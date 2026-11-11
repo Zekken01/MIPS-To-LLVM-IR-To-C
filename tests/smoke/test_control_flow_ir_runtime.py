@@ -46,7 +46,7 @@ def require(condition, message):
         raise AssertionError(message)
 
 
-def run_case(fixture_exe, temp_dir, target, retained, mode, function_name, setup, verify):
+def run_case(fixture_exe, temp_dir, target, retained, mode, function_name, setup, verify, expected_exit=3):
     print(f"control-flow case: {mode}", flush=True)
     target_machine = target.create_target_machine(opt=0)
     retained.append(target_machine)
@@ -81,9 +81,10 @@ def run_case(fixture_exe, temp_dir, target, retained, mode, function_name, setup
     print(f"{mode}: entering JIT function", flush=True)
     result = guest_fn(ctypes.pointer(state), None)
     print(f"{mode}: JIT returned {result}", flush=True)
-    require(result == 3, f"{mode}: expected EE_EXIT_DISPATCH (3), got {result}")
-    require(state.exit_reason == 3,
-            f"{mode}: expected dispatch exit reason 3, got {state.exit_reason}")
+    require(result == expected_exit,
+            f"{mode}: expected exit reason {expected_exit}, got {result}")
+    require(state.exit_reason == expected_exit,
+            f"{mode}: state exit reason {state.exit_reason}, expected {expected_exit}")
     verify(state)
 
 
@@ -114,6 +115,21 @@ def main():
 
         run_case(fixture_exe, temp_dir, target, retained, "jr",
                  "guest_jr_delay_test", check_jr, verify_jr)
+
+        def check_jrra(state):
+            state.gpr[31].lo = 0x00300000
+            state.gpr[31].hi = 0x3131313131313131
+
+        def verify_jrra(state):
+            require(state.pc == 0x00300000,
+                    f"jr $ra: delay slot changed captured target: 0x{state.pc:08x}")
+            require(state.gpr[31].lo == 0x1234,
+                    "jr $ra: delay-slot ADDIU did not execute")
+            require(state.gpr[31].hi == 0x3131313131313131,
+                    "jr $ra: delay slot clobbered the upper GPR half")
+
+        run_case(fixture_exe, temp_dir, target, retained, "jrra",
+                 "guest_jr_return_test", check_jrra, verify_jrra, expected_exit=0)
 
         def check_jal(state):
             state.gpr[31].lo = 0xDEADBEEF
@@ -241,7 +257,7 @@ def main():
             run_case(fixture_exe, temp_dir, target, retained, "bgezall",
                      "guest_bgezall_delay_test", setup, verify)
 
-    print("control_flow_ir_runtime: PASS (JR/JAL/JALR; BLTZAL/BGEZAL/BLTZALL/BGEZALL taken and not-taken)")
+    print("control_flow_ir_runtime: PASS (JR return/dispatch; JAL/JALR; BLTZAL/BGEZAL/BLTZALL/BGEZALL taken and not-taken)")
 
 
 if __name__ == "__main__":
