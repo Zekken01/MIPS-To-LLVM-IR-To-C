@@ -100,6 +100,10 @@ target_link_libraries(ee_mmi1_ir_fixture PRIVATE ee_core)
 add_executable(ee_mmi_ops_test tests/smoke/mmi_ops_test.cpp)
 target_link_libraries(ee_mmi_ops_test PRIVATE ee_core)
 
+# JIT regression for unsupported indirect control transfers and mandatory delay slots.
+add_executable(ee_control_flow_ir_fixture tests/smoke/control_flow_ir_fixture.cpp)
+target_link_libraries(ee_control_flow_ir_fixture PRIVATE ee_core)
+
 find_package(Python3 COMPONENTS Interpreter QUIET)
 set(EE_HAVE_LLVM_JIT_TEST FALSE)
 if(Python3_Interpreter_FOUND)
@@ -119,6 +123,10 @@ add_test(NAME multi_function COMMAND ee_multi_test)
 add_test(NAME smoke COMMAND ee_smoke_test)
 add_test(NAME mmi_ops COMMAND ee_mmi_ops_test)
 if(EE_HAVE_LLVM_JIT_TEST)
+    add_test(NAME control_flow_ir_runtime
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/smoke/test_control_flow_ir_runtime.py
+                $<TARGET_FILE:ee_control_flow_ir_fixture>)
     add_test(NAME mmi_ir_runtime
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/smoke/test_mmi_ir_runtime.py
