@@ -146,6 +146,8 @@ s_lifted_op lift(const s_ee_instruction& insn)
         case 0x01: op.kind = LOP_MADDU; break;
         case 0x18: op.kind = LOP_MULT1; break;
         case 0x19: op.kind = LOP_MULTU1; break;
+        case 0x1a: op.kind = LOP_DIV1; break;
+        case 0x1b: op.kind = LOP_DIVU1; break;
         case 0x20: op.kind = LOP_MADD1; break;
         case 0x21: op.kind = LOP_MADDU1; break;
         case 0x10: op.kind = LOP_MFHI1; break;
