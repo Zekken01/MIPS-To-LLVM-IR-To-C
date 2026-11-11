@@ -5,6 +5,7 @@
 #include "function_analyzer.h"
 #include "ee_recomp.h"
 #include <cstdio>
+#include <map>
 #include <cstring>
 #include <set>
 using namespace ee;
@@ -341,6 +342,43 @@ int main()
         const bool ok = collect_successors(ins).empty();
         ok ? ++g_pass : ++g_fail;
         if (!ok) std::printf("FAIL ERET must not invent a delay slot\\n");
+    }
+    {
+        const auto syscall = decode(0x1000, R(0, 0, 0, 0, 0, 0x0c));
+        const auto brk = decode(0x1008, R(0, 0, 0, 0, 0, 0x0d));
+        const std::set<uint32_t> syscall_resume{0x1004};
+        const std::set<uint32_t> break_resume{0x100c};
+        const bool ok = collect_successors(syscall) == syscall_resume &&
+                        collect_successors(brk) == break_resume;
+        ok ? ++g_pass : ++g_fail;
+        if (!ok) std::printf("FAIL exception instructions must expose possible EPC+4 resume PCs\n");
+    }
+    {
+        // Exception blocks still exit to the host at runtime, but their
+        // post-exception continuation must be present for a handler that
+        // returns at EPC+4.
+        std::map<uint32_t, s_ee_instruction> insns;
+        const auto syscall = decode(0x1000, R(0, 0, 0, 0, 0, 0x0c));
+        const auto middle = decode(0x1004, (0x09u << 26) | (2u << 16) | 7u);
+        const auto brk = decode(0x1008, R(0, 0, 0, 0, 0, 0x0d));
+        const auto resume = decode(0x100c, (0x09u << 26) | (3u << 16) | 9u);
+        insns.emplace(syscall.pc, syscall);
+        insns.emplace(middle.pc, middle);
+        insns.emplace(brk.pc, brk);
+        insns.emplace(resume.pc, resume);
+
+        function_analyzer analyzer;
+        const auto functions = analyzer.analyze(insns, {0x1000});
+        const bool ok = functions.size() == 1 &&
+                        functions[0].blocks.size() == 3 &&
+                        functions[0].blocks[0].start_pc == 0x1000 &&
+                        functions[0].blocks[0].is_terminator &&
+                        functions[0].blocks[1].start_pc == 0x1004 &&
+                        functions[0].blocks[1].insn_indices.size() == 2 &&
+                        functions[0].blocks[1].is_terminator &&
+                        functions[0].blocks[2].start_pc == 0x100c;
+        ok ? ++g_pass : ++g_fail;
+        if (!ok) std::printf("FAIL CFG did not retain code after resumable exceptions\n");
     }
     {
         const auto jal_cross = decode(0x0ffffffc, (0x03u << 26) | 1u);
