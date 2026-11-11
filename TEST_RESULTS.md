@@ -121,3 +121,41 @@ Environment: GitHub Actions `ubuntu-latest`, GCC 15.2, CMake 4.4.5, Ninja 1.13.2
 - GitHub Actions run: [43109193936](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43109193936).
 
 The dispatcher API and native unit tests are complete, but the project still does **not** produce a runnable game: the in-project LLVM object emitter remains a stub, and the dispatcher has not yet been connected to an actual emitted/linked native function set.
+
+## 2026-11-11 — Resumable exceptions and real-game validation
+
+### CI regression results
+
+GitHub Actions run [43110647060](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43110647060), commit `d76f7ec`:
+
+- Clean configure: PASS.
+- Clean build: PASS.
+- CTest: **9/9 PASS**.
+- New decoder/CFG coverage verifies that SYSCALL and BREAK expose a possible EPC+4 continuation. The exception blocks still terminate to the runtime host; code after them is emitted as a separate block that can be re-entered if the exception handler resumes execution.
+
+### USA `SLUS_214.42` full-image pass
+
+Inputs/tools:
+- ELF: preserved USA `SLUS_214.42`.
+- Recompiler: CI-built Linux `ee_recomp` from run [43110647060](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43110647060).
+- Verifier: matching `tools/verify_ir.py`.
+- LLVM: 20.1.8 via llvmlite.
+
+Recompiler result:
+- Entry point: `0x00100008`.
+- Machine: 8 (MIPS).
+- Segments: 2.
+- Functions discovered/emitted: **7,849 / 7,849**.
+- Unique function-scoped instruction PCs: **417,738**.
+- Lifted instructions marked supported: **409,530**.
+- Lifted instructions marked unsupported: **8,208**.
+- Current reported support: **98.0%**.
+
+LLVM validation:
+- IR parse + verify: **7,849/7,849 PASS**, zero invalid modules.
+- Native target object generation at `opt=0`: **7,849/7,849 PASS**.
+- Aggregate in-memory host object bytes: **34,220,040**.
+
+This confirms that the latest exception-continuation CFG change allows discovery through the game startup's syscall path and reaches the direct JAL call graph. The earlier run stopped after one bootstrap function; after retaining the possible EPC+4 resume path it discovered the full 7,849-function set.
+
+Important limitation: `verify_ir.py --emit-opt=0` asks llvmlite to emit host object bytes in memory as a validation step. It does not write/link one object per game function. The project's own `object_emitter::emit_object()` remains a stub, so a standalone runnable game has **not** been produced.
