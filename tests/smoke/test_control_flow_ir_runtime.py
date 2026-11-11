@@ -196,7 +196,52 @@ def main():
             run_case(fixture_exe, temp_dir, target, retained, "bltzall",
                      "guest_bltzall_delay_test", setup, verify)
 
-    print("control_flow_ir_runtime: PASS (JR/JAL/JALR; BLTZAL/BLTZALL taken and not-taken)")
+        def check_bgez_link(state, taken):
+            state.gpr[2].lo = 1 if taken else 0xFFFFFFFFFFFFFFFF
+            state.gpr[31].lo = 0xDEADBEEF
+            state.gpr[31].hi = 0x3131313131313131
+            state.gpr[8].lo = 0x55555555
+
+        def verify_bgezal(state, taken):
+            expected_pc = 0x00100014 if taken else 0x00100008
+            require(state.pc == expected_pc,
+                    f"bgezal: expected PC 0x{expected_pc:08x}, got 0x{state.pc:08x}")
+            require(state.gpr[31].lo == 0x00100008,
+                    "bgezal: link must be written on either outcome")
+            require(state.gpr[31].hi == 0x3131313131313131,
+                    "bgezal: link write clobbered upper GPR half")
+            require(state.gpr[8].lo == 0x00100008,
+                    "bgezal: ordinary delay slot did not execute/read link")
+
+        for taken in (True, False):
+            def setup(state, taken=taken):
+                check_bgez_link(state, taken)
+            def verify(state, taken=taken):
+                verify_bgezal(state, taken)
+            run_case(fixture_exe, temp_dir, target_machine, "bgezal",
+                     "guest_bgezal_delay_test", setup, verify)
+
+        def verify_bgezall(state, taken):
+            expected_pc = 0x00100014 if taken else 0x00100008
+            require(state.pc == expected_pc,
+                    f"bgezall: expected PC 0x{expected_pc:08x}, got 0x{state.pc:08x}")
+            require(state.gpr[31].lo == 0x00100008,
+                    "bgezall: link must be written on either outcome")
+            require(state.gpr[31].hi == 0x3131313131313131,
+                    "bgezall: link write clobbered upper GPR half")
+            expected_t0 = 0x00100008 if taken else 0x55555555
+            require(state.gpr[8].lo == expected_t0,
+                    "bgezall: delay-slot annulment mismatch")
+
+        for taken in (True, False):
+            def setup(state, taken=taken):
+                check_bgez_link(state, taken)
+            def verify(state, taken=taken):
+                verify_bgezall(state, taken)
+            run_case(fixture_exe, temp_dir, target_machine, "bgezall",
+                     "guest_bgezall_delay_test", setup, verify)
+
+    print("control_flow_ir_runtime: PASS (JR/JAL/JALR; BLTZAL/BGEZAL/BLTZALL/BGEZALL taken and not-taken)")
 
 
 if __name__ == "__main__":
