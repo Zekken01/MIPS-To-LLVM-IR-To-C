@@ -307,6 +307,9 @@ static std::set<uint8_t> block_written(const std::vector<ee::s_ee_instruction>& 
         if (ins.valid != ee::e_ee_valid::VALID) continue;
         switch (ins.opcode)
         {
+        case e_ee_opcode::OP_JAL:
+            w.insert(31);
+            break;
         case e_ee_opcode::OP_ADDIU:
         case e_ee_opcode::OP_DADDIU:
         case e_ee_opcode::OP_ANDI:
@@ -334,7 +337,7 @@ static std::set<uint8_t> block_written(const std::vector<ee::s_ee_instruction>& 
                 if (ins.rd != 0) w.insert(ins.rd);
                 break;
             case e_ee_opcode::FUNCT_JALR:
-                w.insert(31);
+                if (ins.rd != 0) w.insert(ins.rd);
                 break;
             case e_ee_opcode::FUNCT_ADD:
             case e_ee_opcode::FUNCT_ADDU:
@@ -400,6 +403,9 @@ static std::set<uint8_t> block_read_before_write(const std::vector<ee::s_ee_inst
         if (ins.valid != ee::e_ee_valid::VALID) continue;
         switch (ins.opcode)
         {
+        case e_ee_opcode::OP_JAL:
+            written_so_far.insert(31);
+            break;
         case e_ee_opcode::OP_ADDIU:
         case e_ee_opcode::OP_DADDIU:
         case e_ee_opcode::OP_ANDI:
@@ -449,6 +455,7 @@ static std::set<uint8_t> block_read_before_write(const std::vector<ee::s_ee_inst
                 break;
             case e_ee_opcode::FUNCT_JALR:
                 consider_read(ins.rs);
+                if (ins.rd != 0) written_so_far.insert(ins.rd);
                 break;
             case e_ee_opcode::FUNCT_ADD:
             case e_ee_opcode::FUNCT_ADDU:
@@ -986,14 +993,20 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
         break;
     case ee::e_ee_opcode::OP_JAL:
     {
-        // Link: write return address into $ra low 64; upper 64 preserved.
+        // Fallback for a missing delay-slot instruction: preserve the link
+        // and dispatch to the direct call target.
         std::string d = newtemp();
         char imm[32];
-        std::snprintf(imm, sizeof(imm), "%u", (unsigned)(ins.pc + 8));
+        std::snprintf(imm, sizeof(imm), "%u", (unsigned)(ins.pc + 8u));
         m_out += "  " + d + " = add i64 " + imm + ", 0\n";
         set_gpr_lo64(31, d);
-        if (is_last_in_block) {
-            m_out += "  br label %" + block_label(ins.jump_target) + "\n";
+        if (is_last_in_block)
+        {
+            const std::string pc_ptr = state_field(6);
+            const std::string exit_ptr = state_field(7);
+            m_out += "  store i32 " + std::to_string(ins.jump_target) + ", ptr " + pc_ptr + "\n";
+            m_out += "  store i32 3, ptr " + exit_ptr + "\n";
+            m_out += "  ret i32 3\n";
         }
         break;
     }
@@ -1002,19 +1015,36 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
         auto funct = static_cast<ee::e_ee_opcode>(ins.funct);
         if (funct == ee::e_ee_opcode::FUNCT_JR)
         {
-            if (is_last_in_block) {
-                m_out += "  br label %" + block_label(0) + "\n";
+            if (is_last_in_block)
+            {
+                const std::string target = src_lo(ins.rs);
+                const std::string target32 = newtemp();
+                m_out += "  " + target32 + " = trunc i64 " + target + " to i32\n";
+                const std::string pc_ptr = state_field(6);
+                const std::string exit_ptr = state_field(7);
+                const uint32_t exit_reason = ins.rs == 31 ? 0u : 3u;
+                m_out += "  store i32 " + target32 + ", ptr " + pc_ptr + "\n";
+                m_out += "  store i32 " + std::to_string(exit_reason) + ", ptr " + exit_ptr + "\n";
+                m_out += "  ret i32 " + std::to_string(exit_reason) + "\n";
             }
         }
         else if (funct == ee::e_ee_opcode::FUNCT_JALR)
         {
+            const std::string target = src_lo(ins.rs);
             std::string d = newtemp();
             char imm[32];
-            std::snprintf(imm, sizeof(imm), "%u", (unsigned)(ins.pc + 8));
+            std::snprintf(imm, sizeof(imm), "%u", (unsigned)(ins.pc + 8u));
             m_out += "  " + d + " = add i64 " + imm + ", 0\n";
-            set_gpr_lo64(31, d);
-            if (is_last_in_block) {
-                m_out += "  br label %" + block_label(0) + "\n";
+            set_gpr_lo64(ins.rd, d);
+            if (is_last_in_block)
+            {
+                const std::string target32 = newtemp();
+                m_out += "  " + target32 + " = trunc i64 " + target + " to i32\n";
+                const std::string pc_ptr = state_field(6);
+                const std::string exit_ptr = state_field(7);
+                m_out += "  store i32 " + target32 + ", ptr " + pc_ptr + "\n";
+                m_out += "  store i32 3, ptr " + exit_ptr + "\n";
+                m_out += "  ret i32 3\n";
             }
         }
         else if (funct == ee::e_ee_opcode::FUNCT_MFHI)
@@ -1876,11 +1906,60 @@ void module_builder::emit_block(const std::vector<ee::s_ee_instruction>& block,
                 m_out += "  br i1 " + cmp + ", label %" + block_label(target) +
                          ", label %" + block_label(ft) + "\n";
             }
+            else if (ctrl.opcode == e_ee_opcode::OP_JAL)
+            {
+                // JAL writes $ra before the delay slot executes.
+                std::string link = newtemp();
+                char link_pc[32];
+                std::snprintf(link_pc, sizeof(link_pc), "%u", (unsigned)(ctrl.pc + 8u));
+                m_out += "  " + link + " = add i64 " + link_pc + ", 0\n";
+                set_gpr_lo64(31, link);
+
+                emit_insn(block[delay_idx], false, 0);
+                store_dirty_regs(live_out);
+
+                // A callee is emitted as a separate translated function. Return
+                // to the host dispatcher with its exact guest entry address.
+                const std::string pc_ptr = state_field(6);
+                const std::string exit_ptr = state_field(7);
+                m_out += "  store i32 " + std::to_string(ctrl.jump_target) + ", ptr " + pc_ptr + "\n";
+                m_out += "  store i32 3, ptr " + exit_ptr + "\n";
+                m_out += "  ret i32 3\n";
+            }
+            else if (ctrl.opcode == e_ee_opcode::OP_SPECIAL &&
+                     (ctrl.funct == static_cast<uint8_t>(e_ee_opcode::FUNCT_JR) ||
+                      ctrl.funct == static_cast<uint8_t>(e_ee_opcode::FUNCT_JALR)))
+            {
+                // Register-indirect targets are sampled before the delay slot:
+                // the slot may overwrite rs, or rd may alias rs in JALR.
+                const std::string jump_target = src_lo(ctrl.rs);
+                const bool is_jalr =
+                    ctrl.funct == static_cast<uint8_t>(e_ee_opcode::FUNCT_JALR);
+                if (is_jalr)
+                {
+                    std::string link = newtemp();
+                    char link_pc[32];
+                    std::snprintf(link_pc, sizeof(link_pc), "%u", (unsigned)(ctrl.pc + 8u));
+                    m_out += "  " + link + " = add i64 " + link_pc + ", 0\n";
+                    set_gpr_lo64(ctrl.rd, link);
+                }
+
+                emit_insn(block[delay_idx], false, 0);
+                store_dirty_regs(live_out);
+
+                const std::string target32 = newtemp();
+                m_out += "  " + target32 + " = trunc i64 " + jump_target + " to i32\n";
+                const std::string pc_ptr = state_field(6);
+                const std::string exit_ptr = state_field(7);
+                const uint32_t exit_reason =
+                    ctrl.flow == ee::e_ee_flow::FLOW_RETURN ? 0u : 3u;
+                m_out += "  store i32 " + target32 + ", ptr " + pc_ptr + "\n";
+                m_out += "  store i32 " + std::to_string(exit_reason) + ", ptr " + exit_ptr + "\n";
+                m_out += "  ret i32 " + std::to_string(exit_reason) + "\n";
+            }
             else
             {
-                // Non-conditional transfers and branch-and-link forms retain
-                // their existing emitter path until their link semantics are
-                // modelled independently of the delay slot.
+                // Other transfers retain their existing emitter path.
                 emit_insn(block[delay_idx], false, 0);
                 store_dirty_regs(live_out);
                 emit_insn(ctrl, true, ft);
@@ -2007,9 +2086,11 @@ void module_builder::emit_function(const std::vector<ee::s_ee_instruction>& insn
             switch (static_cast<ee::e_ee_opcode>(ins.funct))
             {
             case e_ee_opcode::FUNCT_JR:
+                if (ins.rs != 0) touched.insert(ins.rs);
+                break;
             case e_ee_opcode::FUNCT_JALR:
                 if (ins.rs != 0) touched.insert(ins.rs);
-                touched.insert(31);
+                if (ins.rd != 0) touched.insert(ins.rd);
                 break;
             default:
                 if (ins.rd != 0) touched.insert(ins.rd);
