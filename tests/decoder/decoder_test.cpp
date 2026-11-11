@@ -231,7 +231,8 @@ int main()
     expect("add.s", R(0x11,0x10,5,6,7,0x00), "cop1_s", V);
     expect("rsqrt.s", R(0x11,0x10,5,6,7,0x16), "cop1_s", V);
     expect("madda.s", R(0x11,0x10,5,6,7,0x1e), "cop1_s", V);
-    expect("max.s", R(0x11,0x10,5,6,7,0x28), "cop1_s", U);
+    expect("max.s", R(0x11,0x10,5,6,7,0x28), "cop1_s", V);
+    expect("min.s", R(0x11,0x10,5,6,7,0x29), "cop1_s", V);
     expect("c.f.s", R(0x11,0x10,5,6,0,0x30), "cop1_s", V);
     expect("c.eq.s", R(0x11,0x10,5,6,0,0x32), "cop1_s", V);
     expect("c.lt.s", R(0x11,0x10,5,6,0,0x34), "cop1_s", V);
