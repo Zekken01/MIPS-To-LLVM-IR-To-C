@@ -31,3 +31,12 @@ Further changes should be committed to this branch in small, testable increments
 - Verified against the EE Core Instruction Set Manual v6.0, MULT1 and MULTU1 operation definitions.
 - GitHub Actions run [43089471611](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43089471611): clean configure/build and **4/4 CTest passed**, including the JIT runtime fixture at O0–O3.
 
+
+## 2026-11-11 — Pipeline-1 division support
+
+- Added exact decoder/lifter support for `DIV1` and `DIVU1` (funct 0x1a/0x1b; reserved `sa` must be zero).
+- Implemented signed and unsigned 32-bit quotient/remainder lowering into LO1/HI1, respectively.
+- Guarded signed `INT_MIN / -1` before LLVM `sdiv`/`srem`, then applied the EE-defined quotient/remainder result.
+- The EE manual leaves divide-by-zero results undefined. The recompiler chooses a deterministic no-op for HI1/LO1 on a zero divisor, avoiding LLVM undefined behavior/poison.
+- Added an independent JIT fixture covering signed normal division, signed overflow, signed divide-by-zero, unsigned division, and unsigned divide-by-zero; each case also verifies MFHI1/MFLO1 readback at O0–O3.
+- GitHub Actions run [43090955314](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43090955314): clean configure/build and **5/5 CTest passed**.
