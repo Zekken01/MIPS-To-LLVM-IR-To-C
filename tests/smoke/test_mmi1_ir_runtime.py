@@ -215,7 +215,8 @@ def main():
                 modules.append(module)
                 target_machines.append(target_machine)
 
-    print("mmi1_ir_runtime: PASS (O0-O3; PABSW/PABSH; PADSBH; PCEQW/PCEQH/PCEQB; PMINW/PMINH; PADDU*/PSUBU*; PEXTU*/QFSRV; MTSAB/MTSAH; aliasing)
+    print("mmi1_ir_runtime: PASS (O0-O3; PABSW/PABSH; PADSBH; PCEQW/PCEQH/PCEQB; PMINW/PMINH; PADDU*/PSUBU*; PEXTU*/QFSRV; MTSAB/MTSAH; aliasing)")
+
 
 
 if __name__ == "__main__":
