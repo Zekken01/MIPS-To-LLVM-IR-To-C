@@ -96,3 +96,16 @@ Further changes should be committed to this branch in small, testable increments
 - LLVM parse/verify: **7,849/7,849 passed**, zero invalid modules.
 - Native host-object generation via llvmlite at `opt=0`: **7,849/7,849 passed**, total **34,756,008 bytes** of in-memory object code (30,660,224 bytes for the first 7,000 modules plus 4,095,784 bytes for the remaining 849).
 - The project's own `object_emitter::emit_object()` remains a stub; object bytes were emitted in-memory by llvmlite for validation and were not linked into a runnable executable.
+## 2026-11-11 — COP1 FCC0 comparisons and full-game native linking
+
+- Added exact FCC0-only `C.F.S`, `C.EQ.S`, `C.LT.S`, and `C.LE.S` decoding/lowering. Other condition-code destinations remain unsupported because the current state model only exposes FCC0.
+- Added LLVM JIT coverage for all four predicates, signed zero, denormal flushing, infinity/NaN saturation to signed FMAX, and preservation of non-FCC0 FCSR bits.
+- Corrected the fixture to match the R5900 comparison operand normalisation rather than applying host IEEE unordered-NaN expectations directly.
+- GitHub Actions run [43115526527](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43115526527): **12/12 CTest passed**.
+- Extended `tools/link_native_objects.py` to compile its large generated dispatcher metadata translation unit separately at a configurable optimisation level (default O0). Fixed response-file quoting/newline emission for thousands of object inputs.
+- GitHub Actions run [43117522952](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43117522952), commit `f583796`: clean build and **12/12 CTest passed**, including the object-emission/link/dispatcher integration test.
+- Recompiled the preserved USA `SLUS_214.42` ELF with the matching CI build: **7,849 functions**, **417,738 unique instruction PCs**, **416,648 supported / 1,090 unsupported** (99.7% decoder/lifter classification).
+- LLVM 20.1.8 parse/verify and native object generation at O0 passed for **7,849/7,849 modules**. The persisted objects total **35,026,424 bytes** and all 7,849 defined guest symbols were checked against the generated metadata.
+- Ran the committed linker tool over all 7,849 objects and the matching runtime/dispatcher sources. It produced a **28,618,808-byte** x86-64 shared library exporting `ee_game_run` and `ee_fn_00100008`. The library loaded through `ctypes.CDLL`; `ldd -r` reported no unresolved dynamic symbols.
+- Full validation details: `FULL_GAME_NATIVE_LINK_VALIDATION.md`.
+- Limitation: the linked library is not a bootable PS2 game and the full game was not executed. The EE runtime still lacks BIOS/IOP, GS, DMA, TLB/MMIO devices, interrupts, and other console services. The in-tree `object_emitter::emit_object()` remains a stub; the persisted objects were emitted using the external llvmlite validation tool.
