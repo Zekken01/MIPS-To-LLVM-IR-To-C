@@ -84,3 +84,15 @@ Further changes should be committed to this branch in small, testable increments
 - Also ran llvmlite native target code generation at `opt=0` over all **7,849/7,849** modules. All succeeded, producing **34,220,040 bytes** of aggregate in-memory host object code.
 - The validation used the Linux `ee_recomp` and `verify_ir.py` from CI run [43110647060](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43110647060), commit `d76f7ec`.
 - Limitation: llvmlite emitted host objects in memory for validation; the project `object_emitter::emit_object()` remains a stub, and these objects were not linked into a runnable game executable.
+
+## 2026-11-11 — Enable exact 64-bit scalar comparisons
+
+- Confirmed the existing LLVM emitter already contains exact lowerings for `SLT`, `SLTU`, `SLTI`, and `SLTIU`, and the CFG liveness analysis already accounts for their source and destination registers. The decoder was still marking those operations unsupported.
+- Marked `SLTI` and `SLTIU` valid, and marked `SLT`/`SLTU` valid only when their reserved shift-amount field is zero. Non-zero reserved encodings remain unsupported.
+- Added decoder coverage and a generated LLVM JIT fixture checking signed versus unsigned 64-bit ordering, sign extension of the `SLTIU` immediate, read/write aliases, destination `$zero`, and preservation of the upper 64-bit GPR halves.
+- Fixed the JIT harness to register the native LLVM target and assert the expected sequential dispatcher exit/PC.
+- GitHub Actions run [43112984141](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43112984141), commit `5aba8e1`: clean configure/build and **10/10 CTest passed**.
+- Re-ran the CI-built recompiler against USA `SLUS_214.42`: still **7,849 functions / 417,738 PCs**, with **414,916 supported** and **2,822 unsupported** instructions (**99.3%**, up from 98.0%). The 5,386 newly supported instructions are exactly the four scalar comparison families.
+- LLVM parse/verify: **7,849/7,849 passed**, zero invalid modules.
+- Native host-object generation via llvmlite at `opt=0`: **7,849/7,849 passed**, total **34,756,008 bytes** of in-memory object code (30,660,224 bytes for the first 7,000 modules plus 4,095,784 bytes for the remaining 849).
+- The project's own `object_emitter::emit_object()` remains a stub; object bytes were emitted in-memory by llvmlite for validation and were not linked into a runnable executable.
