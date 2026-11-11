@@ -9,6 +9,9 @@
 
 namespace ee {
 
+// Return statically discoverable instruction PCs after one decoded instruction.
+std::set<uint32_t> collect_successors(const s_ee_instruction& ins);
+
 class function_analyzer
 {
 public:
