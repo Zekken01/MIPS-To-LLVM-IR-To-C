@@ -349,6 +349,16 @@ int main()
         if (!ok) std::printf("FAIL J/JAL target region must use PC+4 across 256MB boundary\n");
     }
     {
+        const auto j_zero = decode(0x00000000, 0x08000000u);
+        const auto jal_zero = decode(0x00000000, 0x0c000000u);
+        const std::set<uint32_t> j_expected{0x00000000u};
+        const std::set<uint32_t> jal_expected{0x00000000u, 0x00000008u};
+        const bool ok = collect_successors(j_zero) == j_expected &&
+                        collect_successors(jal_zero) == jal_expected;
+        ok ? ++g_pass : ++g_fail;
+        if (!ok) std::printf("FAIL direct J/JAL target zero was mistaken for indirect transfer\\n");
+    }
+    {
         const auto jr = decode(0x100000, R(0x00,2,0,0,0,0x08));
         const auto jalr = decode(0x100000, R(0x00,2,0,16,0,0x09));
         const std::set<uint32_t> jr_expected{0x100004};
