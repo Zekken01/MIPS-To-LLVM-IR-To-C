@@ -97,7 +97,7 @@ bool cop1_s_lowered_exactly(uint32_t funct)
            (funct >= 0x1c && funct <= 0x1f);
 }
 
-bool mmi_lowered_exactly(uint32_t funct, uint32_t sa)
+bool mmi_lowered_exactly(uint32_t funct, uint32_t sa, uint32_t rs)
 {
     switch (funct)
     {
@@ -110,6 +110,20 @@ bool mmi_lowered_exactly(uint32_t funct, uint32_t sa)
     case 0x08:                                          // MMI0
         return sa == 0 || sa == 1 || sa == 3 || sa == 4 || sa == 5 || sa == 7 ||
                sa == 8 || sa == 9;                      // paddw psubw pmaxw paddh psubh pmaxh paddb psubb
+    case 0x28:                                          // MMI1
+        switch (sa)
+        {
+        case 0x01: case 0x05:                            // pabsw/pabsh use rt only
+            return rs == 0;
+        case 0x02: case 0x03: case 0x06: case 0x07:    // pceq*/pmin*
+        case 0x0a:                                      // pceqb
+        case 0x10: case 0x11:                            // padduw/psubuw
+        case 0x14: case 0x15:                            // padduh/psubuh
+        case 0x18: case 0x19:                            // paddub/psubub
+            return true;
+        default:
+            return false;
+        }
     case 0x09:                                          // MMI2
         return sa == 0x12 || sa == 0x13;                // pand pxor
     case 0x29:                                          // MMI3
@@ -662,7 +676,7 @@ s_ee_instruction decode(uint32_t pc, uint32_t word)
         if (std::string_view(name) == "reserved")
             insn.valid = e_ee_valid::INVALID;
         else
-            insn.valid = mmi_lowered_exactly(insn.funct, insn.sa & 31)
+            insn.valid = mmi_lowered_exactly(insn.funct, insn.sa & 31, insn.rs)
                          ? e_ee_valid::VALID : e_ee_valid::UNSUPPORTED;
         break;
     }
