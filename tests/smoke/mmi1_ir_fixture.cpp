@@ -53,6 +53,11 @@ int main(int argc, char** argv)
         make_mmi(4, 5, 16, 21, 0x28), // PSUBUH $s0, $a0, $a1
         make_mmi(4, 5, 17, 24, 0x28), // PADDUB $s1, $a0, $a1
         make_mmi(4, 5, 18, 25, 0x28), // PSUBUB $s2, $a0, $a1
+        make_mmi(4, 5, 19,  4, 0x28), // PADSBH $s3, $a0, $a1
+        make_mmi(4, 5, 20, 26, 0x28), // PEXTUB $s4, $a0, $a1
+        make_mmi(4, 5, 21, 22, 0x28), // PEXTUH $s5, $a0, $a1
+        make_mmi(4, 5, 22, 18, 0x28), // PEXTUW $s6, $a0, $a1
+        make_mmi(4, 5, 23, 27, 0x28), // QFSRV  $s7, $a0, $a1 (SA set by runtime)
         make_mmi(4, 5, 4,  2, 0x28)  // PCEQW  $a0, $a0, $a1 (rd aliases rs)
     };
 
