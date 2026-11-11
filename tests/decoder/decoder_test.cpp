@@ -259,9 +259,9 @@ int main()
         if (!ok) std::printf("FAIL syscall/break exception flow\n");
     }
 
-    {   // the game's entry word must classify as padduw, not VALID
+    {   // the game's entry word is an exact PADDUW encoding (zero + zero -> zero)
         s_ee_instruction i = decode(0x100008, 0x70000c28);
-        bool ok = std::strcmp(i.mnemonic, "padduw") == 0 && i.valid == U;
+        bool ok = std::strcmp(i.mnemonic, "padduw") == 0 && i.valid == V;
         ok ? ++g_pass : ++g_fail; if (!ok) std::printf("FAIL entry word\n");
     }
     std::printf("decoder_test: %d passed, %d failed\n", g_pass, g_fail);
