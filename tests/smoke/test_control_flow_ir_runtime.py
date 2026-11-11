@@ -334,6 +334,67 @@ def main():
             run_case(fixture_exe, temp_dir, target, retained, "bgezall",
                      "guest_bgezall_delay_test", setup, verify)
 
+
+    def load_function(mode, function_name):
+        target_machine = target.create_target_machine(opt=0)
+        retained.append(target_machine)
+        ir_path = temp_dir / f"{mode}_reentry.ll"
+        subprocess.run([str(fixture_exe), mode, str(ir_path)], check=True)
+        module = llvm.parse_assembly(ir_path.read_text(encoding="utf-8"))
+        module.verify()
+        module.triple = llvm.get_default_triple()
+        module.data_layout = str(target_machine.target_data)
+        engine = llvm.create_mcjit_compiler(llvm.parse_assembly(""), target_machine)
+        engine.add_module(module)
+        engine.finalize_object()
+        retained.extend((engine, module))
+        address = engine.get_function_address(function_name)
+        require(address != 0, f"{mode}: JIT did not expose {function_name}")
+        return ctypes.CFUNCTYPE(
+            ctypes.c_uint32, ctypes.POINTER(EEState), ctypes.c_void_p
+        )(address)
+
+    # Exercise the full call/return/continuation contract with two separately
+    # compiled guest functions. JAL exits to the callee; JR $ra returns to the
+    # caller's PC+8; the caller is re-entered and must dispatch to its second
+    # LLVM basic block rather than restarting at its function entry.
+    caller_fn = load_function("caller_resume", "guest_caller_resume_test")
+    callee_fn = load_function("callee_return", "guest_callee_return_test")
+    backing, state = make_aligned_state()
+    _ = backing
+    state.gpr[16].hi = 0x1616161616161616
+    state.gpr[17].hi = 0x1717171717171717
+    state.gpr[8].hi = 0x0808080808080808
+    state.gpr[31].hi = 0x3131313131313131
+
+    caller_exit = caller_fn(ctypes.pointer(state), None)
+    require(caller_exit == 3 and state.exit_reason == 3,
+            f"caller JAL: expected dispatch exit 3, got {caller_exit}/{state.exit_reason}")
+    require(state.pc == 0x00102000,
+            f"caller JAL: expected callee PC 0x00102000, got 0x{state.pc:08x}")
+    require(state.gpr[31].lo == 0x00100008,
+            f"caller JAL: wrong return address 0x{state.gpr[31].lo:x}")
+    require(state.gpr[16].lo == 0x55 and state.gpr[16].hi == 0x1616161616161616,
+            "caller JAL: delay-slot side effect or upper GPR preservation failed")
+
+    callee_exit = callee_fn(ctypes.pointer(state), None)
+    require(callee_exit == 0 and state.exit_reason == 0,
+            f"callee JR $ra: expected return exit 0, got {callee_exit}/{state.exit_reason}")
+    require(state.pc == 0x00100008,
+            f"callee JR $ra: expected caller continuation 0x00100008, got 0x{state.pc:08x}")
+    require(state.gpr[8].lo == 0x77 and state.gpr[8].hi == 0x0808080808080808,
+            "callee JR $ra: delay-slot side effect or upper GPR preservation failed")
+
+    resume_exit = caller_fn(ctypes.pointer(state), None)
+    require(resume_exit == 3 and state.exit_reason == 3,
+            f"caller continuation: expected dispatch exit 3, got {resume_exit}/{state.exit_reason}")
+    require(state.pc == 0x0010000C,
+            f"caller continuation: expected next PC 0x0010000c, got 0x{state.pc:08x}")
+    require(state.gpr[17].lo == 0x66 and state.gpr[17].hi == 0x1717171717171717,
+            "caller continuation block was not resumed correctly")
+    print("control-flow nested call/resume: PASS", flush=True)
+
+    print("control_flow_ir_runtime: PASS (JR return/dispatch; JAL/JALR; BEQ condition sampling; BLTZAL/BGEZAL/BLTZALL/BGEZALL taken and not-taken)")
     print("control_flow_ir_runtime: PASS (JR return/dispatch; JAL/JALR; BEQ condition sampling; BLTZAL/BGEZAL/BLTZALL/BGEZALL taken and not-taken)")
 
 
