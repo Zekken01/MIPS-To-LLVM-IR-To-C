@@ -53,3 +53,11 @@ Further changes should be committed to this branch in small, testable increments
 - Updated the decoder regression for the game entry-point word `0x70000c28`: it is now correctly accepted as exact `PADDUW`, not rejected.
 - Left the remaining MMI1 operations (`PADSBH`, `PEXTUW/UH/UB`, and `QFSRV`) unsupported pending their own exact implementations and tests.
 - GitHub Actions run [43093331006](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43093331006): clean configure/build and **6/6 CTest passed**.
+
+## 2026-11-11 — Complete the MMI1 operation table
+
+- Extended the exact MMI1 implementation to cover the remaining defined sub-ops: `PADSBH`, `PEXTUW`, `PEXTUH`, `PEXTUB`, and `QFSRV`.
+- Added exact `MTSAB` and `MTSAH` lowering so QFSRV obtains its byte/halfword shift amount from the architectural SA field rather than a test-only preset.
+- Added the three-instruction SA read-hazard gap before the second SA-setting instruction in the runtime fixture.
+- Extended decoder/lifter assertions and the LLVM JIT fixture to exercise all 18 non-reserved MMI1 sub-ops, plus MTSAB/MTSAH, at O0–O3 and multiple SA values.
+- The source and test changes are committed on this branch. CI runs for the latest commits are currently queued; no final result is recorded yet.

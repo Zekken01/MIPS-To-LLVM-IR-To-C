@@ -93,3 +93,10 @@ Environment: GitHub Actions `ubuntu-latest`, GCC/CMake/Ninja, isolated Python vi
 - The game entry-point encoding `0x70000c28` now decodes as supported PADDUW.
 - Remaining MMI1 operations stay unsupported: PADSBH, PEXTUW, PEXTUH, PEXTUB, and QFSRV.
 - GitHub Actions run: [43093331006](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43093331006).
+
+## 2026-11-11 MMI1 completion — validation pending
+
+- Implemented the remaining defined MMI1 operations: PADSBH, PEXTUW, PEXTUH, PEXTUB, and QFSRV.
+- Added MTSAB/MTSAH decoding, lifting, and SA state updates used by QFSRV.
+- Extended the MMI1 JIT fixture to cover all 18 non-reserved MMI1 sub-ops and multiple byte/halfword SA settings at O0–O3.
+- **Validation status:** GitHub Actions runs for this latest source revision are queued and have not yet produced a result. The prior 6/6 green result applies to the earlier 13-operation MMI1 subset only.
