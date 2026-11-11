@@ -3019,20 +3019,29 @@ void module_builder::emit_function_cfg(const ee::s_ee_function& fn,
     if (!fn.blocks.empty())
     {
         // Re-enter at the block named by cpu.m_pc when a callee returns to a
-        // continuation inside this translated function. Unknown/initial PCs
-        // fall back to the function entry for compatibility with callers that
-        // initialise the CPU state without setting m_pc.
+        // continuation inside this translated function. Zero remains accepted
+        // as a legacy initial-PC sentinel; every other unknown PC must go back
+        // to the host dispatcher rather than restarting the function.
         const std::string pc_ptr = state_field(6);
         const std::string guest_pc = newtemp();
         m_out += "  " + guest_pc + " = load i32, ptr " + pc_ptr + "\n";
-        m_out += "  switch i32 " + guest_pc + ", label %" +
-                 block_label(fn.blocks[0].start_pc) + " [\n";
+        m_out += "  switch i32 " + guest_pc + ", label %dispatch_unknown [\n";
+        if (fn.entry_pc != 0)
+        {
+            m_out += "    i32 " + std::to_string(fn.entry_pc) +
+                     ", label %" + block_label(fn.blocks[0].start_pc) + "\n";
+        }
+        m_out += "    i32 0, label %" + block_label(fn.blocks[0].start_pc) + "\n";
         for (size_t i = 1; i < fn.blocks.size(); ++i)
         {
             m_out += "    i32 " + std::to_string(fn.blocks[i].start_pc) +
                      ", label %" + block_label(fn.blocks[i].start_pc) + "\n";
         }
         m_out += "  ]\n";
+        m_out += "dispatch_unknown:\n";
+        const std::string exit_ptr = state_field(7);
+        m_out += "  store i32 3, ptr " + exit_ptr + "\n";
+        m_out += "  ret i32 3\n";
     }
     else
     {
