@@ -268,8 +268,8 @@ def main():
         # objects and can exceed the operating system's command-line length.
         response_path = args.output.with_suffix(args.output.suffix + ".objects.rsp")
         response_path.write_text(
-            "\\n".join('"' + str(path).replace('"', '\\\\"') + '"' for path in objects)
-            + "\\n",
+            "\n".join('"' + str(path).replace('"', '\\"') + '"' for path in objects)
+            + "\n",
             encoding="utf-8",
         )
 
