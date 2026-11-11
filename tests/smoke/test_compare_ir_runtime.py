@@ -59,6 +59,8 @@ def main():
         module.verify()
         module.triple = llvm.get_default_triple()
 
+        llvm.initialize_native_target()
+        llvm.initialize_native_asmprinter()
         target = llvm.Target.from_default_triple()
         target_machine = target.create_target_machine()
         module.data_layout = str(target_machine.target_data)
