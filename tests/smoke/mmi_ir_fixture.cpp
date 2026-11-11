@@ -91,7 +91,13 @@ int main(int argc, char** argv)
         make_mmi(8, 9, 21, 8, 0x08),       // paddb $s5,$t0,$t1
         make_mmi(8, 9, 22, 9, 0x08),       // psubb $s6,$t0,$t1
         make_mmi(8, 9, 8, 0x12, 0x09),     // pand $t0,$t0,$t1 (rd aliases rs)
-        make_mmi(8, 9, 13, 0x13, 0x09)     // pxor $t5,$t0,$t1 sees new $t0
+        make_mmi(8, 9, 13, 0x13, 0x09),    // pxor $t5,$t0,$t1 sees new $t0
+        make_mmi(27, 28, 25, 0, 0x18),     // mult1 $t9,$k1,$gp
+        make_mmi(0, 0, 1, 0, 0x10),        // mfhi1 $at
+        make_mmi(0, 0, 2, 0, 0x12),        // mflo1 $v0
+        make_mmi(27, 28, 26, 0, 0x19),     // multu1 $k0,$k1,$gp
+        make_mmi(0, 0, 3, 0, 0x10),        // mfhi1 $v1
+        make_mmi(0, 0, 31, 0, 0x12)        // mflo1 $ra
     };
 
     std::map<uint32_t, ee::s_ee_instruction> insn_map;
