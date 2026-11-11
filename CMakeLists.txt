@@ -93,6 +93,10 @@ target_link_libraries(ee_mmi_ir_fixture PRIVATE ee_core)
 add_executable(ee_div1_ir_fixture tests/smoke/div1_ir_fixture.cpp)
 target_link_libraries(ee_div1_ir_fixture PRIVATE ee_core)
 
+# Dedicated JIT runtime coverage for exactly lowered MMI1 packed operations.
+add_executable(ee_mmi1_ir_fixture tests/smoke/mmi1_ir_fixture.cpp)
+target_link_libraries(ee_mmi1_ir_fixture PRIVATE ee_core)
+
 find_package(Python3 COMPONENTS Interpreter QUIET)
 set(EE_HAVE_LLVM_JIT_TEST FALSE)
 if(Python3_Interpreter_FOUND)
@@ -123,5 +127,9 @@ if(EE_HAVE_LLVM_JIT_TEST)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/smoke/test_div1_ir_runtime.py
                 $<TARGET_FILE:ee_div1_ir_fixture>)
+    add_test(NAME mmi1_ir_runtime
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/smoke/test_mmi1_ir_runtime.py
+                $<TARGET_FILE:ee_mmi1_ir_fixture>)
 endif()
 set_tests_properties(multi_function smoke PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
