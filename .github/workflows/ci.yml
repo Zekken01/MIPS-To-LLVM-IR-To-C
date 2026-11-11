@@ -1,0 +1,37 @@
+name: Build and test
+
+on:
+  push:
+    branches:
+      - recovery/reassembled-source-2026-11-11
+  pull_request:
+    branches:
+      - recovery/reassembled-source-2026-11-11
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check toolchain
+        run: |
+          cmake --version
+          ninja --version
+          c++ --version
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build --parallel 2
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: Verify generated IR (when llvmlite is installed)
+        run: |
+          if python3 -c "import llvmlite.binding" 2>/dev/null; then
+            python3 tests/smoke/test_mmi_ir_runtime.py
+          else
+            echo "llvmlite unavailable; optional IR runtime test skipped"
+          fi
