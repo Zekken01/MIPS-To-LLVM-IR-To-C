@@ -37,6 +37,7 @@ int main(int argc, char** argv)
     else if (std::strcmp(mode, "c_lt") == 0) funct = 0x34;
     else if (std::strcmp(mode, "c_le") == 0) funct = 0x36;
     else if (std::strcmp(mode, "cvt_w") == 0) funct = 0x24;
+    else if (std::strcmp(mode, "cvt_s_w") == 0) funct = 0x20;
     else if (std::strcmp(mode, "add_s") == 0) funct = 0x00;
     else if (std::strcmp(mode, "sub_s") == 0) funct = 0x01;
     else if (std::strcmp(mode, "mul_s") == 0) funct = 0x02;
@@ -55,6 +56,7 @@ int main(int argc, char** argv)
     // Comparisons use CC0. Conversion and arithmetic forms use FD.
     const bool writes_fpr6 =
         std::strcmp(mode, "cvt_w") == 0 ||
+        std::strcmp(mode, "cvt_s_w") == 0 ||
         std::strcmp(mode, "add_s") == 0 ||
         std::strcmp(mode, "sub_s") == 0 ||
         std::strcmp(mode, "mul_s") == 0 ||
@@ -64,7 +66,10 @@ int main(int argc, char** argv)
         std::strcmp(mode, "abs_s") == 0 ||
         std::strcmp(mode, "neg_s") == 0;
     const uint8_t destination_or_cc = writes_fpr6 ? 6 : 0;
-    const uint32_t word = make_cop1_s(2, 1, destination_or_cc, funct);
+    const uint32_t word = std::strcmp(mode, "cvt_s_w") == 0
+        ? ((0x11u << 26) | (0x14u << 21) | (1u << 11) |
+           (static_cast<uint32_t>(destination_or_cc) << 6) | funct)
+        : make_cop1_s(2, 1, destination_or_cc, funct);
     const ee::s_ee_instruction ins = ee::decode(entry_pc, word);
     if (ins.valid != ee::e_ee_valid::VALID ||
         ins.opcode != ee::e_ee_opcode::OP_COP1)
