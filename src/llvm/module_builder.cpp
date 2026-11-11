@@ -1568,17 +1568,166 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
                 m_out += "  store i32 " + merged + ", ptr " + p + "\n";
             };
 
-            if (fmt == 0x10 && (fp_funct <= 0x03))
+            // The R5900 FPU normalises operands before most scalar arithmetic:
+            // exponent-zero inputs become signed zero and exponent-all-ones
+            // inputs become signed FMAX. Keep this separate from raw-bit
+            // operations such as ABS.S, NEG.S, MAX.S and MIN.S.
+            auto normalise_ee_f32_bits = [&](const std::string& raw) -> std::string {
+                const std::string exponent = newtemp();
+                const std::string is_zero_exp = newtemp();
+                const std::string is_special_exp = newtemp();
+                const std::string sign = newtemp();
+                const std::string fmax = newtemp();
+                const std::string finite_or_special = newtemp();
+                const std::string normalised = newtemp();
+
+                m_out += "  " + exponent + " = and i32 " + raw + ", 2139095040\n";
+                m_out += "  " + is_zero_exp + " = icmp eq i32 " + exponent + ", 0\n";
+                m_out += "  " + is_special_exp + " = icmp eq i32 " + exponent + ", 2139095040\n";
+                m_out += "  " + sign + " = and i32 " + raw + ", -2147483648\n";
+                m_out += "  " + fmax + " = or i32 " + sign + ", 2139095039\n";
+                m_out += "  " + finite_or_special + " = select i1 " + is_special_exp +
+                         ", i32 " + fmax + ", i32 " + raw + "\n";
+                m_out += "  " + normalised + " = select i1 " + is_zero_exp +
+                         ", i32 " + sign + ", i32 " + finite_or_special + "\n";
+                return normalised;
+            };
+
+            auto load_ee_fpr_f32 = [&](uint8_t freg) -> std::string {
+                const std::string raw = load_fpr_i32(freg);
+                const std::string bits = normalise_ee_f32_bits(raw);
+                const std::string value = newtemp();
+                m_out += "  " + value + " = bitcast i32 " + bits + " to float\n";
+                return value;
+            };
+
+            // Apply the EE's post-operation overflow/underflow handling.
+            // update_flags=true matches checkOverflow(O|SO), followed by
+            // checkUnderflow(U|SU). Overflow returns early and therefore
+            // leaves the previous underflow cause bit untouched.
+            auto clamp_ee_f32_result = [&](const std::string& value,
+                                           bool update_flags) -> std::string {
+                const std::string raw = newtemp();
+                const std::string absolute = newtemp();
+                const std::string is_overflow = newtemp();
+                const std::string sign = newtemp();
+                const std::string fmax = newtemp();
+                const std::string clamped = newtemp();
+                const std::string exponent = newtemp();
+                const std::string mantissa = newtemp();
+                const std::string is_zero_exp = newtemp();
+                const std::string has_mantissa = newtemp();
+                const std::string is_underflow = newtemp();
+                const std::string flushed = newtemp();
+
+                m_out += "  " + raw + " = bitcast float " + value + " to i32\n";
+                m_out += "  " + absolute + " = and i32 " + raw + ", 2147483647\n";
+                m_out += "  " + is_overflow + " = icmp eq i32 " + absolute + ", 2139095040\n";
+                m_out += "  " + sign + " = and i32 " + raw + ", -2147483648\n";
+                m_out += "  " + fmax + " = or i32 " + sign + ", 2139095039\n";
+                m_out += "  " + clamped + " = select i1 " + is_overflow +
+                         ", i32 " + fmax + ", i32 " + raw + "\n";
+                m_out += "  " + exponent + " = and i32 " + clamped + ", 2139095040\n";
+                m_out += "  " + mantissa + " = and i32 " + clamped + ", 8388607\n";
+                m_out += "  " + is_zero_exp + " = icmp eq i32 " + exponent + ", 0\n";
+                m_out += "  " + has_mantissa + " = icmp ne i32 " + mantissa + ", 0\n";
+                m_out += "  " + is_underflow + " = and i1 " + is_zero_exp + ", " + has_mantissa + "\n";
+                m_out += "  " + flushed + " = select i1 " + is_underflow +
+                         ", i32 " + sign + ", i32 " + clamped + "\n";
+
+                if (update_flags)
+                {
+                    const std::string fcsr = newtemp();
+                    const std::string old_flags = newtemp();
+                    const std::string overflow_flags = newtemp();
+                    const std::string no_overflow_flags = newtemp();
+                    const std::string after_overflow = newtemp();
+                    const std::string underflow_flags = newtemp();
+                    const std::string no_underflow_flags = newtemp();
+                    const std::string after_underflow = newtemp();
+                    const std::string final_flags = newtemp();
+
+                    m_out += "  " + fcsr + " = " + fcsr_ptr() + "\n";
+                    m_out += "  " + old_flags + " = load i32, ptr " + fcsr + "\n";
+                    m_out += "  " + overflow_flags + " = or i32 " + old_flags + ", 32784\n";
+                    m_out += "  " + no_overflow_flags + " = and i32 " + old_flags + ", -32769\n";
+                    m_out += "  " + after_overflow + " = select i1 " + is_overflow +
+                             ", i32 " + overflow_flags + ", i32 " + no_overflow_flags + "\n";
+                    m_out += "  " + underflow_flags + " = or i32 " + after_overflow + ", 16392\n";
+                    m_out += "  " + no_underflow_flags + " = and i32 " + after_overflow + ", -16385\n";
+                    m_out += "  " + after_underflow + " = select i1 " + is_underflow +
+                             ", i32 " + underflow_flags + ", i32 " + no_underflow_flags + "\n";
+                    m_out += "  " + final_flags + " = select i1 " + is_overflow +
+                             ", i32 " + after_overflow + ", i32 " + after_underflow + "\n";
+                    m_out += "  store i32 " + final_flags + ", ptr " + fcsr + "\n";
+                }
+
+                return flushed;
+            };
+
+            if (fmt == 0x10 && (fp_funct <= 0x02))
             {
                 const char* op = "fadd";
                 if (fp_funct == 0x01) op = "fsub";
                 else if (fp_funct == 0x02) op = "fmul";
                 else if (fp_funct == 0x03) op = "fdiv";
-                std::string fa = load_fpr_f32(fs);
-                std::string fb = load_fpr_f32(ft);
+                std::string fa = load_ee_fpr_f32(fs);
+                std::string fb = load_ee_fpr_f32(ft);
                 std::string fr = newtemp();
                 m_out += "  " + fr + " = " + std::string(op) + " float " + fa + ", " + fb + "\n";
-                store_fpr_f32(fd, fr);
+                const std::string result = clamp_ee_f32_result(fr, true);
+                store_fpr_i32(fd, result);
+            }
+            else if (fmt == 0x10 && fp_funct == 0x03) // DIV.S
+            {
+                // Divide-by-zero is detected from the raw divisor exponent;
+                // denormals count as zero. The result is signed FMAX, and the
+                // selected cause/sticky flags are ORed without clearing others.
+                const std::string raw_fs = load_fpr_i32(fs);
+                const std::string raw_ft = load_fpr_i32(ft);
+                const std::string fs_exponent = newtemp();
+                const std::string ft_exponent = newtemp();
+                const std::string numerator_is_zero = newtemp();
+                const std::string divisor_is_zero = newtemp();
+                const std::string sign_xor = newtemp();
+                const std::string sign = newtemp();
+                const std::string divide_by_zero_result = newtemp();
+
+                m_out += "  " + fs_exponent + " = and i32 " + raw_fs + ", 2139095040\n";
+                m_out += "  " + ft_exponent + " = and i32 " + raw_ft + ", 2139095040\n";
+                m_out += "  " + numerator_is_zero + " = icmp eq i32 " + fs_exponent + ", 0\n";
+                m_out += "  " + divisor_is_zero + " = icmp eq i32 " + ft_exponent + ", 0\n";
+                m_out += "  " + sign_xor + " = xor i32 " + raw_fs + ", " + raw_ft + "\n";
+                m_out += "  " + sign + " = and i32 " + sign_xor + ", -2147483648\n";
+                m_out += "  " + divide_by_zero_result + " = or i32 " + sign + ", 2139095039\n";
+
+                const std::string fa = load_ee_fpr_f32(fs);
+                const std::string fb = load_ee_fpr_f32(ft);
+                const std::string safe_divisor = newtemp();
+                const std::string quotient = newtemp();
+                m_out += "  " + safe_divisor + " = select i1 " + divisor_is_zero +
+                         ", float 1.000000e+00, float " + fb + "\n";
+                m_out += "  " + quotient + " = fdiv float " + fa + ", " + safe_divisor + "\n";
+                const std::string quotient_bits = clamp_ee_f32_result(quotient, false);
+                const std::string result = newtemp();
+                m_out += "  " + result + " = select i1 " + divisor_is_zero +
+                         ", i32 " + divide_by_zero_result + ", i32 " + quotient_bits + "\n";
+                store_fpr_i32(fd, result);
+
+                const std::string divide_zero_flags = newtemp();
+                const std::string old_flags = newtemp();
+                const std::string flags_to_set = newtemp();
+                const std::string flags_if_divide_zero = newtemp();
+                const std::string final_flags = newtemp();
+                const std::string fcsr = newtemp();
+                m_out += "  " + divide_zero_flags + " = select i1 " + numerator_is_zero +
+                         ", i32 131136, i32 65568\n";
+                m_out += "  " + fcsr + " = " + fcsr_ptr() + "\n";
+                m_out += "  " + old_flags + " = load i32, ptr " + fcsr + "\n";
+                m_out += "  " + flags_to_set + " = or i32 " + old_flags + ", " + divide_zero_flags + "\n";
+                m_out += "  " + flags_if_divide_zero + " = select i1 " + divisor_is_zero +
+                         ", i32 " + flags_to_set + ", i32 " + old_flags + "\n";
+                m_out += "  store i32 " + flags_if_divide_zero + ", ptr " + fcsr + "\n";
             }
             else if (fmt == 0x10 && fp_funct == 0x04) // SQRT.S
             {
