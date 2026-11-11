@@ -1730,10 +1730,48 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
             }
             else if (fmt == 0x10 && fp_funct == 0x04) // SQRT.S
             {
-                std::string fa = load_fpr_f32(fs);
-                std::string fr = newtemp();
-                m_out += "  " + fr + " = call float @llvm.sqrt.f32(float " + fa + ")\n";
-                store_fpr_f32(fd, fr);
+                const std::string raw = load_fpr_i32(fs);
+                const std::string exponent = newtemp();
+                const std::string exponent_is_zero = newtemp();
+                const std::string exponent_is_nonzero = newtemp();
+                const std::string sign = newtemp();
+                const std::string negative = newtemp();
+                const std::string negative_nonzero = newtemp();
+                const std::string normalised = normalise_ee_f32_bits(raw);
+                const std::string absolute = newtemp();
+                const std::string input = newtemp();
+                const std::string root = newtemp();
+                const std::string root_bits = newtemp();
+                const std::string result = newtemp();
+
+                m_out += "  " + exponent + " = and i32 " + raw + ", 2139095040\n";
+                m_out += "  " + exponent_is_zero + " = icmp eq i32 " + exponent + ", 0\n";
+                m_out += "  " + exponent_is_nonzero + " = icmp ne i32 " + exponent + ", 0\n";
+                m_out += "  " + sign + " = and i32 " + raw + ", -2147483648\n";
+                m_out += "  " + negative + " = icmp ne i32 " + sign + ", 0\n";
+                m_out += "  " + negative_nonzero + " = and i1 " + negative + ", " + exponent_is_nonzero + "\n";
+                m_out += "  " + absolute + " = and i32 " + normalised + ", 2147483647\n";
+                m_out += "  " + input + " = bitcast i32 " + absolute + " to float\n";
+                m_out += "  " + root + " = call float @llvm.sqrt.f32(float " + input + ")\n";
+                m_out += "  " + root_bits + " = bitcast float " + root + " to i32\n";
+                m_out += "  " + result + " = select i1 " + exponent_is_zero +
+                         ", i32 " + sign + ", i32 " + root_bits + "\n";
+                store_fpr_i32(fd, result);
+
+                // SQRT.S clears I/D cause flags; a negative nonzero operand
+                // additionally sets I|SI. Negative zero is still just zero.
+                const std::string fcsr = newtemp();
+                const std::string old_flags = newtemp();
+                const std::string cleared_flags = newtemp();
+                const std::string invalid_flags = newtemp();
+                const std::string final_flags = newtemp();
+                m_out += "  " + fcsr + " = " + fcsr_ptr() + "\n";
+                m_out += "  " + old_flags + " = load i32, ptr " + fcsr + "\n";
+                m_out += "  " + cleared_flags + " = and i32 " + old_flags + ", -196609\n";
+                m_out += "  " + invalid_flags + " = or i32 " + cleared_flags + ", 131136\n";
+                m_out += "  " + final_flags + " = select i1 " + negative_nonzero +
+                         ", i32 " + invalid_flags + ", i32 " + cleared_flags + "\n";
+                m_out += "  store i32 " + final_flags + ", ptr " + fcsr + "\n";
             }
             else if (fmt == 0x10 && fp_funct == 0x05) // ABS.S
             {
@@ -1777,13 +1815,60 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
             }
             else if (fmt == 0x10 && fp_funct == 0x16) // RSQRT.S  fd = fs / sqrt(ft)
             {
-                std::string fa = load_fpr_f32(fs);
-                std::string fb = load_fpr_f32(ft);
-                std::string s = newtemp();
-                std::string fr = newtemp();
-                m_out += "  " + s + " = call float @llvm.sqrt.f32(float " + fb + ")\n";
-                m_out += "  " + fr + " = fdiv float " + fa + ", " + s + "\n";
-                store_fpr_f32(fd, fr);
+                const std::string raw_ft = load_fpr_i32(ft);
+                const std::string ft_exponent = newtemp();
+                const std::string divisor_is_zero = newtemp();
+                const std::string sign = newtemp();
+                const std::string negative = newtemp();
+                const std::string zero_result = newtemp();
+                m_out += "  " + ft_exponent + " = and i32 " + raw_ft + ", 2139095040\n";
+                m_out += "  " + divisor_is_zero + " = icmp eq i32 " + ft_exponent + ", 0\n";
+                m_out += "  " + sign + " = and i32 " + raw_ft + ", -2147483648\n";
+                m_out += "  " + negative + " = icmp ne i32 " + sign + ", 0\n";
+                m_out += "  " + zero_result + " = or i32 " + sign + ", 2139095039\n";
+
+                const std::string numerator = load_ee_fpr_f32(fs);
+                const std::string normalised_denominator = normalise_ee_f32_bits(raw_ft);
+                const std::string absolute_denominator = newtemp();
+                const std::string denominator = newtemp();
+                const std::string root = newtemp();
+                const std::string safe_root = newtemp();
+                const std::string quotient = newtemp();
+                m_out += "  " + absolute_denominator + " = and i32 " + normalised_denominator + ", 2147483647\n";
+                m_out += "  " + denominator + " = bitcast i32 " + absolute_denominator + " to float\n";
+                m_out += "  " + root + " = call float @llvm.sqrt.f32(float " + denominator + ")\n";
+                m_out += "  " + safe_root + " = select i1 " + divisor_is_zero +
+                         ", float 1.000000e+00, float " + root + "\n";
+                m_out += "  " + quotient + " = fdiv float " + numerator + ", " + safe_root + "\n";
+                const std::string quotient_bits = clamp_ee_f32_result(quotient, false);
+                const std::string result = newtemp();
+                m_out += "  " + result + " = select i1 " + divisor_is_zero +
+                         ", i32 " + zero_result + ", i32 " + quotient_bits + "\n";
+                store_fpr_i32(fd, result);
+
+                // RSQRT.S clears I/D causes. A zero/denormal divisor sets
+                // D|SD; otherwise a negative divisor sets I|SI. Result
+                // overflow/underflow is clamped without touching FCSR.
+                const std::string fcsr = newtemp();
+                const std::string old_flags = newtemp();
+                const std::string cleared_flags = newtemp();
+                const std::string divide_flags = newtemp();
+                const std::string invalid_flags = newtemp();
+                const std::string no_error_flags = newtemp();
+                const std::string nonzero_flags = newtemp();
+                const std::string final_flags = newtemp();
+                m_out += "  " + fcsr + " = " + fcsr_ptr() + "\n";
+                m_out += "  " + old_flags + " = load i32, ptr " + fcsr + "\n";
+                m_out += "  " + cleared_flags + " = and i32 " + old_flags + ", -196609\n";
+                m_out += "  " + divide_flags + " = or i32 " + cleared_flags + ", 65568\n";
+                m_out += "  " + invalid_flags + " = or i32 " + cleared_flags + ", 131136\n";
+                m_out += "  " + no_error_flags + " = select i1 " + negative +
+                         ", i32 " + invalid_flags + ", i32 " + cleared_flags + "\n";
+                m_out += "  " + nonzero_flags + " = select i1 " + divisor_is_zero +
+                         ", i32 " + divide_flags + ", i32 " + no_error_flags + "\n";
+                m_out += "  " + final_flags + " = select i1 " + divisor_is_zero +
+                         ", i32 " + divide_flags + ", i32 " + nonzero_flags + "\n";
+                m_out += "  store i32 " + final_flags + ", ptr " + fcsr + "\n";
             }
             else if (fmt == 0x10 && (fp_funct == 0x18 || fp_funct == 0x19 || fp_funct == 0x1a))
             {
