@@ -44,7 +44,11 @@ int main(int argc, char** argv)
     }
 
     constexpr uint32_t entry_pc = 0x00130000u;
-    const uint32_t word = make_cop1_s(2, 1, 0, funct);
+    // Comparisons use the condition-code field (CC0 here); conversions use
+    // the same five-bit field as the destination FPR number.
+    const uint8_t destination_or_cc =
+        std::strcmp(mode, "cvt_w") == 0 ? 6 : 0;
+    const uint32_t word = make_cop1_s(2, 1, destination_or_cc, funct);
     const ee::s_ee_instruction ins = ee::decode(entry_pc, word);
     if (ins.valid != ee::e_ee_valid::VALID ||
         ins.opcode != ee::e_ee_opcode::OP_COP1)
