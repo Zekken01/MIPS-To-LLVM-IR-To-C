@@ -4,25 +4,29 @@
 
 This branch is a reconstructed baseline from the preserved 2026-11-11 09:57 MMI/HI1/LO1 follow-up, with subsequent decoder, lifting, control-flow, dispatcher, and validation work. Do not merge it into `main` until source provenance and the latest changes have been reviewed.
 
-Latest fully verified CI: [run #167](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43112984141), **10/10 CTest passed**.
+Latest fully verified CI: [run #191](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43117522952), **12/12 CTest passed**, including native object emission, linking, and dispatcher execution.
 
 Latest USA `SLUS_214.42` validation:
 - **7,849 functions discovered and emitted**.
 - **417,738 unique instruction PCs** in the function-scoped CFG set.
-- **414,916 supported / 2,822 unsupported** instructions (**99.3%**).
+- **416,648 supported / 1,090 unsupported** instructions (**99.7% decoder/lifter classification**).
 - **7,849/7,849 LLVM modules parsed and verified** with LLVM 20.1.8.
-- **7,849/7,849** modules passed llvmlite native object generation at `opt=0`, with **34,756,008** aggregate in-memory object bytes.
-- The four scalar compare operations (`SLT`, `SLTU`, `SLTI`, `SLTIU`) account for 5,386 instructions newly recovered since the prior 98.0% baseline.
+- **7,849/7,849** host objects emitted at `opt=0`, totalling **35,026,424 bytes**.
+- All 7,849 objects' defined symbols matched the generated function metadata.
+- All 7,849 per-function objects linked with runtime and generated dispatcher glue into a **28,618,808-byte x86-64 shared library**.
+- The linked library exports `ee_game_run` and `ee_fn_00100008`, loads with `ctypes.CDLL`, and passes `ldd -r` with no unresolved dynamic symbols.
 
-Control-flow regressions cover JAL/JALR/JR target and link ordering, delay-slot effects, ordinary and likely branch semantics, branch-and-link, caller/callee continuations, recursive JAL, dynamic cross-function JALR, PC-zero entry, exception resume PCs, and host dispatcher budget/unknown-target handling. Scalar compare JIT coverage checks signedness, sign-extended immediates, source/destination aliasing, `$zero`, and upper GPR halves.
+The full-image native-link report is in `FULL_GAME_NATIVE_LINK_VALIDATION.md`. This is a linked translated-code library, not a complete runnable PS2 title: the full title was not executed, and BIOS/IOP, GS, DMA, TLB/MMIO, interrupts, and other console services remain incomplete. The in-tree `object_emitter::emit_object()` is still a stub; llvmlite generated the persisted per-function objects.
+
+Control-flow regressions cover JAL/JALR/JR target and link ordering, delay-slot effects, ordinary and likely branch semantics, branch-and-link, caller/callee continuations, recursive JAL, dynamic cross-function JALR, PC-zero entry, exception resume PCs, and host dispatcher budget/unknown-target handling. COP1 comparison JIT coverage exercises C.F/C.EQ/C.LT/C.LE, EE operand normalisation, NaNs, signed zero, and FCC0-only FCSR updates. Scalar compare JIT coverage checks signedness, sign-extended immediates, source/destination aliasing, `$zero`, and upper GPR halves.
 
 ## Remaining priorities
 
-1. **Next coverage group:** examine COP1 compare/conversion sub-operations using exact PCSX2/R5900 semantics. The remaining largest unsupported groups are COP1 compares/conversions and VU0/COP2 macro instructions. Do not approximate NaN, rounding, exception-flag, or VU pipeline behaviour.
-2. **Real native backend:** implement the project `object_emitter::emit_object()` and save actual per-function host objects. The llvmlite check emitted object bytes in memory only; no per-function object set was linked.
-3. **Runnable dispatcher integration:** connect `ee_dispatch_run()` to generated native function entry points and the real runtime. The dispatcher API and synthetic native tests exist, but generated functions are not yet loaded/linked into it.
-4. **Runtime completeness:** continue EE memory/TLB/MMIO and exception integration, then VU0/COP1 runtime behaviour.
-5. **Broader validation:** after each decoder/lifter/backend change, repeat full-image IR verification and object emission on `SLUS_214.42`.
+1. **COP1 completion:** exact rounding/conversion modes and FCSR exception/sticky flag semantics. Keep uncertain forms unsupported.
+2. **VU0/COP2:** implement macro/transfer semantics only with exact pipeline, flag, and 128-bit state behaviour.
+3. **Runtime completeness:** EE memory/TLB/MMIO, scratchpad/ROM aliases, alignment exceptions, DMA, interrupts, plus BIOS/IOP/GS host services.
+4. **Semantic validation:** differential instruction and function testing against PCSX2's interpreter. LLVM verification and native linking do not establish R5900 equivalence.
+5. **Production backend:** replace the current external llvmlite object-emission path with an integrated LLVM backend or supported `llc`/LLVM library path; keep the current script as a validation/reference path until then.
 
 The exact later temporary worktree associated with the historical 2/4 CTest report was never exported. This branch remains a reconstructed source baseline, not recovery of that inaccessible working directory.
 
