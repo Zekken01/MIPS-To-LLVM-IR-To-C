@@ -343,6 +343,16 @@ int main()
         ok ? ++g_pass : ++g_fail;
         if (!ok) std::printf("FAIL J/JAL target region must use PC+4 across 256MB boundary\n");
     }
+    {
+        const auto jr = decode(0x100000, R(0x00,2,0,0,0,0x08));
+        const auto jalr = decode(0x100000, R(0x00,2,0,16,0,0x09));
+        const std::set<uint32_t> jr_expected{0x100004};
+        const std::set<uint32_t> jalr_expected{0x100004, 0x100008};
+        const bool ok = collect_successors(jr) == jr_expected &&
+                        collect_successors(jalr) == jalr_expected;
+        ok ? ++g_pass : ++g_fail;
+        if (!ok) std::printf("FAIL indirect JR/JALR must not invent a static target\\n");
+    }
     std::printf("decoder_test: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }
