@@ -34,7 +34,12 @@ std::set<uint32_t> collect_successors(const s_ee_instruction& ins)
         out.insert(after_delay);
         break;
     case e_ee_flow::FLOW_RETURN:
+        break;
     case e_ee_flow::FLOW_EXCEPTION:
+        // SYSCALL/BREAK leave the translated block for the exception handler,
+        // but the handler may resume at EPC+4. Discover that continuation so
+        // code after a returning exception remains available to the dispatcher.
+        out.insert(ins.pc + 4u);
         break;
     case e_ee_flow::FLOW_NONE:
     default:
