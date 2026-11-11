@@ -46,6 +46,10 @@ jobs:
             build/ee_recomp
             tools/verify_ir.py
             tools/link_native_objects.py
+            include/ee/
+            src/runtime/
+            src/ee/ee_dispatcher.cpp
+            src/ee/recompiled_functions.cpp
           if-no-files-found: error
           retention-days: 1
 
