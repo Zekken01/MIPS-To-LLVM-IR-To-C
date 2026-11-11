@@ -120,14 +120,22 @@ def main():
         ("c_eq", 1.5, 1.5, True),
         ("c_eq", 1.5, 2.5, False),
         ("c_eq", 0.0, -0.0, True),
-        ("c_eq", qnan, qnan, False),
+        # The EE comparison path first normalises exponents: denormals become
+        # signed zero, while Inf/NaN become signed FMAX. Therefore equal positive
+        # NaNs compare equal after normalisation, rather than using host IEEE
+        # unordered-comparison behaviour directly.
+        ("c_eq", qnan, qnan, True),
+        ("c_eq", float("inf"), qnan, True),
+        ("c_eq", 1.0e-45, 0.0, True),  # denormal flushes to +0
         ("c_lt", -1.0, 0.0, True),
         ("c_lt", 0.0, 0.0, False),
-        ("c_lt", qnan, -1.0, False),
+        ("c_lt", qnan, -1.0, False),  # +FMAX is not less than -1
+        ("c_lt", -1.0, qnan, True),   # -1 is less than +FMAX
         ("c_le", 0.0, 0.0, True),
         ("c_le", -2.0, -1.0, True),
         ("c_le", 2.0, 1.0, False),
         ("c_le", qnan, 1.0, False),
+        ("c_le", -1.0, qnan, True),
     ]
 
     with tempfile.TemporaryDirectory(prefix="ee-fpu-compare-") as directory:
