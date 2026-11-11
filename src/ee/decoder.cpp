@@ -102,6 +102,7 @@ bool mmi_lowered_exactly(uint32_t funct, uint32_t sa)
     switch (funct)
     {
     case 0x00: case 0x01: case 0x20: case 0x21:        // madd/maddu, pipeline 0/1
+    case 0x18: case 0x19:                                // mult/multu, pipeline 1
         return sa == 0;
     case 0x10: case 0x11: case 0x12: case 0x13:        // mfhi1 mthi1 mflo1 mtlo1
         return true;
