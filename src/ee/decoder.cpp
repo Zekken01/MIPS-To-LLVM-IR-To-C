@@ -228,8 +228,12 @@ s_ee_instruction decode(uint32_t pc, uint32_t word)
             break;
         case e_ee_opcode::FUNCT_SLT:
         case e_ee_opcode::FUNCT_SLTU:
-            insn.valid = e_ee_valid::UNSUPPORTED;
-            set_mnemonic(insn, "r_compare");
+            // The shift-amount field is reserved for register comparisons.
+            // Their exact 64-bit signed/unsigned lowering is implemented.
+            insn.valid = insn.sa == 0
+                ? e_ee_valid::VALID : e_ee_valid::UNSUPPORTED;
+            set_mnemonic(insn, insn.funct == static_cast<uint8_t>(e_ee_opcode::FUNCT_SLT)
+                ? "slt" : "sltu");
             break;
         case e_ee_opcode::FUNCT_SYSCALL:
             insn.valid = e_ee_valid::VALID;
@@ -428,7 +432,7 @@ s_ee_instruction decode(uint32_t pc, uint32_t word)
         insn.type = e_ee_op_type::OP_TYPE_ITYPE;
         insn.opcode = e_ee_opcode::OP_SLTI;
         insn.flow = e_ee_flow::FLOW_NONE;
-        insn.valid = e_ee_valid::UNSUPPORTED;
+        insn.valid = e_ee_valid::VALID;
         set_mnemonic(insn, "slti");
         break;
 
@@ -436,7 +440,7 @@ s_ee_instruction decode(uint32_t pc, uint32_t word)
         insn.type = e_ee_op_type::OP_TYPE_ITYPE;
         insn.opcode = e_ee_opcode::OP_SLTIU;
         insn.flow = e_ee_flow::FLOW_NONE;
-        insn.valid = e_ee_valid::UNSUPPORTED;
+        insn.valid = e_ee_valid::VALID;
         set_mnemonic(insn, "sltiu");
         break;
 
