@@ -130,6 +130,55 @@ def run_cvt_w_case(fixture, temp_dir, target, source_bits, expected_bits, label)
             prefix + f"CVT.W.S unexpectedly modified FCSR: 0x{state.fcsr:08x}")
 
 
+def fp_reference_extreme(lhs_bits, rhs_bits, is_max):
+    lhs_signed = ctypes.c_int32(lhs_bits).value
+    rhs_signed = ctypes.c_int32(rhs_bits).value
+    both_negative = lhs_signed < 0 and rhs_signed < 0
+
+    if is_max:
+        value = min(lhs_signed, rhs_signed) if both_negative else max(lhs_signed, rhs_signed)
+    else:
+        value = max(lhs_signed, rhs_signed) if both_negative else min(lhs_signed, rhs_signed)
+
+    return value & 0xFFFFFFFF
+
+
+def run_max_min_cases(fixture, temp_dir, target, mode, pairs):
+    guest_fn, engine, module, target_machine = compile_jit(
+        fixture, temp_dir, mode, target
+    )
+    retained = (engine, module, target_machine)
+    is_max = mode == "max_s"
+    initial_fcsr = 0xA592F456
+    expected_fcsr = initial_fcsr & ~(0x00008000 | 0x00004000)
+
+    for lhs_bits, rhs_bits, label in pairs:
+        backing, state = aligned_state()
+        _ = (backing, retained)
+        state.fpr[1] = lhs_bits
+        state.fpr[2] = rhs_bits
+        state.fpr[6] = 0xAABBCCDD11223344
+        state.fcsr = initial_fcsr
+
+        result = guest_fn(ctypes.pointer(state), None)
+        prefix = f"{mode}({label}, 0x{lhs_bits:08x}, 0x{rhs_bits:08x}): "
+        require(result == 3, prefix + f"expected EE_EXIT_DISPATCH (3), got {result}")
+        require(state.exit_reason == 3,
+                prefix + f"state exit reason was {state.exit_reason}")
+        require(state.pc == ENTRY_PC + 4,
+                prefix + f"wrong sequential PC 0x{state.pc:08x}")
+
+        expected = fp_reference_extreme(lhs_bits, rhs_bits, is_max)
+        require(state.fpr[6] == expected,
+                prefix + f"FPR[6] got 0x{state.fpr[6]:016x}, "
+                         f"expected 0x{expected:08x}")
+        require(state.fpr[1] == lhs_bits and state.fpr[2] == rhs_bits,
+                prefix + "source FPR was modified")
+        require(state.fcsr == expected_fcsr,
+                prefix + f"FCSR got 0x{state.fcsr:08x}, "
+                         f"expected 0x{expected_fcsr:08x}")
+
+
 def main():
     require(
         len(sys.argv) == 2,
@@ -189,6 +238,21 @@ def main():
         (0xFFC00000, 0x0000000080000000, "negative quiet NaN saturates"),
     ]
 
+    extreme_pairs = [
+        (0x3F800000, 0x40000000, "positive finite"),
+        (0xBF800000, 0xC0000000, "both negative"),
+        (0x00000000, 0x80000000, "positive and negative zero"),
+        (0x7F800000, 0x7F7FFFFF, "positive infinity and FMAX"),
+        (0xFF800000, 0xFF7FFFFF, "negative infinity and negative FMAX"),
+        (0x7FC00000, 0x3F800000, "positive NaN and positive finite"),
+        (0xFFC00000, 0xBF800000, "negative NaN and negative finite"),
+        (0x7FC00000, 0xFFC00000, "opposite-sign NaNs"),
+        (0x80000001, 0x00000001, "opposite-sign denormals"),
+        (0x7F800000, 0xFF800000, "opposite infinities"),
+        (0xFFFFFFFF, 0x80000000, "negative NaN and negative zero"),
+        (0x00000000, 0x7FC00000, "positive zero and positive NaN"),
+    ]
+
     with tempfile.TemporaryDirectory(prefix="ee-fpu-compare-") as directory:
         temp_dir = pathlib.Path(directory)
         for mode, lhs, rhs, expected in cases:
@@ -197,10 +261,13 @@ def main():
             run_cvt_w_case(
                 fixture, temp_dir, target, source_bits, expected_bits, label
             )
+        run_max_min_cases(fixture, temp_dir, target, "max_s", extreme_pairs)
+        run_max_min_cases(fixture, temp_dir, target, "min_s", extreme_pairs)
 
     print(
         "fpu_compare_ir_runtime: PASS (C.F/C.EQ/C.LT/C.LE; CVT.W.S; "
-        "EE NaN/Inf normalisation, integer saturation, truncation, FCSR "
+        "MAX.S/MIN.S bitwise ordering; EE NaN/Inf normalisation, integer "
+        "saturation, truncation, FCSR cause-bit clearing and sticky-bit "
         "preservation; O0 JIT)"
     )
 
