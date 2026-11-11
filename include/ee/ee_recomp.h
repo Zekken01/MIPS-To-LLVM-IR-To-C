@@ -1,5 +1,6 @@
 #pragma once
 #include "ee_state.h"
+#include <algorithm>
 #include <cstdint>
 #include <cstddef>
 #include <string>
@@ -61,9 +62,20 @@ struct s_recompiled_elf
 
 // Find the translated function whose entry switch accepts guest_pc.
 // Returns nullptr when the PC is outside all emitted CFGs.
-const s_recompiled_fn* find_recompiled_function(
+inline const s_recompiled_fn* find_recompiled_function(
     const s_recompiled_elf& compiled,
-    uint32_t guest_pc);
+    uint32_t guest_pc)
+{
+    for (const auto& fn : compiled.functions)
+    {
+        if (std::find(fn.block_pcs.begin(), fn.block_pcs.end(), guest_pc) !=
+            fn.block_pcs.end())
+        {
+            return &fn;
+        }
+    }
+    return nullptr;
+}
 
 // Emission controls for ee_recomp.
 struct s_recomp_options
