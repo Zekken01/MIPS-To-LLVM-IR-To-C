@@ -159,3 +159,31 @@ LLVM validation:
 This confirms that the latest exception-continuation CFG change allows discovery through the game startup's syscall path and reaches the direct JAL call graph. The earlier run stopped after one bootstrap function; after retaining the possible EPC+4 resume path it discovered the full 7,849-function set.
 
 Important limitation: `verify_ir.py --emit-opt=0` asks llvmlite to emit host object bytes in memory as a validation step. It does not write/link one object per game function. The project's own `object_emitter::emit_object()` remains a stub, so a standalone runnable game has **not** been produced.
+
+## 2026-11-11 — Scalar compare enablement and updated game coverage
+
+### CI regression results
+
+GitHub Actions run [43112984141](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43112984141), commit `5aba8e1`:
+
+- Clean configure: PASS.
+- Clean build: PASS.
+- CTest: **10/10 PASS**, including the new `compare_ir_runtime` test.
+- New comparison tests verify `SLT`, `SLTU`, `SLTI`, and `SLTIU` against 64-bit signed/unsigned edge cases, sign-extended immediates, source/destination aliases, `$zero`, and upper-GPR preservation.
+
+### USA `SLUS_214.42` updated full-image pass
+
+- Functions discovered/emitted: **7,849 / 7,849**.
+- Unique function-scoped instruction PCs: **417,738**.
+- Supported: **414,916**.
+- Unsupported: **2,822**.
+- Reported support: **99.3%** (previous baseline: 98.0%).
+
+The decoder now enables the four exact scalar compare families. This recovers **5,386 instructions** without changing the discovered function/PC set.
+
+LLVM validation on the newly emitted 7,849 modules:
+- IR parse + verify: **7,849/7,849 PASS**, zero invalid modules.
+- Native target object generation at `opt=0`: **7,849/7,849 PASS**.
+- Aggregate in-memory host object bytes: **34,756,008**.
+
+As before, the in-memory llvmlite object-generation test does not implement the project's `object_emitter::emit_object()`, write/link a per-function object set, or produce a runnable game executable.
