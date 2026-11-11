@@ -1671,14 +1671,45 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
             }
             else if (fmt == 0x10 && (fp_funct == 0x28 || fp_funct == 0x29)) // MAX/MIN
             {
-                std::string fa = load_fpr_f32(fs);
-                std::string fb = load_fpr_f32(ft);
-                std::string cmp = newtemp();
-                std::string fr = newtemp();
-                const char* pred = (fp_funct == 0x28) ? "ogt" : "olt";
-                m_out += "  " + cmp + " = fcmp " + std::string(pred) + " float " + fa + ", " + fb + "\n";
-                m_out += "  " + fr + " = select i1 " + cmp + ", float " + fa + ", float " + fb + "\n";
-                store_fpr_f32(fd, fr);
+                // The EE interpreter implements MAX.S/MIN.S with signed
+                // integer ordering of the raw IEEE-754 words. In particular,
+                // do not replace this with host fcmp/select: the bitwise rule
+                // defines the result for signed zero, infinities and NaNs too.
+                const std::string a = load_fpr_i32(fs);
+                const std::string b = load_fpr_i32(ft);
+                const std::string a_negative = newtemp();
+                const std::string b_negative = newtemp();
+                const std::string both_negative = newtemp();
+                const std::string a_less = newtemp();
+                const std::string a_not_less = newtemp();
+                const std::string choose_a = newtemp();
+                const std::string result = newtemp();
+
+                m_out += "  " + a_negative + " = icmp slt i32 " + a + ", 0\n";
+                m_out += "  " + b_negative + " = icmp slt i32 " + b + ", 0\n";
+                m_out += "  " + both_negative + " = and i1 " + a_negative + ", " + b_negative + "\n";
+                m_out += "  " + a_less + " = icmp slt i32 " + a + ", " + b + "\n";
+                m_out += "  " + a_not_less + " = xor i1 " + a_less + ", true\n";
+
+                // For two negative encodings, signed order is reversed:
+                // MAX chooses the signed minimum and MIN the signed maximum.
+                if (fp_funct == 0x28)
+                    m_out += "  " + choose_a + " = select i1 " + both_negative + ", i1 " + a_less + ", i1 " + a_not_less + "\n";
+                else
+                    m_out += "  " + choose_a + " = select i1 " + both_negative + ", i1 " + a_not_less + ", i1 " + a_less + "\n";
+
+                m_out += "  " + result + " = select i1 " + choose_a + ", i32 " + a + ", i32 " + b + "\n";
+                store_fpr_i32(fd, result);
+
+                // MAX.S/MIN.S clear only the overflow/underflow cause flags.
+                // Sticky flags and every other FCSR bit remain untouched.
+                const std::string fcsr = newtemp();
+                const std::string fcsr_value = newtemp();
+                const std::string fcsr_updated = newtemp();
+                m_out += "  " + fcsr + " = " + fcsr_ptr() + "\n";
+                m_out += "  " + fcsr_value + " = load i32, ptr " + fcsr + "\n";
+                m_out += "  " + fcsr_updated + " = and i32 " + fcsr_value + ", -49153\n";
+                m_out += "  store i32 " + fcsr_updated + ", ptr " + fcsr + "\n";
             }
             else if (fp_funct == 0x20 || (fmt == 0x14 && fp_funct == 0x20))
             {
