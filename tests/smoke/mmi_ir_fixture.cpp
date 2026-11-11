@@ -61,6 +61,14 @@ int main(int argc, char** argv)
         make_mmi(8, 9, 10, 0x13, 0x09),    // pxor $t2,$t0,$t1
         make_mmi(8, 9, 11, 0x12, 0x29),    // por $t3,$t0,$t1
         make_mmi(8, 9, 12, 0x13, 0x29),    // pnor $t4,$t0,$t1
+        make_mmi(8, 9, 15, 0, 0x08),       // paddw $t7,$t0,$t1
+        make_mmi(8, 9, 16, 1, 0x08),       // psubw $s0,$t0,$t1
+        make_mmi(8, 9, 17, 3, 0x08),       // pmaxw $s1,$t0,$t1
+        make_mmi(8, 9, 18, 4, 0x08),       // paddh $s2,$t0,$t1
+        make_mmi(8, 9, 19, 5, 0x08),       // psubh $s3,$t0,$t1
+        make_mmi(8, 9, 20, 7, 0x08),       // pmaxh $s4,$t0,$t1
+        make_mmi(8, 9, 21, 8, 0x08),       // paddb $s5,$t0,$t1
+        make_mmi(8, 9, 22, 9, 0x08),       // psubb $s6,$t0,$t1
         make_mmi(8, 9, 8, 0x12, 0x09),     // pand $t0,$t0,$t1 (rd aliases rs)
         make_mmi(8, 9, 13, 0x13, 0x09)     // pxor $t5,$t0,$t1 sees new $t0
     };
