@@ -1698,15 +1698,47 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
             else if (fmt == 0x10 && (fp_funct == 0x30 || fp_funct == 0x32 ||
                                      fp_funct == 0x34 || fp_funct == 0x36))
             {
-                // C.F / C.EQ / C.LT / C.LE → FCC0
-                if (fp_funct == 0x30) {
-                    std::string z = newtemp();
-                    m_out += "  " + z + " = add i1 0, 0\n"; // false
-                    set_fcc(z);
-                } else {
-                    std::string fa = load_fpr_f32(fs);
-                    std::string fb = load_fpr_f32(ft);
-                    std::string cmp = newtemp();
+                // R5900 comparisons run through the EE FPU's operand
+                // normalisation before testing FCC0:
+                //   exponent == 0       -> signed zero (denormals flushed)
+                //   exponent == 0x7f800000 -> signed FMAX (Inf/NaN saturated)
+                // This matches the reference interpreter's fpuDouble().
+                auto load_compare_f32 = [&](uint8_t freg) -> std::string {
+                    const std::string raw = load_fpr_i32(freg);
+                    const std::string exponent = newtemp();
+                    const std::string is_zero_exp = newtemp();
+                    const std::string is_special_exp = newtemp();
+                    const std::string sign = newtemp();
+                    const std::string fmax = newtemp();
+                    const std::string finite_or_special = newtemp();
+                    const std::string normalised = newtemp();
+                    const std::string value = newtemp();
+
+                    m_out += "  " + exponent + " = and i32 " + raw + ", 2139095040\n";
+                    m_out += "  " + is_zero_exp + " = icmp eq i32 " + exponent + ", 0\n";
+                    m_out += "  " + is_special_exp + " = icmp eq i32 " + exponent + ", 2139095040\n";
+                    m_out += "  " + sign + " = and i32 " + raw + ", -2147483648\n";
+                    m_out += "  " + fmax + " = or i32 " + sign + ", 2139095039\n";
+                    m_out += "  " + finite_or_special + " = select i1 " + is_special_exp +
+                             ", i32 " + fmax + ", i32 " + raw + "\n";
+                    m_out += "  " + normalised + " = select i1 " + is_zero_exp +
+                             ", i32 " + sign + ", i32 " + finite_or_special + "\n";
+                    m_out += "  " + value + " = bitcast i32 " + normalised + " to float\n";
+                    return value;
+                };
+
+                // C.F always clears FCC0 and does not inspect either FPR.
+                if (fp_funct == 0x30)
+                {
+                    const std::string false_value = newtemp();
+                    m_out += "  " + false_value + " = add i1 0, 0\n";
+                    set_fcc(false_value);
+                }
+                else
+                {
+                    const std::string fa = load_compare_f32(fs);
+                    const std::string fb = load_compare_f32(ft);
+                    const std::string cmp = newtemp();
                     const char* pred = "oeq";
                     if (fp_funct == 0x34) pred = "olt";
                     else if (fp_funct == 0x36) pred = "ole";
