@@ -157,7 +157,7 @@ bool ee_recomp(const char* elf_path,
     {
         const s_ee_instruction& ins = kv.second;
         if (ins.flow == e_ee_flow::FLOW_CALL &&
-            ins.jump_target != 0 &&
+            ins.opcode == e_ee_opcode::OP_JAL &&
             loader.is_executable_address(ins.jump_target)) {
             call_targets.insert(ins.jump_target);
         }
