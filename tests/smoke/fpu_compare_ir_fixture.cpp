@@ -42,6 +42,13 @@ int main(int argc, char** argv)
     else if (std::strcmp(mode, "sub_s") == 0) funct = 0x01;
     else if (std::strcmp(mode, "mul_s") == 0) funct = 0x02;
     else if (std::strcmp(mode, "div_s") == 0) funct = 0x03;
+    else if (std::strcmp(mode, "adda_s") == 0) funct = 0x18;
+    else if (std::strcmp(mode, "suba_s") == 0) funct = 0x19;
+    else if (std::strcmp(mode, "mula_s") == 0) funct = 0x1a;
+    else if (std::strcmp(mode, "madd_s") == 0) funct = 0x1c;
+    else if (std::strcmp(mode, "msub_s") == 0) funct = 0x1d;
+    else if (std::strcmp(mode, "madda_s") == 0) funct = 0x1e;
+    else if (std::strcmp(mode, "msuba_s") == 0) funct = 0x1f;
     else if (std::strcmp(mode, "sqrt_s") == 0) funct = 0x04;
     else if (std::strcmp(mode, "rsqrt_s") == 0) funct = 0x16;
     else if (std::strcmp(mode, "max_s") == 0) funct = 0x28;
@@ -63,6 +70,8 @@ int main(int argc, char** argv)
         std::strcmp(mode, "sub_s") == 0 ||
         std::strcmp(mode, "mul_s") == 0 ||
         std::strcmp(mode, "div_s") == 0 ||
+        std::strcmp(mode, "madd_s") == 0 ||
+        std::strcmp(mode, "msub_s") == 0 ||
         std::strcmp(mode, "sqrt_s") == 0 ||
         std::strcmp(mode, "rsqrt_s") == 0 ||
         std::strcmp(mode, "max_s") == 0 ||
