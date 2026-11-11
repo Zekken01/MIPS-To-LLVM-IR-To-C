@@ -2414,21 +2414,186 @@ void module_builder::emit_mmi_insn(const ee::s_ee_instruction& ins)
                 store_vec2i64(vr); return;
             }
         }
-        // MMI1 (0x28); currently rejected by the decoder allow-list
-        if (fn == 0x28) {
-            switch (sa) {
-            case 0x12: // PAND alternate encoding area
-                m_out += "  " + vr + " = and <2 x i64> " + va2 + ", " + vb2 + "\n";
-                store_vec2i64(vr); return;
-            case 0x13: // PXOR
-                m_out += "  " + vr + " = xor <2 x i64> " + va2 + ", " + vb2 + "\n";
-                store_vec2i64(vr); return;
-            case 16: // PADDUW approx
-                m_out += "  " + vr + " = add <4 x i32> " + va4 + ", " + vb4 + "\n";
-                store_vec4i32(vr); return;
+        // MMI1 (0x28): only operations with exact lane semantics are
+        // enabled in the decoder. PADDU*/PSUBU* use widened lane arithmetic
+        // so saturation is explicit and independent for every element.
+        if (fn == 0x28)
+        {
+            auto emit_unsigned_sat = [&](const std::string& lhs,
+                                         const std::string& rhs,
+                                         const char* narrow_type,
+                                         const char* wide_type,
+                                         const char* predicate_type,
+                                         const char* wide_scalar,
+                                         unsigned lane_count,
+                                         uint64_t lane_max,
+                                         bool is_add) -> std::string
+            {
+                const std::string lhs_wide = newtemp();
+                const std::string rhs_wide = newtemp();
+                const std::string arithmetic = newtemp();
+                const std::string condition = newtemp();
+                const std::string saturated = newtemp();
+                const std::string result = newtemp();
+
+                std::string max_vector = "<";
+                for (unsigned i = 0; i < lane_count; ++i)
+                {
+                    if (i != 0) max_vector += ", ";
+                    max_vector += std::string(wide_scalar) + " " + std::to_string(lane_max);
+                }
+                max_vector += ">";
+
+                m_out += "  " + lhs_wide + " = zext " + narrow_type + " " + lhs +
+                         " to " + wide_type + "\n";
+                m_out += "  " + rhs_wide + " = zext " + narrow_type + " " + rhs +
+                         " to " + wide_type + "\n";
+                if (is_add)
+                {
+                    m_out += "  " + arithmetic + " = add " + wide_type + " " +
+                             lhs_wide + ", " + rhs_wide + "\n";
+                    m_out += "  " + condition + " = icmp ugt " + wide_type + " " +
+                             arithmetic + ", " + max_vector + "\n";
+                    m_out += "  " + saturated + " = select " + predicate_type + " " +
+                             condition + ", " + wide_type + " " + max_vector +
+                             ", " + wide_type + " " + arithmetic + "\n";
+                }
+                else
+                {
+                    m_out += "  " + arithmetic + " = sub " + wide_type + " " +
+                             lhs_wide + ", " + rhs_wide + "\n";
+                    m_out += "  " + condition + " = icmp ult " + wide_type + " " +
+                             lhs_wide + ", " + rhs_wide + "\n";
+                    m_out += "  " + saturated + " = select " + predicate_type + " " +
+                             condition + ", " + wide_type + " zeroinitializer, " +
+                             wide_type + " " + arithmetic + "\n";
+                }
+                m_out += "  " + result + " = trunc " + wide_type + " " +
+                         saturated + " to " + narrow_type + "\n";
+                return result;
+            };
+
+            switch (sa)
+            {
+            case 0x01: // PABSW: unary rt -> rd; clamp INT_MIN to INT_MAX
+            {
+                const std::string negative = newtemp();
+                const std::string negated = newtemp();
+                const std::string absolute = newtemp();
+                const std::string is_min = newtemp();
+                const std::string result = newtemp();
+                m_out += "  " + negative + " = icmp slt <4 x i32> " + vb4 +
+                         ", zeroinitializer\n";
+                m_out += "  " + negated + " = sub <4 x i32> zeroinitializer, " +
+                         vb4 + "\n";
+                m_out += "  " + absolute + " = select <4 x i1> " + negative +
+                         ", <4 x i32> " + negated + ", <4 x i32> " + vb4 + "\n";
+                m_out += "  " + is_min + " = icmp eq <4 x i32> " + vb4 +
+                         ", <i32 -2147483648, i32 -2147483648, i32 -2147483648, i32 -2147483648>\n";
+                m_out += "  " + result + " = select <4 x i1> " + is_min +
+                         ", <4 x i32> <i32 2147483647, i32 2147483647, i32 2147483647, i32 2147483647>, <4 x i32> " +
+                         absolute + "\n";
+                store_vec4i32(result);
+                return;
+            }
+            case 0x05: // PABSH: unary rt -> rd; clamp INT_MIN to INT_MAX
+            {
+                const std::string wide = newtemp();
+                const std::string negative = newtemp();
+                const std::string negated = newtemp();
+                const std::string absolute = newtemp();
+                const std::string is_min = newtemp();
+                const std::string saturated = newtemp();
+                const std::string result = newtemp();
+                m_out += "  " + wide + " = sext <8 x i16> " + vb8 + " to <8 x i32>\n";
+                m_out += "  " + negative + " = icmp slt <8 x i32> " + wide +
+                         ", zeroinitializer\n";
+                m_out += "  " + negated + " = sub <8 x i32> zeroinitializer, " +
+                         wide + "\n";
+                m_out += "  " + absolute + " = select <8 x i1> " + negative +
+                         ", <8 x i32> " + negated + ", <8 x i32> " + wide + "\n";
+                m_out += "  " + is_min + " = icmp eq <8 x i32> " + wide +
+                         ", <i32 -32768, i32 -32768, i32 -32768, i32 -32768, i32 -32768, i32 -32768, i32 -32768, i32 -32768>\n";
+                m_out += "  " + saturated + " = select <8 x i1> " + is_min +
+                         ", <8 x i32> <i32 32767, i32 32767, i32 32767, i32 32767, i32 32767, i32 32767, i32 32767, i32 32767>, <8 x i32> " +
+                         absolute + "\n";
+                m_out += "  " + result + " = trunc <8 x i32> " + saturated +
+                         " to <8 x i16>\n";
+                store_vec8i16(result);
+                return;
+            }
+            case 0x02: // PCEQW
+                m_out += "  " + vr + " = icmp eq <4 x i32> " + va4 + ", " + vb4 + "\n";
+                {
+                    const std::string result = newtemp();
+                    m_out += "  " + result + " = sext <4 x i1> " + vr + " to <4 x i32>\n";
+                    store_vec4i32(result);
+                }
+                return;
+            case 0x03: // PMINW (signed)
+                {
+                    const std::string cmp = newtemp();
+                    m_out += "  " + cmp + " = icmp slt <4 x i32> " + va4 + ", " + vb4 + "\n";
+                    m_out += "  " + vr + " = select <4 x i1> " + cmp +
+                             ", <4 x i32> " + va4 + ", <4 x i32> " + vb4 + "\n";
+                    store_vec4i32(vr);
+                }
+                return;
+            case 0x06: // PCEQH
+                {
+                    const std::string cmp = newtemp();
+                    m_out += "  " + cmp + " = icmp eq <8 x i16> " + va8 + ", " + vb8 + "\n";
+                    const std::string result = newtemp();
+                    m_out += "  " + result + " = sext <8 x i1> " + cmp + " to <8 x i16>\n";
+                    store_vec8i16(result);
+                }
+                return;
+            case 0x07: // PMINH (signed)
+                {
+                    const std::string cmp = newtemp();
+                    m_out += "  " + cmp + " = icmp slt <8 x i16> " + va8 + ", " + vb8 + "\n";
+                    m_out += "  " + vr + " = select <8 x i1> " + cmp +
+                             ", <8 x i16> " + va8 + ", <8 x i16> " + vb8 + "\n";
+                    store_vec8i16(vr);
+                }
+                return;
+            case 0x0a: // PCEQB
+                {
+                    const std::string cmp = newtemp();
+                    m_out += "  " + cmp + " = icmp eq <16 x i8> " + va16 + ", " + vb16 + "\n";
+                    const std::string result = newtemp();
+                    m_out += "  " + result + " = sext <16 x i1> " + cmp + " to <16 x i8>\n";
+                    store_vec16i8(result);
+                }
+                return;
+            case 0x10: // PADDUW
+                store_vec4i32(emit_unsigned_sat(va4, vb4, "<4 x i32>", "<4 x i64>",
+                                                "<4 x i1>", "i64", 4, 0xFFFFFFFFull, true));
+                return;
+            case 0x11: // PSUBUW
+                store_vec4i32(emit_unsigned_sat(va4, vb4, "<4 x i32>", "<4 x i64>",
+                                                "<4 x i1>", "i64", 4, 0xFFFFFFFFull, false));
+                return;
+            case 0x14: // PADDUH
+                store_vec8i16(emit_unsigned_sat(va8, vb8, "<8 x i16>", "<8 x i32>",
+                                                "<8 x i1>", "i32", 8, 0xFFFFull, true));
+                return;
+            case 0x15: // PSUBUH
+                store_vec8i16(emit_unsigned_sat(va8, vb8, "<8 x i16>", "<8 x i32>",
+                                                "<8 x i1>", "i32", 8, 0xFFFFull, false));
+                return;
+            case 0x18: // PADDUB
+                store_vec16i8(emit_unsigned_sat(va16, vb16, "<16 x i8>", "<16 x i16>",
+                                                "<16 x i1>", "i16", 16, 0xFFull, true));
+                return;
+            case 0x19: // PSUBUB
+                store_vec16i8(emit_unsigned_sat(va16, vb16, "<16 x i8>", "<16 x i16>",
+                                                "<16 x i1>", "i16", 16, 0xFFull, false));
+                return;
             default:
-                m_out += "  " + vr + " = add <4 x i32> " + va4 + ", " + vb4 + "\n";
-                store_vec4i32(vr); return;
+                // The decoder leaves every other MMI1 sub-op unsupported.
+                m_out += "  ; unsupported MMI1 sub-op " + std::to_string(sa) + "\n";
+                return;
             }
         }
         // MMI3 (0x29)
