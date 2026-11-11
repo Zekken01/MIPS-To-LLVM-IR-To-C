@@ -232,7 +232,12 @@ int main()
     expect("rsqrt.s", R(0x11,0x10,5,6,7,0x16), "cop1_s", V);
     expect("madda.s", R(0x11,0x10,5,6,7,0x1e), "cop1_s", V);
     expect("max.s", R(0x11,0x10,5,6,7,0x28), "cop1_s", U);
-    expect("c.eq.s", R(0x11,0x10,5,6,7,0x32), "cop1_s", U);
+    expect("c.f.s", R(0x11,0x10,5,6,0,0x30), "cop1_s", V);
+    expect("c.eq.s", R(0x11,0x10,5,6,0,0x32), "cop1_s", V);
+    expect("c.lt.s", R(0x11,0x10,5,6,0,0x34), "cop1_s", V);
+    expect("c.le.s", R(0x11,0x10,5,6,0,0x36), "cop1_s", V);
+    expect("c.eq.fcc1", R(0x11,0x10,5,6,1,0x32), "cop1_s", U);
+    expect("c.lt.fcc1", R(0x11,0x10,5,6,1,0x34), "cop1_s", U);
     expect("cvt.w.s", R(0x11,0x10,5,6,7,0x24), "cop1_s", U);
     expect("unknown.s", R(0x11,0x10,5,6,7,0x08), "cop1_reserved", X);
     expect("cvt.s.w", R(0x11,0x14,0,6,7,0x20), "cvt_s_w", V);
