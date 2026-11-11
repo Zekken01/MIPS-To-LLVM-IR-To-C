@@ -28,6 +28,7 @@ add_library(ee_core STATIC
     src/ee/opcode_tables.cpp
     src/ee/function_analyzer.cpp
     src/ee/recompiled_functions.cpp
+    src/ee/ee_dispatcher.cpp
     src/elf/elf_loader.cpp
     src/llvm/llvm_context.cpp
     src/llvm/module_builder.cpp
@@ -66,6 +67,10 @@ add_executable(ee_multi_test
     tests/smoke/multi_function_test.cpp
 )
 target_link_libraries(ee_multi_test PRIVATE ee_core)
+
+# Host-side PC-based dispatcher regression tests.
+add_executable(ee_dispatcher_test tests/smoke/dispatcher_test.cpp)
+target_link_libraries(ee_dispatcher_test PRIVATE ee_core)
 
 add_executable(ee_min_test
     tests/smoke/min_test.cpp
@@ -120,6 +125,7 @@ endif()
 
 enable_testing()
 add_test(NAME decoder COMMAND ee_decoder_test)
+add_test(NAME dispatcher COMMAND ee_dispatcher_test)
 add_test(NAME multi_function COMMAND ee_multi_test)
 add_test(NAME smoke COMMAND ee_smoke_test)
 add_test(NAME mmi_ops COMMAND ee_mmi_ops_test)
