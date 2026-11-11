@@ -20,9 +20,13 @@ The full-image native-link report is in `FULL_GAME_NATIVE_LINK_VALIDATION.md`. T
 
 Control-flow regressions cover JAL/JALR/JR target and link ordering, delay-slot effects, ordinary and likely branch semantics, branch-and-link, caller/callee continuations, recursive JAL, dynamic cross-function JALR, PC-zero entry, exception resume PCs, and host dispatcher budget/unknown-target handling. COP1 comparison JIT coverage exercises C.F/C.EQ/C.LT/C.LE, EE operand normalisation, NaNs, signed zero, and FCC0-only FCSR updates. Scalar compare JIT coverage checks signedness, sign-extended immediates, source/destination aliasing, `$zero`, and upper GPR halves.
 
+## Latest follow-up
+
+- Added O0 LLVM JIT regression coverage for the existing exact `CVT.S.W` (`fmt=W`) lowering, including signed extrema and the 16,777,217 rounding boundary. CI is pending for this change.
+
 ## Remaining priorities
 
-1. **COP1 completion:** exact rounding/conversion modes and FCSR exception/sticky flag semantics. Keep uncertain forms unsupported.
+1. **COP1 completion:** verify remaining implemented operations against PCSX2, then address exact FCSR exception/sticky flag semantics where supported by the R5900 tables. Do not add standard MIPS rounding conversions that are not present in the R5900 COP1 table. Keep uncertain forms unsupported.
 2. **VU0/COP2:** implement macro/transfer semantics only with exact pipeline, flag, and 128-bit state behaviour.
 3. **Runtime completeness:** EE memory/TLB/MMIO, scratchpad/ROM aliases, alignment exceptions, DMA, interrupts, plus BIOS/IOP/GS host services.
 4. **Semantic validation:** differential instruction and function testing against PCSX2's interpreter. LLVM verification and native linking do not establish R5900 equivalence.
