@@ -80,6 +80,8 @@ def run_opt_level(fixture_exe, temp_dir, opt_level, target_machine):
     state.gpr[8].hi = 0xFEDCBA9876543210
     state.gpr[9].lo = 0x00FF00FF00FF00FF
     state.gpr[9].hi = 0x0F0F0F0F0F0F0F0F
+    state.hi = 0x00000000FFFFFFFE
+    state.lo = 0x0000000000000003
     state.hi1 = 0x1111222233334444
     state.lo1 = 0x5555666677778888
     source_a_lo, source_a_hi = state.gpr[8].lo, state.gpr[8].hi
@@ -90,13 +92,28 @@ def run_opt_level(fixture_exe, temp_dir, opt_level, target_machine):
     prefix = f"O{opt_level}: "
     require(result == 3, prefix + f"unexpected exit result: {result}")
     require(state.exit_reason == 3, prefix + f"unexpected exit reason: {state.exit_reason}")
-    require(state.pc == 0x0010005C, prefix + f"unexpected dispatcher PC: 0x{state.pc:08x}")
+    require(state.pc == 0x0010008C, prefix + f"unexpected dispatcher PC: 0x{state.pc:08x}")
     require(state.gpr[4].lo == 0x1234, prefix + f"ADDIU writeback lost: 0x{state.gpr[4].lo:x}")
     require(state.gpr[4].hi == 0x4444444444444444, prefix + "ADDIU clobbered upper GPR half")
     require(state.gpr[14].lo == 0x5678,
             prefix + f"unused MTHI1 rd field killed cross-block GPR14 writeback: 0x{state.gpr[14].lo:x}")
     require(state.gpr[14].hi == 0x1414141414141414,
             prefix + "cross-block writeback clobbered GPR14 upper half")
+    require(state.hi == 0, prefix + f"MADD/MADDU HI accumulator wrong: 0x{state.hi:x}")
+    require(state.lo == 0xFFFFFFFFFFFFFFF7,
+            prefix + f"MADD/MADDU LO accumulator wrong: 0x{state.lo:x}")
+    require(state.gpr[23].lo == 0xFFFFFFFFFFFFFFFD,
+            prefix + f"MADD rd result wrong: 0x{state.gpr[23].lo:x}")
+    require(state.gpr[24].lo == 0xFFFFFFFFFFFFFFF7,
+            prefix + f"MADDU rd result wrong: 0x{state.gpr[24].lo:x}")
+    require(state.gpr[29].lo == 0,
+            prefix + f"MFHI did not read accumulated HI: 0x{state.gpr[29].lo:x}")
+    require(state.gpr[30].lo == 0xFFFFFFFFFFFFFFF7,
+            prefix + f"MFLO did not read accumulated LO: 0x{state.gpr[30].lo:x}")
+    require(state.gpr[25].lo == 0,
+            prefix + f"MADD1/MADDU1 HI1 accumulator wrong: 0x{state.gpr[25].lo:x}")
+    require(state.gpr[26].lo == 0xFFFFFFFFFFFFFFF7,
+            prefix + f"MADD1/MADDU1 LO1 accumulator wrong: 0x{state.gpr[26].lo:x}")
     require(state.hi1 == 0x1234, prefix + f"MTHI1 did not read current rs: 0x{state.hi1:x}")
     require(state.gpr[5].lo == 0x1234, prefix + f"MFHI1 result missing: 0x{state.gpr[5].lo:x}")
     require(state.gpr[5].hi == 0x5555555555555555, prefix + "MFHI1 clobbered upper GPR half")
@@ -179,7 +196,7 @@ def main():
             engines.append(result[0])
             modules.append(result[1])
 
-    print("mmi_ir_runtime: PASS (O0-O3; CFG writeback; HI1/LO1; aliasing; upper-GPR preservation; PAND/PXOR/POR/PNOR; PADD/PSUB/PMAX lanes)")
+    print("mmi_ir_runtime: PASS (O0-O3; CFG writeback; HI1/LO1; MADD/MADDU on both pipelines; aliasing; upper-GPR preservation; MMI logical and packed arithmetic lanes)")
 
 
 if __name__ == "__main__":
