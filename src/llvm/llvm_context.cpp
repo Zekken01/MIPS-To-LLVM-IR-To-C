@@ -22,7 +22,7 @@ bool llvm_context::write_ir_to_file(const char* path) const
     std::FILE* f = std::fopen(path, "wb");
     if (!f)
     {
-        std::fprintf(stderr, "llvm_context: cannot open '%s': %s\\n",
+        std::fprintf(stderr, "llvm_context: cannot open '%s': %s\n",
                      path, std::strerror(errno));
         return false;
     }
@@ -32,7 +32,7 @@ bool llvm_context::write_ir_to_file(const char* path) const
     if (written != m_ir.size() || close_result != 0)
     {
         std::fprintf(stderr,
-                     "llvm_context: short write for '%s' (written=%zu, expected=%zu, close=%d): %s\\n",
+                     "llvm_context: short write for '%s' (written=%zu, expected=%zu, close=%d): %s\n",
                      path, written, m_ir.size(), close_result,
                      std::strerror(errno));
         return false;
