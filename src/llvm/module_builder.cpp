@@ -2158,31 +2158,64 @@ void module_builder::emit_mmi_insn(const ee::s_ee_instruction& ins)
     const uint8_t sa = ins.sa & 31;
 
     // Top-level MMI (not class)
-    if (fn == 0x00 || fn == 0x01 || fn == 0x20 || fn == 0x21) {
-        // MADD/MADDU/MADD1/MADDU1: approximate as 32-bit product added into HI/LO
-        std::string a32 = newtemp(), b32 = newtemp(), a64 = newtemp(), b64 = newtemp();
-        std::string prod = newtemp(), lo = newtemp(), hi = newtemp();
-        m_out += "  " + a32 + " = trunc i64 " + a.first + " to i32\n";
-        m_out += "  " + b32 + " = trunc i64 " + b.first + " to i32\n";
-        if (fn == 0x00 || fn == 0x20) {
-            m_out += "  " + a64 + " = sext i32 " + a32 + " to i64\n";
-            m_out += "  " + b64 + " = sext i32 " + b32 + " to i64\n";
-        } else {
-            m_out += "  " + a64 + " = zext i32 " + a32 + " to i64\n";
-            m_out += "  " + b64 + " = zext i32 " + b32 + " to i64\n";
-        }
-        m_out += "  " + prod + " = mul i64 " + a64 + ", " + b64 + "\n";
-        // HI:LO += product (simplified: replace LO/HI with product halves)
-        m_out += "  " + lo + " = trunc i64 " + prod + " to i32\n";
-        std::string sh = newtemp();
-        m_out += "  " + sh + " = lshr i64 " + prod + ", 32\n";
-        m_out += "  " + hi + " = trunc i64 " + sh + " to i32\n";
-        std::string lo64 = newtemp(), hi64 = newtemp();
-        m_out += "  " + lo64 + " = sext i32 " + lo + " to i64\n";
-        m_out += "  " + hi64 + " = sext i32 " + hi + " to i64\n";
-        m_out += "  store i64 " + lo64 + ", ptr " + state_field(2) + "\n";
-        m_out += "  store i64 " + hi64 + ", ptr " + state_field(1) + "\n";
-        if (ins.rd != 0) set_gpr_lo64(ins.rd, lo64);
+    if (fn == 0x00 || fn == 0x01 || fn == 0x20 || fn == 0x21)
+    {
+        // MADD/MADDU accumulate into the low 64-bit HI:LO pair. MADD1/
+        // MADDU1 use the upper pair HI1:LO1. The accumulator is formed from
+        // the low 32 bits of each special register; each resulting word is
+        // sign-extended back to the 64-bit architectural register.
+        const bool pipeline1 = fn == 0x20 || fn == 0x21;
+        const bool is_unsigned = fn == 0x01 || fn == 0x21;
+        const int hi_index = pipeline1 ? 3 : 1;
+        const int lo_index = pipeline1 ? 4 : 2;
+
+        std::string lhs32 = newtemp();
+        std::string rhs32 = newtemp();
+        std::string lhs64 = newtemp();
+        std::string rhs64 = newtemp();
+        std::string product = newtemp();
+        std::string hi_ptr = state_field(hi_index);
+        std::string lo_ptr = state_field(lo_index);
+        std::string old_hi64 = newtemp();
+        std::string old_lo64 = newtemp();
+        std::string old_hi32 = newtemp();
+        std::string old_lo32 = newtemp();
+        std::string hi_part = newtemp();
+        std::string lo_part = newtemp();
+        std::string hi_shifted = newtemp();
+        std::string accumulator = newtemp();
+        std::string result = newtemp();
+        std::string result_lo32 = newtemp();
+        std::string result_hi_shifted = newtemp();
+        std::string result_hi32 = newtemp();
+        std::string result_lo64 = newtemp();
+        std::string result_hi64 = newtemp();
+
+        m_out += "  " + lhs32 + " = trunc i64 " + a.first + " to i32\n";
+        m_out += "  " + rhs32 + " = trunc i64 " + b.first + " to i32\n";
+        const char* extend = is_unsigned ? "zext" : "sext";
+        m_out += "  " + lhs64 + " = " + extend + " i32 " + lhs32 + " to i64\n";
+        m_out += "  " + rhs64 + " = " + extend + " i32 " + rhs32 + " to i64\n";
+        m_out += "  " + product + " = mul i64 " + lhs64 + ", " + rhs64 + "\n";
+
+        m_out += "  " + old_hi64 + " = load i64, ptr " + hi_ptr + "\n";
+        m_out += "  " + old_lo64 + " = load i64, ptr " + lo_ptr + "\n";
+        m_out += "  " + old_hi32 + " = trunc i64 " + old_hi64 + " to i32\n";
+        m_out += "  " + old_lo32 + " = trunc i64 " + old_lo64 + " to i32\n";
+        m_out += "  " + hi_part + " = zext i32 " + old_hi32 + " to i64\n";
+        m_out += "  " + lo_part + " = zext i32 " + old_lo32 + " to i64\n";
+        m_out += "  " + hi_shifted + " = shl i64 " + hi_part + ", 32\n";
+        m_out += "  " + accumulator + " = or i64 " + hi_shifted + ", " + lo_part + "\n";
+        m_out += "  " + result + " = add i64 " + accumulator + ", " + product + "\n";
+
+        m_out += "  " + result_lo32 + " = trunc i64 " + result + " to i32\n";
+        m_out += "  " + result_hi_shifted + " = lshr i64 " + result + ", 32\n";
+        m_out += "  " + result_hi32 + " = trunc i64 " + result_hi_shifted + " to i32\n";
+        m_out += "  " + result_lo64 + " = sext i32 " + result_lo32 + " to i64\n";
+        m_out += "  " + result_hi64 + " = sext i32 " + result_hi32 + " to i64\n";
+        m_out += "  store i64 " + result_hi64 + ", ptr " + hi_ptr + "\n";
+        m_out += "  store i64 " + result_lo64 + ", ptr " + lo_ptr + "\n";
+        set_gpr_lo64(ins.rd, result_lo64);
         return;
     }
     if (fn == 0x10) { // MFHI1
