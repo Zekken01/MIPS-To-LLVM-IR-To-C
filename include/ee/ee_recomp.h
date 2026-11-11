@@ -10,7 +10,8 @@ namespace ee {
 // Result of recompiling one guest function.
 struct s_recompiled_fn
 {
-    std::string name;
+    std::string name;                  // Guest symbol / display name.
+    std::string host_symbol;            // Unique native symbol keyed by guest entry VA.
     uint32_t vaddr = 0;
     uint32_t size = 0;                 // bytes decoded
     uint32_t insn_count = 0;
