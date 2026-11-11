@@ -94,7 +94,9 @@ bool cop1_s_lowered_exactly(uint32_t funct)
 {
     return funct <= 7 || funct == 0x16 ||
            funct == 0x18 || funct == 0x19 || funct == 0x1a ||
-           (funct >= 0x1c && funct <= 0x1f);
+           (funct >= 0x1c && funct <= 0x1f) ||
+           funct == 0x30 || funct == 0x32 ||
+           funct == 0x34 || funct == 0x36;
 }
 
 bool mmi_lowered_exactly(uint32_t funct, uint32_t sa, uint32_t rs)
@@ -826,7 +828,14 @@ s_ee_instruction decode(uint32_t pc, uint32_t word)
         case static_cast<e_ee_opcode>(0x10): // fmt=S
             if (cop1_s_defined(insn.funct))
             {
-                insn.valid = cop1_s_lowered_exactly(insn.funct)
+                const bool compare = insn.funct == 0x30 || insn.funct == 0x32 ||
+                                     insn.funct == 0x34 || insn.funct == 0x36;
+                // The current CPU state models FCC0 only. Other condition
+                // codes remain recognised but unsupported until all FCC bits
+                // and BC1 condition-code selection are represented.
+                const bool supported = cop1_s_lowered_exactly(insn.funct) &&
+                                       (!compare || insn.sa == 0);
+                insn.valid = supported
                     ? e_ee_valid::VALID : e_ee_valid::UNSUPPORTED;
                 set_mnemonic(insn, "cop1_s");
             }
