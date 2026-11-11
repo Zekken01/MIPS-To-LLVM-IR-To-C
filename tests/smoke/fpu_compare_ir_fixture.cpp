@@ -37,6 +37,10 @@ int main(int argc, char** argv)
     else if (std::strcmp(mode, "c_lt") == 0) funct = 0x34;
     else if (std::strcmp(mode, "c_le") == 0) funct = 0x36;
     else if (std::strcmp(mode, "cvt_w") == 0) funct = 0x24;
+    else if (std::strcmp(mode, "add_s") == 0) funct = 0x00;
+    else if (std::strcmp(mode, "sub_s") == 0) funct = 0x01;
+    else if (std::strcmp(mode, "mul_s") == 0) funct = 0x02;
+    else if (std::strcmp(mode, "div_s") == 0) funct = 0x03;
     else if (std::strcmp(mode, "max_s") == 0) funct = 0x28;
     else if (std::strcmp(mode, "min_s") == 0) funct = 0x29;
     else if (std::strcmp(mode, "abs_s") == 0) funct = 0x05;
@@ -51,6 +55,10 @@ int main(int argc, char** argv)
     // Comparisons use CC0. Conversion and arithmetic forms use FD.
     const bool writes_fpr6 =
         std::strcmp(mode, "cvt_w") == 0 ||
+        std::strcmp(mode, "add_s") == 0 ||
+        std::strcmp(mode, "sub_s") == 0 ||
+        std::strcmp(mode, "mul_s") == 0 ||
+        std::strcmp(mode, "div_s") == 0 ||
         std::strcmp(mode, "max_s") == 0 ||
         std::strcmp(mode, "min_s") == 0 ||
         std::strcmp(mode, "abs_s") == 0 ||
