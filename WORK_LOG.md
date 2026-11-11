@@ -21,3 +21,13 @@ Further changes should be committed to this branch in small, testable increments
 - Verified against the EE Core Instruction Set Manual, Version 6.0, MADD/MADD1/MADDU/MADDU1 descriptions and operation pseudocode.
 - GitHub Actions run [43089047322](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43089047322): clean configure/build and **4/4 CTest passed**, including the LLVM JIT runtime fixture.
 
+
+
+## 2026-11-11 — Pipeline-1 multiply support
+
+- Added exact decoder/lifter coverage for `MULT1` and `MULTU1` (funct 0x18/0x19, reserved `sa` must be zero).
+- Implemented signed and unsigned 32×32 multiplication into HI1/LO1, including sign-extension of the resulting 32-bit HI1/LO1 words and the low-word result in rd.
+- Extended the LLVM JIT fixture to verify MULT1/MULTU1, in addition to MADD/MADDU and the MMI arithmetic/logical operations.
+- Verified against the EE Core Instruction Set Manual v6.0, MULT1 and MULTU1 operation definitions.
+- GitHub Actions run [43089471611](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43089471611): clean configure/build and **4/4 CTest passed**, including the JIT runtime fixture at O0–O3.
+
