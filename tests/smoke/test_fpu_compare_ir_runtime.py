@@ -344,7 +344,7 @@ def main():
         (0x3F800000, 0x00000000, 0x7F7FFFFF,
          0xA5903456, 0xA5913476, "positive divide by zero sets D|SD"),
         (0x00000000, 0x00000000, 0x7F7FFFFF,
-         0xA5903456, 0xA5923496, "zero divided by zero sets I|SI"),
+         0xA5903456, 0xA5923456, "zero divided by zero sets I|SI"),
         (0xBF800000, 0x00000000, 0xFF7FFFFF,
          0xA5903456, 0xA5913476, "negative divide by zero returns negative FMAX"),
         (0x3F800000, 0x00000001, 0x7F7FFFFF,
