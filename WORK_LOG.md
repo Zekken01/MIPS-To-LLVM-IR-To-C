@@ -40,3 +40,16 @@ Further changes should be committed to this branch in small, testable increments
 - The EE manual leaves divide-by-zero results undefined. The recompiler chooses a deterministic no-op for HI1/LO1 on a zero divisor, avoiding LLVM undefined behavior/poison.
 - Added an independent JIT fixture covering signed normal division, signed overflow, signed divide-by-zero, unsigned division, and unsigned divide-by-zero; each case also verifies MFHI1/MFLO1 readback at O0–O3.
 - GitHub Actions run [43090955314](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43090955314): clean configure/build and **5/5 CTest passed**.
+
+## 2026-11-11 — Exact MMI1 packed operations
+
+- Added exact decoder/lifter/LLVM lowering for 13 MMI1 operations:
+  - `PABSW` and `PABSH`, including the defined clamp of signed minimum to signed maximum.
+  - `PCEQW`, `PCEQH`, and `PCEQB`.
+  - Signed `PMINW` and `PMINH`.
+  - Unsigned saturating `PADDUW/H/B` and `PSUBUW/H/B`.
+- Restricted unary absolute-value forms to their documented `rs=0` encodings.
+- Added a separate O0–O3 LLVM JIT fixture that checks all 13 operations, lane ordering, saturation edges, and a destination/source alias.
+- Updated the decoder regression for the game entry-point word `0x70000c28`: it is now correctly accepted as exact `PADDUW`, not rejected.
+- Left the remaining MMI1 operations (`PADSBH`, `PEXTUW/UH/UB`, and `QFSRV`) unsupported pending their own exact implementations and tests.
+- GitHub Actions run [43093331006](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43093331006): clean configure/build and **6/6 CTest passed**.
