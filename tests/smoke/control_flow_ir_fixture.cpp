@@ -107,6 +107,17 @@ int main(int argc, char** argv)
         has_continuation = true;
         function_name = "guest_caller_resume_test";
     }
+    else if (mode == "caller_jalr")
+    {
+        // JALR uses $t0 as its dynamic target and $ra as its link. The delay
+        // slot copies the new link into $t0, so dispatch must use the target
+        // sampled before the slot overwrites rs.
+        control_word = make_r(8, 0, 31, 0, 0x09); // jalr $ra,($t0)
+        delay_word = make_r(31, 0, 8, 0, 0x21);   // addu $t0,$ra,$zero
+        continuation_word = make_i(0x09, 0, 17, 0x66); // $s1 = 0x66
+        has_continuation = true;
+        function_name = "guest_caller_jalr_test";
+    }
     else if (mode == "callee_return")
     {
         // Return through the caller's link. The host should resume at PC+8.
