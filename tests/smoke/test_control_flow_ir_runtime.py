@@ -195,6 +195,30 @@ def main():
         run_case(fixture_exe, temp_dir, target, retained, "jalr",
                  "guest_jalr_delay_test", check_jalr, verify_jalr)
 
+        def check_jalr_rd(state):
+            state.gpr[8].lo = 0x00210000
+            state.gpr[16].lo = 0xAAAAAAAA
+            state.gpr[16].hi = 0x1616161616161616
+            state.gpr[9].lo = 0xBBBBBBBB
+            state.gpr[31].lo = 0xDEADBEEF
+            state.gpr[31].hi = 0x3131313131313131
+
+        def verify_jalr_rd(state):
+            require(state.pc == 0x00210000,
+                    "jalr rd: dynamic target was not captured from rs")
+            require(state.gpr[16].lo == 0x00100008,
+                    f"jalr rd: encoded rd did not receive PC+8: 0x{state.gpr[16].lo:x}")
+            require(state.gpr[16].hi == 0x1616161616161616,
+                    "jalr rd: link write clobbered upper GPR half")
+            require(state.gpr[9].lo == 0x00100009,
+                    "jalr rd: delay slot did not read the encoded link register")
+            require(state.gpr[31].lo == 0xDEADBEEF and
+                    state.gpr[31].hi == 0x3131313131313131,
+                    "jalr rd: non-$ra destination incorrectly modified $ra")
+
+        run_case(fixture_exe, temp_dir, target, retained, "jalr_rd",
+                 "guest_jalr_rd_delay_test", check_jalr_rd, verify_jalr_rd)
+
         def check_beq_taken(state):
             state.gpr[2].lo = 0
 
