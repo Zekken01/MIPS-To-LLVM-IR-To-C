@@ -57,8 +57,6 @@ def run_case(fixture_exe, temp_dir, target, retained, mode, function_name, setup
     module.verify()
     module.triple = llvm.get_default_triple()
     module.data_layout = str(target_machine.target_data)
-    if mode == "jal":
-        print("JAL IR module:\\n" + str(module), flush=True)
 
     engine = llvm.create_mcjit_compiler(llvm.parse_assembly(""), target_machine)
     engine.add_module(module)
@@ -100,6 +98,36 @@ def main():
 
     with tempfile.TemporaryDirectory(prefix="ee-control-flow-") as temp:
         temp_dir = pathlib.Path(temp)
+
+        def check_beq_taken(state):
+            state.gpr[2].lo = 0
+            state.gpr[2].hi = 0x2222333344445555
+
+        def verify_beq_taken(state):
+            require(state.pc == 0x00100014,
+                    f"beq taken: delay slot changed sampled condition: PC=0x{state.pc:08x}")
+            require(state.gpr[2].lo == 1,
+                    f"beq taken: delay-slot ADDIU did not execute: {state.gpr[2].lo}")
+            require(state.gpr[2].hi == 0x2222333344445555,
+                    "beq taken: delay slot clobbered upper GPR half")
+
+        run_case(fixture_exe, temp_dir, target, retained, "beq_taken",
+                 "guest_beq_taken_delay_test", check_beq_taken, verify_beq_taken)
+
+        def check_beq_not_taken(state):
+            state.gpr[2].lo = 1
+            state.gpr[2].hi = 0x2222333344445555
+
+        def verify_beq_not_taken(state):
+            require(state.pc == 0x00100008,
+                    f"beq not-taken: delay slot changed sampled condition: PC=0x{state.pc:08x}")
+            require(state.gpr[2].lo == 0,
+                    f"beq not-taken: delay-slot ADDIU did not execute: {state.gpr[2].lo}")
+            require(state.gpr[2].hi == 0x2222333344445555,
+                    "beq not-taken: delay slot clobbered upper GPR half")
+
+        run_case(fixture_exe, temp_dir, target, retained, "beq_not_taken",
+                 "guest_beq_not_taken_delay_test", check_beq_not_taken, verify_beq_not_taken)
 
         def check_jr(state):
             state.gpr[2].lo = 0x00200000
@@ -257,7 +285,7 @@ def main():
             run_case(fixture_exe, temp_dir, target, retained, "bgezall",
                      "guest_bgezall_delay_test", setup, verify)
 
-    print("control_flow_ir_runtime: PASS (JR return/dispatch; JAL/JALR; BLTZAL/BGEZAL/BLTZALL/BGEZALL taken and not-taken)")
+    print("control_flow_ir_runtime: PASS (JR return/dispatch; JAL/JALR; BEQ condition sampling; BLTZAL/BGEZAL/BLTZALL/BGEZALL taken and not-taken)")
 
 
 if __name__ == "__main__":
