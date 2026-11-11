@@ -5,6 +5,7 @@
 #include "function_analyzer.h"
 #include <cstdio>
 #include <cstring>
+#include <set>
 using namespace ee;
 static int g_pass = 0, g_fail = 0;
 static uint32_t R(uint32_t op, uint32_t rs, uint32_t rt, uint32_t rd, uint32_t sa, uint32_t funct)
@@ -240,8 +241,12 @@ int main()
     expect("dadd overflow", R(0x00,4,5,6,0,0x2c), "signed_arith", U);
     expect("slt", R(0x00,4,5,6,0,0x2a), "r_compare", U);
     expect("tge", R(0x00,4,5,0,0,0x30), "trap", U);
-    expect("bltzal", R(0x01,4,0x10,0,0,0), "bltzal", U);
-    expect("bgezall", R(0x01,4,0x13,0,0,0), "bgezall", U);
+    expect("bltzal", R(0x01,4,0x10,0,0,0), "bltzal", V);
+    expect("bgezal", R(0x01,4,0x11,0,0,0), "bgezal", V);
+    expect("bltzall", R(0x01,4,0x12,0,0,0), "bltzall", V);
+    expect("bgezall", R(0x01,4,0x13,0,0,0), "bgezall", V);
+    expect("bltzal rs=ra", R(0x01,31,0x10,0,0,0), "bltzal", U);
+    expect("bltzall rs=ra", R(0x01,31,0x12,0,0,0), "bltzall", U);
     expect("tgei", R(0x01,4,0x08,0,0,0), "regimm_trap", U);
     expect("mtsab", R(0x01,4,0x18,0,0,0), "mtsab", V);
     expect("mtsah", R(0x01,4,0x19,0,0,0), "mtsah", V);
@@ -351,7 +356,7 @@ int main()
         const bool ok = collect_successors(jr) == jr_expected &&
                         collect_successors(jalr) == jalr_expected;
         ok ? ++g_pass : ++g_fail;
-        if (!ok) std::printf("FAIL indirect JR/JALR must not invent a static target\\n");
+        if (!ok) std::printf("FAIL indirect JR/JALR must not invent a static target\n");
     }
     std::printf("decoder_test: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
