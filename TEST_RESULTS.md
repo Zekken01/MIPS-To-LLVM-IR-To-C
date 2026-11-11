@@ -74,3 +74,22 @@ Environment: GitHub Actions `ubuntu-latest`, GCC/CMake/Ninja, isolated Python vi
   - Unsigned divide-by-zero preservation.
 - Each case verifies HI1/LO1 state and MFHI1/MFLO1 readback.
 - GitHub Actions run: [43090955314](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43090955314).
+
+## 2026-11-11 MMI1 packed-operation follow-up
+
+Environment: GitHub Actions `ubuntu-latest`, GCC/CMake/Ninja, isolated Python virtual environment with `llvmlite`.
+
+- Clean configure: PASS.
+- Clean build: PASS.
+- CTest: **6/6 PASS** (`decoder`, `multi_function`, `smoke`, `mmi_ir_runtime`, `div1_ir_runtime`, `mmi1_ir_runtime`).
+- New MMI1 LLVM JIT runtime test: PASS at O0–O3.
+- Runtime coverage:
+  - PABSW/PABSH with signed-minimum saturation.
+  - PCEQW/PCEQH/PCEQB all-ones equality masks.
+  - Signed PMINW/PMINH.
+  - PADDUW/PADDUH/PADDUB unsigned saturation.
+  - PSUBUW/PSUBUH/PSUBUB unsigned floor-at-zero saturation.
+  - In-place source/destination aliasing.
+- The game entry-point encoding `0x70000c28` now decodes as supported PADDUW.
+- Remaining MMI1 operations stay unsupported: PADSBH, PEXTUW, PEXTUH, PEXTUB, and QFSRV.
+- GitHub Actions run: [43093331006](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43093331006).
