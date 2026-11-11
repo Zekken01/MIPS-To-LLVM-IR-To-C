@@ -17,6 +17,9 @@ struct s_recompiled_fn
     uint32_t supported_count = 0;      // instructions lifted to a known op
     uint32_t unsupported_count = 0;    // instructions with no lift
     uint32_t block_count = 0;
+    // Guest PCs accepted by the generated function's entry switch. The host
+    // dispatcher uses these to resume a translated function at any CFG block.
+    std::vector<uint32_t> block_pcs;
     std::string ir_path;               // emitted LLVM IR text file
 };
 
@@ -55,6 +58,12 @@ struct s_recompiled_elf
     };
     std::vector<s_sub_cov> sub_coverage;
 };
+
+// Find the translated function whose entry switch accepts guest_pc.
+// Returns nullptr when the PC is outside all emitted CFGs.
+const s_recompiled_fn* find_recompiled_function(
+    const s_recompiled_elf& compiled,
+    uint32_t guest_pc);
 
 // Emission controls for ee_recomp.
 struct s_recomp_options
