@@ -72,3 +72,15 @@ Further changes should be committed to this branch in small, testable increments
 - Moved `find_recompiled_function()` into the core library so dispatcher clients and tests share the same implementation without linking the full ELF recompiler into the decoder test.
 - GitHub Actions run [43109193936](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43109193936): clean configure/build and **9/9 CTest passed**, including the new `dispatcher` test and all LLVM JIT suites.
 - Limitation: the dispatcher is now implemented and independently tested, but the real LLVM object emitter still returns false. The dispatcher therefore has not yet been wired to a complete set of generated native game functions.
+
+## 2026-11-11 — Real-game exception continuation and full-image validation
+
+- Ran the CI-built `ee_recomp` binary against the preserved USA `SLUS_214.42` ELF.
+- The first run emitted only the initial bootstrap function. Inspection showed that startup code executes `SYSCALL` and then continues after the exception handler; static discovery treated `FLOW_EXCEPTION` as an unconditional end and never reached the later direct JAL targets.
+- Updated `collect_successors()` to include the possible `EPC+4` resume PC for exception instructions. Updated the CFG builder to retain that continuation as a separate dispatchable block while keeping the syscall/break block itself as a runtime exception exit.
+- Added regressions for successor discovery after both SYSCALL and BREAK, plus CFG retention of code after both exception blocks.
+- Re-ran the CI-built recompiler on `SLUS_214.42` (entry `0x00100008`, machine 8, two segments): **7,849 functions discovered and emitted**, covering **417,738 unique instruction PCs**. The current lifter reports 409,530 supported and 8,208 unsupported instructions (98.0%).
+- Parsed and LLVM-verified all **7,849/7,849** generated modules with LLVM 20.1.8; zero invalid modules.
+- Also ran llvmlite native target code generation at `opt=0` over all **7,849/7,849** modules. All succeeded, producing **34,220,040 bytes** of aggregate in-memory host object code.
+- The validation used the Linux `ee_recomp` and `verify_ir.py` from CI run [43110647060](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43110647060), commit `d76f7ec`.
+- Limitation: llvmlite emitted host objects in memory for validation; the project `object_emitter::emit_object()` remains a stub, and these objects were not linked into a runnable game executable.
