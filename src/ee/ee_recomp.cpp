@@ -79,10 +79,6 @@ std::string u32hex(uint32_t v)
     return buf;
 }
 
-// Collect all successor PCs reachable from a decoded instruction:
-//   fall-through (pc+4), branch target, call target.
-// Control transfers that end the flow (JR, J, ERET, etc.) have no fall-through.
-
 } // namespace
 
 bool ee_recomp(const char* elf_path,
