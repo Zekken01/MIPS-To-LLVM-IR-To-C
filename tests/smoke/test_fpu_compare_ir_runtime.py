@@ -179,6 +179,44 @@ def run_max_min_cases(fixture, temp_dir, target, mode, pairs):
                          f"expected 0x{expected_fcsr:08x}")
 
 
+def run_sign_operation_cases(fixture, temp_dir, target, mode, source_words):
+    guest_fn, engine, module, target_machine = compile_jit(
+        fixture, temp_dir, mode, target
+    )
+    retained = (engine, module, target_machine)
+    initial_fcsr = 0xA592F456
+    expected_fcsr = initial_fcsr & ~(0x00008000 | 0x00004000)
+
+    for source_bits, label in source_words:
+        backing, state = aligned_state()
+        _ = (backing, retained)
+        state.fpr[1] = source_bits
+        state.fpr[6] = 0xAABBCCDD11223344
+        state.fcsr = initial_fcsr
+
+        result = guest_fn(ctypes.pointer(state), None)
+        prefix = f"{mode}({label}, 0x{source_bits:08x}): "
+        require(result == 3, prefix + f"expected EE_EXIT_DISPATCH (3), got {result}")
+        require(state.exit_reason == 3,
+                prefix + f"state exit reason was {state.exit_reason}")
+        require(state.pc == ENTRY_PC + 4,
+                prefix + f"wrong sequential PC 0x{state.pc:08x}")
+
+        expected = (
+            source_bits & 0x7FFFFFFF
+            if mode == "abs_s"
+            else source_bits ^ 0x80000000
+        )
+        require(state.fpr[6] == expected,
+                prefix + f"FPR[6] got 0x{state.fpr[6]:016x}, "
+                         f"expected 0x{expected:08x}")
+        require(state.fpr[1] == source_bits,
+                prefix + "source FPR was modified")
+        require(state.fcsr == expected_fcsr,
+                prefix + f"FCSR got 0x{state.fcsr:08x}, "
+                         f"expected 0x{expected_fcsr:08x}")
+
+
 def main():
     require(
         len(sys.argv) == 2,
@@ -238,6 +276,17 @@ def main():
         (0xFFC00000, 0x0000000080000000, "negative quiet NaN saturates"),
     ]
 
+    sign_operation_words = [
+        (0xBF800000, "negative one"),
+        (0x80000000, "negative zero"),
+        (0xFF800000, "negative infinity"),
+        (0xFFC00000, "negative quiet NaN"),
+        (0x7FC12345, "positive NaN payload"),
+        (0xFFA54321, "negative NaN payload"),
+        (0x80000001, "negative denormal"),
+        (0x00000000, "positive zero"),
+    ]
+
     extreme_pairs = [
         (0x3F800000, 0x40000000, "positive finite"),
         (0xBF800000, 0xC0000000, "both negative"),
@@ -263,10 +312,17 @@ def main():
             )
         run_max_min_cases(fixture, temp_dir, target, "max_s", extreme_pairs)
         run_max_min_cases(fixture, temp_dir, target, "min_s", extreme_pairs)
+        run_sign_operation_cases(
+            fixture, temp_dir, target, "abs_s", sign_operation_words
+        )
+        run_sign_operation_cases(
+            fixture, temp_dir, target, "neg_s", sign_operation_words
+        )
 
     print(
         "fpu_compare_ir_runtime: PASS (C.F/C.EQ/C.LT/C.LE; CVT.W.S; "
-        "MAX.S/MIN.S bitwise ordering; EE NaN/Inf normalisation, integer "
+        "MAX.S/MIN.S bitwise ordering; ABS.S/NEG.S raw-bit sign operations; "
+        "EE NaN/Inf normalisation, integer "
         "saturation, truncation, FCSR cause-bit clearing and sticky-bit "
         "preservation; O0 JIT)"
     )
