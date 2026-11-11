@@ -79,6 +79,13 @@ std::string u32hex(uint32_t v)
     return buf;
 }
 
+std::string native_function_symbol(uint32_t guest_entry)
+{
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "ee_fn_%08x", guest_entry);
+    return buf;
+}
+
 } // namespace
 
 bool ee_recomp(const char* elf_path,
@@ -272,14 +279,19 @@ bool ee_recomp(const char* elf_path,
         }
         if (!any_new) return false;
 
+        // Keep the guest display name separate from the native linker symbol.
+        // ELF symbol names are not guaranteed to be unique across aliases or
+        // stripped/partially-symbolized images; the guest entry VA is.
+        const std::string host_symbol = native_function_symbol(entry);
         llvm::module_builder builder(ctx, opts.opt_level);
-        builder.emit_function_cfg(fn, global_insns, fn.name.c_str());
+        builder.emit_function_cfg(fn, global_insns, host_symbol.c_str());
         std::string ir_name = sanitize_name(fn.name) + "_" + u32hex(entry) + ".ll";
         std::string ir_path = std::string(output_dir) + "/" + ir_name;
         ctx.write_ir_to_file(ir_path.c_str());
 
         s_recompiled_fn rfn;
         rfn.name = fn.name;
+        rfn.host_symbol = host_symbol;
         rfn.vaddr = entry;
         rfn.ir_path = ir_path;
         rfn.block_count = (uint32_t)fn.blocks.size();
@@ -419,6 +431,7 @@ bool ee_recomp(const char* elf_path,
             const auto& f = result->functions[i];
             os << "    {\n";
             os << "      \"name\": \"" << json_escape(f.name) << "\",\n";
+            os << "      \\"host_symbol\\": \\"" << json_escape(f.host_symbol) << "\\\",\\n";
             os << "      \"vaddr\": \"" << u32hex(f.vaddr) << "\",\n";
             os << "      \"size\": " << f.size << ",\n";
             os << "      \"insn_count\": " << f.insn_count << ",\n";
