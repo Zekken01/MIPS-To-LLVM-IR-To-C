@@ -2,6 +2,7 @@
 """JIT-test the four supported R5900 quiet ordered single-precision predicates."""
 
 import ctypes
+import math
 import pathlib
 import struct
 import subprocess
@@ -281,6 +282,137 @@ def run_arithmetic_cases(fixture, temp_dir, target, mode, cases):
                          f"expected 0x{expected_fcsr:08x}")
 
 
+def f32_value(bits):
+    return struct.unpack("<f", struct.pack("<I", bits & 0xFFFFFFFF))[0]
+
+
+def ieee_f32_bits(value):
+    try:
+        return f32_bits(value)
+    except OverflowError:
+        return 0xFF800000 if value < 0.0 else 0x7F800000
+
+
+def ee_fpu_normalise_bits(bits):
+    exponent = bits & 0x7F800000
+    sign = bits & 0x80000000
+    if exponent == 0:
+        return sign
+    if exponent == 0x7F800000:
+        return sign | 0x7F7FFFFF
+    return bits
+
+
+def ee_fpu_clamp_result_bits(bits):
+    absolute = bits & 0x7FFFFFFF
+    if absolute == 0x7F800000:
+        return (bits & 0x80000000) | 0x7F7FFFFF
+    if (bits & 0x7F800000) == 0 and (bits & 0x007FFFFF) != 0:
+        return bits & 0x80000000
+    return bits
+
+
+def expected_sqrt_bits(source_bits):
+    if (source_bits & 0x7F800000) == 0:
+        return source_bits & 0x80000000
+    normalised = ee_fpu_normalise_bits(source_bits)
+    absolute = normalised & 0x7FFFFFFF
+    return ieee_f32_bits(math.sqrt(f32_value(absolute)))
+
+
+def expected_rsqrt_bits(numerator_bits, denominator_bits):
+    if (denominator_bits & 0x7F800000) == 0:
+        return (denominator_bits & 0x80000000) | 0x7F7FFFFF
+
+    numerator = f32_value(ee_fpu_normalise_bits(numerator_bits))
+    denominator = ee_fpu_normalise_bits(denominator_bits) & 0x7FFFFFFF
+    root_bits = ieee_f32_bits(math.sqrt(f32_value(denominator)))
+    root_bits = ee_fpu_normalise_bits(root_bits)
+    quotient_bits = ieee_f32_bits(numerator / f32_value(root_bits))
+    return ee_fpu_clamp_result_bits(quotient_bits)
+
+
+def run_sqrt_cases(fixture, temp_dir, target, source_words):
+    guest_fn, engine, module, target_machine = compile_jit(
+        fixture, temp_dir, "sqrt_s", target
+    )
+    retained = (engine, module, target_machine)
+    initial_fcsr = 0xA593F47E
+    cleared_fcsr = initial_fcsr & ~0x00030000
+
+    for source_bits, label in source_words:
+        backing, state = aligned_state()
+        _ = (backing, retained)
+        state.fpr[1] = source_bits
+        state.fpr[6] = 0xAABBCCDD11223344
+        state.fcsr = initial_fcsr
+
+        result = guest_fn(ctypes.pointer(state), None)
+        prefix = f"sqrt_s({label}, 0x{source_bits:08x}): "
+        require(result == 3, prefix + f"expected EE_EXIT_DISPATCH (3), got {result}")
+        require(state.exit_reason == 3,
+                prefix + f"state exit reason was {state.exit_reason}")
+        require(state.pc == ENTRY_PC + 4,
+                prefix + f"wrong sequential PC 0x{state.pc:08x}")
+
+        expected = expected_sqrt_bits(source_bits)
+        expected_fcsr = cleared_fcsr
+        if (source_bits & 0x7F800000) != 0 and (source_bits & 0x80000000):
+            expected_fcsr |= 0x00020040  # I|SI
+        require(state.fpr[6] == expected,
+                prefix + f"FPR[6] got 0x{state.fpr[6]:016x}, "
+                         f"expected 0x{expected:08x}")
+        require(state.fpr[1] == source_bits,
+                prefix + "source FPR was modified")
+        require(state.fcsr == expected_fcsr,
+                prefix + f"FCSR got 0x{state.fcsr:08x}, "
+                         f"expected 0x{expected_fcsr:08x}")
+
+
+def run_rsqrt_cases(fixture, temp_dir, target, operand_pairs):
+    guest_fn, engine, module, target_machine = compile_jit(
+        fixture, temp_dir, "rsqrt_s", target
+    )
+    retained = (engine, module, target_machine)
+    initial_fcsr = 0xA593F47E
+    cleared_fcsr = initial_fcsr & ~0x00030000
+
+    for numerator_bits, denominator_bits, label in operand_pairs:
+        backing, state = aligned_state()
+        _ = (backing, retained)
+        state.fpr[1] = numerator_bits
+        state.fpr[2] = denominator_bits
+        state.fpr[6] = 0xAABBCCDD11223344
+        state.fcsr = initial_fcsr
+
+        result = guest_fn(ctypes.pointer(state), None)
+        prefix = (
+            f"rsqrt_s({label}, 0x{numerator_bits:08x}, "
+            f"0x{denominator_bits:08x}): "
+        )
+        require(result == 3, prefix + f"expected EE_EXIT_DISPATCH (3), got {result}")
+        require(state.exit_reason == 3,
+                prefix + f"state exit reason was {state.exit_reason}")
+        require(state.pc == ENTRY_PC + 4,
+                prefix + f"wrong sequential PC 0x{state.pc:08x}")
+
+        expected = expected_rsqrt_bits(numerator_bits, denominator_bits)
+        expected_fcsr = cleared_fcsr
+        if (denominator_bits & 0x7F800000) == 0:
+            expected_fcsr |= 0x00010020  # D|SD
+        elif denominator_bits & 0x80000000:
+            expected_fcsr |= 0x00020040  # I|SI
+
+        require(state.fpr[6] == expected,
+                prefix + f"FPR[6] got 0x{state.fpr[6]:016x}, "
+                         f"expected 0x{expected:08x}")
+        require(state.fpr[1] == numerator_bits and state.fpr[2] == denominator_bits,
+                prefix + "source FPR was modified")
+        require(state.fcsr == expected_fcsr,
+                prefix + f"FCSR got 0x{state.fcsr:08x}, "
+                         f"expected 0x{expected_fcsr:08x}")
+
+
 def main():
     require(
         len(sys.argv) == 2,
@@ -385,6 +517,30 @@ def main():
          0xA592F45E, 0xA592F45E, "division overflow clamps without flags"),
     ]
 
+    sqrt_words = [
+        (0x40800000, "positive four"),
+        (0xC0800000, "negative four"),
+        (0x80000000, "negative zero"),
+        (0x00000001, "positive denormal"),
+        (0x80000001, "negative denormal"),
+        (0x7F800000, "positive infinity saturates to FMAX"),
+        (0xFF800000, "negative infinity is invalid"),
+        (0x7FC12345, "positive NaN normalises to FMAX"),
+        (0xFFC12345, "negative NaN is invalid"),
+    ]
+    rsqrt_pairs = [
+        (0x40C00000, 0x40800000, "six divided by sqrt four"),
+        (0x40C00000, 0xC0800000, "negative divisor is made positive and invalid"),
+        (0x40C00000, 0x00000000, "positive zero divisor returns FMAX"),
+        (0x40C00000, 0x80000000, "negative zero divisor returns negative FMAX"),
+        (0x40C00000, 0x00000001, "positive denormal divisor counts as zero"),
+        (0x40C00000, 0x80000001, "negative denormal divisor counts as zero"),
+        (0x7F7FFFFF, 0x00800000, "overflow clamps without flags"),
+        (0x00800000, 0x7F7FFFFF, "underflow flushes without flags"),
+        (0xC0C00000, 0x40800000, "negative numerator"),
+        (0x40C00000, 0xFF800000, "negative infinity divisor normalises to negative FMAX"),
+    ]
+
     sign_operation_words = [
         (0xBF800000, "negative one"),
         (0x80000000, "negative zero"),
@@ -434,6 +590,8 @@ def main():
         run_arithmetic_cases(fixture, temp_dir, target, "sub_s", sub_cases)
         run_arithmetic_cases(fixture, temp_dir, target, "mul_s", mul_cases)
         run_arithmetic_cases(fixture, temp_dir, target, "div_s", div_cases)
+        run_sqrt_cases(fixture, temp_dir, target, sqrt_words)
+        run_rsqrt_cases(fixture, temp_dir, target, rsqrt_pairs)
         run_max_min_cases(fixture, temp_dir, target, "max_s", extreme_pairs)
         run_max_min_cases(fixture, temp_dir, target, "min_s", extreme_pairs)
         run_sign_operation_cases(
@@ -445,7 +603,8 @@ def main():
 
     print(
         "fpu_compare_ir_runtime: PASS (C.F/C.EQ/C.LT/C.LE; CVT.W.S/CVT.S.W; "
-        "ADD.S/SUB.S/MUL.S/DIV.S normalization and FCSR flags; "
+        "ADD.S/SUB.S/MUL.S/DIV.S and SQRT.S/RSQRT.S normalisation; "
+        "FCSR cause/sticky semantics; "
         "MAX.S/MIN.S bitwise ordering; ABS.S/NEG.S raw-bit sign operations; "
         "EE NaN/Inf normalisation, integer "
         "saturation, truncation, FCSR cause-bit clearing and sticky-bit "
