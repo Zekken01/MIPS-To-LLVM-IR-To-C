@@ -117,10 +117,11 @@ def main():
     with tempfile.TemporaryDirectory(prefix="ee_div1_ir_") as directory:
         temp_dir = pathlib.Path(directory)
         for opt_level in range(4):
-            target_machine = target.create_target_machine(opt=0)
-            target_machines.append(target_machine)
             for case in range(5):
-                print(f"div1_ir_runtime: running O{opt_level} case {case}", flush=True)
+                # MCJIT takes ownership of backend resources; give each engine
+                # its own target machine rather than sharing one across engines.
+                target_machine = target.create_target_machine(opt=0)
+                target_machines.append(target_machine)
                 engine, module = run_case(
                     fixture, temp_dir, opt_level, case, target_machine
                 )
