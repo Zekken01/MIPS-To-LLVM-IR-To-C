@@ -180,18 +180,19 @@ s_ee_instruction decode(uint32_t pc, uint32_t word)
         case e_ee_opcode::FUNCT_JR:
             insn.flow = (insn.rs == 31) ? e_ee_flow::FLOW_RETURN : e_ee_flow::FLOW_JUMP;
             insn.has_delay_slot = true;
-            // JR $ra is a normal function return. Other JR targets are
-            // indirect and require a runtime dispatcher that is not present.
-            insn.valid = (insn.rs == 31) ? e_ee_valid::VALID
-                                         : e_ee_valid::UNSUPPORTED;
+            // JR targets are resolved by the host dispatcher after the delay
+            // slot. Only the architecturally reserved fields must be zero.
+            insn.valid = (insn.rt == 0 && insn.rd == 0 && insn.sa == 0)
+                ? e_ee_valid::VALID : e_ee_valid::UNSUPPORTED;
             set_mnemonic(insn, "jr");
             break;
         case e_ee_opcode::FUNCT_JALR:
-            // The emitter has no indirect-call dispatcher (and must honour
-            // rd as the link register), so do not advertise any JALR as valid.
+            // The dynamic target is captured before the delay slot; the
+            // encoded rd receives PC+8 before that slot executes.
             insn.flow = e_ee_flow::FLOW_CALL;
             insn.has_delay_slot = true;
-            insn.valid = e_ee_valid::UNSUPPORTED;
+            insn.valid = (insn.rt == 0 && insn.sa == 0)
+                ? e_ee_valid::VALID : e_ee_valid::UNSUPPORTED;
             set_mnemonic(insn, "jalr");
             break;
         case e_ee_opcode::FUNCT_MFHI:
@@ -269,7 +270,7 @@ s_ee_instruction decode(uint32_t pc, uint32_t word)
         insn.type = e_ee_op_type::OP_TYPE_JTYPE;
         insn.opcode = e_ee_opcode::OP_J;
         insn.flow = e_ee_flow::FLOW_JUMP;
-        insn.jump_target = (pc & 0xf0000000u) | ((word & 0x03ffffffu) << 2);
+        insn.jump_target = ((pc + 4u) & 0xf0000000u) | ((word & 0x03ffffffu) << 2);
         insn.has_delay_slot = true;
         insn.valid = e_ee_valid::VALID;
         set_mnemonic(insn, "j");
@@ -279,7 +280,7 @@ s_ee_instruction decode(uint32_t pc, uint32_t word)
         insn.type = e_ee_op_type::OP_TYPE_JTYPE;
         insn.opcode = e_ee_opcode::OP_JAL;
         insn.flow = e_ee_flow::FLOW_CALL;
-        insn.jump_target = (pc & 0xf0000000u) | ((word & 0x03ffffffu) << 2);
+        insn.jump_target = ((pc + 4u) & 0xf0000000u) | ((word & 0x03ffffffu) << 2);
         insn.has_delay_slot = true;
         insn.valid = e_ee_valid::VALID;
         set_mnemonic(insn, "jal");
