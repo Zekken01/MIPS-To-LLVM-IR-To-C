@@ -17,7 +17,7 @@ uint32_t make_cop1_s(uint8_t ft, uint8_t fs, uint8_t cc, uint8_t funct)
            (0x10u << 21) |
            (static_cast<uint32_t>(ft) << 16) |
            (static_cast<uint32_t>(fs) << 11) |
-           (static_cast<uint32_t>(cc) << 8) |
+           (static_cast<uint32_t>(cc) << 6) |
            funct;
 }
 }
@@ -36,6 +36,7 @@ int main(int argc, char** argv)
     else if (std::strcmp(mode, "c_eq") == 0) funct = 0x32;
     else if (std::strcmp(mode, "c_lt") == 0) funct = 0x34;
     else if (std::strcmp(mode, "c_le") == 0) funct = 0x36;
+    else if (std::strcmp(mode, "cvt_w") == 0) funct = 0x24;
     else
     {
         std::fprintf(stderr, "unknown COP1 comparison mode: %s\n", mode);
