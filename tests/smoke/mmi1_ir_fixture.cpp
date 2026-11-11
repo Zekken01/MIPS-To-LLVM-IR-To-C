@@ -67,6 +67,9 @@ int main(int argc, char** argv)
         make_mmi(4, 5, 22, 18, 0x28), // PEXTUW $s6, $a0, $a1
         make_regimm(25, 0x18, 0),    // MTSAB $t9, 0
         make_mmi(4, 5, 23, 27, 0x28), // QFSRV $s7, $a0, $a1
+        0x00000000u,                 // NOP: satisfy the SA read hazard window
+        0x00000000u,
+        0x00000000u,
         make_regimm(26, 0x19, 0),    // MTSAH $k0, 0
         make_mmi(4, 5, 24, 27, 0x28), // QFSRV $t8, $a0, $a1
         make_mmi(4, 5, 4,  2, 0x28)  // PCEQW  $a0, $a0, $a1 (rd aliases rs)
