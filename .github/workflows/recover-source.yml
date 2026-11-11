@@ -227,7 +227,7 @@ jobs:
           retention-days: 14
 
       - name: Commit verified source tree to a separate branch
-        if: success() && steps.recover.outputs.source_ready == 'true'
+        if: always() && steps.recover.outputs.source_ready == 'true'
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
