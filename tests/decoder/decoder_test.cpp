@@ -50,7 +50,7 @@ int main()
     expect("paddub", R(0x1c,4,5,6,0x18,0x28), "paddub", V);
     expect("psubub", R(0x1c,4,5,6,0x19,0x28), "psubub", V);
     expect("pabsw rs",R(0x1c,4,5,6,0x01,0x28), "pabsw", U);
-    expect("mmi1 unsupported", R(0x1c,4,5,6,0x1b,0x28), "qfsrv", U);
+    expect("mmi1 reserved", R(0x1c,4,5,6,0x00,0x28), "reserved", X);
     expect("madd",    R(0x1c,4,5,6,0,0x00),    "madd",   V);
     expect("maddu",   R(0x1c,4,5,6,0,0x01),    "maddu",  V);
     expect("madd1",   R(0x1c,4,5,6,0,0x20),    "madd1",  V);
