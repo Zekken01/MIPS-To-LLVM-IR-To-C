@@ -196,9 +196,16 @@ void function_analyzer::split_into_blocks(
                 {
                     if (ins.flow == e_ee_flow::FLOW_EXCEPTION)
                     {
-                        // Exception entry terminates the guest basic block;
-                        // the runtime exception dispatcher chooses the vector.
+                        // The exception handler chooses the vector and the
+                        // current translated block exits to the host. It may
+                        // later resume at EPC+4, so retain that PC as a
+                        // separately dispatchable continuation block.
                         bb.is_terminator = true;
+                        if (!is_foreign_entry(bb.fallthrough_pc))
+                        {
+                            bb.successors.insert(bb.fallthrough_pc);
+                            worklist.push_back(bb.fallthrough_pc);
+                        }
                     }
                     else if (ins.flow == e_ee_flow::FLOW_CALL)
                     {
