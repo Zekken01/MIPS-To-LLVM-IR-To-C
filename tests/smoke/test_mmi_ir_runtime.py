@@ -92,7 +92,7 @@ def run_opt_level(fixture_exe, temp_dir, opt_level, target_machine):
     prefix = f"O{opt_level}: "
     require(result == 3, prefix + f"unexpected exit result: {result}")
     require(state.exit_reason == 3, prefix + f"unexpected exit reason: {state.exit_reason}")
-    require(state.pc == 0x0010008C, prefix + f"unexpected dispatcher PC: 0x{state.pc:08x}")
+    require(state.pc == 0x001000A4, prefix + f"unexpected dispatcher PC: 0x{state.pc:08x}")
     require(state.gpr[4].lo == 0x1234, prefix + f"ADDIU writeback lost: 0x{state.gpr[4].lo:x}")
     require(state.gpr[4].hi == 0x4444444444444444, prefix + "ADDIU clobbered upper GPR half")
     require(state.gpr[14].lo == 0x5678,
@@ -114,12 +114,23 @@ def run_opt_level(fixture_exe, temp_dir, opt_level, target_machine):
             prefix + f"MADD1/MADDU1 HI1 accumulator wrong: 0x{state.gpr[25].lo:x}")
     require(state.gpr[26].lo == 0xFFFFFFFFFFFFFFF7,
             prefix + f"MADD1/MADDU1 LO1 accumulator wrong: 0x{state.gpr[26].lo:x}")
-    require(state.hi1 == 0x1234, prefix + f"MTHI1 did not read current rs: 0x{state.hi1:x}")
     require(state.gpr[5].lo == 0x1234, prefix + f"MFHI1 result missing: 0x{state.gpr[5].lo:x}")
     require(state.gpr[5].hi == 0x5555555555555555, prefix + "MFHI1 clobbered upper GPR half")
-    require(state.lo1 == 0x1234, prefix + f"MTLO1 did not read pending MFHI1 result: 0x{state.lo1:x}")
     require(state.gpr[6].lo == 0x1234, prefix + f"MFLO1 result missing: 0x{state.gpr[6].lo:x}")
     require(state.gpr[6].hi == 0x6666666666666666, prefix + "MFLO1 clobbered upper GPR half")
+    require(state.gpr[1].lo == 0xFFFFFFFFFFFFFFFA,
+            prefix + f"MULT1 rd result wrong: 0x{state.gpr[1].lo:x}")
+    require(state.gpr[2].lo == 0xFFFFFFFFFFFFFFFF,
+            prefix + f"MULT1 HI1 result wrong: 0x{state.gpr[2].lo:x}")
+    require(state.gpr[3].lo == 0xFFFFFFFFFFFFFFFA,
+            prefix + f"MULT1 LO1 result wrong: 0x{state.gpr[3].lo:x}")
+    require(state.hi1 == 2, prefix + f"MULTU1 HI1 result wrong: 0x{state.hi1:x}")
+    require(state.lo1 == 0xFFFFFFFFFFFFFFFA,
+            prefix + f"MULTU1 LO1 result wrong: 0x{state.lo1:x}")
+    require(state.gpr[27].lo == 2,
+            prefix + f"MFHI1 after MULTU1 wrong: 0x{state.gpr[27].lo:x}")
+    require(state.gpr[28].lo == 0xFFFFFFFFFFFFFFFA,
+            prefix + f"MFLO1 after MULTU1 wrong: 0x{state.gpr[28].lo:x}")
 
     a_lo, a_hi = source_a_lo, source_a_hi
     b_lo, b_hi = source_b_lo, source_b_hi
@@ -196,7 +207,7 @@ def main():
             engines.append(result[0])
             modules.append(result[1])
 
-    print("mmi_ir_runtime: PASS (O0-O3; CFG writeback; HI1/LO1; MADD/MADDU on both pipelines; aliasing; upper-GPR preservation; MMI logical and packed arithmetic lanes)")
+    print("mmi_ir_runtime: PASS (O0-O3; CFG writeback; HI1/LO1; MADD/MADDU and MULT1/MULTU1; aliasing; upper-GPR preservation; MMI logical and packed arithmetic lanes)")
 
 
 if __name__ == "__main__":
