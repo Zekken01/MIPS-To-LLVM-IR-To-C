@@ -2158,6 +2158,75 @@ void module_builder::emit_mmi_insn(const ee::s_ee_instruction& ins)
     const uint8_t sa = ins.sa & 31;
 
     // Top-level MMI (not class)
+    if (fn == 0x1a || fn == 0x1b)
+    {
+        // DIV1/DIVU1 write quotient to LO1 and remainder to HI1. The ISA
+        // leaves divide-by-zero undefined; choose deterministic zero results.
+        // DIV1 additionally defines INT_MIN / -1 without trapping.
+        const bool is_unsigned = fn == 0x1b;
+        std::string lhs32 = newtemp();
+        std::string rhs32 = newtemp();
+        std::string is_zero = newtemp();
+        std::string safe_rhs = newtemp();
+        std::string quotient = newtemp();
+        std::string remainder = newtemp();
+        std::string quotient64 = newtemp();
+        std::string remainder64 = newtemp();
+        std::string hi_ptr = state_field(3);
+        std::string lo_ptr = state_field(4);
+
+        m_out += "  " + lhs32 + " = trunc i64 " + a.first + " to i32\n";
+        m_out += "  " + rhs32 + " = trunc i64 " + b.first + " to i32\n";
+        m_out += "  " + is_zero + " = icmp eq i32 " + rhs32 + ", 0\n";
+
+        if (is_unsigned)
+        {
+            m_out += "  " + safe_rhs + " = select i1 " + is_zero +
+                     ", i32 1, i32 " + rhs32 + "\n";
+            std::string raw_q = newtemp();
+            std::string raw_r = newtemp();
+            m_out += "  " + raw_q + " = udiv i32 " + lhs32 + ", " + safe_rhs + "\n";
+            m_out += "  " + raw_r + " = urem i32 " + lhs32 + ", " + safe_rhs + "\n";
+            quotient = newtemp();
+            remainder = newtemp();
+            m_out += "  " + quotient + " = select i1 " + is_zero + ", i32 0, i32 " + raw_q + "\n";
+            m_out += "  " + remainder + " = select i1 " + is_zero + ", i32 0, i32 " + raw_r + "\n";
+        }
+        else
+        {
+            std::string is_min = newtemp();
+            std::string is_neg_one = newtemp();
+            std::string is_overflow = newtemp();
+            std::string invalid_divisor = newtemp();
+            std::string raw_q = newtemp();
+            std::string raw_r = newtemp();
+            std::string overflow_q = newtemp();
+            std::string overflow_r = newtemp();
+
+            m_out += "  " + is_min + " = icmp eq i32 " + lhs32 + ", -2147483648\n";
+            m_out += "  " + is_neg_one + " = icmp eq i32 " + rhs32 + ", -1\n";
+            m_out += "  " + is_overflow + " = and i1 " + is_min + ", " + is_neg_one + "\n";
+            m_out += "  " + invalid_divisor + " = or i1 " + is_zero + ", " + is_overflow + "\n";
+            m_out += "  " + safe_rhs + " = select i1 " + invalid_divisor +
+                     ", i32 1, i32 " + rhs32 + "\n";
+            m_out += "  " + raw_q + " = sdiv i32 " + lhs32 + ", " + safe_rhs + "\n";
+            m_out += "  " + raw_r + " = srem i32 " + lhs32 + ", " + safe_rhs + "\n";
+            m_out += "  " + overflow_q + " = select i1 " + is_overflow +
+                     ", i32 -2147483648, i32 " + raw_q + "\n";
+            m_out += "  " + overflow_r + " = select i1 " + is_overflow +
+                     ", i32 0, i32 " + raw_r + "\n";
+            quotient = newtemp();
+            remainder = newtemp();
+            m_out += "  " + quotient + " = select i1 " + is_zero + ", i32 0, i32 " + overflow_q + "\n";
+            m_out += "  " + remainder + " = select i1 " + is_zero + ", i32 0, i32 " + overflow_r + "\n";
+        }
+
+        m_out += "  " + quotient64 + " = sext i32 " + quotient + " to i64\n";
+        m_out += "  " + remainder64 + " = sext i32 " + remainder + " to i64\n";
+        m_out += "  store i64 " + remainder64 + ", ptr " + hi_ptr + "\n";
+        m_out += "  store i64 " + quotient64 + ", ptr " + lo_ptr + "\n";
+        return;
+    }
     if (fn == 0x18 || fn == 0x19)
     {
         // MULT1/MULTU1 write the 64-bit product to the upper HI1:LO1
