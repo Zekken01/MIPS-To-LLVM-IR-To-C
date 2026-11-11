@@ -320,7 +320,7 @@ def main():
         (0x3FC00000, 0x40100000, 0x40700000,
          fpu_normal_flags, fpu_normal_flags & ~0xC000, "normal addition"),
         (0x7F7FFFFF, 0x7F7FFFFF, 0x7F7FFFFF,
-         0xA592745E, 0xA592F46E, "positive overflow and early return"),
+         0xA592744E, 0xA592F45E, "positive overflow and early return"),
         (0x00000001, 0x80000001, 0x00000000,
          fpu_normal_flags, fpu_normal_flags & ~0xC000, "denormal operands flush to signed zero"),
     ]
@@ -336,7 +336,7 @@ def main():
         (0x80800000, 0x3F000000, 0x80000000,
          0xA592B456, 0xA592745E, "negative subnormal result flushes and sets U|SU"),
         (0x7F7FFFFF, 0x40000000, 0x7F7FFFFF,
-         0xA592745E, 0xA592F46E, "multiplication overflow clamps to FMAX"),
+         0xA592744E, 0xA592F45E, "multiplication overflow clamps to FMAX"),
     ]
     div_cases = [
         (0x40400000, 0x40000000, 0x3FC00000,
