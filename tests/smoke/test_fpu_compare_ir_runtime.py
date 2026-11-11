@@ -171,22 +171,22 @@ def main():
     # the PCSX2 EE interpreter's CVT_W implementation.
     cvt_cases = [
         (0x40700000, 0x00000003, "positive fraction truncates"),
-        (0xC0700000, 0xFFFFFFFFFFFFFFFD, "negative fraction truncates toward zero"),
+        (0xC0700000, 0x00000000FFFFFFFD, "negative fraction truncates toward zero"),
         (0x3F000000, 0x00000000, "positive half"),
         (0xBF000000, 0x00000000, "negative half"),
         (0x00000000, 0x00000000, "positive zero"),
         (0x80000000, 0x00000000, "negative zero"),
         (0x00000001, 0x00000000, "positive denormal"),
         (0x80000001, 0x00000000, "negative denormal"),
-        (0x4EFFFFFF, 0x000000007F7FFF80, "largest value below 2^31"),
-        (0xCEFFFFFF, 0xFFFFFFFF80000080, "negative value just above -2^31"),
+        (0x4EFFFFFF, 0x000000007FFFFF80, "largest value below 2^31"),
+        (0xCEFFFFFF, 0x0000000080000080, "negative value just above -2^31"),
         (0x4F000000, 0x000000007FFFFFFF, "positive 2^31 saturates"),
-        (0xCF000000, 0xFFFFFFFF80000000, "negative 2^31 clamps"),
-        (0xCF000001, 0xFFFFFFFF80000000, "negative overflow saturates"),
+        (0xCF000000, 0x0000000080000000, "negative 2^31 clamps"),
+        (0xCF000001, 0x0000000080000000, "negative overflow saturates"),
         (0x7F800000, 0x000000007FFFFFFF, "positive infinity saturates"),
-        (0xFF800000, 0xFFFFFFFF80000000, "negative infinity saturates"),
+        (0xFF800000, 0x0000000080000000, "negative infinity saturates"),
         (0x7FC00000, 0x000000007FFFFFFF, "positive quiet NaN saturates"),
-        (0xFFC00000, 0xFFFFFFFF80000000, "negative quiet NaN saturates"),
+        (0xFFC00000, 0x0000000080000000, "negative quiet NaN saturates"),
     ]
 
     with tempfile.TemporaryDirectory(prefix="ee-fpu-compare-") as directory:
