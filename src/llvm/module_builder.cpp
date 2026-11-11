@@ -1608,11 +1608,10 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
             auto load_ee_acc_f32 = [&]() -> std::string {
                 const std::string p = newtemp();
                 const std::string raw = newtemp();
-                const std::string bits = newtemp();
                 const std::string value = newtemp();
                 m_out += "  " + p + " = " + fpu_acc_ptr() + "\n";
                 m_out += "  " + raw + " = load i32, ptr " + p + "\n";
-                m_out += "  " + bits + " = " + normalise_ee_f32_bits(raw) + "\n";
+                const std::string bits = normalise_ee_f32_bits(raw);
                 m_out += "  " + value + " = bitcast i32 " + bits + " to float\n";
                 return value;
             };
@@ -1906,13 +1905,12 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
                 const std::string fb = load_ee_fpr_f32(ft);
                 const std::string prod = newtemp();
                 const std::string prod_raw = newtemp();
-                const std::string prod_bits = newtemp();
                 const std::string prod_value = newtemp();
                 const std::string acc = load_ee_acc_f32();
                 const std::string fr = newtemp();
                 m_out += "  " + prod + " = fmul float " + fa + ", " + fb + "\n";
                 m_out += "  " + prod_raw + " = bitcast float " + prod + " to i32\n";
-                m_out += "  " + prod_bits + " = " + normalise_ee_f32_bits(prod_raw) + "\n";
+                const std::string prod_bits = normalise_ee_f32_bits(prod_raw);
                 m_out += "  " + prod_value + " = bitcast i32 " + prod_bits + " to float\n";
                 const char* op = (fp_funct == 0x1d) ? "fsub" : "fadd";
                 m_out += "  " + fr + " = " + std::string(op) + " float " + acc + ", " + prod_value + "\n";
