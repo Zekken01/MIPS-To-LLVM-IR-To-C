@@ -45,6 +45,7 @@ int main(int argc, char** argv)
     uint32_t delay_word = 0;
     uint32_t continuation_word = 0;
     bool has_continuation = false;
+    bool is_recursive = false;
     const char* function_name = nullptr;
 
     if (mode == "jr")
@@ -85,6 +86,15 @@ int main(int argc, char** argv)
         control_word = make_r(8, 0, 16, 0, 0x09);
         delay_word = make_i(0x09, 16, 9, 1);
         function_name = "guest_jalr_rd_delay_test";
+    }
+    else if (mode == "recursive")
+    {
+        // One recursive activation: the initial BEQ enters the call block;
+        // the recursive activation increments $v0 and takes the base return.
+        control_word = make_i(0x04, 2, 0, 4); // beq $v0,$zero, entry+0x14
+        delay_word = make_i(0x09, 2, 2, 1);   // addiu $v0,$v0,1
+        is_recursive = true;
+        function_name = "guest_recursive_call_test";
     }
     else if (mode == "caller_resume")
     {
@@ -183,16 +193,59 @@ int main(int argc, char** argv)
         }
         insn_map.emplace(continuation.pc, continuation);
     }
+    if (is_recursive)
+    {
+        const uint32_t recursive_pcs[] =
+        {
+            entry_pc + 8u, entry_pc + 12u, entry_pc + 20u,
+            entry_pc + 24u, entry_pc + 28u, entry_pc + 32u,
+            entry_pc + 36u
+        };
+        const uint32_t recursive_words[] =
+        {
+            make_r(31, 0, 0, 0, 0x08),                         // jr $ra
+            make_i(0x09, 0, 8, 0x77),                          // delay: addiu $t0,$zero,0x77
+            make_r(31, 0, 26, 0, 0x21),                        // addu $k0,$ra,$zero
+            (0x03u << 26) | ((entry_pc >> 2) & 0x03ffffffu),   // jal entry_pc
+            make_i(0x09, 0, 9, 0x11),                          // delay: addiu $t1,$zero,0x11
+            make_r(26, 0, 0, 0, 0x08),                         // jr $k0
+            make_i(0x09, 0, 10, 0x22)                          // delay: addiu $t2,$zero,0x22
+        };
+        for (size_t i = 0; i < sizeof(recursive_pcs) / sizeof(recursive_pcs[0]); ++i)
+        {
+            const ee::s_ee_instruction extra = ee::decode(recursive_pcs[i], recursive_words[i]);
+            if (extra.valid != ee::e_ee_valid::VALID)
+            {
+                std::fprintf(stderr, "%s recursive instruction at 0x%08x failed to decode: %s\n",
+                             mode.c_str(), recursive_pcs[i], extra.mnemonic);
+                return 6;
+            }
+            insn_map.emplace(extra.pc, extra);
+        }
+    }
 
     ee::function_analyzer analyzer;
     const auto functions = analyzer.analyze(insn_map, {function_entry_pc});
-    const size_t expected_blocks = has_continuation ? 2u : 1u;
-    if (functions.size() != 1 || functions[0].blocks.size() != expected_blocks ||
-        functions[0].blocks.empty() ||
-        functions[0].blocks[0].insn_indices.size() != 2 ||
-        (has_continuation &&
-         (functions[0].blocks[1].start_pc != function_entry_pc + 8u ||
-          functions[0].blocks[1].insn_indices.size() != 1)))
+    const size_t expected_blocks = is_recursive ? 4u : has_continuation ? 2u : 1u;
+    bool block_layout_valid =
+        !functions.empty() && functions[0].blocks.size() == expected_blocks &&
+        !functions[0].blocks.empty() &&
+        functions[0].blocks[0].insn_indices.size() == 2;
+    if (block_layout_valid && has_continuation)
+    {
+        block_layout_valid =
+            functions[0].blocks[1].start_pc == function_entry_pc + 8u &&
+            functions[0].blocks[1].insn_indices.size() == 1;
+    }
+    if (block_layout_valid && is_recursive)
+    {
+        const auto& blocks = functions[0].blocks;
+        block_layout_valid =
+            blocks[1].start_pc == entry_pc + 8u && blocks[1].insn_indices.size() == 2 &&
+            blocks[2].start_pc == entry_pc + 20u && blocks[2].insn_indices.size() == 3 &&
+            blocks[3].start_pc == entry_pc + 32u && blocks[3].insn_indices.size() == 2;
+    }
+    if (functions.size() != 1 || !block_layout_valid)
     {
         std::fprintf(stderr, "%s fixture CFG did not retain expected delay/continuation blocks\n",
                      mode.c_str());
