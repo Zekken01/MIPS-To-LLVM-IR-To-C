@@ -1554,6 +1554,11 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
                 m_out += "  " + p + " = " + fpu_acc_ptr() + "\n";
                 m_out += "  store i32 " + bits + ", ptr " + p + "\n";
             };
+            auto store_acc_i32 = [&](const std::string& bits) {
+                const std::string p = newtemp();
+                m_out += "  " + p + " = " + fpu_acc_ptr() + "\n";
+                m_out += "  store i32 " + bits + ", ptr " + p + "\n";
+            };
             auto set_fcc = [&](const std::string& cmp_i1) {
                 std::string p = newtemp();
                 std::string fcsr = newtemp();
@@ -1597,6 +1602,17 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
                 const std::string raw = load_fpr_i32(freg);
                 const std::string bits = normalise_ee_f32_bits(raw);
                 const std::string value = newtemp();
+                m_out += "  " + value + " = bitcast i32 " + bits + " to float\n";
+                return value;
+            };
+            auto load_ee_acc_f32 = [&]() -> std::string {
+                const std::string p = newtemp();
+                const std::string raw = newtemp();
+                const std::string bits = newtemp();
+                const std::string value = newtemp();
+                m_out += "  " + p + " = " + fpu_acc_ptr() + "\n";
+                m_out += "  " + raw + " = load i32, ptr " + p + "\n";
+                m_out += "  " + bits + " = " + normalise_ee_f32_bits(raw) + "\n";
                 m_out += "  " + value + " = bitcast i32 " + bits + " to float\n";
                 return value;
             };
@@ -1872,57 +1888,51 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
             }
             else if (fmt == 0x10 && (fp_funct == 0x18 || fp_funct == 0x19 || fp_funct == 0x1a))
             {
-                // ADDA.S / SUBA.S / MULA.S → ACC
+                // ADDA.S / SUBA.S / MULA.S normalise both source FPRs,
+                // update ACC, then apply the standard O|SO and U|SU checks.
                 const char* op = (fp_funct == 0x19) ? "fsub" : (fp_funct == 0x1a) ? "fmul" : "fadd";
-                std::string fa = load_fpr_f32(fs);
-                std::string fb = load_fpr_f32(ft);
-                std::string fr = newtemp();
+                const std::string fa = load_ee_fpr_f32(fs);
+                const std::string fb = load_ee_fpr_f32(ft);
+                const std::string fr = newtemp();
                 m_out += "  " + fr + " = " + std::string(op) + " float " + fa + ", " + fb + "\n";
-                store_acc_f32(fr);
+                const std::string result = clamp_ee_f32_result(fr, true);
+                store_acc_i32(result);
             }
-            else if (fmt == 0x10 && fp_funct == 0x1c) // MADD.S  fd = ACC + fs*ft
+            else if (fmt == 0x10 && (fp_funct == 0x1c || fp_funct == 0x1d))
             {
-                std::string fa = load_fpr_f32(fs);
-                std::string fb = load_fpr_f32(ft);
-                std::string prod = newtemp();
-                std::string acc = load_acc_f32();
-                std::string fr = newtemp();
+                // MADD.S / MSUB.S: round the product to f32, then apply
+                // fpuDouble to both the rounded product and the accumulator.
+                const std::string fa = load_ee_fpr_f32(fs);
+                const std::string fb = load_ee_fpr_f32(ft);
+                const std::string prod = newtemp();
+                const std::string prod_raw = newtemp();
+                const std::string prod_bits = newtemp();
+                const std::string prod_value = newtemp();
+                const std::string acc = load_ee_acc_f32();
+                const std::string fr = newtemp();
                 m_out += "  " + prod + " = fmul float " + fa + ", " + fb + "\n";
-                m_out += "  " + fr + " = fadd float " + acc + ", " + prod + "\n";
-                store_fpr_f32(fd, fr);
+                m_out += "  " + prod_raw + " = bitcast float " + prod + " to i32\n";
+                m_out += "  " + prod_bits + " = " + normalise_ee_f32_bits(prod_raw) + "\n";
+                m_out += "  " + prod_value + " = bitcast i32 " + prod_bits + " to float\n";
+                const char* op = (fp_funct == 0x1d) ? "fsub" : "fadd";
+                m_out += "  " + fr + " = " + std::string(op) + " float " + acc + ", " + prod_value + "\n";
+                const std::string result = clamp_ee_f32_result(fr, true);
+                store_fpr_i32(fd, result);
             }
-            else if (fmt == 0x10 && fp_funct == 0x1d) // MSUB.S  fd = ACC - fs*ft
+            else if (fmt == 0x10 && (fp_funct == 0x1e || fp_funct == 0x1f))
             {
-                std::string fa = load_fpr_f32(fs);
-                std::string fb = load_fpr_f32(ft);
-                std::string prod = newtemp();
-                std::string acc = load_acc_f32();
-                std::string fr = newtemp();
+                // MADDA.S / MSUBA.S retain the raw accumulator and rounded
+                // product; only the source FPR operands use fpuDouble.
+                const std::string fa = load_ee_fpr_f32(fs);
+                const std::string fb = load_ee_fpr_f32(ft);
+                const std::string prod = newtemp();
+                const std::string acc = load_acc_f32();
+                const std::string fr = newtemp();
                 m_out += "  " + prod + " = fmul float " + fa + ", " + fb + "\n";
-                m_out += "  " + fr + " = fsub float " + acc + ", " + prod + "\n";
-                store_fpr_f32(fd, fr);
-            }
-            else if (fmt == 0x10 && fp_funct == 0x1e) // MADDA.S  ACC = ACC + fs*ft
-            {
-                std::string fa = load_fpr_f32(fs);
-                std::string fb = load_fpr_f32(ft);
-                std::string prod = newtemp();
-                std::string acc = load_acc_f32();
-                std::string fr = newtemp();
-                m_out += "  " + prod + " = fmul float " + fa + ", " + fb + "\n";
-                m_out += "  " + fr + " = fadd float " + acc + ", " + prod + "\n";
-                store_acc_f32(fr);
-            }
-            else if (fmt == 0x10 && fp_funct == 0x1f) // MSUBA.S  ACC = ACC - fs*ft
-            {
-                std::string fa = load_fpr_f32(fs);
-                std::string fb = load_fpr_f32(ft);
-                std::string prod = newtemp();
-                std::string acc = load_acc_f32();
-                std::string fr = newtemp();
-                m_out += "  " + prod + " = fmul float " + fa + ", " + fb + "\n";
-                m_out += "  " + fr + " = fsub float " + acc + ", " + prod + "\n";
-                store_acc_f32(fr);
+                const char* op = (fp_funct == 0x1f) ? "fsub" : "fadd";
+                m_out += "  " + fr + " = " + std::string(op) + " float " + acc + ", " + prod + "\n";
+                const std::string result = clamp_ee_f32_result(fr, true);
+                store_acc_i32(result);
             }
             else if (fmt == 0x10 && (fp_funct == 0x28 || fp_funct == 0x29)) // MAX/MIN
             {
