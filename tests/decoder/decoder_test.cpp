@@ -36,8 +36,21 @@ int main()
     expect("paddsw",  R(0x1c,4,5,6,0x10,0x08), "paddsw", U);   // saturating: was plain add
     expect("pextlw",  R(0x1c,4,5,6,0x12,0x08), "pextlw", U);   // was lowered as OR
     expect("pcpyld",  R(0x1c,4,5,6,0x0e,0x09), "pcpyld", U);   // was lowered as AND
-    expect("padduw",  R(0x1c,0,0,0,0x10,0x28), "padduw", U);   // the game's entry-point word 0x70000c28
-    expect("pminw",   R(0x1c,4,5,6,0x03,0x28), "pminw",  U);
+    expect("pabsw",  R(0x1c,0,5,6,0x01,0x28), "pabsw",  V);
+    expect("pceqw",  R(0x1c,4,5,6,0x02,0x28), "pceqw",  V);
+    expect("pminw",  R(0x1c,4,5,6,0x03,0x28), "pminw",  V);
+    expect("pabsh",  R(0x1c,0,5,6,0x05,0x28), "pabsh",  V);
+    expect("pceqh",  R(0x1c,4,5,6,0x06,0x28), "pceqh",  V);
+    expect("pminh",  R(0x1c,4,5,6,0x07,0x28), "pminh",  V);
+    expect("pceqb",  R(0x1c,4,5,6,0x0a,0x28), "pceqb",  V);
+    expect("padduw", R(0x1c,4,5,6,0x10,0x28), "padduw", V);
+    expect("psubuw", R(0x1c,4,5,6,0x11,0x28), "psubuw", V);
+    expect("padduh", R(0x1c,4,5,6,0x14,0x28), "padduh", V);
+    expect("psubuh", R(0x1c,4,5,6,0x15,0x28), "psubuh", V);
+    expect("paddub", R(0x1c,4,5,6,0x18,0x28), "paddub", V);
+    expect("psubub", R(0x1c,4,5,6,0x19,0x28), "psubub", V);
+    expect("pabsw rs",R(0x1c,4,5,6,0x01,0x28), "pabsw", U);
+    expect("mmi1 unsupported", R(0x1c,4,5,6,0x1b,0x28), "qfsrv", U);
     expect("madd",    R(0x1c,4,5,6,0,0x00),    "madd",   V);
     expect("maddu",   R(0x1c,4,5,6,0,0x01),    "maddu",  V);
     expect("madd1",   R(0x1c,4,5,6,0,0x20),    "madd1",  V);
@@ -52,6 +65,19 @@ int main()
         const auto multu1 = decode(0x100000, R(0x1c,4,5,6,0,0x19));
         const auto div1 = decode(0x100000, R(0x1c,4,5,6,0,0x1a));
         const auto divu1 = decode(0x100000, R(0x1c,4,5,6,0,0x1b));
+        const auto pabsw = decode(0x100000, R(0x1c,0,5,6,1,0x28));
+        const auto pceqw = decode(0x100000, R(0x1c,4,5,6,2,0x28));
+        const auto pminw = decode(0x100000, R(0x1c,4,5,6,3,0x28));
+        const auto pabsh = decode(0x100000, R(0x1c,0,5,6,5,0x28));
+        const auto pceqh = decode(0x100000, R(0x1c,4,5,6,6,0x28));
+        const auto pminh = decode(0x100000, R(0x1c,4,5,6,7,0x28));
+        const auto pceqb = decode(0x100000, R(0x1c,4,5,6,10,0x28));
+        const auto padduw = decode(0x100000, R(0x1c,4,5,6,16,0x28));
+        const auto psubuw = decode(0x100000, R(0x1c,4,5,6,17,0x28));
+        const auto padduh = decode(0x100000, R(0x1c,4,5,6,20,0x28));
+        const auto psubuh = decode(0x100000, R(0x1c,4,5,6,21,0x28));
+        const auto paddub = decode(0x100000, R(0x1c,4,5,6,24,0x28));
+        const auto psubub = decode(0x100000, R(0x1c,4,5,6,25,0x28));
         const bool ok = lift(madd).kind == LOP_MADD &&
                         lift(maddu).kind == LOP_MADDU &&
                         lift(madd1).kind == LOP_MADD1 &&
@@ -59,9 +85,22 @@ int main()
                         lift(mult1).kind == LOP_MULT1 &&
                         lift(multu1).kind == LOP_MULTU1 &&
                         lift(div1).kind == LOP_DIV1 &&
-                        lift(divu1).kind == LOP_DIVU1;
+                        lift(divu1).kind == LOP_DIVU1 &&
+                        lift(pabsw).kind == LOP_MMI_ABS_W &&
+                        lift(pceqw).kind == LOP_MMI_CEQ_W &&
+                        lift(pminw).kind == LOP_MMI_MINS_W &&
+                        lift(pabsh).kind == LOP_MMI_ABS_H &&
+                        lift(pceqh).kind == LOP_MMI_CEQ_H &&
+                        lift(pminh).kind == LOP_MMI_MINS_H &&
+                        lift(pceqb).kind == LOP_MMI_CEQ_B &&
+                        lift(padduw).kind == LOP_MMI_ADDU_SAT_W &&
+                        lift(psubuw).kind == LOP_MMI_SUBU_SAT_W &&
+                        lift(padduh).kind == LOP_MMI_ADDU_SAT_H &&
+                        lift(psubuh).kind == LOP_MMI_SUBU_SAT_H &&
+                        lift(paddub).kind == LOP_MMI_ADDU_SAT_B &&
+                        lift(psubub).kind == LOP_MMI_SUBU_SAT_B;
         ok ? ++g_pass : ++g_fail;
-        if (!ok) std::printf("FAIL MADD/MADDU/MULT1/DIV1 pipeline lift mapping\n");
+        if (!ok) std::printf("FAIL MADD/MADDU/MULT1/DIV1/MMI1 pipeline lift mapping\n");
     }
     expect("mult1",   R(0x1c,4,5,6,0,0x18),    "mult1",  V);
     expect("multu1",  R(0x1c,4,5,6,0,0x19),    "multu1", V);
