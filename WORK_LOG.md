@@ -61,3 +61,14 @@ Further changes should be committed to this branch in small, testable increments
 - Added the three-instruction SA read-hazard gap before the second SA-setting instruction in the runtime fixture.
 - Extended decoder/lifter assertions and the LLVM JIT fixture to exercise all 18 non-reserved MMI1 sub-ops, plus MTSAB/MTSAH, at O0–O3 and multiple SA values.
 - The source and test changes are committed on this branch. CI runs for the latest commits are currently queued; no final result is recorded yet.
+
+## 2026-11-11 — Host dispatcher and cross-function control-flow validation
+
+- Added end-to-end LLVM JIT coverage for dynamic `JALR` across separately translated caller and callee functions. The test checks that the target register is sampled before the delay slot overwrites it, `rd` receives the PC+8 link, the callee returns, and the caller resumes at its PC+8 continuation.
+- Added `ee_dispatch_run()` as a bounded host dispatcher over `s_recompiled_elf::functions` plus a parallel array of native entry points.
+- The dispatcher resolves the current guest PC to its owning translated function. Both `EE_EXIT_RETURN` and `EE_EXIT_DISPATCH` re-enter translated code when the next PC belongs to a registered block; an unmapped PC is returned to the outer host with its original exit reason.
+- Added explicit invalid-table checks and a maximum-dispatch budget so a malformed guest loop cannot monopolise the host indefinitely.
+- Added six native dispatcher tests: direct caller/callee/return continuation, dynamic JALR/callee/caller continuation, return to external code, unknown initial PC, dispatch-budget exhaustion, and metadata/native-entry array mismatch.
+- Moved `find_recompiled_function()` into the core library so dispatcher clients and tests share the same implementation without linking the full ELF recompiler into the decoder test.
+- GitHub Actions run [43109193936](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43109193936): clean configure/build and **9/9 CTest passed**, including the new `dispatcher` test and all LLVM JIT suites.
+- Limitation: the dispatcher is now implemented and independently tested, but the real LLVM object emitter still returns false. The dispatcher therefore has not yet been wired to a complete set of generated native game functions.
