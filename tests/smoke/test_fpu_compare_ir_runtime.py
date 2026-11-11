@@ -217,6 +217,40 @@ def run_sign_operation_cases(fixture, temp_dir, target, mode, source_words):
                          f"expected 0x{expected_fcsr:08x}")
 
 
+def run_arithmetic_cases(fixture, temp_dir, target, mode, cases):
+    guest_fn, engine, module, target_machine = compile_jit(
+        fixture, temp_dir, mode, target
+    )
+    retained = (engine, module, target_machine)
+
+    for (lhs_bits, rhs_bits, expected_bits,
+         initial_fcsr, expected_fcsr, label) in cases:
+        backing, state = aligned_state()
+        _ = (backing, retained)
+        state.fpr[1] = lhs_bits
+        state.fpr[2] = rhs_bits
+        state.fpr[6] = 0xAABBCCDD11223344
+        state.fcsr = initial_fcsr
+
+        result = guest_fn(ctypes.pointer(state), None)
+        prefix = (
+            f"{mode}({label}, 0x{lhs_bits:08x}, 0x{rhs_bits:08x}): "
+        )
+        require(result == 3, prefix + f"expected EE_EXIT_DISPATCH (3), got {result}")
+        require(state.exit_reason == 3,
+                prefix + f"state exit reason was {state.exit_reason}")
+        require(state.pc == ENTRY_PC + 4,
+                prefix + f"wrong sequential PC 0x{state.pc:08x}")
+        require(state.fpr[6] == expected_bits,
+                prefix + f"FPR[6] got 0x{state.fpr[6]:016x}, "
+                         f"expected 0x{expected_bits:08x}")
+        require(state.fpr[1] == lhs_bits and state.fpr[2] == rhs_bits,
+                prefix + "source FPR was modified")
+        require(state.fcsr == expected_fcsr,
+                prefix + f"FCSR got 0x{state.fcsr:08x}, "
+                         f"expected 0x{expected_fcsr:08x}")
+
+
 def main():
     require(
         len(sys.argv) == 2,
@@ -276,6 +310,51 @@ def main():
         (0xFFC00000, 0x0000000080000000, "negative quiet NaN saturates"),
     ]
 
+    # PCSX2 EE reference semantics:
+    # - ADD/SUB/MUL normalise zero/denormal and Inf/NaN operands first.
+    # - Arithmetic overflow clamps to signed FMAX and sets O|SO.
+    # - Arithmetic underflow flushes to signed zero and sets U|SU.
+    # - DIV zero checks the raw divisor exponent and ORs D|SD or I|SI.
+    fpu_normal_flags = 0xA592F45E
+    add_cases = [
+        (0x3FC00000, 0x40100000, 0x40700000,
+         fpu_normal_flags, fpu_normal_flags & ~0xC000, "normal addition"),
+        (0x7F7FFFFF, 0x7F7FFFFF, 0x7F7FFFFF,
+         0xA592745E, 0xA592F45E, "positive overflow and early return"),
+        (0x00000001, 0x80000001, 0x00000000,
+         fpu_normal_flags, fpu_normal_flags & ~0xC000, "denormal operands flush to signed zero"),
+    ]
+    sub_cases = [
+        (0x3FC00000, 0x40100000, 0xBF400000,
+         fpu_normal_flags, fpu_normal_flags & ~0xC000, "normal subtraction"),
+    ]
+    mul_cases = [
+        (0x3FC00000, 0x40000000, 0x40400000,
+         fpu_normal_flags, fpu_normal_flags & ~0xC000, "normal multiplication"),
+        (0x00800000, 0x3F000000, 0x00000000,
+         0xA592B456, 0xA592745E, "positive subnormal result flushes and sets U|SU"),
+        (0x80800000, 0x3F000000, 0x80000000,
+         0xA592B456, 0xA592745E, "negative subnormal result flushes and sets U|SU"),
+        (0x7F7FFFFF, 0x40000000, 0x7F7FFFFF,
+         0xA592745E, 0xA592F45E, "multiplication overflow clamps to FMAX"),
+    ]
+    div_cases = [
+        (0x40400000, 0x40000000, 0x3FC00000,
+         0xA592F45E, 0xA592F45E, "normal division leaves FCSR untouched"),
+        (0x3F800000, 0x00000000, 0x7F7FFFFF,
+         0xA5923456, 0xA5933476, "positive divide by zero sets D|SD"),
+        (0x00000000, 0x00000000, 0x7F7FFFFF,
+         0xA5923456, 0xA5943496, "zero divided by zero sets I|SI"),
+        (0xBF800000, 0x00000000, 0xFF7FFFFF,
+         0xA5923456, 0xA5933476, "negative divide by zero returns negative FMAX"),
+        (0x3F800000, 0x00000001, 0x7F7FFFFF,
+         0xA5923456, 0xA5933476, "denormal divisor counts as zero"),
+        (0x00800000, 0x40000000, 0x00000000,
+         0xA592F45E, 0xA592F45E, "division subnormal result flushes without flags"),
+        (0x7F7FFFFF, 0x00800000, 0x7F7FFFFF,
+         0xA592F45E, 0xA592F45E, "division overflow clamps without flags"),
+    ]
+
     sign_operation_words = [
         (0xBF800000, "negative one"),
         (0x80000000, "negative zero"),
@@ -310,6 +389,10 @@ def main():
             run_cvt_w_case(
                 fixture, temp_dir, target, source_bits, expected_bits, label
             )
+        run_arithmetic_cases(fixture, temp_dir, target, "add_s", add_cases)
+        run_arithmetic_cases(fixture, temp_dir, target, "sub_s", sub_cases)
+        run_arithmetic_cases(fixture, temp_dir, target, "mul_s", mul_cases)
+        run_arithmetic_cases(fixture, temp_dir, target, "div_s", div_cases)
         run_max_min_cases(fixture, temp_dir, target, "max_s", extreme_pairs)
         run_max_min_cases(fixture, temp_dir, target, "min_s", extreme_pairs)
         run_sign_operation_cases(
@@ -321,6 +404,7 @@ def main():
 
     print(
         "fpu_compare_ir_runtime: PASS (C.F/C.EQ/C.LT/C.LE; CVT.W.S; "
+        "ADD.S/SUB.S/MUL.S/DIV.S normalization and FCSR flags; "
         "MAX.S/MIN.S bitwise ordering; ABS.S/NEG.S raw-bit sign operations; "
         "EE NaN/Inf normalisation, integer "
         "saturation, truncation, FCSR cause-bit clearing and sticky-bit "
