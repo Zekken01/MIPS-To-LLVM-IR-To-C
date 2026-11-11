@@ -206,6 +206,13 @@ def main():
     parser.add_argument("output", type=Path, help="output shared library path")
     parser.add_argument("--source-root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--cxx", default=os.environ.get("CXX", "c++"))
+    parser.add_argument(
+        "--dispatcher-opt",
+        type=int,
+        choices=range(0, 4),
+        default=0,
+        help="optimisation level for the generated dispatcher metadata glue (default: 0)",
+    )
     args = parser.parse_args()
 
     source_root = args.source_root.resolve()
@@ -230,6 +237,42 @@ def main():
             build_dispatch_source(metadata, functions), encoding="utf-8"
         )
 
+        include_args = [
+            "-I" + str(source_root / "include"),
+            "-I" + str(source_root / "include/ee"),
+            "-I" + str(source_root / "src/runtime"),
+        ]
+
+        # The generated metadata glue can contain several megabytes of static
+        # initializer code for a full game. Compile it separately at a low
+        # optimisation level; optimising these tables is expensive and does not
+        # improve the generated guest functions (already compiled to objects).
+        dispatch_object = args.output.with_suffix(args.output.suffix + ".dispatch.o")
+        compile_command = [
+            args.cxx,
+            "-std=c++17",
+            f"-O{args.dispatcher_opt}",
+        ]
+        if sys.platform in ("linux", "darwin"):
+            compile_command.append("-fPIC")
+        compile_command += include_args
+        compile_command += ["-c", str(dispatch_source), "-o", str(dispatch_object)]
+
+        print(
+            f"link_native_objects: compiling dispatcher glue at -O{args.dispatcher_opt}",
+            flush=True,
+        )
+        subprocess.run(compile_command, check=True)
+
+        # Use a response file: the complete game emits thousands of per-function
+        # objects and can exceed the operating system's command-line length.
+        response_path = args.output.with_suffix(args.output.suffix + ".objects.rsp")
+        response_path.write_text(
+            "\\n".join('"' + str(path).replace('"', '\\\\"') + '"' for path in objects)
+            + "\\n",
+            encoding="utf-8",
+        )
+
         command = [
             args.cxx,
             "-std=c++17",
@@ -244,23 +287,10 @@ def main():
         else:
             raise ValueError(f"unsupported host platform for shared-library linking: {sys.platform}")
 
-        command += [
-            "-I" + str(source_root / "include"),
-            "-I" + str(source_root / "include/ee"),
-            "-I" + str(source_root / "src/runtime"),
-        ]
-
-        # Use a response file: the complete game emits thousands of per-function
-        # objects and can exceed the operating system's command-line length.
-        response_path = args.output.with_suffix(args.output.suffix + ".objects.rsp")
-        response_path.write_text(
-            "\n".join('"' + str(path).replace('"', '\\"') + '"' for path in objects)
-            + "\n",
-            encoding="utf-8",
-        )
+        command += include_args
         command.append("@" + str(response_path))
         command += [str(path) for path in required_sources]
-        command.append(str(dispatch_source))
+        command.append(str(dispatch_object))
         command += ["-o", str(args.output)]
 
         print(
@@ -281,6 +311,8 @@ def main():
             "library_sha256": hashlib.sha256(linked_data).hexdigest(),
             "dispatcher_entry": "ee_game_run",
             "dispatch_glue": dispatch_source.name,
+            "dispatch_object": dispatch_object.name,
+            "dispatcher_optimization_level": args.dispatcher_opt,
         }
         manifest_path = args.output.with_suffix(args.output.suffix + ".link.json")
         manifest_path.write_text(json.dumps(link_manifest, indent=2) + "\n", encoding="utf-8")
