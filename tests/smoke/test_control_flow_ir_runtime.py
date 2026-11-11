@@ -47,6 +47,7 @@ def require(condition, message):
 
 
 def run_case(fixture_exe, temp_dir, target_machine, mode, function_name, setup, verify):
+    print(f"control-flow case: {mode}", flush=True)
     ir_path = temp_dir / f"{mode}.ll"
     subprocess.run([str(fixture_exe), mode, str(ir_path)], check=True)
 
@@ -160,7 +161,6 @@ def main():
                     "bltzal: ordinary delay slot did not execute/read link")
 
         for taken in (True, False):
-            mode = "bltzal_taken" if taken else "bltzal_not_taken"
             def setup(state, taken=taken):
                 check_link(state, taken)
             def verify(state, taken=taken):
