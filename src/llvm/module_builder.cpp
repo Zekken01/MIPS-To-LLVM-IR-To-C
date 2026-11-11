@@ -1718,7 +1718,6 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
                 const std::string old_flags = newtemp();
                 const std::string flags_to_set = newtemp();
                 const std::string flags_if_divide_zero = newtemp();
-                const std::string final_flags = newtemp();
                 const std::string fcsr = newtemp();
                 m_out += "  " + divide_zero_flags + " = select i1 " + numerator_is_zero +
                          ", i32 131136, i32 65568\n";
