@@ -77,6 +77,19 @@ uint32_t external_return_entry(ee::s_ee_cpu_state* cpu, ee::s_ee_runtime*)
     return static_cast<uint32_t>(ee::e_ee_exit_reason::EE_EXIT_RETURN);
 }
 
+uint32_t zero_initial_pc_entry(ee::s_ee_cpu_state* cpu, ee::s_ee_runtime*)
+{
+    // Generated entry switches treat PC zero as the function's initial entry.
+    if (cpu->m_pc == 0 || cpu->m_pc == 0x00400000u)
+    {
+        cpu->m_gpr[3].m_lo = 0x33u;
+        cpu->m_pc = 0xDEAD0000u;
+        return static_cast<uint32_t>(ee::e_ee_exit_reason::EE_EXIT_DISPATCH);
+    }
+
+    return static_cast<uint32_t>(ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED);
+}
+
 uint32_t dispatch_loop_entry(ee::s_ee_cpu_state* cpu, ee::s_ee_runtime*)
 {
     // Deliberately return to this same translated block forever.
@@ -192,6 +205,30 @@ int main()
               result.dispatch_count == 1u &&
               result.guest_pc == 0xF0000000u,
               "propagate return to external guest address");
+    }
+
+    // PC zero is a supported generated-function entry sentinel and must
+    // resolve to the ELF entry's translated function, not appear unmapped.
+    {
+        ee::s_recompiled_elf compiled{};
+        compiled.entry_point = 0x00400000u;
+        compiled.functions.push_back(
+            make_function("entry", 0x00400000u, {0x00400000u}));
+        const ee::t_ee_translated_entry entries[] = {zero_initial_pc_entry};
+        const ee::s_ee_dispatch_table table{&compiled, entries, 1u};
+
+        ee::s_ee_cpu_state cpu{};
+        cpu.m_pc = 0u;
+        cpu.m_exit_reason = static_cast<uint32_t>(e_ee_exit_reason::EE_EXIT_DISPATCH);
+
+        const ee::s_ee_dispatch_result result =
+            ee::ee_dispatch_run(&cpu, nullptr, table, 4u);
+
+        check(is_exited(result, static_cast<uint32_t>(e_ee_exit_reason::EE_EXIT_DISPATCH)) &&
+              result.dispatch_count == 1u &&
+              result.guest_pc == 0xDEAD0000u &&
+              cpu.m_gpr[3].m_lo == 0x33u,
+              "map zero initial PC to the ELF entry function");
     }
 
     // An unknown initial PC is returned untouched to the outer dispatcher.
