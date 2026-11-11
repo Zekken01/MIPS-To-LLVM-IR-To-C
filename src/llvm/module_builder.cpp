@@ -2672,6 +2672,9 @@ void module_builder::emit_mmi_insn(const ee::s_ee_instruction& ins)
                 return;
             }
             case 0x10: // PADDUW
+                store_vec4i32(emit_unsigned_sat(va4, vb4, "<4 x i32>", "<4 x i64>",
+                                                "<4 x i1>", "i64", 4, 0xFFFFFFFFull, true));
+                return;
             case 0x11: // PSUBUW
                 store_vec4i32(emit_unsigned_sat(va4, vb4, "<4 x i32>", "<4 x i64>",
                                                 "<4 x i1>", "i64", 4, 0xFFFFFFFFull, false));

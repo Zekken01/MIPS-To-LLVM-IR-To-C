@@ -97,6 +97,9 @@ target_link_libraries(ee_div1_ir_fixture PRIVATE ee_core)
 add_executable(ee_mmi1_ir_fixture tests/smoke/mmi1_ir_fixture.cpp)
 target_link_libraries(ee_mmi1_ir_fixture PRIVATE ee_core)
 
+add_executable(ee_mmi_ops_test tests/smoke/mmi_ops_test.cpp)
+target_link_libraries(ee_mmi_ops_test PRIVATE ee_core)
+
 find_package(Python3 COMPONENTS Interpreter QUIET)
 set(EE_HAVE_LLVM_JIT_TEST FALSE)
 if(Python3_Interpreter_FOUND)
@@ -114,6 +117,7 @@ enable_testing()
 add_test(NAME decoder COMMAND ee_decoder_test)
 add_test(NAME multi_function COMMAND ee_multi_test)
 add_test(NAME smoke COMMAND ee_smoke_test)
+add_test(NAME mmi_ops COMMAND ee_mmi_ops_test)
 if(EE_HAVE_LLVM_JIT_TEST)
     add_test(NAME mmi_ir_runtime
         COMMAND ${Python3_EXECUTABLE}

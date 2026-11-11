@@ -104,8 +104,11 @@ void native_codegen::touched_regs(const std::vector<s_lifted_op>& ops,
         case LOP_MULTU:
         case LOP_DIV:
         case LOP_DIVU:
+        case LOP_MTSAB:
+        case LOP_MTSAH:
             if (op.rs != 0) seen[op.rs] = true;
-            if (op.rt != 0) seen[op.rt] = true;
+            if (op.kind != LOP_MTSAB && op.kind != LOP_MTSAH && op.rt != 0)
+                seen[op.rt] = true;
             break;
         case LOP_MFC1:
         case LOP_MTC1:
@@ -240,6 +243,19 @@ void native_codegen::emit_op_body(const s_lifted_op& op)
     case K::LOP_MTHI1:
         out_ += "    g_cpu.m_hi1 = g_cpu.m_gpr[" + std::to_string(op.rs) + "].m_lo;\n";
         break;
+    case K::LOP_MTSAB:
+    case K::LOP_MTSAH:
+    {
+        const bool is_byte = op.kind == K::LOP_MTSAB;
+        const uint32_t lane_mask = is_byte ? 0x0fu : 0x07u;
+        const uint32_t bit_shift = is_byte ? 3u : 4u;
+        out_ += "    g_cpu.m_sa = ((((uint32_t)g_cpu.m_gpr[" +
+                std::to_string(op.rs) + "].m_lo & " +
+                std::to_string(lane_mask) + "u) ^ " +
+                std::to_string(op.uimmediate & lane_mask) + "u) << " +
+                std::to_string(bit_shift) + "u);\n";
+        break;
+    }
     case K::LOP_MFLO1:
         out_ += "    g_cpu.m_gpr[" + std::to_string(op.rd) + "].m_lo = g_cpu.m_lo1;\n";
         break;
@@ -385,13 +401,25 @@ void native_codegen::emit_op_body(const s_lifted_op& op)
     case K::LOP_MMI_MINS_B:
     case K::LOP_MMI_MINS_H:
     case K::LOP_MMI_MINS_W:
+    case K::LOP_MMI_ABS_H:
+    case K::LOP_MMI_ABS_W:
+    case K::LOP_MMI_CEQ_B:
+    case K::LOP_MMI_CEQ_H:
+    case K::LOP_MMI_CEQ_W:
+    case K::LOP_MMI_SUBU_SAT_B:
+    case K::LOP_MMI_SUBU_SAT_H:
+    case K::LOP_MMI_SUBU_SAT_W:
+    case K::LOP_MMI_ADDSUB_H:
+    case K::LOP_MMI_EXTU_B:
+    case K::LOP_MMI_EXTU_H:
+    case K::LOP_MMI_EXTU_W:
     case K::LOP_MMI_QFSRV:
     case K::LOP_MMI_SHUFFLE:
     case K::LOP_MMI_PACK:
     {
         out_ += "    g_cpu.m_gpr[" + std::to_string(op.rd) + "] = mmi_apply((e_lift_op_kind)" +
                 std::to_string((int)op.kind) + ", g_cpu.m_gpr[" + std::to_string(op.rs) + "], " +
-                "g_cpu.m_gpr[" + std::to_string(op.rt) + "], " + std::to_string(op.sa) + ");\n";
+                "g_cpu.m_gpr[" + std::to_string(op.rt) + "], " + (op.kind == K::LOP_MMI_QFSRV ? "g_cpu.m_sa" : std::to_string(op.sa)) + "));\n";
         break;
     }
     default:

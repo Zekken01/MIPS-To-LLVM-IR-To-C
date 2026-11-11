@@ -1,0 +1,147 @@
+#include "mmi_ops.h"
+
+#include <cstdint>
+#include <cstdio>
+#include <initializer_list>
+
+namespace
+{
+int g_fail = 0;
+
+void expect_u128(const char* name, const ee::s_ee_u128& actual,
+                 const ee::s_ee_u128& expected)
+{
+    if (actual.m_lo == expected.m_lo && actual.m_hi == expected.m_hi)
+        return;
+    ++g_fail;
+    std::printf("FAIL %s got=%016llx:%016llx expected=%016llx:%016llx\n",
+                name,
+                (unsigned long long)actual.m_hi,
+                (unsigned long long)actual.m_lo,
+                (unsigned long long)expected.m_hi,
+                (unsigned long long)expected.m_lo);
+}
+uint64_t get_lane(const ee::s_ee_u128& value, unsigned width, unsigned index)
+{
+    const unsigned bit = width * index;
+    const uint64_t word = bit < 64 ? value.m_lo : value.m_hi;
+    const unsigned shift = bit & 63u;
+    return (word >> shift) & ((1ull << width) - 1ull);
+}
+void put_lane(ee::s_ee_u128& value, unsigned width, unsigned index, uint64_t lane)
+{
+    const unsigned bit = width * index;
+    uint64_t& word = bit < 64 ? value.m_lo : value.m_hi;
+    const unsigned shift = bit & 63u;
+    const uint64_t mask = ((1ull << width) - 1ull) << shift;
+    word = (word & ~mask) | ((lane << shift) & mask);
+}
+int64_t signed_lane(uint64_t raw, unsigned width)
+{
+    const uint64_t sign = 1ull << (width - 1);
+    return (raw & sign) ? (int64_t)raw - (1ll << width) : (int64_t)raw;
+}
+enum class e_lane_op { abs_sat, equal, min_signed, add_unsigned_sat, sub_unsigned_sat };
+ee::s_ee_u128 expected_lanes(const ee::s_ee_u128& a,
+                             const ee::s_ee_u128& b,
+                             unsigned width,
+                             e_lane_op operation)
+{
+    ee::s_ee_u128 result{0, 0};
+    const unsigned count = 128 / width;
+    const uint64_t mask = (1ull << width) - 1ull;
+    for (unsigned i = 0; i < count; ++i)
+    {
+        const uint64_t lhs = get_lane(a, width, i);
+        const uint64_t rhs = get_lane(b, width, i);
+        uint64_t value = 0;
+        switch (operation)
+        {
+        case e_lane_op::abs_sat:
+        {
+            const int64_t signed_lhs = signed_lane(lhs, width);
+            const int64_t min_value = -(1ll << (width - 1));
+            const int64_t max_value = (1ll << (width - 1)) - 1;
+            value = signed_lhs == min_value ? (uint64_t)max_value :
+                (uint64_t)(signed_lhs < 0 ? -signed_lhs : signed_lhs);
+            break;
+        }
+        case e_lane_op::equal: value = lhs == rhs ? mask : 0; break;
+        case e_lane_op::min_signed:
+            value = (uint64_t)(signed_lane(lhs, width) < signed_lane(rhs, width)
+                ? signed_lane(lhs, width) : signed_lane(rhs, width);
+            break;
+        case e_lane_op::add_unsigned_sat: value = lhs > mask - rhs ? mask : lhs + rhs; break;
+        case e_lane_op::sub_unsigned_sat: value = lhs > rhs ? lhs - rhs : 0; break;
+        }
+        put_lane(result, width, i, value & mask);
+    }
+    return result;
+}
+ee::s_ee_u128 expected_padsbh(const ee::s_ee_u128& a, const ee::s_ee_u128& b)
+{
+    ee::s_ee_u128 result{0, 0};
+    for (unsigned i = 0; i < 8; ++i)
+    {
+        const uint16_t lhs = (uint16_t)get_lane(a, 16, i);
+        const uint16_t rhs = (uint16_t)get_lane(b, 16, i);
+        put_lane(result, 16, i, i < 4 ? (uint16_t)(lhs - rhs) : (uint16_t)(lhs + rhs));
+    }
+    return result;
+}
+ee::s_ee_u128 expected_pext(const ee::s_ee_u128& a,const ee::s_ee_u128& b,unsigned width)
+{
+    ee::s_ee_u128 result{0, 0};
+    const unsigned half = (128 / width) / 2;
+    for (unsigned i = 0; i < half; ++i)
+    {
+        put_lane(result, width, i * 2, get_lane(b, width, half + i));
+        put_lane(result, width, i * 2 + 1, get_lane(a, width, half + i));
+    }
+    return result;
+}
+ee::s_ee_u128 expected_qfsrv(const ee::s_ee_u128& a,const ee::s_ee_u128& b,unsigned shift)
+{
+    shift &= 0x7fu;
+    if (shift == 0) return b;
+    ee::s_ee_u128 result{};
+    if (shift < 64)
+    {
+        result.m_lo = (b.m_lo >> shift) | (b.m_hi << (64 - shift));
+        result.m_hi = (b.m_hi >> shift) | (a.m_lo << (64 - shift));
+        return result;
+    }
+    const unsigned upper_shift = shift - 64;
+    if (upper_shift == 0) { result.m_lo = b.m_hi; result.m_hi = a.m_lo; return result; }
+    result.m_lo = (b.m_hi >> upper_shift) | (a.m_lo << (64 - upper_shift));
+    result.m_hi = (a.m_lo >> upper_shift) | (a.m_hi << (64 - upper_shift));
+    return result;
+}
+}
+
+int main()
+{
+    const ee::s_ee_u128 a{0x800000007fffffffull, 0x12345678ffffffffull};
+    const ee::s_ee_u128 b{0x800000007fffffffull, 0x8765432100000002ull};
+    expect_u128("PABSW", ee::mmi_apply(ee::LOP_MMI_ABS_W, a, b, 0), expected_lanes(b,b,32,e_lane_op::abs_sat));
+    expect_u128("PABSH", ee::mmi_apply(ee::LOP_MMI_ABS_H, a, b, 0), expected_lanes(b,b,16,e_lane_op::abs_sat));
+    expect_u128("PCEQW", ee::mmi_apply(ee::LOP_MMI_CEQ_W, a, b, 0), expected_lanes(a,b,32,e_lane_op::equal));
+    expect_u128("PCEQH", ee::mmi_apply(ee::LOP_MMI_CEQ_H, a, b, 0), expected_lanes(a,b,16,e_lane_op::equal));
+    expect_u128("PCEQB", ee::mmi_apply(ee::LOP_MMI_CEQ_B, a, b, 0), expected_lanes(a,b,8,e_lane_op::equal));
+    expect_u128("PADSBH", ee::mmi_apply(ee::LOP_MMI_ADDSUB_H, a, b, 0), expected_padsbh(a,b));
+    expect_u128("PEXTUW", ee::mmi_apply(ee::LOP_MMI_EXTU_W, a, b, 0), expected_pext(a,b,32));
+    expect_u128("PEXTUH", ee::mmi_apply(ee::LOP_MMI_EXTU_H, a, b, 0), expected_pext(a,b,16));
+    expect_u128("PEXTUB", ee::mmi_apply(ee::LOP_MMI_EXTU_B, a, b, 0), expected_pext(a,b,8));
+    expect_u128("PADDUW", ee::mmi_apply(ee::LOP_MMI_ADDU_SAT_W, a, b, 0), expected_lanes(a,b,32,e_lane_op::add_unsigned_sat));
+    expect_u128("PADDUH", ee::mmi_apply(ee::LOP_MMI_ADDU_SAT_H, a, b, 0), expected_lanes(a,b,16,e_lane_op::add_unsigned_sat));
+    expect_u128("PADDUB", ee::mmi_apply(ee::LOP_MMI_ADDU_SAT_B, a, b, 0), expected_lanes(a,b,8,e_lane_op::add_unsigned_sat));
+    expect_u128("PSUBUW", ee::mmi_apply(ee::LOP_MMI_SUBU_SAT_W, a, b, 0), expected_lanes(a,b,32,e_lane_op::sub_unsigned_sat));
+    expect_u128("PSUBUH", ee::mmi_apply(ee::LOP_MMI_SUBU_SAT_H, a, b, 0), expected_lanes(a,b,16,e_lane_op::sub_unsigned_sat));
+    expect_u128("PSUBUB", ee::mmi_apply(ee::LOP_MMI_SUBU_SAT_B, a, b, 0), expected_lanes(a,b,8,e_lane_op::sub_unsigned_sat));
+    for (unsigned shift : {0u,8u,40u,120u})
+        expect_u128("QFSRV", ee::mmi_apply(ee::LOP_MMI_QFSRV,a,b,(uint8_t)shift), expected_qfsrv(a,b,shift));
+    expect_u128("SLL shift 0", ee::mmi_apply(ee::LOP_MMI_SLL,a,b,0), b);
+    expect_u128("SRL shift 0", ee::mmi_apply(ee::LOP_MMI_SRL,a,b,0), b);
+    std::printf("mmi_ops_test: %s (%d failures)\n", g_fail == 0 ? "PASS" : "FAIL", g_fail);
+    return g_fail == 0 ? 0 : 1;
+}
