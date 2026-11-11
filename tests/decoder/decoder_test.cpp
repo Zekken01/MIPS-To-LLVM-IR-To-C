@@ -238,7 +238,7 @@ int main()
     expect("c.le.s", R(0x11,0x10,5,6,0,0x36), "cop1_s", V);
     expect("c.eq.fcc1", R(0x11,0x10,5,6,1,0x32), "cop1_s", U);
     expect("c.lt.fcc1", R(0x11,0x10,5,6,1,0x34), "cop1_s", U);
-    expect("cvt.w.s", R(0x11,0x10,5,6,7,0x24), "cop1_s", U);
+    expect("cvt.w.s", R(0x11,0x10,5,6,7,0x24), "cop1_s", V);
     expect("unknown.s", R(0x11,0x10,5,6,7,0x08), "cop1_reserved", X);
     expect("cvt.s.w", R(0x11,0x14,0,6,7,0x20), "cvt_s_w", V);
     expect("bad.w", R(0x11,0x14,0,6,7,0x21), "cop1_reserved", X);
