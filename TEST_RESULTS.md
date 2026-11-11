@@ -100,3 +100,24 @@ Environment: GitHub Actions `ubuntu-latest`, GCC/CMake/Ninja, isolated Python vi
 - Added MTSAB/MTSAH decoding, lifting, and SA state updates used by QFSRV.
 - Extended the MMI1 JIT fixture to cover all 18 non-reserved MMI1 sub-ops and multiple byte/halfword SA settings at O0–O3.
 - **Validation status:** GitHub Actions runs for this latest source revision are queued and have not yet produced a result. The prior 6/6 green result applies to the earlier 13-operation MMI1 subset only.
+
+## 2026-11-11 — Control-flow and host-dispatcher validation
+
+Environment: GitHub Actions `ubuntu-latest`, GCC 15.2, CMake 4.4.5, Ninja 1.13.2, Python 3.14, llvmlite 0.50.0.
+
+- Clean configure: PASS.
+- Clean build: PASS.
+- CTest: **9/9 PASS** (`decoder`, `dispatcher`, `multi_function`, `smoke`, `mmi_ops`, `control_flow_ir_runtime`, `mmi_ir_runtime`, `div1_ir_runtime`, `mmi1_ir_runtime`).
+- Control-flow LLVM JIT coverage includes JAL/JALR/JR target and link ordering, mandatory delay-slot effects, ordinary branch condition sampling, branch-likely annulment, BLTZAL/BGEZAL and likely variants, direct caller/callee return continuation, one-level recursive JAL, and cross-function JALR with the target register overwritten by its delay slot.
+- New native `dispatcher` test covers:
+  - Direct caller dispatch into a translated callee.
+  - `EE_EXIT_RETURN` back into a translated caller continuation.
+  - Dynamic JALR dispatch and caller resume.
+  - Return to an external guest address.
+  - Unknown initial guest PC.
+  - Bounded dispatch-loop exhaustion.
+  - Rejection of mismatched metadata and native-entry arrays.
+- The dispatcher uses guest block-PC ownership metadata and a parallel array of native entry pointers. It routes both RETURN and DISPATCH exits back into translated code when the new PC is owned by a registered function; otherwise it returns the exit to the outer host.
+- GitHub Actions run: [43109193936](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43109193936).
+
+The dispatcher API and native unit tests are complete, but the project still does **not** produce a runnable game: the in-project LLVM object emitter remains a stub, and the dispatcher has not yet been connected to an actual emitted/linked native function set.
