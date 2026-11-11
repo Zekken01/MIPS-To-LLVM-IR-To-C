@@ -94,7 +94,11 @@ def main():
 
         result = guest_fn(ctypes.pointer(state), None)
 
-        require(result == 0, f"expected straight-line return 0, got {result}")
+        require(result == 3, f"expected dispatcher exit 3, got {result}")
+        require(state.exit_reason == 3,
+                f"expected EE_EXIT_DISPATCH, got {state.exit_reason}")
+        require(state.pc == 0x00120024,
+                f"wrong sequential dispatch PC 0x{state.pc:08x}")
         expected = {
             2: 1,   # -3 < -2 (signed)
             3: 1,   # unsigned(-3) < unsigned(-1), immediate is sign-extended
