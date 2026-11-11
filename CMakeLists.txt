@@ -27,6 +27,7 @@ add_library(ee_core STATIC
     src/ee/decoder.cpp
     src/ee/opcode_tables.cpp
     src/ee/function_analyzer.cpp
+    src/ee/recompiled_functions.cpp
     src/elf/elf_loader.cpp
     src/llvm/llvm_context.cpp
     src/llvm/module_builder.cpp
