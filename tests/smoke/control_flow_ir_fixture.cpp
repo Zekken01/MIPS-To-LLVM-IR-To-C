@@ -39,6 +39,8 @@ int main(int argc, char** argv)
 
     constexpr uint32_t entry_pc = 0x00100000u;
     const std::string mode = argv[1];
+    const uint32_t function_entry_pc =
+        mode == "callee_return" ? entry_pc + 0x2000u : entry_pc;
     uint32_t control_word = 0;
     uint32_t delay_word = 0;
     uint32_t continuation_word = 0;
@@ -151,8 +153,8 @@ int main(int argc, char** argv)
     }
 
     std::map<uint32_t, ee::s_ee_instruction> insn_map;
-    const ee::s_ee_instruction control = ee::decode(entry_pc, control_word);
-    const ee::s_ee_instruction delay = ee::decode(entry_pc + 4u, delay_word);
+    const ee::s_ee_instruction control = ee::decode(function_entry_pc, control_word);
+    const ee::s_ee_instruction delay = ee::decode(function_entry_pc + 4u, delay_word);
 
     if (control.valid != ee::e_ee_valid::VALID || !control.has_delay_slot)
     {
@@ -172,7 +174,7 @@ int main(int argc, char** argv)
     if (has_continuation)
     {
         const ee::s_ee_instruction continuation =
-            ee::decode(entry_pc + 8u, continuation_word);
+            ee::decode(function_entry_pc + 8u, continuation_word);
         if (continuation.valid != ee::e_ee_valid::VALID)
         {
             std::fprintf(stderr, "%s continuation instruction failed to decode: %s\n",
@@ -183,13 +185,13 @@ int main(int argc, char** argv)
     }
 
     ee::function_analyzer analyzer;
-    const auto functions = analyzer.analyze(insn_map, {entry_pc});
+    const auto functions = analyzer.analyze(insn_map, {function_entry_pc});
     const size_t expected_blocks = has_continuation ? 2u : 1u;
     if (functions.size() != 1 || functions[0].blocks.size() != expected_blocks ||
         functions[0].blocks.empty() ||
         functions[0].blocks[0].insn_indices.size() != 2 ||
         (has_continuation &&
-         (functions[0].blocks[1].start_pc != entry_pc + 8u ||
+         (functions[0].blocks[1].start_pc != function_entry_pc + 8u ||
           functions[0].blocks[1].insn_indices.size() != 1)))
     {
         std::fprintf(stderr, "%s fixture CFG did not retain expected delay/continuation blocks\n",
