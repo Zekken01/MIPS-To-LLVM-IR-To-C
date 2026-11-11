@@ -46,8 +46,10 @@ def require(condition, message):
         raise AssertionError(message)
 
 
-def run_case(fixture_exe, temp_dir, target_machine, mode, function_name, setup, verify):
+def run_case(fixture_exe, temp_dir, target, retained, mode, function_name, setup, verify):
     print(f"control-flow case: {mode}", flush=True)
+    target_machine = target.create_target_machine(opt=0)
+    retained.append(target_machine)
     ir_path = temp_dir / f"{mode}.ll"
     subprocess.run([str(fixture_exe), mode, str(ir_path)], check=True)
 
@@ -55,10 +57,14 @@ def run_case(fixture_exe, temp_dir, target_machine, mode, function_name, setup, 
     module.verify()
     module.triple = llvm.get_default_triple()
     module.data_layout = str(target_machine.target_data)
+    if mode == "jal":
+        print("JAL IR module:\\n" + str(module), flush=True)
 
     engine = llvm.create_mcjit_compiler(llvm.parse_assembly(""), target_machine)
     engine.add_module(module)
     engine.finalize_object()
+    retained.extend((engine, module))
+    print(f"{mode}: JIT finalized", flush=True)
 
     address = engine.get_function_address(function_name)
     require(address != 0, f"{mode}: JIT did not expose {function_name}")
@@ -72,7 +78,9 @@ def run_case(fixture_exe, temp_dir, target_machine, mode, function_name, setup, 
     _ = backing
     setup(state)
 
+    print(f"{mode}: entering JIT function", flush=True)
     result = guest_fn(ctypes.pointer(state), None)
+    print(f"{mode}: JIT returned {result}", flush=True)
     require(result == 3, f"{mode}: expected EE_EXIT_DISPATCH (3), got {result}")
     require(state.exit_reason == 3,
             f"{mode}: expected dispatch exit reason 3, got {state.exit_reason}")
@@ -87,7 +95,7 @@ def main():
     llvm.initialize_native_target()
     llvm.initialize_native_asmprinter()
     target = llvm.Target.from_default_triple()
-    target_machine = target.create_target_machine(opt=0)
+    retained = []
 
     with tempfile.TemporaryDirectory(prefix="ee-control-flow-") as temp:
         temp_dir = pathlib.Path(temp)
@@ -104,7 +112,7 @@ def main():
             require(state.gpr[2].hi == 0x2222333344445555,
                     "jr: delay slot clobbered the upper GPR half")
 
-        run_case(fixture_exe, temp_dir, target_machine, "jr",
+        run_case(fixture_exe, temp_dir, target, retained, "jr",
                  "guest_jr_delay_test", check_jr, verify_jr)
 
         def check_jal(state):
@@ -122,7 +130,7 @@ def main():
             require(state.gpr[8].lo == 0x00100008,
                     f"jal: delay slot did not observe PC+8: 0x{state.gpr[8].lo:x}")
 
-        run_case(fixture_exe, temp_dir, target_machine, "jal",
+        run_case(fixture_exe, temp_dir, target, retained, "jal",
                  "guest_jal_delay_test", check_jal, verify_jal)
 
         def check_jalr(state):
@@ -140,7 +148,7 @@ def main():
             require(state.gpr[9].lo == 0x00100009,
                     f"jalr: delay slot did not observe new link: 0x{state.gpr[9].lo:x}")
 
-        run_case(fixture_exe, temp_dir, target_machine, "jalr",
+        run_case(fixture_exe, temp_dir, target, retained, "jalr",
                  "guest_jalr_delay_test", check_jalr, verify_jalr)
 
         def check_link(state, taken):
@@ -165,7 +173,7 @@ def main():
                 check_link(state, taken)
             def verify(state, taken=taken):
                 verify_bltzal(state, taken)
-            run_case(fixture_exe, temp_dir, target_machine, "bltzal",
+            run_case(fixture_exe, temp_dir, target, retained, "bltzal",
                      "guest_bltzal_delay_test", setup, verify)
 
         def verify_bltzall(state, taken):
@@ -185,7 +193,7 @@ def main():
                 check_link(state, taken)
             def verify(state, taken=taken):
                 verify_bltzall(state, taken)
-            run_case(fixture_exe, temp_dir, target_machine, "bltzall",
+            run_case(fixture_exe, temp_dir, target, retained, "bltzall",
                      "guest_bltzall_delay_test", setup, verify)
 
     print("control_flow_ir_runtime: PASS (JR/JAL/JALR; BLTZAL/BLTZALL taken and not-taken)")
