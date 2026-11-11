@@ -41,6 +41,8 @@ int main(int argc, char** argv)
     const std::string mode = argv[1];
     uint32_t control_word = 0;
     uint32_t delay_word = 0;
+    uint32_t continuation_word = 0;
+    bool has_continuation = false;
     const char* function_name = nullptr;
 
     if (mode == "jr")
@@ -81,6 +83,24 @@ int main(int argc, char** argv)
         control_word = make_r(8, 0, 16, 0, 0x09);
         delay_word = make_i(0x09, 16, 9, 1);
         function_name = "guest_jalr_rd_delay_test";
+    }
+    else if (mode == "caller_resume")
+    {
+        // The JAL dispatches to a separate callee. On JR $ra, the host
+        // dispatcher re-enters this function at PC+8 and must select block 2.
+        constexpr uint32_t target = entry_pc + 0x2000u;
+        control_word = (0x03u << 26) | ((target >> 2) & 0x03ffffffu);
+        delay_word = make_i(0x09, 0, 16, 0x55); // $s0 = 0x55
+        continuation_word = make_i(0x09, 0, 17, 0x66); // $s1 = 0x66
+        has_continuation = true;
+        function_name = "guest_caller_resume_test";
+    }
+    else if (mode == "callee_return")
+    {
+        // Return through the caller's link. The host should resume at PC+8.
+        control_word = make_r(31, 0, 0, 0, 0x08);
+        delay_word = make_i(0x09, 0, 8, 0x77); // $t0 = 0x77
+        function_name = "guest_callee_return_test";
     }
     else if (mode == "beq_taken")
     {
@@ -149,14 +169,32 @@ int main(int argc, char** argv)
 
     insn_map.emplace(control.pc, control);
     insn_map.emplace(delay.pc, delay);
+    if (has_continuation)
+    {
+        const ee::s_ee_instruction continuation =
+            ee::decode(entry_pc + 8u, continuation_word);
+        if (continuation.valid != ee::e_ee_valid::VALID)
+        {
+            std::fprintf(stderr, "%s continuation instruction failed to decode: %s\n",
+                         mode.c_str(), continuation.mnemonic);
+            return 5;
+        }
+        insn_map.emplace(continuation.pc, continuation);
+    }
 
     ee::function_analyzer analyzer;
     const auto functions = analyzer.analyze(insn_map, {entry_pc});
-    if (functions.size() != 1 || functions[0].blocks.size() != 1 ||
-        functions[0].blocks[0].insn_indices.size() != 2)
+    const size_t expected_blocks = has_continuation ? 2u : 1u;
+    if (functions.size() != 1 || functions[0].blocks.size() != expected_blocks ||
+        functions[0].blocks.empty() ||
+        functions[0].blocks[0].insn_indices.size() != 2 ||
+        (has_continuation &&
+         (functions[0].blocks[1].start_pc != entry_pc + 8u ||
+          functions[0].blocks[1].insn_indices.size() != 1)))
     {
-        std::fprintf(stderr, "%s fixture CFG did not retain its delay slot\n", mode.c_str());
-        return 5;
+        std::fprintf(stderr, "%s fixture CFG did not retain expected delay/continuation blocks\n",
+                     mode.c_str());
+        return 6;
     }
 
     llvm::llvm_context context(mode + "_delay_slot_test");
