@@ -114,6 +114,10 @@ target_link_libraries(ee_control_flow_ir_fixture PRIVATE ee_core)
 add_executable(ee_compare_ir_fixture tests/smoke/compare_ir_fixture.cpp)
 target_link_libraries(ee_compare_ir_fixture PRIVATE ee_core)
 
+# R5900 single-precision FCC0 comparison normalization regression.
+add_executable(ee_fpu_compare_ir_fixture tests/smoke/fpu_compare_ir_fixture.cpp)
+target_link_libraries(ee_fpu_compare_ir_fixture PRIVATE ee_core)
+
 find_package(Python3 COMPONENTS Interpreter QUIET)
 set(EE_HAVE_LLVM_JIT_TEST FALSE)
 if(Python3_Interpreter_FOUND)
@@ -134,6 +138,10 @@ add_test(NAME multi_function COMMAND ee_multi_test)
 add_test(NAME smoke COMMAND ee_smoke_test)
 add_test(NAME mmi_ops COMMAND ee_mmi_ops_test)
 if(EE_HAVE_LLVM_JIT_TEST)
+    add_test(NAME fpu_compare_ir_runtime
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/smoke/test_fpu_compare_ir_runtime.py
+                $<TARGET_FILE:ee_fpu_compare_ir_fixture>)
     add_test(NAME compare_ir_runtime
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/smoke/test_compare_ir_runtime.py
