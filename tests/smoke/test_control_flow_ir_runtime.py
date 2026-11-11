@@ -218,7 +218,7 @@ def main():
                 check_bgez_link(state, taken)
             def verify(state, taken=taken):
                 verify_bgezal(state, taken)
-            run_case(fixture_exe, temp_dir, target_machine, "bgezal",
+            run_case(fixture_exe, temp_dir, target, retained, "bgezal",
                      "guest_bgezal_delay_test", setup, verify)
 
         def verify_bgezall(state, taken):
@@ -238,7 +238,7 @@ def main():
                 check_bgez_link(state, taken)
             def verify(state, taken=taken):
                 verify_bgezall(state, taken)
-            run_case(fixture_exe, temp_dir, target_machine, "bgezall",
+            run_case(fixture_exe, temp_dir, target, retained, "bgezall",
                      "guest_bgezall_delay_test", setup, verify)
 
     print("control_flow_ir_runtime: PASS (JR/JAL/JALR; BLTZAL/BGEZAL/BLTZALL/BGEZALL taken and not-taken)")
