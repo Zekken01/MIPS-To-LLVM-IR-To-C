@@ -130,6 +130,36 @@ def run_cvt_w_case(fixture, temp_dir, target, source_bits, expected_bits, label)
             prefix + f"CVT.W.S unexpectedly modified FCSR: 0x{state.fcsr:08x}")
 
 
+def run_cvt_s_w_case(fixture, temp_dir, target, source_value, label):
+    guest_fn, engine, module, target_machine = compile_jit(
+        fixture, temp_dir, "cvt_s_w", target
+    )
+    backing, state = aligned_state()
+    _ = (backing, engine, module, target_machine)
+
+    source_bits = source_value & 0xFFFFFFFF
+    state.fpr[1] = (0xDEADBEEF << 32) | source_bits
+    state.fpr[6] = 0xAABBCCDD11223344
+    initial_fcsr = 0xA5923456
+    state.fcsr = initial_fcsr
+
+    result = guest_fn(ctypes.pointer(state), None)
+    expected_bits = f32_bits(float(source_value))
+    prefix = f"cvt_s_w({label}, {source_value}): "
+    require(result == 3, prefix + f"expected EE_EXIT_DISPATCH (3), got {result}")
+    require(state.exit_reason == 3,
+            prefix + f"state exit reason was {state.exit_reason}")
+    require(state.pc == ENTRY_PC + 4,
+            prefix + f"wrong sequential PC 0x{state.pc:08x}")
+    require(state.fpr[6] == expected_bits,
+            prefix + f"FPR[6] got 0x{state.fpr[6]:016x}, "
+                     f"expected 0x{expected_bits:08x}")
+    require(state.fpr[1] == ((0xDEADBEEF << 32) | source_bits),
+            prefix + "source FPR was modified")
+    require(state.fcsr == initial_fcsr,
+            prefix + f"CVT.S.W unexpectedly modified FCSR: 0x{state.fcsr:08x}")
+
+
 def fp_reference_extreme(lhs_bits, rhs_bits, is_max):
     lhs_signed = ctypes.c_int32(lhs_bits).value
     rhs_signed = ctypes.c_int32(rhs_bits).value
@@ -389,6 +419,17 @@ def main():
             run_cvt_w_case(
                 fixture, temp_dir, target, source_bits, expected_bits, label
             )
+        for source_value, label in [
+            (0, "zero"),
+            (1, "positive one"),
+            (-1, "negative one"),
+            (16777217, "round-to-nearest-even tie"),
+            (2147483647, "signed maximum"),
+            (-2147483648, "signed minimum"),
+        ]:
+            run_cvt_s_w_case(
+                fixture, temp_dir, target, source_value, label
+            )
         run_arithmetic_cases(fixture, temp_dir, target, "add_s", add_cases)
         run_arithmetic_cases(fixture, temp_dir, target, "sub_s", sub_cases)
         run_arithmetic_cases(fixture, temp_dir, target, "mul_s", mul_cases)
@@ -403,7 +444,7 @@ def main():
         )
 
     print(
-        "fpu_compare_ir_runtime: PASS (C.F/C.EQ/C.LT/C.LE; CVT.W.S; "
+        "fpu_compare_ir_runtime: PASS (C.F/C.EQ/C.LT/C.LE; CVT.W.S/CVT.S.W; "
         "ADD.S/SUB.S/MUL.S/DIV.S normalization and FCSR flags; "
         "MAX.S/MIN.S bitwise ordering; ABS.S/NEG.S raw-bit sign operations; "
         "EE NaN/Inf normalisation, integer "
