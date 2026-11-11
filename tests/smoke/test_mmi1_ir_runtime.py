@@ -78,13 +78,44 @@ def lane_operation(lhs, rhs, width, operation):
     return pack_lanes(result, width)
 
 
+def pad_s_bh(lhs, rhs):
+    result = []
+    for index in range(8):
+        a = (lhs >> (index * 16)) & 0xFFFF
+        b = (rhs >> (index * 16)) & 0xFFFF
+        value = a - b if index < 4 else a + b
+        result.append(value & 0xFFFF)
+    return pack_lanes(result, 16)
+
+
+def pext_upper(lhs, rhs, width):
+    lane_count = 128 // width
+    start = lane_count // 2
+    mask = (1 << width) - 1
+    result = []
+    for index in range(start, lane_count):
+        a = (lhs >> (index * width)) & mask
+        b = (rhs >> (index * width)) & mask
+        # Each output pair is {rs lane, rt lane} in bit notation, which
+        # means rt is the lower lane and rs is the upper lane.
+        result.extend((b, a))
+    return pack_lanes(result, width)
+
+
+def qfsrv(lhs, rhs, shift):
+    mask128 = (1 << 128) - 1
+    if shift == 0:
+        return rhs
+    return ((lhs << (128 - shift)) | (rhs >> shift)) & mask128
+
+
 def split_u128(value):
     mask64 = (1 << 64) - 1
     return value & mask64, (value >> 64) & mask64
 
 
-def run_opt_level(fixture_exe, temp_dir, opt_level):
-    ir_path = temp_dir / f"mmi1_o{opt_level}.ll"
+def run_opt_level(fixture_exe, temp_dir, opt_level, shift_amount):
+    ir_path = temp_dir / f"mmi1_o{opt_level}_sa{shift_amount}.ll"
     subprocess.run([str(fixture_exe), str(ir_path), str(opt_level)], check=True)
 
     module = llvm.parse_assembly(ir_path.read_text(encoding="utf-8"))
@@ -116,9 +147,10 @@ def run_opt_level(fixture_exe, temp_dir, opt_level):
     rhs = pack_lanes(rhs_words, 32)
     state.gpr[4].lo, state.gpr[4].hi = split_u128(lhs)
     state.gpr[5].lo, state.gpr[5].hi = split_u128(rhs)
+    state.sa = shift_amount
 
     result = guest_fn(ctypes.pointer(state), None)
-    prefix = f"O{opt_level}: "
+    prefix = f"O{opt_level} SA={shift_amount}: "
     require(result == 3, prefix + f"unexpected exit result {result}")
     require(state.exit_reason == 3, prefix + f"unexpected exit reason {state.exit_reason}")
 
@@ -136,6 +168,11 @@ def run_opt_level(fixture_exe, temp_dir, opt_level):
         16: lane_operation(lhs, rhs, 16, "sub_unsigned_sat"),
         17: lane_operation(lhs, rhs, 8, "add_unsigned_sat"),
         18: lane_operation(lhs, rhs, 8, "sub_unsigned_sat"),
+        19: pad_s_bh(lhs, rhs),
+        20: pext_upper(lhs, rhs, 8),
+        21: pext_upper(lhs, rhs, 16),
+        22: pext_upper(lhs, rhs, 32),
+        23: qfsrv(lhs, rhs, shift_amount),
         # Final PCEQW intentionally aliases rd with rs.
         4: lane_operation(lhs, rhs, 32, "equal"),
     }
@@ -168,14 +205,15 @@ def main():
     with tempfile.TemporaryDirectory(prefix="ee_mmi1_ir_") as directory:
         temp_dir = pathlib.Path(directory)
         for opt_level in range(4):
-            engine, module, target_machine = run_opt_level(
-                fixture_exe, temp_dir, opt_level
-            )
-            engines.append(engine)
-            modules.append(module)
-            target_machines.append(target_machine)
+            for shift_amount in (0, 8, 40, 120):
+                engine, module, target_machine = run_opt_level(
+                    fixture_exe, temp_dir, opt_level, shift_amount
+                )
+                engines.append(engine)
+                modules.append(module)
+                target_machines.append(target_machine)
 
-    print("mmi1_ir_runtime: PASS (O0-O3; PABSW/PABSH; PCEQW/PCEQH/PCEQB; PMINW/PMINH; PADDU*/PSUBU*; aliasing)")
+    print("mmi1_ir_runtime: PASS (O0-O3; PABSW/PABSH; PADSBH; PCEQW/PCEQH/PCEQB; PMINW/PMINH; PADDU*/PSUBU*; PEXTU*/QFSRV; aliasing)")
 
 
 if __name__ == "__main__":
