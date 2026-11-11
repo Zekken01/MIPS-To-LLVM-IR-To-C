@@ -81,6 +81,21 @@ std::string u32hex(uint32_t v)
 
 } // namespace
 
+const s_recompiled_fn* find_recompiled_function(
+    const s_recompiled_elf& compiled,
+    uint32_t guest_pc)
+{
+    for (const auto& fn : compiled.functions)
+    {
+        if (std::find(fn.block_pcs.begin(), fn.block_pcs.end(), guest_pc) !=
+            fn.block_pcs.end())
+        {
+            return &fn;
+        }
+    }
+    return nullptr;
+}
+
 bool ee_recomp(const char* elf_path,
                const char* output_dir,
                s_recompiled_elf* result,
@@ -283,6 +298,9 @@ bool ee_recomp(const char* elf_path,
         rfn.vaddr = entry;
         rfn.ir_path = ir_path;
         rfn.block_count = (uint32_t)fn.blocks.size();
+        rfn.block_pcs.reserve(fn.blocks.size());
+        for (const auto& bb : fn.blocks)
+            rfn.block_pcs.push_back(bb.start_pc);
         rfn.insn_count = 0;
         rfn.supported_count = 0;
         rfn.unsupported_count = 0;
@@ -422,6 +440,13 @@ bool ee_recomp(const char* elf_path,
             os << "      \"supported_count\": " << f.supported_count << ",\n";
             os << "      \"unsupported_count\": " << f.unsupported_count << ",\n";
             os << "      \"block_count\": " << f.block_count << ",\n";
+            os << "      \"block_pcs\": [";
+            for (size_t j = 0; j < f.block_pcs.size(); ++j)
+            {
+                if (j != 0) os << ", ";
+                os << "\"" << u32hex(f.block_pcs[j]) << "\"";
+            }
+            os << "],\n";
             os << "      \"ir_path\": \"" << json_escape(f.ir_path) << "\"\n";
             os << "    }" << (i + 1 < result->functions.size() ? "," : "") << "\n";
         }
