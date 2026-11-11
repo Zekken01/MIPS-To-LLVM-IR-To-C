@@ -2158,6 +2158,40 @@ void module_builder::emit_mmi_insn(const ee::s_ee_instruction& ins)
     const uint8_t sa = ins.sa & 31;
 
     // Top-level MMI (not class)
+    if (fn == 0x18 || fn == 0x19)
+    {
+        // MULT1/MULTU1 write the 64-bit product to the upper HI1:LO1
+        // accumulator pair and the sign-extended low word to rd.
+        const bool is_unsigned = fn == 0x19;
+        std::string lhs32 = newtemp();
+        std::string rhs32 = newtemp();
+        std::string lhs64 = newtemp();
+        std::string rhs64 = newtemp();
+        std::string product = newtemp();
+        std::string lo32 = newtemp();
+        std::string hi_shifted = newtemp();
+        std::string hi32 = newtemp();
+        std::string lo64 = newtemp();
+        std::string hi64 = newtemp();
+        std::string hi_ptr = state_field(3);
+        std::string lo_ptr = state_field(4);
+
+        m_out += "  " + lhs32 + " = trunc i64 " + a.first + " to i32\n";
+        m_out += "  " + rhs32 + " = trunc i64 " + b.first + " to i32\n";
+        const char* extend = is_unsigned ? "zext" : "sext";
+        m_out += "  " + lhs64 + " = " + extend + " i32 " + lhs32 + " to i64\n";
+        m_out += "  " + rhs64 + " = " + extend + " i32 " + rhs32 + " to i64\n";
+        m_out += "  " + product + " = mul i64 " + lhs64 + ", " + rhs64 + "\n";
+        m_out += "  " + lo32 + " = trunc i64 " + product + " to i32\n";
+        m_out += "  " + hi_shifted + " = lshr i64 " + product + ", 32\n";
+        m_out += "  " + hi32 + " = trunc i64 " + hi_shifted + " to i32\n";
+        m_out += "  " + lo64 + " = sext i32 " + lo32 + " to i64\n";
+        m_out += "  " + hi64 + " = sext i32 " + hi32 + " to i64\n";
+        m_out += "  store i64 " + hi64 + ", ptr " + hi_ptr + "\n";
+        m_out += "  store i64 " + lo64 + ", ptr " + lo_ptr + "\n";
+        set_gpr_lo64(ins.rd, lo64);
+        return;
+    }
     if (fn == 0x00 || fn == 0x01 || fn == 0x20 || fn == 0x21)
     {
         // MADD/MADDU accumulate into the low 64-bit HI:LO pair. MADD1/
