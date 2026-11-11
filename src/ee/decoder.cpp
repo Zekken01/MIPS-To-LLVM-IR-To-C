@@ -661,11 +661,8 @@ s_ee_instruction decode(uint32_t pc, uint32_t word)
         if (std::string_view(name) == "reserved")
             insn.valid = e_ee_valid::INVALID;
         else
-        {
-            const bool exact_mmi = mmi_lowered_exactly(insn.funct, insn.sa & 31) &&
-                ((insn.funct != 0x1a && insn.funct != 0x1b) || insn.rd == 0);
-            insn.valid = exact_mmi ? e_ee_valid::VALID : e_ee_valid::UNSUPPORTED;
-        }
+            insn.valid = mmi_lowered_exactly(insn.funct, insn.sa & 31)
+                         ? e_ee_valid::VALID : e_ee_valid::UNSUPPORTED;
         break;
     }
 
