@@ -43,6 +43,18 @@ int main()
     expect("madd1",   R(0x1c,4,5,6,0,0x20),    "madd1",  V);
     expect("maddu1",  R(0x1c,4,5,6,0,0x21),    "maddu1", V);
     expect("madd bad sa", R(0x1c,4,5,6,1,0x00), "madd", U);
+    {
+        const auto madd = decode(0x100000, R(0x1c,4,5,6,0,0x00));
+        const auto maddu = decode(0x100000, R(0x1c,4,5,6,0,0x01));
+        const auto madd1 = decode(0x100000, R(0x1c,4,5,6,0,0x20));
+        const auto maddu1 = decode(0x100000, R(0x1c,4,5,6,0,0x21));
+        const bool ok = lift(madd).kind == LOP_MADD &&
+                        lift(maddu).kind == LOP_MADDU &&
+                        lift(madd1).kind == LOP_MADD1 &&
+                        lift(maddu1).kind == LOP_MADDU1;
+        ok ? ++g_pass : ++g_fail;
+        if (!ok) std::printf("FAIL MADD/MADDU pipeline lift mapping\n");
+    }
     expect("mult1",   R(0x1c,4,5,6,0,0x18),    "mult1",  U);
     expect("pmfhl",   R(0x1c,0,0,6,0,0x30),    "pmfhl",  U);
     expect("psllh",   R(0x1c,0,5,6,3,0x34),    "psllh",  U);
