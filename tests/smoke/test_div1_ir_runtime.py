@@ -120,6 +120,7 @@ def main():
             target_machine = target.create_target_machine(opt=0)
             target_machines.append(target_machine)
             for case in range(5):
+                print(f"div1_ir_runtime: running O{opt_level} case {case}", flush=True)
                 engine, module = run_case(
                     fixture, temp_dir, opt_level, case, target_machine
                 )
