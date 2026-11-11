@@ -1,0 +1,237 @@
+name: Recover source snapshot
+
+on:
+  push:
+    branches:
+      - recovery/2026-11-11
+    paths:
+      - .github/workflows/recover-source.yml
+
+permissions:
+  contents: write
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out recovery payload
+        uses: actions/checkout@v4
+        with:
+          ref: recovery/2026-11-11
+          fetch-depth: 0
+
+      - name: Reassemble and recover verified files
+        id: recover
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import base64
+          import binascii
+          import io
+          import os
+          import pathlib
+          import re
+          import struct
+          import zipfile
+          import zlib
+
+          root = pathlib.Path.cwd()
+          payload_dir = root / "recovery_payload"
+          recovered = root / "recovered_source"
+          recovered.mkdir(exist_ok=True)
+          report = []
+
+          part_paths = sorted(payload_dir.glob("source_snapshot_part_*.b64"))
+          if not part_paths:
+              raise SystemExit("No source snapshot payload parts found")
+
+          texts = [p.read_text(encoding="ascii").strip() for p in part_paths]
+          report.append(f"Payload parts: {len(texts)}")
+          report.extend(f"- {p.name}: {len(s)} base64 characters" for p, s in zip(part_paths, texts))
+
+          variants = {}
+          try:
+              chunks = []
+              for s in texts:
+                  padded = s + "=" * ((-len(s)) % 4)
+                  chunks.append(base64.b64decode(padded, validate=False))
+              variants["decode-each-part"] = b"".join(chunks)
+          except Exception as exc:
+              report.append(f"decode-each-part failed: {exc}")
+
+          joined = "".join(texts)
+          try:
+              variants["joined-strip-padding"] = base64.b64decode(
+                  joined.replace("=", "") + "=" * ((-len(joined.replace("=", ""))) % 4),
+                  validate=False
+              )
+          except Exception as exc:
+              report.append(f"joined-strip-padding failed: {exc}")
+
+          try:
+              variants["joined-as-is"] = base64.b64decode(
+                  joined + "=" * ((-len(joined)) % 4),
+                  validate=False
+              )
+          except Exception as exc:
+              report.append(f"joined-as-is failed: {exc}")
+
+          valid_zip = None
+          for name, data in variants.items():
+              try:
+                  with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                      bad = zf.testzip()
+                      names = zf.namelist()
+                      report.append(f"{name}: ZIP entries={len(names)}, testzip={bad!r}, bytes={len(data)}")
+                      if bad is None:
+                          valid_zip = (name, data, names)
+                          break
+              except Exception as exc:
+                  report.append(f"{name}: not a complete ZIP ({type(exc).__name__}: {exc})")
+
+          recovered_files = {}
+          if valid_zip:
+              name, data, names = valid_zip
+              with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                  for info in zf.infolist():
+                      item = pathlib.PurePosixPath(info.filename)
+                      if item.is_absolute() or ".." in item.parts:
+                          report.append(f"Skipped unsafe path: {info.filename}")
+                          continue
+                      if info.is_dir():
+                          continue
+                      payload = zf.read(info)
+                      recovered_files[info.filename] = payload
+              report.append(f"Used complete archive variant: {name}")
+          else:
+              # The archive may be truncated. Recover only local ZIP entries whose
+              # compressed bytes, decompressed size, and CRC all validate.
+              for variant_name, data in variants.items():
+                  found = {}
+                  cursor = 0
+                  while True:
+                      pos = data.find(b"PK\\x03\\x04", cursor)
+                      if pos < 0:
+                          break
+                      cursor = pos + 4
+                      if pos + 30 > len(data):
+                          continue
+                      try:
+                          sig, ver, flags, method, mtime, mdate, crc, csize, usize, nlen, elen = struct.unpack_from(
+                              "<IHHHHHIIIHH", data, pos
+                          )
+                          if sig != 0x04034b50 or flags & 0x08:
+                              continue
+                          start = pos + 30 + nlen + elen
+                          end = start + csize
+                          if end > len(data):
+                              continue
+                          raw_name = data[pos + 30:pos + 30 + nlen]
+                          name = raw_name.decode("utf-8")
+                          rel = pathlib.PurePosixPath(name)
+                          if rel.is_absolute() or ".." in rel.parts or not name or "\\x00" in name:
+                              continue
+                          comp = data[start:end]
+                          if method == 0:
+                              payload = comp
+                          elif method == 8:
+                              payload = zlib.decompress(comp, -15)
+                          else:
+                              continue
+                          if len(payload) != usize or (zlib.crc32(payload) & 0xffffffff) != crc:
+                              continue
+                          # Prefer a later CRC-verified copy if the ZIP contains duplicates.
+                          found[name] = payload
+                      except (ValueError, UnicodeDecodeError, struct.error, zlib.error):
+                          continue
+                  report.append(f"{variant_name}: CRC-verified local entries={len(found)}")
+                  if len(found) > len(recovered_files) or (
+                      len(found) == len(recovered_files) and sum(map(len, found.values())) > sum(map(len, recovered_files.values()))
+                  ):
+                      recovered_files = found
+
+          for name, payload in recovered_files.items():
+              rel = pathlib.PurePosixPath(name)
+              target = recovered.joinpath(*rel.parts)
+              target.parent.mkdir(parents=True, exist_ok=True)
+              target.write_bytes(payload)
+
+          report.append(f"Recovered files: {len(recovered_files)}")
+          report.extend(f"- {name} ({len(payload)} bytes)" for name, payload in sorted(recovered_files.items()))
+
+          required = [
+              "CMakeLists.txt",
+              "src/llvm/module_builder.cpp",
+              "src/lift/instruction_lifter.cpp",
+              "tests/decoder/decoder_test.cpp",
+              "tests/smoke/mmi_ir_fixture.cpp",
+              "tests/smoke/test_mmi_ir_runtime.py",
+          ]
+          missing = [name for name in required if not (recovered / name).is_file()]
+          report.append("Missing required files: " + (", ".join(missing) if missing else "none"))
+          report_path = root / "reassembly_report.md"
+          report_path.write_text("# Source Snapshot Reassembly Report\n\n" + "\n".join(report) + "\n", encoding="utf-8")
+
+          ready = not missing
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"source_ready={'true' if ready else 'false'}\n")
+              f.write(f"recovered_count={len(recovered_files)}\n")
+          print(report_path.read_text(encoding="utf-8"))
+          if not recovered_files:
+              raise SystemExit("No CRC-verified source files could be recovered")
+          PY
+
+      - name: Install build dependencies
+        if: steps.recover.outputs.source_ready == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build python3-venv
+
+      - name: Configure, build, and test recovered source
+        if: steps.recover.outputs.source_ready == 'true'
+        shell: bash
+        run: |
+          python3 -m venv .venv
+          source .venv/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install llvmlite
+          cmake -S recovered_source -B "$RUNNER_TEMP/ee-build" -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$RUNNER_TEMP/ee-build" -j2
+          ctest --test-dir "$RUNNER_TEMP/ee-build" --output-on-failure
+          if [ -x "$RUNNER_TEMP/ee-build/ee_decoder_test" ]; then
+            "$RUNNER_TEMP/ee-build/ee_decoder_test"
+          fi
+
+      - name: Upload recovery report and recovered files
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: recovered-source-snapshot
+          path: |
+            reassembly_report.md
+            recovered_source/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Commit verified source tree to a separate branch
+        if: success() && steps.recover.outputs.source_ready == 'true'
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin recovery/2026-11-11
+          git switch --create recovery/reassembled-source-2026-11-11 origin/recovery/2026-11-11
+          mkdir -p recovery/metadata
+          cp RECOVERY_PROVENANCE.md RESUME.md TEST_RESULTS.md WORK_LOG.md recovery/metadata/ 2>/dev/null || true
+          cp reassembly_report.md recovery/metadata/
+          cp -a recovered_source/. .
+          rm -rf recovered_source recovery_payload .github/workflows/recover-source.yml
+          git add -A
+          git commit -m "Recover source tree from verified snapshot payload"
+          git push origin recovery/reassembled-source-2026-11-11
+
+      - name: Report incomplete source payload
+        if: always() && steps.recover.outputs.source_ready != 'true'
+        run: |
+          echo "Recovery was incomplete. No source tree was committed; inspect the uploaded artifact and reassembly report."
+          exit 1
