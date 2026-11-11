@@ -403,6 +403,46 @@ def main():
         require(state.gpr[16].lo == 0x55 and state.gpr[17].lo == 0x66,
                 "unknown caller PC unexpectedly restarted the function")
 
+        # Execute one recursive JAL activation through the same host
+        # dispatcher. The guest saves the outer $ra in $k0, then the inner
+        # invocation returns to its caller continuation before the outer
+        # invocation returns to the original host address.
+        recursive_fn = load_function("recursive", "guest_recursive_call_test")
+        recursive_backing, recursive_state = make_aligned_state()
+        _ = recursive_backing
+        recursive_state.pc = 0x00100000
+        recursive_state.gpr[31].lo = 0x00300000
+        recursive_state.gpr[31].hi = 0x3131313131313131
+        recursive_state.gpr[26].hi = 0x2626262626262626
+
+        recursive_exits = []
+        recursive_block_pcs = {
+            0x00100000, 0x00100008, 0x00100014, 0x00100020
+        }
+        for _ in range(4):
+            recursive_exit = recursive_fn(ctypes.pointer(recursive_state), None)
+            recursive_exits.append(recursive_exit)
+            if recursive_state.pc not in recursive_block_pcs:
+                break
+        else:
+            raise AssertionError("recursive guest dispatch did not leave the translated function")
+
+        require(recursive_exits == [3, 0, 3],
+                f"recursive guest: wrong dispatcher exit sequence: {recursive_exits}")
+        require(recursive_state.pc == 0x00300000,
+                f"recursive guest: outer return target wrong: 0x{recursive_state.pc:08x}")
+        require(recursive_state.gpr[2].lo == 2,
+                f"recursive guest: expected two BEQ delay-slot increments, got {recursive_state.gpr[2].lo}")
+        require(recursive_state.gpr[31].lo == 0x00100020,
+                f"recursive guest: recursive JAL link wrong: 0x{recursive_state.gpr[31].lo:x}")
+        require(recursive_state.gpr[26].lo == 0x00300000,
+                f"recursive guest: saved outer return address lost: 0x{recursive_state.gpr[26].lo:x}")
+        require(recursive_state.gpr[8].lo == 0x77 and
+                recursive_state.gpr[9].lo == 0x11 and
+                recursive_state.gpr[10].lo == 0x22,
+                "recursive guest: one of the three delay-slot side effects was lost")
+        print("control-flow recursive call/return: PASS", flush=True)
+
         print("control-flow nested call/resume: PASS", flush=True)
 
         # One-level self-recursion: the first activation takes the recursive
