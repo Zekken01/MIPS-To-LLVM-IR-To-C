@@ -20,6 +20,15 @@ uint32_t make_i(uint8_t opcode, uint8_t rs, uint8_t rt, int16_t immediate)
            static_cast<uint16_t>(immediate);
 }
 
+uint32_t make_r(uint8_t rs, uint8_t rt, uint8_t rd, uint8_t sa, uint8_t funct)
+{
+    return (static_cast<uint32_t>(rs) << 21) |
+           (static_cast<uint32_t>(rt) << 16) |
+           (static_cast<uint32_t>(rd) << 11) |
+           (static_cast<uint32_t>(sa) << 6) |
+           funct;
+}
+
 uint32_t make_mmi(uint8_t rs, uint8_t rt, uint8_t rd, uint8_t sa, uint8_t funct)
 {
     return (0x1cu << 26) |
@@ -53,6 +62,18 @@ int main(int argc, char** argv)
         make_i(0x04, 0, 0, 2),             // beq $zero,$zero, target (split CFG)
         0x00000000u,                       // delay-slot nop
         make_i(0x09, 0, 14, 0x9999),       // not-taken path must not execute
+        make_i(0x09, 0, 27, -2),           // addiu $k1,$zero,-2
+        make_i(0x09, 0, 28, 3),            // addiu $gp,$zero,3
+        make_mmi(27, 28, 23, 0, 0x00),     // madd $s7,$k1,$gp
+        make_mmi(27, 28, 24, 0, 0x01),     // maddu $t8,$k1,$gp
+        make_r(0, 0, 29, 0, 0x10),         // mfhi $k1
+        make_r(0, 0, 30, 0, 0x12),         // mflo $fp
+        make_mmi(27, 0, 0, 0, 0x11),       // mthi1 $k1
+        make_mmi(28, 0, 0, 0, 0x13),       // mtlo1 $gp
+        make_mmi(27, 28, 25, 0, 0x20),     // madd1 $t9,$k1,$gp
+        make_mmi(27, 28, 26, 0, 0x21),     // maddu1 $k1,$k1,$gp
+        make_mmi(0, 0, 25, 0, 0x10),       // mfhi1 $t9
+        make_mmi(0, 0, 26, 0, 0x12),       // mflo1 $k1
         make_mmi(4, 0, 14, 0, 0x11),       // mthi1 $a0; rd field is unused
         make_mmi(0, 0, 5, 0, 0x10),        // mfhi1 $a1
         make_mmi(5, 0, 0, 0, 0x13),        // mtlo1 $a1 (must see pending MFHI1)
