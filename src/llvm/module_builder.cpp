@@ -1802,6 +1802,15 @@ void module_builder::emit_block(const std::vector<ee::s_ee_instruction>& block,
         // delay slot whose execution depends on a VU0 condition we do not
         // model. Exit at the branch itself instead of guessing an edge.
         if (ctrl.valid != ee::e_ee_valid::VALID) {
+            // Unsupported ordinary transfers still execute their architectural
+            // delay slot before exiting to the dispatcher. Branch-likely
+            // transfers are different: their slot is annulled when not taken,
+            // and without a supported predicate we cannot safely decide whether
+            // to execute it. In that case, fail closed at the branch itself.
+            if (!ctrl.branch_likely && delay_idx >= 0) {
+                emit_insn(block[delay_idx], false, 0);
+                store_dirty_regs(live_out);
+            }
             emit_insn(ctrl, true, ft);
             // emit_insn() leaves a uniquely named continuation block for
             // callers that may still emit later instructions. A control
