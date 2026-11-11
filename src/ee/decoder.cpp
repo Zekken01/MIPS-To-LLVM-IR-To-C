@@ -356,26 +356,25 @@ s_ee_instruction decode(uint32_t pc, uint32_t word)
             set_mnemonic(insn, "bgezl");
             break;
         case e_ee_opcode::REGIMM_BLTZAL:
-            insn.flow = e_ee_flow::FLOW_CALL; // condition/link lowering is incomplete
-            insn.valid = e_ee_valid::UNSUPPORTED;
-            set_mnemonic(insn, "bltzal");
-            break;
         case e_ee_opcode::REGIMM_BGEZAL:
-            insn.flow = e_ee_flow::FLOW_CALL;
-            insn.valid = e_ee_valid::UNSUPPORTED;
-            set_mnemonic(insn, "bgezal");
+            // Branch-and-link writes GPR31=PC+8 on either branch outcome.
+            // The link write is emitted before the ordinary delay slot.
+            insn.flow = e_ee_flow::FLOW_BRANCH;
+            insn.valid = (insn.rs != 31)
+                ? e_ee_valid::VALID : e_ee_valid::UNSUPPORTED;
+            set_mnemonic(insn, insn.rt == static_cast<uint8_t>(e_ee_opcode::REGIMM_BLTZAL)
+                ? "bltzal" : "bgezal");
             break;
         case e_ee_opcode::REGIMM_BLTZALL:
-            insn.flow = e_ee_flow::FLOW_BRANCH_LIKELY;
-            insn.branch_likely = true;
-            insn.valid = e_ee_valid::UNSUPPORTED;
-            set_mnemonic(insn, "bltzall");
-            break;
         case e_ee_opcode::REGIMM_BGEZALL:
+            // Likely branch-and-link also writes the link unconditionally,
+            // but annuls its delay slot when the branch is not taken.
             insn.flow = e_ee_flow::FLOW_BRANCH_LIKELY;
             insn.branch_likely = true;
-            insn.valid = e_ee_valid::UNSUPPORTED;
-            set_mnemonic(insn, "bgezall");
+            insn.valid = (insn.rs != 31)
+                ? e_ee_valid::VALID : e_ee_valid::UNSUPPORTED;
+            set_mnemonic(insn, insn.rt == static_cast<uint8_t>(e_ee_opcode::REGIMM_BLTZALL)
+                ? "bltzall" : "bgezall");
             break;
         case e_ee_opcode::REGIMM_TGEI:
         case e_ee_opcode::REGIMM_TGEIU:
