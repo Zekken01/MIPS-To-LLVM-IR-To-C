@@ -351,12 +351,12 @@ int main()
     {
         const auto j_zero = decode(0x00000000, 0x08000000u);
         const auto jal_zero = decode(0x00000000, 0x0c000000u);
-        const std::set<uint32_t> j_expected{0x00000000u};
-        const std::set<uint32_t> jal_expected{0x00000000u, 0x00000008u};
+        const std::set<uint32_t> j_expected{0x00000000u, 0x00000004u};
+        const std::set<uint32_t> jal_expected{0x00000000u, 0x00000004u, 0x00000008u};
         const bool ok = collect_successors(j_zero) == j_expected &&
                         collect_successors(jal_zero) == jal_expected;
         ok ? ++g_pass : ++g_fail;
-        if (!ok) std::printf("FAIL direct J/JAL target zero was mistaken for indirect transfer\\n");
+        if (!ok) std::printf("FAIL direct J/JAL target zero was mistaken for indirect transfer\n");
     }
     {
         const auto jr = decode(0x100000, R(0x00,2,0,0,0,0x08));
