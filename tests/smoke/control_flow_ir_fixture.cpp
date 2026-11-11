@@ -51,6 +51,14 @@ int main(int argc, char** argv)
         delay_word = make_i(0x09, 0, 2, 0x1234);
         function_name = "guest_jr_delay_test";
     }
+    else if (mode == "jrra")
+    {
+        // JR $ra returns to the captured target even though its delay slot
+        // overwrites the architectural link register.
+        control_word = make_r(31, 0, 0, 0, 0x08);
+        delay_word = make_i(0x09, 0, 31, 0x1234);
+        function_name = "guest_jr_return_test";
+    }
     else if (mode == "jal")
     {
         // JAL writes $ra before its delay slot; the slot reads that link value.
