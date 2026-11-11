@@ -241,16 +241,17 @@ int main()
     expect("fmt.l", R(0x11,0x15,5,6,7,0x00), "cop1_reserved", X);
     expect("bc1 rt=4", R(0x11,0x08,4,0,0,0x00), "cop1_reserved", X);
 
-    // Operations with overflow/trap or unimplemented comparison semantics
-    // must not be advertised as supported just because their opcode is known.
+    // Operations whose overflow/trap semantics are not modelled must remain
+    // unsupported even though the non-trapping comparison family is exact.
     expect("addi overflow", R(0x08,4,5,0,0,0), "addi", U);
     expect("daddi overflow", R(0x18,4,5,0,0,0), "daddi", U);
-    expect("slti", R(0x0a,4,5,0,0,0), "slti", U);
-    expect("sltiu", R(0x0b,4,5,0,0,0), "sltiu", U);
+    expect("slti", R(0x0a,4,5,0,0,0), "slti", V);
+    expect("sltiu", R(0x0b,4,5,0,0,0), "sltiu", V);
     expect("add overflow", R(0x00,4,5,6,0,0x20), "signed_arith", U);
     expect("sub overflow", R(0x00,4,5,6,0,0x22), "signed_arith", U);
     expect("dadd overflow", R(0x00,4,5,6,0,0x2c), "signed_arith", U);
-    expect("slt", R(0x00,4,5,6,0,0x2a), "r_compare", U);
+    expect("slt", R(0x00,4,5,6,0,0x2a), "slt", V);
+    expect("sltu", R(0x00,4,5,6,0,0x2b), "sltu", V);
     expect("tge", R(0x00,4,5,0,0,0x30), "trap", U);
     expect("bltzal", R(0x01,4,0x10,0,0,0), "bltzal", V);
     expect("bgezal", R(0x01,4,0x11,0,0,0), "bgezal", V);
