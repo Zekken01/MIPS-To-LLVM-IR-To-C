@@ -1690,10 +1690,39 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
             }
             else if (fmt == 0x10 && fp_funct == 0x24) // CVT.W.S
             {
-                std::string fa = load_fpr_f32(fs);
-                std::string wi = newtemp();
-                m_out += "  " + wi + " = fptosi float " + fa + " to i32\n";
-                store_fpr_i32(fd, wi);
+                // The EE interpreter converts toward zero and saturates rather
+                // than exposing LLVM's undefined out-of-range fptosi behaviour.
+                // PCSX2's reference path accepts exponent fields through
+                // 0x4e (absolute values < 2^31), then clamps by the sign bit.
+                // NaN/Inf (exponent 0xff) therefore clamp to signed extrema.
+                const std::string raw = load_fpr_i32(fs);
+                const std::string exponent = newtemp();
+                const std::string in_range = newtemp();
+                const std::string safe_bits = newtemp();
+                const std::string safe_float = newtemp();
+                const std::string converted = newtemp();
+                const std::string sign = newtemp();
+                const std::string is_negative = newtemp();
+                const std::string saturated = newtemp();
+                const std::string result = newtemp();
+
+                m_out += "  " + exponent + " = and i32 " + raw + ", " +
+                         std::to_string(0x7f800000u) + "\n";
+                m_out += "  " + in_range + " = icmp ule i32 " + exponent + ", " +
+                         std::to_string(0x4e800000u) + "\n";
+                // Make fptosi's input defined even when the original value is
+                // outside the signed 32-bit conversion range or is NaN/Inf.
+                m_out += "  " + safe_bits + " = select i1 " + in_range +
+                         ", i32 " + raw + ", i32 0\n";
+                m_out += "  " + safe_float + " = bitcast i32 " + safe_bits + " to float\n";
+                m_out += "  " + converted + " = fptosi float " + safe_float + " to i32\n";
+                m_out += "  " + sign + " = and i32 " + raw + ", -2147483648\n";
+                m_out += "  " + is_negative + " = icmp ne i32 " + sign + ", 0\n";
+                m_out += "  " + saturated + " = select i1 " + is_negative +
+                         ", i32 -2147483648, i32 2147483647\n";
+                m_out += "  " + result + " = select i1 " + in_range + ", i32 " +
+                         converted + ", i32 " + saturated + "\n";
+                store_fpr_i32(fd, result);
             }
             else if (fmt == 0x10 && (fp_funct == 0x30 || fp_funct == 0x32 ||
                                      fp_funct == 0x34 || fp_funct == 0x36))
