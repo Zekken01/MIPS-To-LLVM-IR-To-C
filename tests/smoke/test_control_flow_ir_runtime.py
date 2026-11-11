@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JIT regression: an unsupported indirect JR must still execute its delay slot."""
+"""JIT regressions for direct and register-indirect MIPS control transfers."""
 
 import ctypes
 import pathlib
@@ -46,54 +46,133 @@ def require(condition, message):
         raise AssertionError(message)
 
 
+def compile_case(fixture_exe, temp_dir, mode, target_machine):
+    ir_path = temp_dir / f"{mode}.ll"
+    subprocess.run([str(fixture_exe), str(ir_path), mode], check=True)
+
+    module = llvm.parse_assembly(ir_path.read_text(encoding="utf-8"))
+    module.verify()
+    module.triple = llvm.get_default_triple()
+    module.data_layout = str(target_machine.target_data)
+
+    engine = llvm.create_mcjit_compiler(llvm.parse_assembly(""), target_machine)
+    engine.add_module(module)
+    engine.finalize_object()
+    address = engine.get_function_address("guest_control_flow_test")
+    require(address != 0, f"{mode}: JIT did not expose guest function")
+
+    guest_fn_type = ctypes.CFUNCTYPE(
+        ctypes.c_uint32, ctypes.POINTER(EEState), ctypes.c_void_p
+    )
+    return engine, module, guest_fn_type(address)
+
+
+def run_case(fixture_exe, temp_dir, mode, target_machine):
+    engine, module, guest_fn = compile_case(
+        fixture_exe, temp_dir, mode, target_machine
+    )
+    backing, state = make_aligned_state()
+    _ = (backing, engine, module)
+
+    state.gpr[31].hi = 0x3131313131313131
+    state.gpr[16].hi = 0x1616161616161616
+    state.gpr[17].hi = 0x1717171717171717
+    state.gpr[8].hi = 0x0808080808080808
+    state.gpr[25].hi = 0x2525252525252525
+
+    if mode == "jal":
+        state.gpr[31].lo = 0xDEADBEEF
+        state.gpr[17].lo = 0xBAD
+        expected_pc = 0x00101000
+        expected_exit = 3
+        expected_return = 3
+    elif mode == "jalr":
+        state.gpr[8].lo = 0x00234560
+        state.gpr[16].lo = 0xAAAAAAAA
+        state.gpr[17].lo = 0xBBBBBBBB
+        expected_pc = 0x00234560
+        expected_exit = 3
+        expected_return = 3
+    elif mode == "jalr_alias":
+        state.gpr[8].lo = 0x00245670
+        state.gpr[17].lo = 0xBBBBBBBB
+        expected_pc = 0x00245670
+        expected_exit = 3
+        expected_return = 3
+    elif mode == "jr_ra":
+        state.gpr[31].lo = 0x00345670
+        expected_pc = 0x00345670
+        expected_exit = 0
+        expected_return = 0
+    elif mode == "jr_t9":
+        state.gpr[25].lo = 0x00456780
+        expected_pc = 0x00456780
+        expected_exit = 3
+        expected_return = 3
+    else:
+        raise AssertionError(f"unknown test mode: {mode}")
+
+    result = guest_fn(ctypes.pointer(state), None)
+    prefix = f"{mode}: "
+    require(result == expected_return,
+            prefix + f"wrong function exit: {result}")
+    require(state.exit_reason == expected_exit,
+            prefix + f"wrong state exit reason: {state.exit_reason}")
+    require(state.pc == expected_pc,
+            prefix + f"wrong dispatched PC: 0x{state.pc:08x}")
+
+    if mode == "jal":
+        require(state.gpr[31].lo == 0x00100008,
+                prefix + "JAL did not write PC+8 to $ra")
+        require(state.gpr[17].lo == 0x00100008,
+                prefix + "JAL link was not visible in its delay slot")
+        require(state.gpr[31].hi == 0x3131313131313131,
+                prefix + "JAL clobbered the upper half of $ra")
+    elif mode == "jalr":
+        require(state.gpr[16].lo == 0x00100008,
+                prefix + "JALR did not write PC+8 to encoded rd")
+        require(state.gpr[17].lo == 0x00100008,
+                prefix + "JALR link was not visible in its delay slot")
+        require(state.gpr[16].hi == 0x1616161616161616,
+                prefix + "JALR clobbered the upper half of rd")
+    elif mode == "jalr_alias":
+        require(state.gpr[8].lo == 0x00100008,
+                prefix + "JALR rd=rs did not write the link")
+        require(state.gpr[17].lo == 0x00100008,
+                prefix + "JALR rd=rs delay slot did not read the link")
+        require(state.gpr[8].hi == 0x0808080808080808,
+                prefix + "JALR rd=rs clobbered the upper half")
+    elif mode == "jr_ra":
+        require(state.gpr[31].lo == 0x1234,
+                prefix + "JR $ra delay slot did not overwrite $ra")
+    elif mode == "jr_t9":
+        require(state.gpr[25].lo == 0x4321,
+                prefix + "JR $t9 delay slot did not overwrite $t9")
+
+
 def main():
-    if len(sys.argv) != 2:
-        raise SystemExit("usage: test_control_flow_ir_runtime.py fixture_executable")
-
+    require(
+        len(sys.argv) == 2,
+        "usage: test_control_flow_ir_runtime.py path/to/ee_control_flow_ir_fixture",
+    )
     fixture_exe = pathlib.Path(sys.argv[1]).resolve()
-    with tempfile.TemporaryDirectory(prefix="ee-control-flow-") as temp:
-        ir_path = pathlib.Path(temp) / "indirect_jr_delay.ll"
-        subprocess.run([str(fixture_exe), str(ir_path)], check=True)
 
-        module = llvm.parse_assembly(ir_path.read_text(encoding="utf-8"))
-        module.verify()
-        module.triple = llvm.get_default_triple()
+    llvm.initialize_native_target()
+    llvm.initialize_native_asmprinter()
+    target = llvm.Target.from_default_triple()
+    target_machine = target.create_target_machine(opt=0)
 
-        target = llvm.Target.from_default_triple()
-        target_machine = target.create_target_machine()
-        module.data_layout = str(target_machine.target_data)
+    modes = ("jal", "jalr", "jalr_alias", "jr_ra", "jr_t9")
+    with tempfile.TemporaryDirectory(prefix="ee_control_flow_ir_") as directory:
+        temp_dir = pathlib.Path(directory)
+        for mode in modes:
+            run_case(fixture_exe, temp_dir, mode, target_machine)
 
-        engine = llvm.create_mcjit_compiler(llvm.parse_assembly(""), target_machine)
-        engine.add_module(module)
-        engine.finalize_object()
-
-        address = engine.get_function_address("guest_indirect_jr_delay_test")
-        require(address != 0, "JIT did not expose the indirect JR fixture")
-
-        guest_fn_type = ctypes.CFUNCTYPE(
-            ctypes.c_uint32, ctypes.POINTER(EEState), ctypes.c_void_p
-        )
-        guest_fn = guest_fn_type(address)
-
-        backing, state = make_aligned_state()
-        _ = backing
-        state.gpr[2].lo = 0x00200000
-        state.gpr[8].lo = 0xDEADBEEF
-        state.gpr[8].hi = 0x8877665544332211
-
-        result = guest_fn(ctypes.pointer(state), None)
-
-        require(result == 4, f"expected EE_EXIT_UNSUPPORTED (4), got {result}")
-        require(state.exit_reason == 4,
-                f"expected unsupported exit reason 4, got {state.exit_reason}")
-        require(state.pc == 0x00100000,
-                f"unsupported JR exit PC changed: 0x{state.pc:08x}")
-        require(state.gpr[8].lo == 0x1234,
-                f"delay-slot ADDIU did not execute: 0x{state.gpr[8].lo:x}")
-        require(state.gpr[8].hi == 0x8877665544332211,
-                "delay-slot ADDIU clobbered the upper 64-bit GPR half")
-
-    print("control_flow_ir_runtime: PASS")
+    print(
+        "control_flow_ir_runtime: PASS "
+        "(JAL/JALR link timing, JALR rd and rd=rs alias, "
+        "JR target snapshot, delay slots, return/dispatch PC)"
+    )
 
 
 if __name__ == "__main__":
