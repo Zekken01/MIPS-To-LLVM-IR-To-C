@@ -156,11 +156,27 @@ bool ee_recomp(const char* elf_path,
     for (const auto& kv : global_insns)
     {
         const s_ee_instruction& ins = kv.second;
-        if (ins.flow == e_ee_flow::FLOW_CALL &&
-            ins.opcode == e_ee_opcode::OP_JAL &&
-            loader.is_executable_address(ins.jump_target)) {
-            call_targets.insert(ins.jump_target);
-        }
+        const bool direct_jal =
+            ins.flow == e_ee_flow::FLOW_CALL &&
+            ins.opcode == e_ee_opcode::OP_JAL;
+        const bool regimm_link =
+            ins.valid == e_ee_valid::VALID &&
+            ins.opcode == e_ee_opcode::OP_REGIMM &&
+            (ins.rt == static_cast<uint8_t>(e_ee_opcode::REGIMM_BLTZAL) ||
+             ins.rt == static_cast<uint8_t>(e_ee_opcode::REGIMM_BGEZAL) ||
+             ins.rt == static_cast<uint8_t>(e_ee_opcode::REGIMM_BLTZALL) ||
+             ins.rt == static_cast<uint8_t>(e_ee_opcode::REGIMM_BGEZALL));
+        if (!direct_jal && !regimm_link)
+            continue;
+
+        // Conditional branch-and-link forms are FLOW_BRANCH/FLOW_BRANCH_LIKELY
+        // for CFG execution, but their taken destination is still a function
+        // entry and must be emitted independently like a JAL callee.
+        const uint32_t target = direct_jal
+            ? ins.jump_target
+            : static_cast<uint32_t>(ins.branch_target);
+        if (loader.is_executable_address(target))
+            call_targets.insert(target);
     }
     for (uint32_t ct : call_targets)
     {
