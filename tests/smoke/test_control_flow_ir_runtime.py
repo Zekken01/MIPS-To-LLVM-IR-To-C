@@ -392,6 +392,17 @@ def main():
                 f"caller continuation: expected next PC 0x0010000c, got 0x{state.pc:08x}")
         require(state.gpr[17].lo == 0x66 and state.gpr[17].hi == 0x1717171717171717,
                 "caller continuation block was not resumed correctly")
+        # An unknown guest PC must return to the host dispatcher rather
+        # than silently restarting this translated function.
+        state.pc = 0xDEAD0000
+        unknown_exit = caller_fn(ctypes.pointer(state), None)
+        require(unknown_exit == 3 and state.exit_reason == 3,
+                f"unknown caller PC: expected dispatcher exit 3, got {unknown_exit}/{state.exit_reason}")
+        require(state.pc == 0xDEAD0000,
+                f"unknown caller PC was overwritten: 0x{state.pc:08x}")
+        require(state.gpr[16].lo == 0x55 and state.gpr[17].lo == 0x66,
+                "unknown caller PC unexpectedly restarted the function")
+
         print("control-flow nested call/resume: PASS", flush=True)
     
     print("control_flow_ir_runtime: PASS (JR return/dispatch; JAL/JALR; BEQ condition sampling; BLTZAL/BGEZAL/BLTZALL/BGEZALL taken and not-taken)")
