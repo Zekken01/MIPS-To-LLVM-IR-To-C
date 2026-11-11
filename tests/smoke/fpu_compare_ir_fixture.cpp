@@ -39,6 +39,8 @@ int main(int argc, char** argv)
     else if (std::strcmp(mode, "cvt_w") == 0) funct = 0x24;
     else if (std::strcmp(mode, "max_s") == 0) funct = 0x28;
     else if (std::strcmp(mode, "min_s") == 0) funct = 0x29;
+    else if (std::strcmp(mode, "abs_s") == 0) funct = 0x05;
+    else if (std::strcmp(mode, "neg_s") == 0) funct = 0x07;
     else
     {
         std::fprintf(stderr, "unknown COP1 comparison mode: %s\n", mode);
@@ -50,7 +52,9 @@ int main(int argc, char** argv)
     const bool writes_fpr6 =
         std::strcmp(mode, "cvt_w") == 0 ||
         std::strcmp(mode, "max_s") == 0 ||
-        std::strcmp(mode, "min_s") == 0;
+        std::strcmp(mode, "min_s") == 0 ||
+        std::strcmp(mode, "abs_s") == 0 ||
+        std::strcmp(mode, "neg_s") == 0;
     const uint8_t destination_or_cc = writes_fpr6 ? 6 : 0;
     const uint32_t word = make_cop1_s(2, 1, destination_or_cc, funct);
     const ee::s_ee_instruction ins = ee::decode(entry_pc, word);
