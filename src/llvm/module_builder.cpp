@@ -3022,6 +3022,10 @@ void module_builder::emit_function_cfg(const ee::s_ee_function& fn,
         // continuation inside this translated function. Zero remains accepted
         // as a legacy initial-PC sentinel; every other unknown PC must go back
         // to the host dispatcher rather than restarting the function.
+        uint32_t entry_block_pc = fn.entry_pc;
+        if (block_pcs.count(entry_block_pc) == 0)
+            entry_block_pc = fn.blocks[0].start_pc;
+
         const std::string pc_ptr = state_field(6);
         const std::string guest_pc = newtemp();
         m_out += "  " + guest_pc + " = load i32, ptr " + pc_ptr + "\n";
@@ -3029,13 +3033,15 @@ void module_builder::emit_function_cfg(const ee::s_ee_function& fn,
         if (fn.entry_pc != 0)
         {
             m_out += "    i32 " + std::to_string(fn.entry_pc) +
-                     ", label %" + block_label(fn.blocks[0].start_pc) + "\n";
+                     ", label %" + block_label(entry_block_pc) + "\n";
         }
-        m_out += "    i32 0, label %" + block_label(fn.blocks[0].start_pc) + "\n";
-        for (size_t i = 1; i < fn.blocks.size(); ++i)
+        m_out += "    i32 0, label %" + block_label(entry_block_pc) + "\n";
+        for (const auto& bb : fn.blocks)
         {
-            m_out += "    i32 " + std::to_string(fn.blocks[i].start_pc) +
-                     ", label %" + block_label(fn.blocks[i].start_pc) + "\n";
+            if (bb.start_pc == entry_block_pc || bb.start_pc == 0)
+                continue;
+            m_out += "    i32 " + std::to_string(bb.start_pc) +
+                     ", label %" + block_label(bb.start_pc) + "\n";
         }
         m_out += "  ]\n";
         m_out += "dispatch_unknown:\n";
