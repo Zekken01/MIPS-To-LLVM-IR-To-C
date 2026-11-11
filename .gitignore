@@ -1,0 +1,13 @@
+/build*/
+/cmake-build*/
+/PS2_GAME/
+/results/SLUS_214.42_ir/
+*.o
+*.obj
+*.a
+*.lib
+*.dll
+*.so
+*.exe
+__pycache__/
+*.pyc

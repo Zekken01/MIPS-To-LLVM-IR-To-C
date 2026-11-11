@@ -1,0 +1,2760 @@
+#include "module_builder.h"
+#include "ee_opcode.h"
+#include <cctype>
+#include <cstdio>
+#include <cstring>
+#include <set>
+#include <sstream>
+#include <algorithm>
+#include <map>
+
+namespace llvm {
+
+namespace
+{
+std::string u32hex(uint32_t v)
+{
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "0x%x", v);
+    return buf;
+}
+
+std::string reg_lo(uint8_t r)  { char b[16]; std::snprintf(b, sizeof(b), "%%g%d_lo", r); return b; }
+std::string reg_hi(uint8_t r)  { char b[16]; std::snprintf(b, sizeof(b), "%%g%d_hi", r); return b; }
+} // namespace
+
+module_builder::module_builder(llvm_context& ctx, int opt_level)
+    : m_ctx(ctx)
+{
+    set_opt_level(opt_level);
+}
+
+void module_builder::set_opt_level(int level)
+{
+    if (level < 0) level = 0;
+    if (level > 3) level = 3;
+    m_opt_level = level;
+}
+
+void module_builder::header()
+{
+    m_out += "; ModuleID = 'ee_module'\n";
+    m_out += "target datalayout = \"e-m:w-p:64:64-i64:64-f80:128-n8:16:32:64-S128\"\n";
+    m_out += "target triple = \"x86_64-pc-windows-msvc\"\n";
+    m_out += "\n";
+    // Layout must match s_ee_cpu_state:
+    // 0 gpr[32]{lo,hi}, 1 hi, 2 lo, 3 hi1, 4 lo1, 5 sa, 6 pc, 7 exit, 8 pad,
+    // 9 cop0[32], 10 fpr[32], 11 vu0[32]{lo,hi}, 12 fcsr, 13 fpu_acc
+    m_out += "%ee_cpu_state = type { "
+             "[32 x { i64, i64 }], "
+             "i64, i64, i64, i64, "
+             "i32, i32, i32, i32, "
+             "[32 x i32], "
+             "[32 x i64], "
+             "[32 x { i64, i64 }], "
+             "i32, i32 }\n";
+    m_out += "\n";
+}
+
+void module_builder::declare_memory_helpers()
+{
+    m_out += "declare i8   @ee_mem_read8 (ptr, i32)\n";
+    m_out += "declare i16  @ee_mem_read16(ptr, i32)\n";
+    m_out += "declare i32  @ee_mem_read32(ptr, i32)\n";
+    m_out += "declare i64  @ee_mem_read64(ptr, i32)\n";
+    m_out += "declare void @ee_mem_read128(ptr, i32, ptr)\n";
+    m_out += "declare void @ee_mem_write8 (ptr, i32, i8 )\n";
+    m_out += "declare void @ee_mem_write16(ptr, i32, i16)\n";
+    m_out += "declare void @ee_mem_write32(ptr, i32, i32)\n";
+    m_out += "declare void @ee_mem_write64(ptr, i32, i64)\n";
+    m_out += "declare void @ee_mem_write128(ptr, i32, ptr)\n";
+    m_out += "declare float @llvm.sqrt.f32(float)\n";
+    m_out += "declare float @llvm.fabs.f32(float)\n";
+    m_out += "declare i32 @ee_raise_exception(ptr, ptr, i32, i32, i32, i32)\n";
+    m_out += "declare i32 @ee_exception_return(ptr)\n";
+    m_out += "\n";
+}
+
+std::string module_builder::gptr_lo(uint8_t reg)
+{
+    // Emits "%tN = getelementptr ..." (a GEP is not a valid inline operand
+    // for load/store) and returns the temp holding the pointer.
+    char buf[160];
+    std::snprintf(buf, sizeof(buf),
+        "getelementptr %%ee_cpu_state, ptr %%cpu, i32 0, i32 0, i32 %u, i32 0",
+        (unsigned)reg);
+    std::string t = newtemp();
+    m_out += "  " + t + " = " + buf + "\n";
+    return t;
+}
+
+std::string module_builder::gptr_hi(uint8_t reg)
+{
+    // Emits "%tN = getelementptr ..." (a GEP is not a valid inline operand
+    // for load/store) and returns the temp holding the pointer.
+    char buf[160];
+    std::snprintf(buf, sizeof(buf),
+        "getelementptr %%ee_cpu_state, ptr %%cpu, i32 0, i32 0, i32 %u, i32 1",
+        (unsigned)reg);
+    std::string t = newtemp();
+    m_out += "  " + t + " = " + buf + "\n";
+    return t;
+}
+
+std::string module_builder::cop0_ptr(uint8_t reg)
+{
+    char buf[160];
+    std::snprintf(buf, sizeof(buf),
+        "getelementptr %%ee_cpu_state, ptr %%cpu, i32 0, i32 9, i32 %u",
+        (unsigned)reg);
+    return buf;
+}
+
+std::string module_builder::fpr_ptr(uint8_t reg)
+{
+    char buf[160];
+    std::snprintf(buf, sizeof(buf),
+        "getelementptr %%ee_cpu_state, ptr %%cpu, i32 0, i32 10, i32 %u",
+        (unsigned)reg);
+    return buf;
+}
+
+std::string module_builder::fcsr_ptr()
+{
+    return "getelementptr %ee_cpu_state, ptr %cpu, i32 0, i32 12";
+}
+
+std::string module_builder::fpu_acc_ptr()
+{
+    return "getelementptr %ee_cpu_state, ptr %cpu, i32 0, i32 13";
+}
+
+std::string module_builder::load_fpr_i32(uint8_t freg)
+{
+    std::string p = newtemp();
+    std::string v64 = newtemp();
+    std::string v32 = newtemp();
+    m_out += "  " + p + " = " + fpr_ptr(freg) + "\n";
+    m_out += "  " + v64 + " = load i64, ptr " + p + "\n";
+    m_out += "  " + v32 + " = trunc i64 " + v64 + " to i32\n";
+    return v32;
+}
+
+std::string module_builder::load_fpr_f32(uint8_t freg)
+{
+    std::string bits = load_fpr_i32(freg);
+    std::string f = newtemp();
+    m_out += "  " + f + " = bitcast i32 " + bits + " to float\n";
+    return f;
+}
+
+void module_builder::store_fpr_i32(uint8_t freg, const std::string& ival)
+{
+    std::string p = newtemp();
+    std::string v64 = newtemp();
+    m_out += "  " + p + " = " + fpr_ptr(freg) + "\n";
+    m_out += "  " + v64 + " = zext i32 " + ival + " to i64\n";
+    m_out += "  store i64 " + v64 + ", ptr " + p + "\n";
+}
+
+void module_builder::store_fpr_f32(uint8_t freg, const std::string& fval)
+{
+    std::string bits = newtemp();
+    m_out += "  " + bits + " = bitcast float " + fval + " to i32\n";
+    store_fpr_i32(freg, bits);
+}
+
+std::string module_builder::vu0_lo_ptr(uint8_t reg)
+{
+    // Emits "%tN = getelementptr ..." (a GEP is not a valid inline operand
+    // for load/store) and returns the temp holding the pointer.
+    char buf[160];
+    std::snprintf(buf, sizeof(buf),
+        "getelementptr %%ee_cpu_state, ptr %%cpu, i32 0, i32 11, i32 %u, i32 0",
+        (unsigned)reg);
+    std::string t = newtemp();
+    m_out += "  " + t + " = " + buf + "\n";
+    return t;
+}
+
+std::string module_builder::vu0_hi_ptr(uint8_t reg)
+{
+    // Emits "%tN = getelementptr ..." (a GEP is not a valid inline operand
+    // for load/store) and returns the temp holding the pointer.
+    char buf[160];
+    std::snprintf(buf, sizeof(buf),
+        "getelementptr %%ee_cpu_state, ptr %%cpu, i32 0, i32 11, i32 %u, i32 1",
+        (unsigned)reg);
+    std::string t = newtemp();
+    m_out += "  " + t + " = " + buf + "\n";
+    return t;
+}
+
+std::string module_builder::state_field(int field)
+{
+    std::string ge = newtemp();
+    m_out += "  " + ge + " = getelementptr %ee_cpu_state, ptr %cpu, i32 0, i32 " +
+             std::to_string(field) + "\n";
+    return ge;
+}
+
+std::string module_builder::block_label(uint32_t pc)
+{
+    // Bare label name. Definitions: "bb_0x..:"; references: "label %bb_0x.."
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "bb_0x%x", pc);
+    return buf;
+}
+
+std::string module_builder::newtemp()
+{
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%%t%d", m_temp_counter++);
+    return buf;
+}
+
+// ---- Register tracking (Phase 7: reduce register-state synchronisation) ----
+
+std::string module_builder::load_gpr_temp(uint8_t reg)
+{
+    if (reg == 0) return "0";
+    auto it = m_cur_lo.find(reg);
+    if (it != m_cur_lo.end()) return it->second;
+    std::string lo = newtemp(); std::string hi = newtemp();
+    m_out += "  " + lo + " = load i64, ptr " + gptr_lo(reg) + "\n";
+    m_out += "  " + hi + " = load i64, ptr " + gptr_hi(reg) + "\n";
+    m_cur_lo[reg] = lo;
+    m_cur_hi[reg] = hi;
+    return lo;
+}
+
+std::string module_builder::src_lo(uint8_t reg)
+{
+    if (reg == 0) return "0";
+    return load_gpr_temp(reg);
+}
+
+std::string module_builder::src_hi(uint8_t reg)
+{
+    if (reg == 0) return "0";
+    load_gpr_temp(reg);
+    return m_cur_hi[reg];
+}
+
+void module_builder::set_gpr_temp(uint8_t reg, const std::string& lo,
+                                  const std::string& hi)
+{
+    if (reg == 0) return; // $zero is hard-wired
+    m_cur_lo[reg] = lo;
+    m_cur_hi[reg] = hi;
+    m_dirty_regs.insert(reg);
+}
+
+// Write only the low 64 bits of a GPR; preserve the existing upper 64.
+// Matches PCSX2 interpreter behaviour for scalar integer ops (UD[0] write only).
+void module_builder::set_gpr_lo64(uint8_t reg, const std::string& lo)
+{
+    if (reg == 0) return;
+    // Ensure hi is loaded into the tracking map so it is not lost on store-back.
+    std::string hi = src_hi(reg);
+    m_cur_lo[reg] = lo;
+    m_cur_hi[reg] = hi;
+    m_dirty_regs.insert(reg);
+}
+
+// Sign-extend a 32-bit (or low-32-of-64) result into the full low 64 bits,
+// then preserve the upper 64. Used by ADDU/ADDIU/SUBU/LW/LUI/etc.
+void module_builder::set_gpr_lo32_sext(uint8_t reg, const std::string& val)
+{
+    if (reg == 0) return;
+    // trunc to i32 then sext to i64 so the high 32 of the low doubleword
+    // become a proper sign extension of the 32-bit result.
+    std::string t32 = newtemp();
+    std::string t64 = newtemp();
+    m_out += "  " + t32 + " = trunc i64 " + val + " to i32\n";
+    m_out += "  " + t64 + " = sext i32 " + t32 + " to i64\n";
+    set_gpr_lo64(reg, t64);
+}
+
+void module_builder::store_dirty_regs(const std::set<uint8_t>& live_out)
+{
+    for (uint8_t r : m_dirty_regs)
+    {
+        if (live_out.count(r) == 0) continue;
+        auto lit = m_cur_lo.find(r);
+        auto hit = m_cur_hi.find(r);
+        if (lit == m_cur_lo.end() || hit == m_cur_hi.end()) continue;
+        m_out += "  store i64 " + lit->second + ", ptr " + gptr_lo(r) + "\n";
+        m_out += "  store i64 " + hit->second + ", ptr " + gptr_hi(r) + "\n";
+    }
+}
+
+void module_builder::reset_tracking()
+{
+    m_cur_lo.clear();
+    m_cur_hi.clear();
+    m_dirty_regs.clear();
+}
+
+// ---- Block reads/writes (computed from actual instructions) ----
+
+static std::set<uint8_t> block_written(const std::vector<ee::s_ee_instruction>& block)
+{
+    std::set<uint8_t> w;
+    using ee::e_ee_opcode;
+    for (const auto& ins : block)
+    {
+        if (ins.valid != ee::e_ee_valid::VALID) continue;
+        switch (ins.opcode)
+        {
+        case e_ee_opcode::OP_ADDIU:
+        case e_ee_opcode::OP_DADDIU:
+        case e_ee_opcode::OP_ANDI:
+        case ee::e_ee_opcode::OP_ORI:
+        case ee::e_ee_opcode::OP_XORI:
+        case ee::e_ee_opcode::OP_LUI:
+        case ee::e_ee_opcode::OP_SLTI:
+        case ee::e_ee_opcode::OP_SLTIU:
+        case ee::e_ee_opcode::OP_LB:
+        case ee::e_ee_opcode::OP_LH:
+        case ee::e_ee_opcode::OP_LBU:
+        case ee::e_ee_opcode::OP_LHU:
+        case ee::e_ee_opcode::OP_LW:
+        case ee::e_ee_opcode::OP_LWU:
+        case ee::e_ee_opcode::OP_LD:
+        case ee::e_ee_opcode::OP_LWL:
+        case ee::e_ee_opcode::OP_LWR:
+            if (ins.rt != 0) w.insert(ins.rt);
+            break;
+        case e_ee_opcode::OP_SPECIAL:
+            switch (static_cast<e_ee_opcode>(ins.funct))
+            {
+            case e_ee_opcode::FUNCT_MFHI:
+            case e_ee_opcode::FUNCT_MFLO:
+                if (ins.rd != 0) w.insert(ins.rd);
+                break;
+            case e_ee_opcode::FUNCT_JALR:
+                w.insert(31);
+                break;
+            case e_ee_opcode::FUNCT_ADD:
+            case e_ee_opcode::FUNCT_ADDU:
+            case e_ee_opcode::FUNCT_SUB:
+            case e_ee_opcode::FUNCT_SUBU:
+            case e_ee_opcode::FUNCT_AND:
+            case e_ee_opcode::FUNCT_OR:
+            case e_ee_opcode::FUNCT_XOR:
+            case e_ee_opcode::FUNCT_NOR:
+            case e_ee_opcode::FUNCT_SLT:
+            case e_ee_opcode::FUNCT_SLTU:
+            case e_ee_opcode::FUNCT_SLL:
+            case e_ee_opcode::FUNCT_SRL:
+            case e_ee_opcode::FUNCT_SRA:
+            case e_ee_opcode::FUNCT_ROTR:
+            case e_ee_opcode::FUNCT_ROTRV:
+                if (ins.rd != 0) w.insert(ins.rd);
+                break;
+            default:
+                break;
+            }
+            break;
+        case e_ee_opcode::OP_COP0:
+            if (ins.rs == static_cast<uint8_t>(e_ee_opcode::COP0_MFC0) && ins.rt != 0) w.insert(ins.rt);
+            break;
+        case e_ee_opcode::OP_COP1:
+            if (ins.rs == static_cast<uint8_t>(e_ee_opcode::COP1_MFC1) && ins.rt != 0) w.insert(ins.rt);
+            break;
+        case e_ee_opcode::OP_MMI:
+            switch (ins.funct)
+            {
+            case 0x10: // MFHI1: rd = HI1
+            case 0x12: // MFLO1: rd = LO1
+                if (ins.rd != 0) w.insert(ins.rd);
+                break;
+            case 0x11: // MTHI1: HI1 = rs
+            case 0x13: // MTLO1: LO1 = rs
+                break;
+            default: // packed MMI operations write rd
+                if (ins.rd != 0) w.insert(ins.rd);
+                break;
+            }
+            break;
+        default:
+            break;
+        }
+    }
+    return w;
+}
+
+static std::set<uint8_t> block_read_before_write(const std::vector<ee::s_ee_instruction>& block)
+{
+    std::set<uint8_t> result;
+    std::set<uint8_t> written_so_far;
+    auto consider_read = [&](uint8_t r) {
+        if (r != 0 && written_so_far.count(r) == 0) result.insert(r);
+    };
+    using ee::e_ee_opcode;
+    for (const auto& ins : block)
+    {
+        if (ins.valid != ee::e_ee_valid::VALID) continue;
+        switch (ins.opcode)
+        {
+        case e_ee_opcode::OP_ADDIU:
+        case e_ee_opcode::OP_DADDIU:
+        case e_ee_opcode::OP_ANDI:
+        case e_ee_opcode::OP_ORI:
+        case e_ee_opcode::OP_XORI:
+        case e_ee_opcode::OP_LUI:
+        case e_ee_opcode::OP_SLTI:
+        case e_ee_opcode::OP_SLTIU:
+        case e_ee_opcode::OP_LB:
+        case e_ee_opcode::OP_LH:
+        case e_ee_opcode::OP_LBU:
+        case e_ee_opcode::OP_LHU:
+        case e_ee_opcode::OP_LW:
+        case e_ee_opcode::OP_LWU:
+        case e_ee_opcode::OP_LD:
+        case e_ee_opcode::OP_LWL:
+        case e_ee_opcode::OP_LWR:
+            consider_read(ins.rs);
+            if (ins.rt != 0) written_so_far.insert(ins.rt);
+            break;
+        case e_ee_opcode::OP_SW:
+        case e_ee_opcode::OP_SB:
+        case e_ee_opcode::OP_SH:
+        case e_ee_opcode::OP_SD:
+        case e_ee_opcode::OP_SWL:
+        case e_ee_opcode::OP_SDL:
+            consider_read(ins.rs);
+            consider_read(ins.rt);
+            break;
+        case e_ee_opcode::OP_SPECIAL:
+            switch (static_cast<e_ee_opcode>(ins.funct))
+            {
+            case e_ee_opcode::FUNCT_MFHI:
+            case e_ee_opcode::FUNCT_MFLO:
+                break;
+            case e_ee_opcode::FUNCT_MTHI:
+            case e_ee_opcode::FUNCT_MTLO:
+            case e_ee_opcode::FUNCT_MULT:
+            case e_ee_opcode::FUNCT_MULTU:
+            case e_ee_opcode::FUNCT_DIV:
+            case e_ee_opcode::FUNCT_DIVU:
+                consider_read(ins.rs);
+                consider_read(ins.rt);
+                break;
+            case e_ee_opcode::FUNCT_JR:
+                consider_read(ins.rs);
+                break;
+            case e_ee_opcode::FUNCT_JALR:
+                consider_read(ins.rs);
+                break;
+            case e_ee_opcode::FUNCT_ADD:
+            case e_ee_opcode::FUNCT_ADDU:
+            case e_ee_opcode::FUNCT_SUB:
+            case e_ee_opcode::FUNCT_SUBU:
+            case e_ee_opcode::FUNCT_AND:
+            case e_ee_opcode::FUNCT_OR:
+            case e_ee_opcode::FUNCT_XOR:
+            case e_ee_opcode::FUNCT_NOR:
+            case e_ee_opcode::FUNCT_SLT:
+            case e_ee_opcode::FUNCT_SLTU:
+            case e_ee_opcode::FUNCT_SLL:
+            case e_ee_opcode::FUNCT_SRL:
+            case e_ee_opcode::FUNCT_SRA:
+            case e_ee_opcode::FUNCT_ROTR:
+            case e_ee_opcode::FUNCT_ROTRV:
+                consider_read(ins.rs);
+                consider_read(ins.rt);
+                if (ins.rd != 0) written_so_far.insert(ins.rd);
+                break;
+            default:
+                break;
+            }
+            break;
+        case e_ee_opcode::OP_BEQ:
+        case e_ee_opcode::OP_BNE:
+            consider_read(ins.rs);
+            consider_read(ins.rt);
+            break;
+        case e_ee_opcode::OP_REGIMM:
+            consider_read(ins.rs);
+            break;
+        case e_ee_opcode::OP_ADDI:
+            consider_read(ins.rs);
+            if (ins.rt != 0) written_so_far.insert(ins.rt);
+            break;
+        case e_ee_opcode::OP_COP0:
+            if (ins.rs == static_cast<uint8_t>(e_ee_opcode::COP0_MTC0)) consider_read(ins.rt);
+            break;
+        case e_ee_opcode::OP_COP1:
+            if (ins.rs == static_cast<uint8_t>(e_ee_opcode::COP1_MTC1)) consider_read(ins.rt);
+            if (ins.rs == static_cast<uint8_t>(e_ee_opcode::COP1_LWC1)) {
+                consider_read(ins.rs);
+                if (ins.rt != 0) written_so_far.insert(ins.rt);
+            }
+            if (ins.rs == static_cast<uint8_t>(e_ee_opcode::COP1_SWC1)) {
+                consider_read(ins.rs);
+                consider_read(ins.rt);
+            }
+            break;
+        case e_ee_opcode::OP_MMI:
+            switch (ins.funct)
+            {
+            case 0x10: // MFHI1: rd = HI1
+            case 0x12: // MFLO1: rd = LO1
+                if (ins.rd != 0) written_so_far.insert(ins.rd);
+                break;
+            case 0x11: // MTHI1: HI1 = rs
+            case 0x13: // MTLO1: LO1 = rs
+                consider_read(ins.rs);
+                break;
+            default: // packed MMI operations read rs/rt and write rd
+                consider_read(ins.rs);
+                consider_read(ins.rt);
+                if (ins.rd != 0) written_so_far.insert(ins.rd);
+                break;
+            }
+            break;
+        default:
+            break;
+        }
+    }
+    return result;
+}
+
+void module_builder::emit_insn(const ee::s_ee_instruction& ins,
+                               bool is_last_in_block,
+                               uint32_t fallthrough_pc)
+{
+    using ee::e_ee_opcode;
+    m_out += "  ; ";
+    m_out += u32hex(ins.pc);
+    m_out += ": ";
+    m_out += ins.mnemonic;
+    m_out += "\n";
+
+    if (ins.valid != ee::e_ee_valid::VALID)
+    {
+        // Never silently skip or approximate an instruction we cannot lower
+        // (PLAN.md guardrail). Record the guest pc + reason and leave the
+        // function with EE_EXIT_UNSUPPORTED so the host can see exactly which
+        // instruction was reached. Code after it in the block is unreachable.
+        // Flush registers already computed in this block (they live in SSA
+        // temps) so the host sees correct architectural state at the exit.
+        {
+            std::set<uint8_t> all;
+            for (uint8_t r : m_dirty_regs) all.insert(r);
+            store_dirty_regs(all);
+        }
+        char pcbuf[32];
+        std::snprintf(pcbuf, sizeof(pcbuf), "%u", ins.pc);
+        std::string ppc = state_field(6);   // m_pc
+        m_out += "  store i32 " + std::string(pcbuf) + ", ptr " + ppc + "\n";
+        std::string pex = state_field(7);   // m_exit_reason
+        m_out += "  store i32 4, ptr " + pex + "\n";
+        m_out += "  ret i32 4\n";
+        m_out += "unsup_cont_" + std::string(pcbuf) + "_" + std::to_string(m_temp_counter++) + ":\n";
+        return;
+    }
+
+    if (fallthrough_pc == 0)
+        fallthrough_pc = ins.pc + 8;
+
+    switch (ins.opcode)
+    {
+    case ee::e_ee_opcode::OP_ADDIU:
+    {
+        // 32-bit add, result sign-extended into low 64; upper 64 preserved.
+        // PCSX2: UD[0] = (s64)(s32)(UL[0] + Imm)
+        std::string d = newtemp();
+        char imm[32];
+        std::snprintf(imm, sizeof(imm), "%d", ins.immediate);
+        m_out += "  " + d + " = add i64 " + src_lo(ins.rs) + ", " + imm + "\n";
+        set_gpr_lo32_sext(ins.rt, d);
+        break;
+    }
+    case ee::e_ee_opcode::OP_DADDIU:
+    {
+        // Full 64-bit add; upper 64 preserved.
+        std::string d = newtemp();
+        char imm[32];
+        std::snprintf(imm, sizeof(imm), "%d", ins.immediate);
+        m_out += "  " + d + " = add i64 " + src_lo(ins.rs) + ", " + imm + "\n";
+        set_gpr_lo64(ins.rt, d);
+        break;
+    }
+    case ee::e_ee_opcode::OP_ORI:
+    {
+        // Zero-extend 16-bit imm, OR into full 64; upper 64 preserved.
+        std::string d = newtemp();
+        char imm[32];
+        std::snprintf(imm, sizeof(imm), "%u", ins.uimmediate);
+        m_out += "  " + d + " = or i64 " + src_lo(ins.rs) + ", " + imm + "\n";
+        set_gpr_lo64(ins.rt, d);
+        break;
+    }
+    case ee::e_ee_opcode::OP_ANDI:
+    {
+        std::string d = newtemp();
+        char imm[32];
+        std::snprintf(imm, sizeof(imm), "%u", ins.uimmediate);
+        m_out += "  " + d + " = and i64 " + src_lo(ins.rs) + ", " + imm + "\n";
+        set_gpr_lo64(ins.rt, d);
+        break;
+    }
+    case ee::e_ee_opcode::OP_XORI:
+    {
+        std::string d = newtemp();
+        char imm[32];
+        std::snprintf(imm, sizeof(imm), "%u", ins.uimmediate);
+        m_out += "  " + d + " = xor i64 " + src_lo(ins.rs) + ", " + imm + "\n";
+        set_gpr_lo64(ins.rt, d);
+        break;
+    }
+    case ee::e_ee_opcode::OP_LUI:
+    {
+        // LUI writes a 32-bit constant << 16, sign-extended into low 64.
+        std::string d = newtemp();
+        char imm[32];
+        std::snprintf(imm, sizeof(imm), "%u", ins.uimmediate);
+        m_out += "  " + d + " = shl i64 " + imm + ", 16\n";
+        set_gpr_lo32_sext(ins.rt, d);
+        break;
+    }
+    case ee::e_ee_opcode::OP_LB:
+    case ee::e_ee_opcode::OP_LBU:
+    case ee::e_ee_opcode::OP_LH:
+    case ee::e_ee_opcode::OP_LHU:
+    case ee::e_ee_opcode::OP_LW:
+    case ee::e_ee_opcode::OP_LWU:
+    case ee::e_ee_opcode::OP_LD:
+    {
+        // Integer loads: addr = trunc32(rs + sext16(imm)); result into low 64,
+        // upper 64 preserved (except full 64-bit LD still only writes lo64).
+        char imm[32];
+        std::snprintf(imm, sizeof(imm), "%d", ins.immediate);
+        std::string sum = newtemp();
+        std::string addr = newtemp();
+        m_out += "  " + sum + " = add i64 " + src_lo(ins.rs) + ", " + imm + "\n";
+        m_out += "  " + addr + " = trunc i64 " + sum + " to i32\n";
+
+        if (ins.opcode == ee::e_ee_opcode::OP_LB ||
+            ins.opcode == ee::e_ee_opcode::OP_LBU) {
+            std::string b = newtemp();
+            std::string d = newtemp();
+            m_out += "  " + b + " = call i8 @ee_mem_read8(ptr %rt, i32 " + addr + ")\n";
+            if (ins.opcode == ee::e_ee_opcode::OP_LB)
+                m_out += "  " + d + " = sext i8 " + b + " to i64\n";
+            else
+                m_out += "  " + d + " = zext i8 " + b + " to i64\n";
+            set_gpr_lo64(ins.rt, d);
+        } else if (ins.opcode == ee::e_ee_opcode::OP_LH ||
+                   ins.opcode == ee::e_ee_opcode::OP_LHU) {
+            std::string h = newtemp();
+            std::string d = newtemp();
+            m_out += "  " + h + " = call i16 @ee_mem_read16(ptr %rt, i32 " + addr + ")\n";
+            if (ins.opcode == ee::e_ee_opcode::OP_LH)
+                m_out += "  " + d + " = sext i16 " + h + " to i64\n";
+            else
+                m_out += "  " + d + " = zext i16 " + h + " to i64\n";
+            set_gpr_lo64(ins.rt, d);
+        } else if (ins.opcode == ee::e_ee_opcode::OP_LD) {
+            std::string d = newtemp();
+            m_out += "  " + d + " = call i64 @ee_mem_read64(ptr %rt, i32 " + addr + ")\n";
+            set_gpr_lo64(ins.rt, d);
+        } else {
+            // LW / LWU
+            std::string w = newtemp();
+            std::string d = newtemp();
+            m_out += "  " + w + " = call i32 @ee_mem_read32(ptr %rt, i32 " + addr + ")\n";
+            if (ins.opcode == ee::e_ee_opcode::OP_LWU)
+                m_out += "  " + d + " = zext i32 " + w + " to i64\n";
+            else
+                m_out += "  " + d + " = sext i32 " + w + " to i64\n";
+            set_gpr_lo64(ins.rt, d);
+        }
+        break;
+    }
+    case ee::e_ee_opcode::OP_SB:
+    case ee::e_ee_opcode::OP_SH:
+    case ee::e_ee_opcode::OP_SW:
+    case ee::e_ee_opcode::OP_SD:
+    {
+        char imm[32];
+        std::snprintf(imm, sizeof(imm), "%d", ins.immediate);
+        std::string sum = newtemp();
+        std::string addr = newtemp();
+        m_out += "  " + sum + " = add i64 " + src_lo(ins.rs) + ", " + imm + "\n";
+        m_out += "  " + addr + " = trunc i64 " + sum + " to i32\n";
+        if (ins.opcode == ee::e_ee_opcode::OP_SB) {
+            std::string v = newtemp();
+            m_out += "  " + v + " = trunc i64 " + src_lo(ins.rt) + " to i8\n";
+            m_out += "  call void @ee_mem_write8(ptr %rt, i32 " + addr + ", i8 " + v + ")\n";
+        } else if (ins.opcode == ee::e_ee_opcode::OP_SH) {
+            std::string v = newtemp();
+            m_out += "  " + v + " = trunc i64 " + src_lo(ins.rt) + " to i16\n";
+            m_out += "  call void @ee_mem_write16(ptr %rt, i32 " + addr + ", i16 " + v + ")\n";
+        } else if (ins.opcode == ee::e_ee_opcode::OP_SD) {
+            m_out += "  call void @ee_mem_write64(ptr %rt, i32 " + addr + ", i64 " +
+                     src_lo(ins.rt) + ")\n";
+        } else {
+            std::string v = newtemp();
+            m_out += "  " + v + " = trunc i64 " + src_lo(ins.rt) + " to i32\n";
+            m_out += "  call void @ee_mem_write32(ptr %rt, i32 " + addr + ", i32 " + v + ")\n";
+        }
+        break;
+    }
+    case ee::e_ee_opcode::OP_LQ:
+    {
+        // Load quadword into full 128-bit GPR (lo + hi).
+        char imm[32];
+        std::snprintf(imm, sizeof(imm), "%d", ins.immediate);
+        std::string sum = newtemp();
+        std::string addr = newtemp();
+        std::string addr8 = newtemp();
+        std::string vlo = newtemp();
+        std::string vhi = newtemp();
+        m_out += "  " + sum + " = add i64 " + src_lo(ins.rs) + ", " + imm + "\n";
+        m_out += "  " + addr + " = trunc i64 " + sum + " to i32\n";
+        m_out += "  " + vlo + " = call i64 @ee_mem_read64(ptr %rt, i32 " + addr + ")\n";
+        m_out += "  " + addr8 + " = add i32 " + addr + ", 8\n";
+        m_out += "  " + vhi + " = call i64 @ee_mem_read64(ptr %rt, i32 " + addr8 + ")\n";
+        set_gpr_temp(ins.rt, vlo, vhi);
+        break;
+    }
+    case ee::e_ee_opcode::OP_SQ:
+    {
+        // Store full 128-bit GPR.
+        char imm[32];
+        std::snprintf(imm, sizeof(imm), "%d", ins.immediate);
+        std::string sum = newtemp();
+        std::string addr = newtemp();
+        std::string addr8 = newtemp();
+        m_out += "  " + sum + " = add i64 " + src_lo(ins.rs) + ", " + imm + "\n";
+        m_out += "  " + addr + " = trunc i64 " + sum + " to i32\n";
+        m_out += "  call void @ee_mem_write64(ptr %rt, i32 " + addr + ", i64 " +
+                 src_lo(ins.rt) + ")\n";
+        m_out += "  " + addr8 + " = add i32 " + addr + ", 8\n";
+        m_out += "  call void @ee_mem_write64(ptr %rt, i32 " + addr8 + ", i64 " +
+                 src_hi(ins.rt) + ")\n";
+        break;
+    }
+    case ee::e_ee_opcode::OP_LDL:
+    case ee::e_ee_opcode::OP_LDR:
+    {
+        // Unaligned 64-bit load partials — approximate with aligned LD of lo64.
+        char imm[32];
+        std::snprintf(imm, sizeof(imm), "%d", ins.immediate);
+        std::string sum = newtemp();
+        std::string addr = newtemp();
+        std::string d = newtemp();
+        m_out += "  " + sum + " = add i64 " + src_lo(ins.rs) + ", " + imm + "\n";
+        m_out += "  " + addr + " = trunc i64 " + sum + " to i32\n";
+        m_out += "  " + d + " = call i64 @ee_mem_read64(ptr %rt, i32 " + addr + ")\n";
+        set_gpr_lo64(ins.rt, d);
+        break;
+    }
+    case ee::e_ee_opcode::OP_SDL:
+    case ee::e_ee_opcode::OP_SDR:
+    case ee::e_ee_opcode::OP_SWR:
+    {
+        // Unaligned stores — approximate with aligned SD/SW of available data.
+        char imm[32];
+        std::snprintf(imm, sizeof(imm), "%d", ins.immediate);
+        std::string sum = newtemp();
+        std::string addr = newtemp();
+        m_out += "  " + sum + " = add i64 " + src_lo(ins.rs) + ", " + imm + "\n";
+        m_out += "  " + addr + " = trunc i64 " + sum + " to i32\n";
+        if (ins.opcode == ee::e_ee_opcode::OP_SWR) {
+            std::string v = newtemp();
+            m_out += "  " + v + " = trunc i64 " + src_lo(ins.rt) + " to i32\n";
+            m_out += "  call void @ee_mem_write32(ptr %rt, i32 " + addr + ", i32 " + v + ")\n";
+        } else {
+            m_out += "  call void @ee_mem_write64(ptr %rt, i32 " + addr + ", i64 " +
+                     src_lo(ins.rt) + ")\n";
+        }
+        break;
+    }
+    case ee::e_ee_opcode::OP_LQC2:
+    {
+        // LQC2 transfers a full 128-bit vector register, not a scalar dword.
+        char imm[32];
+        std::snprintf(imm, sizeof(imm), "%d", ins.immediate);
+        std::string sum = newtemp();
+        std::string addr = newtemp();
+        std::string addr8 = newtemp();
+        std::string vlo = newtemp();
+        std::string vhi = newtemp();
+        m_out += "  " + sum + " = add i64 " + src_lo(ins.rs) + ", " + imm + "\n";
+        m_out += "  " + addr + " = trunc i64 " + sum + " to i32\n";
+        m_out += "  " + addr8 + " = add i32 " + addr + ", 8\n";
+        m_out += "  " + vlo + " = call i64 @ee_mem_read64(ptr %rt, i32 " + addr + ")\n";
+        m_out += "  " + vhi + " = call i64 @ee_mem_read64(ptr %rt, i32 " + addr8 + ")\n";
+        m_out += "  store i64 " + vlo + ", ptr " + vu0_lo_ptr(ins.rt) + "\n";
+        m_out += "  store i64 " + vhi + ", ptr " + vu0_hi_ptr(ins.rt) + "\n";
+        break;
+    }
+    case ee::e_ee_opcode::OP_SQC2:
+    {
+        char imm[32];
+        std::snprintf(imm, sizeof(imm), "%d", ins.immediate);
+        std::string sum = newtemp();
+        std::string addr = newtemp();
+        std::string addr8 = newtemp();
+        std::string vlo = newtemp();
+        std::string vhi = newtemp();
+        m_out += "  " + sum + " = add i64 " + src_lo(ins.rs) + ", " + imm + "\n";
+        m_out += "  " + addr + " = trunc i64 " + sum + " to i32\n";
+        m_out += "  " + addr8 + " = add i32 " + addr + ", 8\n";
+        m_out += "  " + vlo + " = load i64, ptr " + vu0_lo_ptr(ins.rt) + "\n";
+        m_out += "  " + vhi + " = load i64, ptr " + vu0_hi_ptr(ins.rt) + "\n";
+        m_out += "  call void @ee_mem_write64(ptr %rt, i32 " + addr + ", i64 " + vlo + ")\n";
+        m_out += "  call void @ee_mem_write64(ptr %rt, i32 " + addr8 + ", i64 " + vhi + ")\n";
+        break;
+    }
+    case ee::e_ee_opcode::OP_CACHE:
+    case ee::e_ee_opcode::OP_PREF:
+        m_out += "  ; cache/pref nop\n";
+        break;
+    case ee::e_ee_opcode::OP_SLTI:
+    case ee::e_ee_opcode::OP_SLTIU:
+    {
+        char imm[32];
+        std::snprintf(imm, sizeof(imm), "%d", ins.immediate);
+        std::string cmp = newtemp();
+        std::string d = newtemp();
+        if (ins.opcode == ee::e_ee_opcode::OP_SLTI)
+            m_out += "  " + cmp + " = icmp slt i64 " + src_lo(ins.rs) + ", " + imm + "\n";
+        else {
+            // SLTIU: imm is sign-extended then compared as unsigned (MIPS rule).
+            m_out += "  " + cmp + " = icmp ult i64 " + src_lo(ins.rs) + ", " + imm + "\n";
+        }
+        m_out += "  " + d + " = zext i1 " + cmp + " to i64\n";
+        set_gpr_lo64(ins.rt, d);
+        break;
+    }
+    case ee::e_ee_opcode::OP_REGIMM:
+    {
+        auto rt = static_cast<ee::e_ee_opcode>(ins.rt);
+        // Any REGIMM encoding not explicitly implemented below is not emitted
+        // as a NOP. Decoder status normally exits before this switch for it.
+        if ((ins.rt != 0x00 && ins.rt != 0x01 && ins.rt != 0x02 && ins.rt != 0x03 &&
+             ins.rt != 0x08 && ins.rt != 0x09 && ins.rt != 0x0a && ins.rt != 0x0b &&
+             ins.rt != 0x0c && ins.rt != 0x0e &&
+             ins.rt != 0x10 && ins.rt != 0x11 && ins.rt != 0x12 && ins.rt != 0x13)) {
+            m_out += "  ; regimm rt=0x" + u32hex(ins.rt) + " reserved/nop\n";
+            break;
+        }
+        // Immediate traps: conditional raise EX_Tr (code 13).
+        if (rt == ee::e_ee_opcode::REGIMM_TGEI || rt == ee::e_ee_opcode::REGIMM_TGEIU ||
+            rt == ee::e_ee_opcode::REGIMM_TLTI || rt == ee::e_ee_opcode::REGIMM_TLTIU ||
+            rt == ee::e_ee_opcode::REGIMM_TEQI || rt == ee::e_ee_opcode::REGIMM_TNEI) {
+            char imm[32];
+            std::snprintf(imm, sizeof(imm), "%d", (int)ins.immediate);
+            std::string imm64 = newtemp();
+            std::string cmp = newtemp();
+            m_out += "  " + imm64 + " = sext i32 " + imm + " to i64\n";
+            const char* pred = "eq";
+            if (rt == ee::e_ee_opcode::REGIMM_TGEI) pred = "sge";
+            else if (rt == ee::e_ee_opcode::REGIMM_TGEIU) pred = "uge";
+            else if (rt == ee::e_ee_opcode::REGIMM_TLTI) pred = "slt";
+            else if (rt == ee::e_ee_opcode::REGIMM_TLTIU) pred = "ult";
+            else if (rt == ee::e_ee_opcode::REGIMM_TNEI) pred = "ne";
+            m_out += "  " + cmp + " = icmp " + std::string(pred) + " i64 " +
+                     src_lo(ins.rs) + ", " + imm64 + "\n";
+            char pcbuf[32];
+            std::snprintf(pcbuf, sizeof(pcbuf), "%u", (unsigned)ins.pc);
+            m_out += "  br i1 " + cmp + ", label %trap_ri_" + std::string(pcbuf) +
+                     ", label %trap_ri_cont_" + std::string(pcbuf) + "\n";
+            m_out += "trap_ri_" + std::string(pcbuf) + ":\n";
+            std::string vec = newtemp();
+            m_out += "  " + vec +
+                     " = call i32 @ee_raise_exception(ptr %cpu, ptr %rt, i32 13, i32 " +
+                     std::string(pcbuf) + ", i32 0, i32 0)\n";
+            m_out += "  ret i32 1\n";
+            m_out += "trap_ri_cont_" + std::string(pcbuf) + ":\n";
+            break;
+        }
+        // Branches: BLTZ/BGEZ family including link (*AL) and likely (*L/*ALL).
+        const bool is_gez =
+            (rt == ee::e_ee_opcode::REGIMM_BGEZ ||
+             rt == ee::e_ee_opcode::REGIMM_BGEZL ||
+             rt == ee::e_ee_opcode::REGIMM_BGEZAL ||
+             rt == ee::e_ee_opcode::REGIMM_BGEZALL);
+        const bool is_link =
+            (rt == ee::e_ee_opcode::REGIMM_BLTZAL ||
+             rt == ee::e_ee_opcode::REGIMM_BGEZAL ||
+             rt == ee::e_ee_opcode::REGIMM_BLTZALL ||
+             rt == ee::e_ee_opcode::REGIMM_BGEZALL);
+        if (is_link) {
+            std::string d = newtemp();
+            char ra[32];
+            std::snprintf(ra, sizeof(ra), "%u", (unsigned)(ins.pc + 8));
+            m_out += "  " + d + " = add i64 " + ra + ", 0\n";
+            set_gpr_lo64(31, d);
+        }
+        std::string cmp = newtemp();
+        if (is_gez)
+            m_out += "  " + cmp + " = icmp sge i64 " + src_lo(ins.rs) + ", 0\n";
+        else
+            m_out += "  " + cmp + " = icmp slt i64 " + src_lo(ins.rs) + ", 0\n";
+        if (is_last_in_block) {
+            m_out += "  br i1 " + cmp + ", label %" + block_label(ins.branch_target)
+                   + ", label %" + block_label(fallthrough_pc) + "\n";
+        }
+        break;
+    }
+    case ee::e_ee_opcode::OP_BEQ:
+    case ee::e_ee_opcode::OP_BEQL:
+    {
+        std::string cmp = newtemp();
+        m_out += "  " + cmp + " = icmp eq i64 " + src_lo(ins.rs) + ", "
+               + src_lo(ins.rt) + "\n";
+        if (is_last_in_block) {
+            m_out += "  br i1 " + cmp + ", label %" + block_label(ins.branch_target)
+                   + ", label %" + block_label(fallthrough_pc) + "\n";
+        }
+        break;
+    }
+    case ee::e_ee_opcode::OP_BNE:
+    case ee::e_ee_opcode::OP_BNEL:
+    {
+        std::string cmp = newtemp();
+        m_out += "  " + cmp + " = icmp ne i64 " + src_lo(ins.rs) + ", "
+               + src_lo(ins.rt) + "\n";
+        if (is_last_in_block) {
+            m_out += "  br i1 " + cmp + ", label %" + block_label(ins.branch_target)
+                   + ", label %" + block_label(fallthrough_pc) + "\n";
+        }
+        break;
+    }
+    case ee::e_ee_opcode::OP_BLEZ:
+    case ee::e_ee_opcode::OP_BLEZL:
+    {
+        std::string cmp = newtemp();
+        m_out += "  " + cmp + " = icmp sle i64 " + src_lo(ins.rs) + ", 0\n";
+        if (is_last_in_block) {
+            m_out += "  br i1 " + cmp + ", label %" + block_label(ins.branch_target)
+                   + ", label %" + block_label(fallthrough_pc) + "\n";
+        }
+        break;
+    }
+    case ee::e_ee_opcode::OP_BGTZ:
+    case ee::e_ee_opcode::OP_BGTZL:
+    {
+        std::string cmp = newtemp();
+        m_out += "  " + cmp + " = icmp sgt i64 " + src_lo(ins.rs) + ", 0\n";
+        if (is_last_in_block) {
+            m_out += "  br i1 " + cmp + ", label %" + block_label(ins.branch_target)
+                   + ", label %" + block_label(fallthrough_pc) + "\n";
+        }
+        break;
+    }
+    case ee::e_ee_opcode::OP_J:
+        if (is_last_in_block) {
+            m_out += "  br label %" + block_label(ins.jump_target) + "\n";
+        }
+        break;
+    case ee::e_ee_opcode::OP_JAL:
+    {
+        // Link: write return address into $ra low 64; upper 64 preserved.
+        std::string d = newtemp();
+        char imm[32];
+        std::snprintf(imm, sizeof(imm), "%u", (unsigned)(ins.pc + 8));
+        m_out += "  " + d + " = add i64 " + imm + ", 0\n";
+        set_gpr_lo64(31, d);
+        if (is_last_in_block) {
+            m_out += "  br label %" + block_label(ins.jump_target) + "\n";
+        }
+        break;
+    }
+    case ee::e_ee_opcode::OP_SPECIAL:
+    {
+        auto funct = static_cast<ee::e_ee_opcode>(ins.funct);
+        if (funct == ee::e_ee_opcode::FUNCT_JR)
+        {
+            if (is_last_in_block) {
+                m_out += "  br label %" + block_label(0) + "\n";
+            }
+        }
+        else if (funct == ee::e_ee_opcode::FUNCT_JALR)
+        {
+            std::string d = newtemp();
+            char imm[32];
+            std::snprintf(imm, sizeof(imm), "%u", (unsigned)(ins.pc + 8));
+            m_out += "  " + d + " = add i64 " + imm + ", 0\n";
+            set_gpr_lo64(31, d);
+            if (is_last_in_block) {
+                m_out += "  br label %" + block_label(0) + "\n";
+            }
+        }
+        else if (funct == ee::e_ee_opcode::FUNCT_MFHI)
+        {
+            // MFHI moves the full 64-bit HI into the low doubleword; upper preserved.
+            std::string ge = state_field(1);
+            std::string v = newtemp();
+            m_out += "  " + v + " = load i64, ptr " + ge + "\n";
+            set_gpr_lo64(ins.rd, v);
+        }
+        else if (funct == ee::e_ee_opcode::FUNCT_MFLO)
+        {
+            std::string ge = state_field(2);
+            std::string v = newtemp();
+            m_out += "  " + v + " = load i64, ptr " + ge + "\n";
+            set_gpr_lo64(ins.rd, v);
+        }
+        else if (funct == ee::e_ee_opcode::FUNCT_MTHI)
+        {
+            m_out += "  store i64 " + src_lo(ins.rs) + ", ptr " + state_field(1) + "\n";
+        }
+        else if (funct == ee::e_ee_opcode::FUNCT_MTLO)
+        {
+            m_out += "  store i64 " + src_lo(ins.rs) + ", ptr " + state_field(2) + "\n";
+        }
+        else if (funct == ee::e_ee_opcode::FUNCT_SYSCALL ||
+                 funct == ee::e_ee_opcode::FUNCT_BREAK)
+        {
+            // Full exception entry via runtime helper.
+            // EX_Sys = 8, EX_Bp = 9. BD=0 for the exception PC = this insn.
+            const char* code =
+                (funct == ee::e_ee_opcode::FUNCT_SYSCALL) ? "8" : "9";
+            char pcbuf[32];
+            std::snprintf(pcbuf, sizeof(pcbuf), "%u", (unsigned)ins.pc);
+            std::string vec = newtemp();
+            m_out += "  " + vec + " = call i32 @ee_raise_exception(ptr %cpu, ptr %rt, i32 " +
+                     std::string(code) + ", i32 " + pcbuf + ", i32 0, i32 0)\n";
+            // Exit translated function so the host can dispatch to the vector.
+            m_out += "  ret i32 1\n"; // EE_EXIT_EXCEPTION
+        }
+        else if (funct == ee::e_ee_opcode::FUNCT_SLL ||
+                 funct == ee::e_ee_opcode::FUNCT_SRL ||
+                 funct == ee::e_ee_opcode::FUNCT_SRA ||
+                 ins.funct == 0x04 || // SLLV (enum also names ROTR)
+                 ins.funct == 0x06 || // SRLV (enum also names ROTRV)
+                 ins.funct == 0x07)   // SRAV
+        {
+            // 32-bit shifts: operate on low 32 of rt (or rs for *V), result
+            // sign-extended into low 64; upper 64 preserved.
+            const bool variable = (ins.funct == 0x04 || ins.funct == 0x06 ||
+                                   ins.funct == 0x07);
+            std::string val32 = newtemp();
+            m_out += "  " + val32 + " = trunc i64 " + src_lo(ins.rt) + " to i32\n";
+            std::string shamt;
+            if (variable) {
+                std::string rs32 = newtemp();
+                std::string mask = newtemp();
+                m_out += "  " + rs32 + " = trunc i64 " + src_lo(ins.rs) + " to i32\n";
+                m_out += "  " + mask + " = and i32 " + rs32 + ", 31\n";
+                shamt = mask;
+            } else {
+                char sa[16];
+                std::snprintf(sa, sizeof(sa), "%u", (unsigned)(ins.sa & 31));
+                shamt = sa;
+            }
+            std::string r32 = newtemp();
+            std::string r64 = newtemp();
+            if (funct == ee::e_ee_opcode::FUNCT_SLL || ins.funct == 0x04)
+                m_out += "  " + r32 + " = shl i32 " + val32 + ", " + shamt + "\n";
+            else if (funct == ee::e_ee_opcode::FUNCT_SRA || ins.funct == 0x07)
+                m_out += "  " + r32 + " = ashr i32 " + val32 + ", " + shamt + "\n";
+            else
+                m_out += "  " + r32 + " = lshr i32 " + val32 + ", " + shamt + "\n";
+            m_out += "  " + r64 + " = sext i32 " + r32 + " to i64\n";
+            set_gpr_lo64(ins.rd, r64);
+        }
+        else if (ins.funct == 0x38 || ins.funct == 0x3a || ins.funct == 0x3b ||
+                 ins.funct == 0x3c || ins.funct == 0x3e || ins.funct == 0x3f ||
+                 funct == ee::e_ee_opcode::FUNCT_DSLL ||
+                 funct == ee::e_ee_opcode::FUNCT_DSRL ||
+                 funct == ee::e_ee_opcode::FUNCT_DSRA)
+        {
+            // 64-bit shifts (DSLL/DSRL/DSRA and *32 variants).
+            // Encoding (R5900/MIPS III): 0x38 DSLL, 0x3a DSRL, 0x3b DSRA,
+            // 0x3c DSLL32, 0x3e DSRL32, 0x3f DSRA32.
+            unsigned sa = ins.sa & 31;
+            if (ins.funct == 0x3c || ins.funct == 0x3e || ins.funct == 0x3f)
+                sa += 32;
+            char sa_s[16];
+            std::snprintf(sa_s, sizeof(sa_s), "%u", sa);
+            std::string r = newtemp();
+            if (ins.funct == 0x38 || ins.funct == 0x3c ||
+                funct == ee::e_ee_opcode::FUNCT_DSLL)
+                m_out += "  " + r + " = shl i64 " + src_lo(ins.rt) + ", " + sa_s + "\n";
+            else if (ins.funct == 0x3b || ins.funct == 0x3f ||
+                     funct == ee::e_ee_opcode::FUNCT_DSRA)
+                m_out += "  " + r + " = ashr i64 " + src_lo(ins.rt) + ", " + sa_s + "\n";
+            else
+                m_out += "  " + r + " = lshr i64 " + src_lo(ins.rt) + ", " + sa_s + "\n";
+            set_gpr_lo64(ins.rd, r);
+        }
+        else if (funct == ee::e_ee_opcode::FUNCT_MULT ||
+                 funct == ee::e_ee_opcode::FUNCT_MULTU)
+        {
+            // 32x32 -> 64 product into HI:LO (each half sign-extended to 64).
+            std::string a32 = newtemp();
+            std::string b32 = newtemp();
+            std::string a64 = newtemp();
+            std::string b64 = newtemp();
+            std::string prod = newtemp();
+            std::string lo32 = newtemp();
+            std::string hi32 = newtemp();
+            std::string lo64 = newtemp();
+            std::string hi64 = newtemp();
+            m_out += "  " + a32 + " = trunc i64 " + src_lo(ins.rs) + " to i32\n";
+            m_out += "  " + b32 + " = trunc i64 " + src_lo(ins.rt) + " to i32\n";
+            if (funct == ee::e_ee_opcode::FUNCT_MULT) {
+                m_out += "  " + a64 + " = sext i32 " + a32 + " to i64\n";
+                m_out += "  " + b64 + " = sext i32 " + b32 + " to i64\n";
+            } else {
+                m_out += "  " + a64 + " = zext i32 " + a32 + " to i64\n";
+                m_out += "  " + b64 + " = zext i32 " + b32 + " to i64\n";
+            }
+            m_out += "  " + prod + " = mul i64 " + a64 + ", " + b64 + "\n";
+            m_out += "  " + lo32 + " = trunc i64 " + prod + " to i32\n";
+            std::string shift = newtemp();
+            m_out += "  " + shift + " = lshr i64 " + prod + ", 32\n";
+            m_out += "  " + hi32 + " = trunc i64 " + shift + " to i32\n";
+            m_out += "  " + lo64 + " = sext i32 " + lo32 + " to i64\n";
+            m_out += "  " + hi64 + " = sext i32 " + hi32 + " to i64\n";
+            m_out += "  store i64 " + lo64 + ", ptr " + state_field(2) + "\n";
+            m_out += "  store i64 " + hi64 + ", ptr " + state_field(1) + "\n";
+        }
+        else if (funct == ee::e_ee_opcode::FUNCT_DIV ||
+                 funct == ee::e_ee_opcode::FUNCT_DIVU)
+        {
+            // 32-bit divide: LO = quot, HI = rem (each sign-extended to 64).
+            std::string a32 = newtemp();
+            std::string b32 = newtemp();
+            std::string q32 = newtemp();
+            std::string r32 = newtemp();
+            std::string q64 = newtemp();
+            std::string r64 = newtemp();
+            m_out += "  " + a32 + " = trunc i64 " + src_lo(ins.rs) + " to i32\n";
+            m_out += "  " + b32 + " = trunc i64 " + src_lo(ins.rt) + " to i32\n";
+            // Skip div-by-zero: host would fault; emit udiv/sdiv anyway (runtime
+            // can trap). Prefer sdiv/udiv matching the instruction.
+            if (funct == ee::e_ee_opcode::FUNCT_DIV) {
+                m_out += "  " + q32 + " = sdiv i32 " + a32 + ", " + b32 + "\n";
+                m_out += "  " + r32 + " = srem i32 " + a32 + ", " + b32 + "\n";
+            } else {
+                m_out += "  " + q32 + " = udiv i32 " + a32 + ", " + b32 + "\n";
+                m_out += "  " + r32 + " = urem i32 " + a32 + ", " + b32 + "\n";
+            }
+            m_out += "  " + q64 + " = sext i32 " + q32 + " to i64\n";
+            m_out += "  " + r64 + " = sext i32 " + r32 + " to i64\n";
+            m_out += "  store i64 " + q64 + ", ptr " + state_field(2) + "\n";
+            m_out += "  store i64 " + r64 + ", ptr " + state_field(1) + "\n";
+        }
+        else if (funct == ee::e_ee_opcode::FUNCT_SLT ||
+                 funct == ee::e_ee_opcode::FUNCT_SLTU)
+        {
+            std::string cmp = newtemp();
+            std::string d = newtemp();
+            if (funct == ee::e_ee_opcode::FUNCT_SLT)
+                m_out += "  " + cmp + " = icmp slt i64 " + src_lo(ins.rs) + ", " +
+                         src_lo(ins.rt) + "\n";
+            else
+                m_out += "  " + cmp + " = icmp ult i64 " + src_lo(ins.rs) + ", " +
+                         src_lo(ins.rt) + "\n";
+            m_out += "  " + d + " = zext i1 " + cmp + " to i64\n";
+            set_gpr_lo64(ins.rd, d);
+        }
+        else if (funct == ee::e_ee_opcode::FUNCT_MOVZ ||
+                 funct == ee::e_ee_opcode::FUNCT_MOVN ||
+                 funct == ee::e_ee_opcode::FUNCT_MOVNI)
+        {
+            // MOVZ: rd = rs if rt == 0; MOVN: rd = rs if rt != 0.
+            std::string cmp = newtemp();
+            std::string d = newtemp();
+            if (funct == ee::e_ee_opcode::FUNCT_MOVZ)
+                m_out += "  " + cmp + " = icmp eq i64 " + src_lo(ins.rt) + ", 0\n";
+            else
+                m_out += "  " + cmp + " = icmp ne i64 " + src_lo(ins.rt) + ", 0\n";
+            m_out += "  " + d + " = select i1 " + cmp + ", i64 " + src_lo(ins.rs) +
+                     ", i64 " + src_lo(ins.rd) + "\n";
+            set_gpr_lo64(ins.rd, d);
+        }
+        else if (funct == ee::e_ee_opcode::FUNCT_SYNC)
+        {
+            m_out += "  ; sync (nop in static recompiler)\n";
+        }
+        else if (funct == ee::e_ee_opcode::FUNCT_TGE ||
+                 funct == ee::e_ee_opcode::FUNCT_TGEU ||
+                 funct == ee::e_ee_opcode::FUNCT_TLT ||
+                 funct == ee::e_ee_opcode::FUNCT_TLTU ||
+                 funct == ee::e_ee_opcode::FUNCT_TEQ ||
+                 funct == ee::e_ee_opcode::FUNCT_TNE)
+        {
+            // Conditional trap → EX_Tr (13) if condition holds.
+            std::string cmp = newtemp();
+            const char* pred = "eq";
+            if (funct == ee::e_ee_opcode::FUNCT_TGE) pred = "sge";
+            else if (funct == ee::e_ee_opcode::FUNCT_TGEU) pred = "uge";
+            else if (funct == ee::e_ee_opcode::FUNCT_TLT) pred = "slt";
+            else if (funct == ee::e_ee_opcode::FUNCT_TLTU) pred = "ult";
+            else if (funct == ee::e_ee_opcode::FUNCT_TNE) pred = "ne";
+            m_out += "  " + cmp + " = icmp " + std::string(pred) + " i64 " +
+                     src_lo(ins.rs) + ", " + src_lo(ins.rt) + "\n";
+            // Branch to trap block vs fallthrough (inline).
+            std::string t_yes = newtemp();
+            std::string t_no = newtemp();
+            // Simple: always emit raise call under select by branching labels.
+            // Text IR: use br i1.
+            char pcbuf[32];
+            std::snprintf(pcbuf, sizeof(pcbuf), "%u", (unsigned)ins.pc);
+            // Materialize trap as: if cmp then raise else continue — for
+            // mid-block we only raise when last, otherwise leave a note.
+            m_out += "  ; trap " + std::string(pred) + " @ " + pcbuf + "\n";
+            std::string vec = newtemp();
+            // Always call helper only when condition true is hard in pure text
+            // without splitting blocks; approximate by unconditional check
+            // via select of exit — host can refine. Prefer correct when taken:
+            m_out += "  br i1 " + cmp + ", label %trap_" + std::string(pcbuf) +
+                     ", label %trap_cont_" + std::string(pcbuf) + "\n";
+            m_out += "trap_" + std::string(pcbuf) + ":\n";
+            m_out += "  " + vec + " = call i32 @ee_raise_exception(ptr %cpu, ptr %rt, i32 13, i32 " +
+                     std::string(pcbuf) + ", i32 0, i32 0)\n";
+            m_out += "  ret i32 1\n";
+            m_out += "trap_cont_" + std::string(pcbuf) + ":\n";
+        }
+        else if (ins.funct == 0x14 || ins.funct == 0x16 || ins.funct == 0x17)
+        {
+            // DSLLV / DSRLV / DSRAV: 64-bit variable shift, amount = rs & 63.
+            std::string sh = newtemp();
+            std::string mask = newtemp();
+            std::string r = newtemp();
+            m_out += "  " + sh + " = trunc i64 " + src_lo(ins.rs) + " to i32\n";
+            m_out += "  " + mask + " = and i32 " + sh + ", 63\n";
+            std::string mask64 = newtemp();
+            m_out += "  " + mask64 + " = zext i32 " + mask + " to i64\n";
+            if (ins.funct == 0x14)
+                m_out += "  " + r + " = shl i64 " + src_lo(ins.rt) + ", " + mask64 + "\n";
+            else if (ins.funct == 0x17)
+                m_out += "  " + r + " = ashr i64 " + src_lo(ins.rt) + ", " + mask64 + "\n";
+            else
+                m_out += "  " + r + " = lshr i64 " + src_lo(ins.rt) + ", " + mask64 + "\n";
+            set_gpr_lo64(ins.rd, r);
+        }
+        else
+        {
+            auto a = src_lo(ins.rs);
+            auto b = src_lo(ins.rt);
+            std::string r = newtemp();
+            const char* op = "add";
+            bool is_32bit_arith = false;
+            bool known = true;
+            switch (funct)
+            {
+            case e_ee_opcode::FUNCT_ADD:
+            case e_ee_opcode::FUNCT_ADDU:
+                op = "add"; is_32bit_arith = true; break;
+            case e_ee_opcode::FUNCT_SUB:
+            case e_ee_opcode::FUNCT_SUBU:
+                op = "sub"; is_32bit_arith = true; break;
+            case e_ee_opcode::FUNCT_DADD:
+            case e_ee_opcode::FUNCT_DADDU:
+                op = "add"; is_32bit_arith = false; break; // full 64-bit
+            case e_ee_opcode::FUNCT_DSUB:
+            case e_ee_opcode::FUNCT_DSUBU:
+                op = "sub"; is_32bit_arith = false; break;
+            case e_ee_opcode::FUNCT_AND: op = "and"; break;
+            case e_ee_opcode::FUNCT_OR:  op = "or";  break;
+            case e_ee_opcode::FUNCT_XOR: op = "xor"; break;
+            case e_ee_opcode::FUNCT_NOR: op = "or";  break;
+            default:
+                known = false;
+                break;
+            }
+            if (!known)
+            {
+                m_out += "  ; special funct 0x" + u32hex(ins.funct) +
+                         " not yet lowered\n";
+            }
+            else if (funct == e_ee_opcode::FUNCT_NOR)
+            {
+                std::string o = newtemp();
+                m_out += "  " + o + " = or i64 " + a + ", " + b + "\n";
+                m_out += "  " + r + " = xor i64 " + o + ", -1\n";
+                set_gpr_lo64(ins.rd, r);
+            }
+            else
+            {
+                m_out += "  " + r + " = " + std::string(op) + " i64 " + a + ", " + b + "\n";
+                if (is_32bit_arith)
+                    set_gpr_lo32_sext(ins.rd, r); // 32-bit result, sext into low 64
+                else
+                    set_gpr_lo64(ins.rd, r);      // full 64-bit result
+            }
+        }
+        break;
+    }
+    case ee::e_ee_opcode::OP_MMI:
+        emit_mmi_insn(ins);
+        break;
+    case ee::e_ee_opcode::OP_COP0:
+    {
+        // COP0: rs/fmt selects class; rd = CP0 register, rt = GPR.
+        // CP0 regs of interest: 12=Status, 13=Cause, 14=EPC, 9=Count, 11=Compare.
+        const uint8_t fmt = ins.rs;
+        const uint8_t cp0_reg = ins.rd;
+        const uint8_t gpr = ins.rt;
+
+        if (fmt == static_cast<uint8_t>(ee::e_ee_opcode::COP0_MFC0))
+        {
+            // GPR.rt = sext32(COP0[rd])
+            std::string p = newtemp();
+            std::string v32 = newtemp();
+            std::string v64 = newtemp();
+            m_out += "  " + p + " = " + cop0_ptr(cp0_reg) + "\n";
+            m_out += "  " + v32 + " = load i32, ptr " + p + "\n";
+            m_out += "  " + v64 + " = sext i32 " + v32 + " to i64\n";
+            set_gpr_lo64(gpr, v64);
+        }
+        else if (fmt == static_cast<uint8_t>(ee::e_ee_opcode::COP0_MTC0))
+        {
+            // COP0[rd] = low32(GPR.rt)
+            std::string p = newtemp();
+            std::string v32 = newtemp();
+            m_out += "  " + v32 + " = trunc i64 " + src_lo(gpr) + " to i32\n";
+            m_out += "  " + p + " = " + cop0_ptr(cp0_reg) + "\n";
+            m_out += "  store i32 " + v32 + ", ptr " + p + "\n";
+        }
+        else if (fmt == static_cast<uint8_t>(ee::e_ee_opcode::COP0_BC0))
+        {
+            // BC0F/BC0T: condition from Cause / simple always-false stub.
+            // Without a live COP0 condition bit, branch not-taken (conservative).
+            if (is_last_in_block) {
+                m_out += "  br label %" + block_label(fallthrough_pc) + "\n";
+            }
+        }
+        else if (fmt == static_cast<uint8_t>(ee::e_ee_opcode::COP0_CO))
+        {
+            const uint8_t fn = ins.funct;
+            if (fn == static_cast<uint8_t>(ee::e_ee_opcode::COP0_ERET))
+            {
+                // Full exception return: clear EXL, PC <- EPC, exit DISPATCH.
+                std::string epc = newtemp();
+                m_out += "  " + epc + " = call i32 @ee_exception_return(ptr %cpu)\n";
+                m_out += "  ret i32 3\n"; // EE_EXIT_DISPATCH
+            }
+            else if (fn == static_cast<uint8_t>(ee::e_ee_opcode::COP0_EI))
+            {
+                // Enable interrupts: set Status.EIE (bit 16 on R5900).
+                std::string sp = newtemp();
+                std::string st = newtemp();
+                std::string st2 = newtemp();
+                m_out += "  " + sp + " = " + cop0_ptr(12) + "\n";
+                m_out += "  " + st + " = load i32, ptr " + sp + "\n";
+                m_out += "  " + st2 + " = or i32 " + st + ", 65536\n"; // EIE
+                m_out += "  store i32 " + st2 + ", ptr " + sp + "\n";
+            }
+            else if (fn == static_cast<uint8_t>(ee::e_ee_opcode::COP0_DI))
+            {
+                // Disable interrupts: clear Status.EIE.
+                std::string sp = newtemp();
+                std::string st = newtemp();
+                std::string st2 = newtemp();
+                m_out += "  " + sp + " = " + cop0_ptr(12) + "\n";
+                m_out += "  " + st + " = load i32, ptr " + sp + "\n";
+                m_out += "  " + st2 + " = and i32 " + st + ", -65537\n";
+                m_out += "  store i32 " + st2 + ", ptr " + sp + "\n";
+            }
+            else if (fn == static_cast<uint8_t>(ee::e_ee_opcode::COP0_TLBR) ||
+                     fn == static_cast<uint8_t>(ee::e_ee_opcode::COP0_TLBWI) ||
+                     fn == static_cast<uint8_t>(ee::e_ee_opcode::COP0_TLBWR) ||
+                     fn == static_cast<uint8_t>(ee::e_ee_opcode::COP0_TLBP))
+            {
+                // TLB ops: no host TLB model yet — architectural no-op with note.
+                m_out += "  ; cop0 tlb funct=0x" + u32hex(fn) + " (nop in static recompiler)\n";
+            }
+            else
+            {
+                m_out += "  ; cop0 co funct=0x" + u32hex(fn) + "\n";
+            }
+        }
+        else
+        {
+            m_out += "  ; cop0 fmt=0x" + u32hex(fmt) + " not yet lowered\n";
+        }
+        break;
+    }
+    case ee::e_ee_opcode::OP_LWC1:
+    case ee::e_ee_opcode::OP_SWC1:
+    {
+        // Primary LWC1/SWC1: base=rs, ft=rt, offset=imm.
+        char imm[32];
+        std::snprintf(imm, sizeof(imm), "%d", ins.immediate);
+        std::string sum = newtemp();
+        std::string addr = newtemp();
+        m_out += "  " + sum + " = add i64 " + src_lo(ins.rs) + ", " + imm + "\n";
+        m_out += "  " + addr + " = trunc i64 " + sum + " to i32\n";
+        if (ins.opcode == ee::e_ee_opcode::OP_LWC1) {
+            std::string w = newtemp();
+            m_out += "  " + w + " = call i32 @ee_mem_read32(ptr %rt, i32 " + addr + ")\n";
+            store_fpr_i32(ins.rt, w);
+        } else {
+            std::string w = load_fpr_i32(ins.rt);
+            m_out += "  call void @ee_mem_write32(ptr %rt, i32 " + addr + ", i32 " + w + ")\n";
+        }
+        break;
+    }
+    case ee::e_ee_opcode::OP_COP1:
+    {
+        // MIPS COP1 encoding:
+        //   bits 25-21 (rs/fmt): MFC1=0 CFC1=2 MTC1=4 CTC1=6 BC=8
+        //                        S=16 D=17 W=20 L=21
+        //   For moves: rt=GPR, rd=FS
+        //   For arith: rt=FT, rd=FS, sa=FD, funct=op
+        const uint8_t fmt = ins.rs;
+        const uint8_t ft = ins.rt;
+        const uint8_t fs = ins.rd;
+        const uint8_t fd = ins.sa;
+        const uint8_t fp_funct = ins.funct;
+
+        if (fmt == static_cast<uint8_t>(ee::e_ee_opcode::COP1_MFC1))
+        {
+            // GPR.rt = sext32(FPR.fs)
+            std::string bits = load_fpr_i32(fs);
+            std::string sx = newtemp();
+            m_out += "  " + sx + " = sext i32 " + bits + " to i64\n";
+            set_gpr_lo64(ft, sx);
+        }
+        else if (fmt == static_cast<uint8_t>(ee::e_ee_opcode::COP1_MTC1))
+        {
+            // FPR.fs = low32(GPR.rt)
+            std::string lo32 = newtemp();
+            m_out += "  " + lo32 + " = trunc i64 " + src_lo(ft) + " to i32\n";
+            store_fpr_i32(fs, lo32);
+        }
+        else if (fmt == static_cast<uint8_t>(ee::e_ee_opcode::COP1_CFC1))
+        {
+            // Move from FCR; only FCR31 (FCSR) is meaningful here.
+            std::string p = newtemp();
+            std::string v = newtemp();
+            std::string sx = newtemp();
+            m_out += "  " + p + " = " + fcsr_ptr() + "\n";
+            m_out += "  " + v + " = load i32, ptr " + p + "\n";
+            m_out += "  " + sx + " = sext i32 " + v + " to i64\n";
+            set_gpr_lo64(ft, sx);
+        }
+        else if (fmt == static_cast<uint8_t>(ee::e_ee_opcode::COP1_CTC1))
+        {
+            std::string lo32 = newtemp();
+            std::string p = newtemp();
+            m_out += "  " + lo32 + " = trunc i64 " + src_lo(ft) + " to i32\n";
+            m_out += "  " + p + " = " + fcsr_ptr() + "\n";
+            m_out += "  store i32 " + lo32 + ", ptr " + p + "\n";
+        }
+        else if (fmt == 0x08)
+        {
+            // BC1: rt selects F/T and likely (bits of rt).
+            // rt: 0=BC1F, 1=BC1T, 2=BC1FL, 3=BC1TL (common encoding).
+            const bool branch_true = (ft & 1) != 0;
+            std::string p = newtemp();
+            std::string fcsr = newtemp();
+            std::string fcc = newtemp();
+            std::string cmp = newtemp();
+            m_out += "  " + p + " = " + fcsr_ptr() + "\n";
+            m_out += "  " + fcsr + " = load i32, ptr " + p + "\n";
+            // FCC0 in bit 23 of FCSR (MIPS standard).
+            m_out += "  " + fcc + " = and i32 " + fcsr + ", 8388608\n";
+            if (branch_true)
+                m_out += "  " + cmp + " = icmp ne i32 " + fcc + ", 0\n";
+            else
+                m_out += "  " + cmp + " = icmp eq i32 " + fcc + ", 0\n";
+            if (is_last_in_block) {
+                m_out += "  br i1 " + cmp + ", label %" + block_label(ins.branch_target)
+                       + ", label %" + block_label(fallthrough_pc) + "\n";
+            }
+        }
+        else if (fmt == 0x10 || fmt == 0x14)
+        {
+            // fmt S (16) or W (20). Encodings match PCSX2 tbl_COP1_S.
+            auto load_acc_f32 = [&]() -> std::string {
+                std::string p = newtemp();
+                std::string bits = newtemp();
+                std::string f = newtemp();
+                m_out += "  " + p + " = " + fpu_acc_ptr() + "\n";
+                m_out += "  " + bits + " = load i32, ptr " + p + "\n";
+                m_out += "  " + f + " = bitcast i32 " + bits + " to float\n";
+                return f;
+            };
+            auto store_acc_f32 = [&](const std::string& fval) {
+                std::string bits = newtemp();
+                std::string p = newtemp();
+                m_out += "  " + bits + " = bitcast float " + fval + " to i32\n";
+                m_out += "  " + p + " = " + fpu_acc_ptr() + "\n";
+                m_out += "  store i32 " + bits + ", ptr " + p + "\n";
+            };
+            auto set_fcc = [&](const std::string& cmp_i1) {
+                std::string p = newtemp();
+                std::string fcsr = newtemp();
+                std::string cleared = newtemp();
+                std::string bit = newtemp();
+                std::string merged = newtemp();
+                m_out += "  " + p + " = " + fcsr_ptr() + "\n";
+                m_out += "  " + fcsr + " = load i32, ptr " + p + "\n";
+                m_out += "  " + cleared + " = and i32 " + fcsr + ", -8388609\n";
+                m_out += "  " + bit + " = select i1 " + cmp_i1 + ", i32 8388608, i32 0\n";
+                m_out += "  " + merged + " = or i32 " + cleared + ", " + bit + "\n";
+                m_out += "  store i32 " + merged + ", ptr " + p + "\n";
+            };
+
+            if (fmt == 0x10 && (fp_funct <= 0x03))
+            {
+                const char* op = "fadd";
+                if (fp_funct == 0x01) op = "fsub";
+                else if (fp_funct == 0x02) op = "fmul";
+                else if (fp_funct == 0x03) op = "fdiv";
+                std::string fa = load_fpr_f32(fs);
+                std::string fb = load_fpr_f32(ft);
+                std::string fr = newtemp();
+                m_out += "  " + fr + " = " + std::string(op) + " float " + fa + ", " + fb + "\n";
+                store_fpr_f32(fd, fr);
+            }
+            else if (fmt == 0x10 && fp_funct == 0x04) // SQRT.S
+            {
+                std::string fa = load_fpr_f32(fs);
+                std::string fr = newtemp();
+                m_out += "  " + fr + " = call float @llvm.sqrt.f32(float " + fa + ")\n";
+                store_fpr_f32(fd, fr);
+            }
+            else if (fmt == 0x10 && fp_funct == 0x05) // ABS.S
+            {
+                std::string fa = load_fpr_f32(fs);
+                std::string fr = newtemp();
+                m_out += "  " + fr + " = call float @llvm.fabs.f32(float " + fa + ")\n";
+                store_fpr_f32(fd, fr);
+            }
+            else if (fmt == 0x10 && fp_funct == 0x06) // MOV.S
+            {
+                store_fpr_f32(fd, load_fpr_f32(fs));
+            }
+            else if (fmt == 0x10 && fp_funct == 0x07) // NEG.S
+            {
+                std::string fa = load_fpr_f32(fs);
+                std::string fr = newtemp();
+                m_out += "  " + fr + " = fneg float " + fa + "\n";
+                store_fpr_f32(fd, fr);
+            }
+            else if (fmt == 0x10 && fp_funct == 0x16) // RSQRT.S  fd = fs / sqrt(ft)
+            {
+                std::string fa = load_fpr_f32(fs);
+                std::string fb = load_fpr_f32(ft);
+                std::string s = newtemp();
+                std::string fr = newtemp();
+                m_out += "  " + s + " = call float @llvm.sqrt.f32(float " + fb + ")\n";
+                m_out += "  " + fr + " = fdiv float " + fa + ", " + s + "\n";
+                store_fpr_f32(fd, fr);
+            }
+            else if (fmt == 0x10 && (fp_funct == 0x18 || fp_funct == 0x19 || fp_funct == 0x1a))
+            {
+                // ADDA.S / SUBA.S / MULA.S → ACC
+                const char* op = (fp_funct == 0x19) ? "fsub" : (fp_funct == 0x1a) ? "fmul" : "fadd";
+                std::string fa = load_fpr_f32(fs);
+                std::string fb = load_fpr_f32(ft);
+                std::string fr = newtemp();
+                m_out += "  " + fr + " = " + std::string(op) + " float " + fa + ", " + fb + "\n";
+                store_acc_f32(fr);
+            }
+            else if (fmt == 0x10 && fp_funct == 0x1c) // MADD.S  fd = ACC + fs*ft
+            {
+                std::string fa = load_fpr_f32(fs);
+                std::string fb = load_fpr_f32(ft);
+                std::string prod = newtemp();
+                std::string acc = load_acc_f32();
+                std::string fr = newtemp();
+                m_out += "  " + prod + " = fmul float " + fa + ", " + fb + "\n";
+                m_out += "  " + fr + " = fadd float " + acc + ", " + prod + "\n";
+                store_fpr_f32(fd, fr);
+            }
+            else if (fmt == 0x10 && fp_funct == 0x1d) // MSUB.S  fd = ACC - fs*ft
+            {
+                std::string fa = load_fpr_f32(fs);
+                std::string fb = load_fpr_f32(ft);
+                std::string prod = newtemp();
+                std::string acc = load_acc_f32();
+                std::string fr = newtemp();
+                m_out += "  " + prod + " = fmul float " + fa + ", " + fb + "\n";
+                m_out += "  " + fr + " = fsub float " + acc + ", " + prod + "\n";
+                store_fpr_f32(fd, fr);
+            }
+            else if (fmt == 0x10 && fp_funct == 0x1e) // MADDA.S  ACC = ACC + fs*ft
+            {
+                std::string fa = load_fpr_f32(fs);
+                std::string fb = load_fpr_f32(ft);
+                std::string prod = newtemp();
+                std::string acc = load_acc_f32();
+                std::string fr = newtemp();
+                m_out += "  " + prod + " = fmul float " + fa + ", " + fb + "\n";
+                m_out += "  " + fr + " = fadd float " + acc + ", " + prod + "\n";
+                store_acc_f32(fr);
+            }
+            else if (fmt == 0x10 && fp_funct == 0x1f) // MSUBA.S  ACC = ACC - fs*ft
+            {
+                std::string fa = load_fpr_f32(fs);
+                std::string fb = load_fpr_f32(ft);
+                std::string prod = newtemp();
+                std::string acc = load_acc_f32();
+                std::string fr = newtemp();
+                m_out += "  " + prod + " = fmul float " + fa + ", " + fb + "\n";
+                m_out += "  " + fr + " = fsub float " + acc + ", " + prod + "\n";
+                store_acc_f32(fr);
+            }
+            else if (fmt == 0x10 && (fp_funct == 0x28 || fp_funct == 0x29)) // MAX/MIN
+            {
+                std::string fa = load_fpr_f32(fs);
+                std::string fb = load_fpr_f32(ft);
+                std::string cmp = newtemp();
+                std::string fr = newtemp();
+                const char* pred = (fp_funct == 0x28) ? "ogt" : "olt";
+                m_out += "  " + cmp + " = fcmp " + std::string(pred) + " float " + fa + ", " + fb + "\n";
+                m_out += "  " + fr + " = select i1 " + cmp + ", float " + fa + ", float " + fb + "\n";
+                store_fpr_f32(fd, fr);
+            }
+            else if (fp_funct == 0x20 || (fmt == 0x14 && fp_funct == 0x20))
+            {
+                // CVT.S.W (fmt=W) or enum CVT_S_W
+                std::string wi = load_fpr_i32(fs);
+                std::string fr = newtemp();
+                m_out += "  " + fr + " = sitofp i32 " + wi + " to float\n";
+                store_fpr_f32(fd, fr);
+            }
+            else if (fmt == 0x10 && fp_funct == 0x24) // CVT.W.S
+            {
+                std::string fa = load_fpr_f32(fs);
+                std::string wi = newtemp();
+                m_out += "  " + wi + " = fptosi float " + fa + " to i32\n";
+                store_fpr_i32(fd, wi);
+            }
+            else if (fmt == 0x10 && (fp_funct == 0x30 || fp_funct == 0x32 ||
+                                     fp_funct == 0x34 || fp_funct == 0x36))
+            {
+                // C.F / C.EQ / C.LT / C.LE → FCC0
+                if (fp_funct == 0x30) {
+                    std::string z = newtemp();
+                    m_out += "  " + z + " = add i1 0, 0\n"; // false
+                    set_fcc(z);
+                } else {
+                    std::string fa = load_fpr_f32(fs);
+                    std::string fb = load_fpr_f32(ft);
+                    std::string cmp = newtemp();
+                    const char* pred = "oeq";
+                    if (fp_funct == 0x34) pred = "olt";
+                    else if (fp_funct == 0x36) pred = "ole";
+                    m_out += "  " + cmp + " = fcmp " + std::string(pred) + " float " + fa +
+                             ", " + fb + "\n";
+                    set_fcc(cmp);
+                }
+            }
+            else if (fmt == 0x10 && (fp_funct == 0x0d || fp_funct == 0x0c ||
+                                     fp_funct == 0x0e || fp_funct == 0x0f))
+            {
+                // TRUNC/ROUND/CEIL/FLOOR.W.S — approximate with fptosi
+                std::string fa = load_fpr_f32(fs);
+                std::string wi = newtemp();
+                m_out += "  " + wi + " = fptosi float " + fa + " to i32\n";
+                store_fpr_i32(fd, wi);
+            }
+            else
+            {
+                m_out += "  ; cop1 fmt=" + u32hex(fmt) + " funct=0x" + u32hex(fp_funct) +
+                         " not yet lowered\n";
+            }
+        }
+
+        else
+        {
+            m_out += "  ; cop1 fmt=0x" + u32hex(fmt) + " not yet lowered\n";
+        }
+        break;
+    }
+    case ee::e_ee_opcode::OP_COP2:
+        // COP2 macro/transfer encodings are intentionally not lowered until
+        // their true subtable fields and full VU0 semantics are implemented.
+        m_out += "  ; COP2 intentionally unsupported\n";
+        break;
+    default:
+        break;
+    }
+}
+
+void module_builder::emit_block(const std::vector<ee::s_ee_instruction>& block,
+                                bool /*is_last*/, uint32_t /*entry_pc*/,
+                                const std::set<uint8_t>& live_in,
+                                const std::set<uint8_t>& live_out,
+                                uint32_t fallthrough_pc,
+                                bool is_terminator)
+{
+    using ee::e_ee_opcode;
+    if (block.empty()) return;
+    m_out += block_label(block[0].pc);
+    m_out += ":\n";
+
+    reset_tracking();
+
+    for (uint8_t r : live_in)
+        (void)load_gpr_temp(r);
+
+    // Analyzer layout for control-flow blocks:
+    //   [ ... straight-line ..., control-flow insn, delay-slot insn ]
+    size_t n = block.size();
+    int ctrl_idx = -1;
+    int delay_idx = -1;
+    if (n >= 2 && block[n - 2].has_delay_slot) {
+        ctrl_idx = static_cast<int>(n - 2);
+        delay_idx = static_cast<int>(n - 1);
+    } else if (n >= 1 && (block[n - 1].has_delay_slot ||
+                          block[n - 1].flow != ee::e_ee_flow::FLOW_NONE)) {
+        // ERET and exception instructions terminate without a delay slot.
+        ctrl_idx = static_cast<int>(n - 1);
+    }
+
+    for (size_t i = 0; i < n; ++i) {
+        if (static_cast<int>(i) == ctrl_idx || static_cast<int>(i) == delay_idx)
+            continue;
+        emit_insn(block[i], false, 0);
+    }
+
+    auto make_cond = [&](const ee::s_ee_instruction& ctrl) -> std::string {
+        using ee::e_ee_opcode;
+        std::string cmp = newtemp();
+        if (ctrl.opcode == e_ee_opcode::OP_BEQ ||
+            ctrl.opcode == e_ee_opcode::OP_BEQL) {
+            m_out += "  " + cmp + " = icmp eq i64 " + src_lo(ctrl.rs) + ", "
+                   + src_lo(ctrl.rt) + "\n";
+        } else if (ctrl.opcode == e_ee_opcode::OP_BNE ||
+                   ctrl.opcode == e_ee_opcode::OP_BNEL) {
+            m_out += "  " + cmp + " = icmp ne i64 " + src_lo(ctrl.rs) + ", "
+                   + src_lo(ctrl.rt) + "\n";
+        } else if (ctrl.opcode == e_ee_opcode::OP_BLEZ ||
+                   ctrl.opcode == e_ee_opcode::OP_BLEZL) {
+            m_out += "  " + cmp + " = icmp sle i64 " + src_lo(ctrl.rs) + ", 0\n";
+        } else if (ctrl.opcode == e_ee_opcode::OP_BGTZ ||
+                   ctrl.opcode == e_ee_opcode::OP_BGTZL) {
+            m_out += "  " + cmp + " = icmp sgt i64 " + src_lo(ctrl.rs) + ", 0\n";
+        } else if (ctrl.opcode == e_ee_opcode::OP_REGIMM) {
+            auto rt = static_cast<e_ee_opcode>(ctrl.rt);
+            const bool is_gez =
+                (rt == e_ee_opcode::REGIMM_BGEZ ||
+                 rt == e_ee_opcode::REGIMM_BGEZL ||
+                 rt == e_ee_opcode::REGIMM_BGEZAL ||
+                 rt == e_ee_opcode::REGIMM_BGEZALL);
+            if (is_gez)
+                m_out += "  " + cmp + " = icmp sge i64 " + src_lo(ctrl.rs) + ", 0\n";
+            else
+                m_out += "  " + cmp + " = icmp slt i64 " + src_lo(ctrl.rs) + ", 0\n";
+        } else if (ctrl.opcode == e_ee_opcode::OP_COP1 && ctrl.rs == 0x08) {
+            // BC1F/T and BC1FL/TL read FCC0 from FCSR. Evaluate the condition
+            // before the delay slot; the slot is allowed to overwrite FCSR.
+            std::string fcsr_ptr_temp = newtemp();
+            std::string fcsr = newtemp();
+            std::string fcc = newtemp();
+            m_out += "  " + fcsr_ptr_temp + " = " + fcsr_ptr() + "\n";
+            m_out += "  " + fcsr + " = load i32, ptr " + fcsr_ptr_temp + "\n";
+            m_out += "  " + fcc + " = and i32 " + fcsr + ", 8388608\n";
+            m_out += "  " + cmp + " = icmp " + std::string((ctrl.rt & 1) ? "ne" : "eq") +
+                     " i32 " + fcc + ", 0\n";
+        } else {
+            // Unconditional or unsupported — treat as always-taken.
+            m_out += "  " + cmp + " = add i1 1, 0\n";
+        }
+        return cmp;
+    };
+
+    if (ctrl_idx >= 0) {
+        const auto& ctrl = block[ctrl_idx];
+        uint32_t ft = fallthrough_pc ? fallthrough_pc : (ctrl.pc + 8);
+        uint32_t target = ctrl.branch_target ? ctrl.branch_target : ctrl.jump_target;
+
+        // Do not let an unsupported branch reach make_cond()'s fallback
+        // predicate (which is intentionally always true for unconditional
+        // control transfers). In particular, BC2FL/BC2TL have an annulled
+        // delay slot whose execution depends on a VU0 condition we do not
+        // model. Exit at the branch itself instead of guessing an edge.
+        if (ctrl.valid != ee::e_ee_valid::VALID) {
+            emit_insn(ctrl, true, ft);
+            // emit_insn() leaves a uniquely named continuation block for
+            // callers that may still emit later instructions. A control
+            // transfer is the end of this block, so terminate that unreachable
+            // continuation explicitly before the next CFG label is emitted.
+            m_out += "  unreachable\n";
+        } else if (ctrl.branch_likely && delay_idx >= 0) {
+            // ---------------------------------------------------------------
+            // Branch-likely: delay slot executes ONLY when the branch is taken.
+            // Split into taken (delay + target) and not-taken (skip delay, ft).
+            // ---------------------------------------------------------------
+            // The branch condition reads the PRE-delay-slot register values.
+            std::string cmp = make_cond(ctrl);
+
+            // Flush all pre-delay architectural state in the common block, so
+            // both successors start from it. (Previously the not-taken path
+            // "invalidated" the delay slot's destinations, which also dropped
+            // earlier writes to those registers made in this same block.)
+            store_dirty_regs(live_out);
+
+            // Labels must be unique per emitted block: the analyzer can emit
+            // overlapping blocks that contain the same branch-likely pc.
+            char taken_buf[64], nottaken_buf[64];
+            std::snprintf(taken_buf, sizeof(taken_buf), "bl_taken_0x%x_0x%x", block[0].pc, ctrl.pc);
+            std::snprintf(nottaken_buf, sizeof(nottaken_buf), "bl_nottaken_0x%x_0x%x", block[0].pc, ctrl.pc);
+
+            m_out += "  br i1 " + cmp + ", label %" + taken_buf
+                   + ", label %" + nottaken_buf + "\n";
+
+            // --- taken path: execute delay slot, then go to the branch target ---
+            m_out += taken_buf;
+            m_out += ":\n";
+            emit_insn(block[delay_idx], false, 0);
+            store_dirty_regs(live_out);
+            m_out += "  br label %" + block_label(target ? target : 0) + "\n";
+
+            // --- not-taken path: delay slot annulled, state already flushed ---
+            m_out += nottaken_buf;
+            m_out += ":\n";
+            m_out += "  br label %" + block_label(ft) + "\n";
+        } else if (delay_idx >= 0) {
+            // Ordinary conditional branches sample their condition before the
+            // delay slot, although the slot itself always executes. Keep the
+            // predicate in SSA, execute the slot, then select the successor.
+            const auto regimm_rt = static_cast<e_ee_opcode>(ctrl.rt);
+            const bool has_link =
+                ctrl.opcode == e_ee_opcode::OP_REGIMM &&
+                (regimm_rt == e_ee_opcode::REGIMM_BLTZAL ||
+                 regimm_rt == e_ee_opcode::REGIMM_BGEZAL);
+            const bool supported_conditional =
+                ctrl.flow == ee::e_ee_flow::FLOW_BRANCH && !has_link &&
+                (ctrl.opcode == e_ee_opcode::OP_BEQ ||
+                 ctrl.opcode == e_ee_opcode::OP_BNE ||
+                 ctrl.opcode == e_ee_opcode::OP_BLEZ ||
+                 ctrl.opcode == e_ee_opcode::OP_BGTZ ||
+                 ctrl.opcode == e_ee_opcode::OP_REGIMM ||
+                 (ctrl.opcode == e_ee_opcode::OP_COP1 && ctrl.rs == 0x08));
+            if (supported_conditional)
+            {
+                const std::string cmp = make_cond(ctrl);
+                emit_insn(block[delay_idx], false, 0);
+                store_dirty_regs(live_out);
+                m_out += "  br i1 " + cmp + ", label %" + block_label(target) +
+                         ", label %" + block_label(ft) + "\n";
+            }
+            else
+            {
+                // Non-conditional transfers and branch-and-link forms retain
+                // their existing emitter path until their link semantics are
+                // modelled independently of the delay slot.
+                emit_insn(block[delay_idx], false, 0);
+                store_dirty_regs(live_out);
+                emit_insn(ctrl, true, ft);
+            }
+        } else {
+            store_dirty_regs(live_out);
+            emit_insn(ctrl, true, ft);
+        }
+    } else {
+        // Straight-line instructions were emitted by the loop above. Do not
+        // emit the last one a second time when closing the block.
+        store_dirty_regs(live_out);
+        if (is_terminator || fallthrough_pc == 0)
+            m_out += "  br label %" + block_label(0) + "\n";
+        else
+            m_out += "  br label %" + block_label(fallthrough_pc) + "\n";
+    }
+}
+
+void module_builder::begin_function(const char* func_name)
+{
+    m_out += "define i32 @";
+    m_out += func_name;
+    m_out += "(ptr %cpu, ptr %rt) {\n";
+    m_out += "entry:\n";
+}
+
+void module_builder::end_function()
+{
+    // Callers ensure every path already has a terminator.
+    m_out += "}\n";
+}
+void module_builder::emit_function(const std::vector<ee::s_ee_instruction>& insns,
+                                   uint32_t entry_pc, const char* func_name)
+{
+    using ee::e_ee_opcode;
+    header();
+    declare_memory_helpers();
+
+    std::vector<std::vector<ee::s_ee_instruction>> blocks;
+    std::vector<ee::s_ee_instruction> cur;
+
+    // A branch may target an instruction in the middle of the linear input
+    // sequence. Split there so every intra-function branch has a real LLVM
+    // basic-block label instead of branching into the middle of another block.
+    std::set<uint32_t> branch_targets;
+    for (const auto& ins : insns)
+    {
+        if (ins.branch_target != 0)
+            branch_targets.insert(ins.branch_target);
+        if (ins.jump_target != 0)
+            branch_targets.insert(ins.jump_target);
+    }
+
+    for (size_t i = 0; i < insns.size(); ++i)
+    {
+        const auto& ins = insns[i];
+
+        if (!cur.empty() && branch_targets.count(ins.pc) != 0)
+        {
+            blocks.push_back(std::move(cur));
+            cur.clear();
+        }
+
+        cur.push_back(ins);   // unsupported ones are kept: emit_insn makes an explicit exit
+        const bool ends_block = (ins.flow != ee::e_ee_flow::FLOW_NONE);
+        const bool last = (i + 1 == insns.size());
+        if (ends_block)
+        {
+            // A control transfer and its delay slot are one indivisible block.
+            if (ins.has_delay_slot && i + 1 < insns.size())
+            {
+                cur.push_back(insns[i + 1]);
+                ++i;
+            }
+            blocks.push_back(std::move(cur));
+            cur.clear();
+        }
+        else if (last)
+        {
+            blocks.push_back(std::move(cur));
+            cur.clear();
+        }
+    }
+
+    // Conservative liveness: all touched regs are live-in at block 0,
+    // all touched regs are live-out at every block.
+    std::set<uint8_t> touched;
+    for (const auto& ins : insns)
+    {
+        if (ins.valid != ee::e_ee_valid::VALID) continue;
+        switch (ins.opcode)
+        {
+        case ee::e_ee_opcode::OP_ADDIU:
+        case ee::e_ee_opcode::OP_DADDIU:
+        case ee::e_ee_opcode::OP_ANDI:
+        case ee::e_ee_opcode::OP_ORI:
+        case ee::e_ee_opcode::OP_XORI:
+        case ee::e_ee_opcode::OP_LUI:
+        case ee::e_ee_opcode::OP_SLTI:
+        case ee::e_ee_opcode::OP_SLTIU:
+        case ee::e_ee_opcode::OP_LB:
+        case ee::e_ee_opcode::OP_LH:
+        case ee::e_ee_opcode::OP_LBU:
+        case e_ee_opcode::OP_LHU:
+        case e_ee_opcode::OP_LW:
+        case e_ee_opcode::OP_LWU:
+        case e_ee_opcode::OP_LD:
+        case e_ee_opcode::OP_LWL:
+        case e_ee_opcode::OP_LWR:
+            touched.insert(ins.rt);
+            if (ins.rs != 0) touched.insert(ins.rs);
+            break;
+        case e_ee_opcode::OP_SW:
+        case e_ee_opcode::OP_SB:
+        case e_ee_opcode::OP_SH:
+        case e_ee_opcode::OP_SD:
+        case e_ee_opcode::OP_SWL:
+        case e_ee_opcode::OP_SDL:
+            if (ins.rs != 0) touched.insert(ins.rs);
+            touched.insert(ins.rt);
+            break;
+        case e_ee_opcode::OP_SPECIAL:
+            switch (static_cast<ee::e_ee_opcode>(ins.funct))
+            {
+            case e_ee_opcode::FUNCT_JR:
+            case e_ee_opcode::FUNCT_JALR:
+                if (ins.rs != 0) touched.insert(ins.rs);
+                touched.insert(31);
+                break;
+            default:
+                if (ins.rd != 0) touched.insert(ins.rd);
+                if (ins.rs != 0) touched.insert(ins.rs);
+                if (ins.rt != 0) touched.insert(ins.rt);
+                break;
+            }
+            break;
+        case e_ee_opcode::OP_REGIMM:
+        case e_ee_opcode::OP_ADDI:
+            if (ins.rs != 0) touched.insert(ins.rs);
+            touched.insert(ins.rt);
+            break;
+        default:
+            break;
+        }
+    }
+    touched.insert(31);
+
+    begin_function(func_name);
+
+    if (!blocks.empty() && !blocks[0].empty())
+        m_out += "  br label %" + block_label(blocks[0][0].pc) + "\n";
+    else
+        m_out += "  br label %" + block_label(0) + "\n";
+
+    std::set<uint32_t> defined_pcs;
+    std::set<uint32_t> referenced_pcs;
+    for (size_t b = 0; b < blocks.size(); ++b)
+    {
+        if (blocks[b].empty())
+            continue;
+        defined_pcs.insert(blocks[b][0].pc);
+        if (b + 1 < blocks.size() && !blocks[b + 1].empty())
+            referenced_pcs.insert(blocks[b + 1][0].pc);
+        for (const auto& ins : blocks[b])
+        {
+            if (ins.branch_target != 0)
+                referenced_pcs.insert(ins.branch_target);
+            if (ins.jump_target != 0)
+                referenced_pcs.insert(ins.jump_target);
+            if (ins.has_delay_slot)
+                referenced_pcs.insert(ins.pc + 8);
+        }
+    }
+
+    for (size_t b = 0; b < blocks.size(); ++b)
+    {
+        const uint32_t fallthrough_pc =
+            (b + 1 < blocks.size() && !blocks[b + 1].empty())
+                ? blocks[b + 1][0].pc : 0;
+        emit_block(blocks[b], b == blocks.size() - 1, entry_pc,
+                   touched, touched, fallthrough_pc, b == blocks.size() - 1);
+    }
+
+    // A direct target outside this emitted function is a dispatcher exit, not
+    // an undefined LLVM label. Preserve the guest PC for the host dispatcher.
+    for (uint32_t pc : referenced_pcs)
+    {
+        if (pc == 0 || defined_pcs.count(pc) != 0)
+            continue;
+        m_out += block_label(pc) + ":\n";
+        std::string pc_ptr = state_field(6);
+        m_out += "  store i32 " + std::to_string(pc) + ", ptr " + pc_ptr + "\n";
+        std::string exit_ptr = state_field(7);
+        m_out += "  store i32 3, ptr " + exit_ptr + "\n";
+        m_out += "  ret i32 3\n";
+    }
+
+    m_out += block_label(0);
+    m_out += ":\n";
+    m_out += "  ret i32 0\n";
+    m_out += "\n";
+    end_function();
+
+    m_ctx.ir(optimize_ir(m_out, m_opt_level));
+  }
+
+void module_builder::emit_gpr_loads(const std::vector<uint8_t>& regs)
+{
+    for (uint8_t r : regs)
+    {
+        std::string plo = gptr_lo(r);
+        m_out += "  " + reg_lo(r) + " = load i64, ptr " + plo + "\n";
+        std::string phi = gptr_hi(r);
+        m_out += "  " + reg_hi(r) + " = load i64, ptr " + phi + "\n";
+    }
+}
+
+void module_builder::emit_gpr_stores(const std::vector<uint8_t>& regs)
+{
+    for (uint8_t r : regs)
+    {
+        std::string plo = gptr_lo(r);
+        m_out += "  store i64 " + reg_lo(r) + ", ptr " + plo + "\n";
+        std::string phi = gptr_hi(r);
+        m_out += "  store i64 " + reg_hi(r) + ", ptr " + phi + "\n";
+    }
+}
+
+// ---- MMI instruction emission (vector types) ----
+
+void module_builder::emit_mmi_insn(const ee::s_ee_instruction& ins)
+{
+    // R5900 MMI class in funct: 0x08=MMI0, 0x28=MMI1,
+    // 0x09=MMI2, 0x29=MMI3. The sub-op is in sa.
+    // Use the block-local register cache so earlier writes in this block are
+    // visible to MTHI1/MTLO1 and packed operations that read the same GPR.
+    auto load_gpr = [&](uint8_t r) -> std::pair<std::string,std::string> {
+        return {src_lo(r), src_hi(r)};
+    };
+    auto store_gpr = [&](uint8_t r, const std::string& lo, const std::string& hi) {
+        set_gpr_temp(r, lo, hi);
+    };
+    auto build2i64 = [&](const std::string& lo, const std::string& hi) {
+        std::string v = newtemp();
+        m_out += "  " + v + " = insertelement <2 x i64> undef, i64 " + lo + ", i32 0\n";
+        std::string v2 = newtemp();
+        m_out += "  " + v2 + " = insertelement <2 x i64> " + v + ", i64 " + hi + ", i32 1\n";
+        return v2;
+    };
+    auto extract2i64 = [&](const std::string& v) {
+        std::string lo = newtemp(), hi = newtemp();
+        m_out += "  " + lo + " = extractelement <2 x i64> " + v + ", i32 0\n";
+        m_out += "  " + hi + " = extractelement <2 x i64> " + v + ", i32 1\n";
+        return std::make_pair(lo, hi);
+    };
+    auto build4i32 = [&](const std::string& lo, const std::string& hi) {
+        // bitcast 2xi64 → 4xi32
+        std::string v2 = build2i64(lo, hi);
+        std::string v4 = newtemp();
+        m_out += "  " + v4 + " = bitcast <2 x i64> " + v2 + " to <4 x i32>\n";
+        return v4;
+    };
+    auto extract4i32 = [&](const std::string& v4) {
+        std::string v2 = newtemp();
+        m_out += "  " + v2 + " = bitcast <4 x i32> " + v4 + " to <2 x i64>\n";
+        return extract2i64(v2);
+    };
+    auto build8i16 = [&](const std::string& lo, const std::string& hi) {
+        std::string v2 = build2i64(lo, hi);
+        std::string v8 = newtemp();
+        m_out += "  " + v8 + " = bitcast <2 x i64> " + v2 + " to <8 x i16>\n";
+        return v8;
+    };
+    auto extract8i16 = [&](const std::string& v8) {
+        std::string v2 = newtemp();
+        m_out += "  " + v2 + " = bitcast <8 x i16> " + v8 + " to <2 x i64>\n";
+        return extract2i64(v2);
+    };
+    auto build16i8 = [&](const std::string& lo, const std::string& hi) {
+        std::string v2 = build2i64(lo, hi);
+        std::string v16 = newtemp();
+        m_out += "  " + v16 + " = bitcast <2 x i64> " + v2 + " to <16 x i8>\n";
+        return v16;
+    };
+    auto extract16i8 = [&](const std::string& v16) {
+        std::string v2 = newtemp();
+        m_out += "  " + v2 + " = bitcast <16 x i8> " + v16 + " to <2 x i64>\n";
+        return extract2i64(v2);
+    };
+
+    auto a = load_gpr(ins.rs);
+    auto b = load_gpr(ins.rt);
+
+    auto store_vec2i64 = [&](const std::string& vr) {
+        auto r = extract2i64(vr);
+        store_gpr(ins.rd, r.first, r.second);
+    };
+    auto store_vec4i32 = [&](const std::string& vr) {
+        auto r = extract4i32(vr);
+        store_gpr(ins.rd, r.first, r.second);
+    };
+    auto store_vec8i16 = [&](const std::string& vr) {
+        auto r = extract8i16(vr);
+        store_gpr(ins.rd, r.first, r.second);
+    };
+    auto store_vec16i8 = [&](const std::string& vr) {
+        auto r = extract16i8(vr);
+        store_gpr(ins.rd, r.first, r.second);
+    };
+
+    const uint8_t fn = ins.funct;
+    const uint8_t sa = ins.sa & 31;
+
+    // Top-level MMI (not class)
+    if (fn == 0x00 || fn == 0x01 || fn == 0x20 || fn == 0x21) {
+        // MADD/MADDU/MADD1/MADDU1: approximate as 32-bit product added into HI/LO
+        std::string a32 = newtemp(), b32 = newtemp(), a64 = newtemp(), b64 = newtemp();
+        std::string prod = newtemp(), lo = newtemp(), hi = newtemp();
+        m_out += "  " + a32 + " = trunc i64 " + a.first + " to i32\n";
+        m_out += "  " + b32 + " = trunc i64 " + b.first + " to i32\n";
+        if (fn == 0x00 || fn == 0x20) {
+            m_out += "  " + a64 + " = sext i32 " + a32 + " to i64\n";
+            m_out += "  " + b64 + " = sext i32 " + b32 + " to i64\n";
+        } else {
+            m_out += "  " + a64 + " = zext i32 " + a32 + " to i64\n";
+            m_out += "  " + b64 + " = zext i32 " + b32 + " to i64\n";
+        }
+        m_out += "  " + prod + " = mul i64 " + a64 + ", " + b64 + "\n";
+        // HI:LO += product (simplified: replace LO/HI with product halves)
+        m_out += "  " + lo + " = trunc i64 " + prod + " to i32\n";
+        std::string sh = newtemp();
+        m_out += "  " + sh + " = lshr i64 " + prod + ", 32\n";
+        m_out += "  " + hi + " = trunc i64 " + sh + " to i32\n";
+        std::string lo64 = newtemp(), hi64 = newtemp();
+        m_out += "  " + lo64 + " = sext i32 " + lo + " to i64\n";
+        m_out += "  " + hi64 + " = sext i32 " + hi + " to i64\n";
+        m_out += "  store i64 " + lo64 + ", ptr " + state_field(2) + "\n";
+        m_out += "  store i64 " + hi64 + ", ptr " + state_field(1) + "\n";
+        if (ins.rd != 0) set_gpr_lo64(ins.rd, lo64);
+        return;
+    }
+    if (fn == 0x10) { // MFHI1
+        std::string v = newtemp();
+        m_out += "  " + v + " = load i64, ptr " + state_field(3) + "\n";
+        set_gpr_lo64(ins.rd, v);
+        return;
+    }
+    if (fn == 0x12) { // MFLO1
+        std::string v = newtemp();
+        m_out += "  " + v + " = load i64, ptr " + state_field(4) + "\n";
+        set_gpr_lo64(ins.rd, v);
+        return;
+    }
+    if (fn == 0x11) { // MTHI1
+        m_out += "  store i64 " + a.first + ", ptr " + state_field(3) + "\n";
+        return;
+    }
+    if (fn == 0x13) { // MTLO1
+        m_out += "  store i64 " + a.first + ", ptr " + state_field(4) + "\n";
+        return;
+    }
+
+    // Class-based MMI0/1/2/3
+    if (fn == 0x08 || fn == 0x09 || fn == 0x28 || fn == 0x29) {
+        std::string va4 = build4i32(a.first, a.second);
+        std::string vb4 = build4i32(b.first, b.second);
+        std::string va2 = build2i64(a.first, a.second);
+        std::string vb2 = build2i64(b.first, b.second);
+        std::string va8 = build8i16(a.first, a.second);
+        std::string vb8 = build8i16(b.first, b.second);
+        std::string va16 = build16i8(a.first, a.second);
+        std::string vb16 = build16i8(b.first, b.second);
+        std::string vr = newtemp();
+
+        // MMI0 (0x08): parallel arith / pack by sa
+        if (fn == 0x08) {
+            switch (sa) {
+            case 0: // PADDW
+                m_out += "  " + vr + " = add <4 x i32> " + va4 + ", " + vb4 + "\n";
+                store_vec4i32(vr); return;
+            case 1: // PSUBW
+                m_out += "  " + vr + " = sub <4 x i32> " + va4 + ", " + vb4 + "\n";
+                store_vec4i32(vr); return;
+            case 3: // PMAXW (signed)
+                m_out += "  " + vr + " = call <4 x i32> @llvm.smax.v4i32(<4 x i32> " + va4 + ", <4 x i32> " + vb4 + ")\n";
+                store_vec4i32(vr); return;
+            case 4: // PADDH
+                m_out += "  " + vr + " = add <8 x i16> " + va8 + ", " + vb8 + "\n";
+                store_vec8i16(vr); return;
+            case 5: // PSUBH
+                m_out += "  " + vr + " = sub <8 x i16> " + va8 + ", " + vb8 + "\n";
+                store_vec8i16(vr); return;
+            case 7: // PMAXH
+                m_out += "  " + vr + " = call <8 x i16> @llvm.smax.v8i16(<8 x i16> " + va8 + ", <8 x i16> " + vb8 + ")\n";
+                store_vec8i16(vr); return;
+            case 8: // PADDB
+                m_out += "  " + vr + " = add <16 x i8> " + va16 + ", " + vb16 + "\n";
+                store_vec16i8(vr); return;
+            case 9: // PSUBB
+                m_out += "  " + vr + " = sub <16 x i8> " + va16 + ", " + vb16 + "\n";
+                store_vec16i8(vr); return;
+            case 16: case 17: // PADDSW/PSUBSW — non-sat approx
+                m_out += "  " + vr + " = " + (sa == 16 ? "add" : "sub") + " <4 x i32> " + va4 + ", " + vb4 + "\n";
+                store_vec4i32(vr); return;
+            case 18: // PEXTLW — interleave low words: approx or of halves
+                m_out += "  " + vr + " = or <2 x i64> " + va2 + ", " + vb2 + "\n";
+                store_vec2i64(vr); return;
+            case 19: // PPACW — pack words: low32 of each
+                {
+                    std::string alo = newtemp(), blo = newtemp(), r = newtemp();
+                    m_out += "  " + alo + " = and i64 " + a.first + ", 4294967295\n";
+                    m_out += "  " + blo + " = and i64 " + b.first + ", 4294967295\n";
+                    m_out += "  " + r + " = or i64 " + alo + ", " + blo + "\n";
+                    set_gpr_lo64(ins.rd, r);
+                    // hi: use upper halves approx
+                    std::string ahi = newtemp(), bhi = newtemp(), rh = newtemp();
+                    m_out += "  " + ahi + " = and i64 " + a.second + ", 4294967295\n";
+                    m_out += "  " + bhi + " = and i64 " + b.second + ", 4294967295\n";
+                    m_out += "  " + rh + " = or i64 " + ahi + ", " + bhi + "\n";
+                    // full write
+                    store_gpr(ins.rd, r, rh);
+                }
+                return;
+            default:
+                // Generic: 32-bit parallel add as fallback
+                m_out += "  " + vr + " = add <4 x i32> " + va4 + ", " + vb4 + "\n";
+                store_vec4i32(vr); return;
+            }
+        }
+        // MMI2 (0x09): PAND / PXOR
+        if (fn == 0x09) {
+            switch (sa) {
+            case 0x12: // PAND
+                m_out += "  " + vr + " = and <2 x i64> " + va2 + ", " + vb2 + "\n";
+                store_vec2i64(vr); return;
+            case 0x13: // PXOR (MMI2 has xor at different place; treat)
+                m_out += "  " + vr + " = xor <2 x i64> " + va2 + ", " + vb2 + "\n";
+                store_vec2i64(vr); return;
+            case 0x14: // spare
+                m_out += "  " + vr + " = or <2 x i64> " + va2 + ", " + vb2 + "\n";
+                store_vec2i64(vr); return;
+            default:
+                m_out += "  " + vr + " = and <2 x i64> " + va2 + ", " + vb2 + "\n";
+                store_vec2i64(vr); return;
+            }
+        }
+        // MMI1 (0x28); currently rejected by the decoder allow-list
+        if (fn == 0x28) {
+            switch (sa) {
+            case 0x12: // PAND alternate encoding area
+                m_out += "  " + vr + " = and <2 x i64> " + va2 + ", " + vb2 + "\n";
+                store_vec2i64(vr); return;
+            case 0x13: // PXOR
+                m_out += "  " + vr + " = xor <2 x i64> " + va2 + ", " + vb2 + "\n";
+                store_vec2i64(vr); return;
+            case 16: // PADDUW approx
+                m_out += "  " + vr + " = add <4 x i32> " + va4 + ", " + vb4 + "\n";
+                store_vec4i32(vr); return;
+            default:
+                m_out += "  " + vr + " = add <4 x i32> " + va4 + ", " + vb4 + "\n";
+                store_vec4i32(vr); return;
+            }
+        }
+        // MMI3 (0x29)
+        if (fn == 0x29) {
+            switch (sa) {
+            case 0x12: // POR
+                m_out += "  " + vr + " = or <2 x i64> " + va2 + ", " + vb2 + "\n";
+                store_vec2i64(vr); return;
+            case 0x13: // PNOR
+                {
+                    std::string vo = newtemp();
+                    m_out += "  " + vo + " = or <2 x i64> " + va2 + ", " + vb2 + "\n";
+                    m_out += "  " + vr + " = xor <2 x i64> " + vo + ", <i64 -1, i64 -1>\n";
+                }
+                store_vec2i64(vr); return;
+            default:
+                m_out += "  " + vr + " = or <2 x i64> " + va2 + ", " + vb2 + "\n";
+                store_vec2i64(vr); return;
+            }
+        }
+    }
+
+    // Legacy enum-based paths (old FUNCT_MMI_* values) + generic fallback
+    switch (static_cast<ee::e_ee_opcode>(fn)) {
+    case ee::e_ee_opcode::FUNCT_MMI_AND: {
+        std::string vr = newtemp();
+        m_out += "  " + vr + " = and <2 x i64> " + build2i64(a.first,a.second) + ", " + build2i64(b.first,b.second) + "\n";
+        store_vec2i64(vr); break;
+    }
+    case ee::e_ee_opcode::FUNCT_MMI_OR: {
+        std::string vr = newtemp();
+        m_out += "  " + vr + " = or <2 x i64> " + build2i64(a.first,a.second) + ", " + build2i64(b.first,b.second) + "\n";
+        store_vec2i64(vr); break;
+    }
+    case ee::e_ee_opcode::FUNCT_MMI_XOR: {
+        std::string vr = newtemp();
+        m_out += "  " + vr + " = xor <2 x i64> " + build2i64(a.first,a.second) + ", " + build2i64(b.first,b.second) + "\n";
+        store_vec2i64(vr); break;
+    }
+    default: {
+        // Safe fallback: copy rs → rd (keeps 128-bit shape)
+        store_gpr(ins.rd, a.first, a.second);
+        m_out += "  ; mmi funct=0x" + u32hex(fn) + " sa=" + std::to_string(sa) + " fallback move\n";
+        break;
+    }
+    }
+}
+
+void module_builder::emit_function_cfg(const ee::s_ee_function& fn,
+                                       const std::map<uint32_t, ee::s_ee_instruction>& insn_map,
+                                       const char* func_name)
+{
+    using ee::e_ee_opcode;
+    header();
+    declare_memory_helpers();
+
+    // Compute written/rbw per block.
+    std::map<uint32_t, std::set<uint8_t>> block_written_map, block_rbw_map;
+    std::vector<std::vector<ee::s_ee_instruction>> block_insns_vec;
+    for (const auto& bb : fn.blocks)
+    {
+        std::vector<ee::s_ee_instruction> insns;
+        for (uint32_t pc = bb.start_pc; pc < bb.end_pc; pc += 4)
+        {
+            auto it = insn_map.find(pc);
+            if (it != insn_map.end()) insns.push_back(it->second);
+        }
+        block_insns_vec.push_back(insns);
+        block_written_map[bb.start_pc] = block_written(insns);
+        block_rbw_map[bb.start_pc] = block_read_before_write(insns);
+    }
+
+    // Initialize liveness. Every architectural GPR is observable at a
+    // dispatcher/return/exception boundary, even when no later translated
+    // instruction in this function reads it. Seed those outgoing edges with
+    // all GPRs, then let ordinary backwards liveness carry the requirement to
+    // earlier blocks. Without this, a final MFHI1/MFLO1 (or any cached scalar
+    // write) can be discarded as dead before the host sees CPU state.
+    std::map<uint32_t, std::set<uint8_t>> live_in, live_out;
+    std::set<uint32_t> block_pcs;
+    std::set<uint8_t> all_arch_gprs;
+    for (uint8_t r = 1; r < 32; ++r)
+        all_arch_gprs.insert(r);
+    for (const auto& bb : fn.blocks)
+        block_pcs.insert(bb.start_pc);
+
+    std::set<uint32_t> dispatch_exit_blocks;
+    for (size_t i = 0; i < fn.blocks.size(); ++i)
+    {
+        const auto& bb = fn.blocks[i];
+        const auto& insns = block_insns_vec[i];
+        const ee::s_ee_instruction* control = nullptr;
+        for (auto it = insns.rbegin(); it != insns.rend(); ++it)
+        {
+            if (it->flow != ee::e_ee_flow::FLOW_NONE)
+            {
+                control = &*it;
+                break;
+            }
+        }
+
+        bool exits_to_dispatcher = bb.is_terminator;
+        if (control != nullptr)
+        {
+            switch (control->flow)
+            {
+            case ee::e_ee_flow::FLOW_BRANCH:
+            case ee::e_ee_flow::FLOW_BRANCH_LIKELY:
+                exits_to_dispatcher = exits_to_dispatcher ||
+                    block_pcs.count(control->branch_target) == 0 ||
+                    block_pcs.count(bb.fallthrough_pc) == 0;
+                break;
+            case ee::e_ee_flow::FLOW_CALL:
+                // The callee executes outside this translated function.
+                exits_to_dispatcher = true;
+                break;
+            case ee::e_ee_flow::FLOW_JUMP:
+                exits_to_dispatcher = exits_to_dispatcher ||
+                    control->jump_target == 0 ||
+                    block_pcs.count(control->jump_target) == 0;
+                break;
+            case ee::e_ee_flow::FLOW_RETURN:
+            case ee::e_ee_flow::FLOW_EXCEPTION:
+                exits_to_dispatcher = true;
+                break;
+            default:
+                break;
+            }
+        }
+        else if (bb.successors.empty() ||
+                 (bb.fallthrough_pc != 0 && block_pcs.count(bb.fallthrough_pc) == 0))
+        {
+            // Straight-line end of the discovered function: the emitted
+            // continuation is a host-dispatcher exit.
+            exits_to_dispatcher = true;
+        }
+
+        if (exits_to_dispatcher)
+            dispatch_exit_blocks.insert(bb.start_pc);
+    }
+
+    for (const auto& bb : fn.blocks)
+    {
+        live_in[bb.start_pc] = {};
+        live_out[bb.start_pc] = {};
+    }
+
+    // Iterate to fixpoint.
+    bool changed = true;
+    while (changed)
+    {
+        changed = false;
+        for (size_t i = 0; i < fn.blocks.size(); ++i)
+        {
+            const auto& bb = fn.blocks[i];
+            const auto& insns = block_insns_vec[i];
+
+            // live_out[B] = U live_in[succ]
+            std::set<uint8_t> new_out;
+            for (uint32_t succ : bb.successors)
+            {
+                auto it = live_in.find(succ);
+                if (it != live_in.end())
+                    new_out.insert(it->second.begin(), it->second.end());
+            }
+            if (dispatch_exit_blocks.count(bb.start_pc) != 0)
+                new_out.insert(all_arch_gprs.begin(), all_arch_gprs.end());
+            if (new_out != live_out[bb.start_pc])
+            {
+                live_out[bb.start_pc] = new_out;
+                changed = true;
+            }
+
+            // live_in[B] = (live_out[B] - written[B]) U read_before_write[B]
+            const auto& written = block_written_map[bb.start_pc];
+            const auto& rbw = block_rbw_map[bb.start_pc];
+            std::set<uint8_t> new_in;
+            for (uint8_t r : live_out[bb.start_pc])
+                if (written.count(r) == 0) new_in.insert(r);
+            for (uint8_t r : rbw) new_in.insert(r);
+            if (new_in != live_in[bb.start_pc])
+            {
+                live_in[bb.start_pc] = new_in;
+                changed = true;
+            }
+        }
+    }
+
+    begin_function(func_name);
+
+    if (!fn.blocks.empty())
+        m_out += "  br label %" + block_label(fn.blocks[0].start_pc) + "\n";
+    else
+        m_out += "  br label %" + block_label(0) + "\n";
+
+    std::set<uint32_t> defined_pcs;
+    std::set<uint32_t> referenced_pcs;
+    for (size_t i = 0; i < fn.blocks.size(); ++i) {
+        const auto& bb = fn.blocks[i];
+        defined_pcs.insert(bb.start_pc);
+        if (bb.fallthrough_pc) referenced_pcs.insert(bb.fallthrough_pc);
+        if (bb.target_pc) referenced_pcs.insert(bb.target_pc);
+        for (uint32_t s : bb.successors) referenced_pcs.insert(s);
+        for (const auto& ins : block_insns_vec[i]) {
+            if (ins.branch_target) referenced_pcs.insert(ins.branch_target);
+            if (ins.jump_target) referenced_pcs.insert(ins.jump_target);
+            if (ins.has_delay_slot) referenced_pcs.insert(ins.pc + 8);
+        }
+    }
+    referenced_pcs.insert(0);
+
+    for (size_t i = 0; i < fn.blocks.size(); ++i) {
+        const auto& bb = fn.blocks[i];
+        emit_block(block_insns_vec[i], i == fn.blocks.size() - 1, fn.entry_pc,
+                   live_in[bb.start_pc], live_out[bb.start_pc],
+                   bb.fallthrough_pc, bb.is_terminator);
+    }
+
+    // External / unresolved targets return to the host dispatcher. Returning
+    // through the zero sentinel loses the guest target PC and makes direct
+    // branches/calls into other translated functions look like a normal return.
+    for (uint32_t pc : referenced_pcs) {
+        if (pc == 0 || defined_pcs.count(pc)) continue;
+        m_out += block_label(pc) + ":\n";
+        const std::string pc_ptr = state_field(6); // s_ee_cpu_state::m_pc
+        m_out += "  store i32 " + std::to_string(pc) + ", ptr " + pc_ptr + "\n";
+        const std::string exit_ptr = state_field(7); // m_exit_reason
+        m_out += "  store i32 3, ptr " + exit_ptr + "\n";
+        m_out += "  ret i32 3\n"; // EE_EXIT_DISPATCH
+    }
+
+    m_out += block_label(0);
+    m_out += ":\n";
+    m_out += "  ret i32 0\n";
+
+    m_out += "\n";
+    end_function();
+
+    m_ctx.ir(optimize_ir(m_out, m_opt_level));
+}
+
+  // ---- IR text optimisation passes (Phase 7) ----
+
+namespace {
+
+bool is_pure_binop_def(const std::string& line, std::string* def_out,
+                       std::string* rhs_out)
+{
+    // Match: "  %tN = <op> <ty> <ops...>"  (no call, load, store, br, ret)
+    size_t p = 0;
+    while (p < line.size() && (line[p] == ' ' || line[p] == '\t')) ++p;
+    if (p >= line.size() || line[p] != '%') return false;
+    size_t name_end = p + 1;
+    while (name_end < line.size() &&
+           (std::isdigit(static_cast<unsigned char>(line[name_end])) ||
+            line[name_end] == 't' ||
+            (line[name_end] >= 'a' && line[name_end] <= 'z') ||
+            (line[name_end] >= 'A' && line[name_end] <= 'Z') ||
+            line[name_end] == '_'))
+        ++name_end;
+    size_t eq = line.find('=', name_end);
+    if (eq == std::string::npos) return false;
+    std::string def = line.substr(p, name_end - p);
+    if (def.size() < 3 || def[1] != 't') return false;
+
+    size_t rhs = eq + 1;
+    while (rhs < line.size() && (line[rhs] == ' ' || line[rhs] == '\t')) ++rhs;
+    // Reject side-effecting / memory ops.
+    static const char* ban[] = {
+        "call ", "load ", "store ", "br ", "ret ", "phi ", "alloca ",
+        "invoke ", "landingpad ", "atomicrmw ", "cmpxchg "
+    };
+    for (const char* b : ban) {
+        if (line.compare(rhs, std::strlen(b), b) == 0) return false;
+    }
+    if (def_out) *def_out = def;
+    if (rhs_out) *rhs_out = line.substr(rhs);
+    return true;
+}
+
+} // namespace
+
+std::string module_builder::optimize_ir(const std::string& ir, int level)
+{
+    if (level <= 0) return ir;
+
+    // Split into lines (preserve empties for readability).
+    std::vector<std::string> lines;
+    {
+        std::string::size_type start = 0;
+        while (start < ir.size()) {
+            auto nl = ir.find('\n', start);
+            if (nl == std::string::npos) {
+                lines.push_back(ir.substr(start));
+                break;
+            }
+            lines.push_back(ir.substr(start, nl - start));
+            start = nl + 1;
+        }
+    }
+
+    // ---- Level 1: preserve architectural state stores ----
+    // Every store emitted by the current EE backend writes architectural CPU
+    // or VU0 state.  The old "dead store" pass treated a value used only by a
+    // store as dead, but that store is itself an observable side effect.  It
+    // also failed to canonicalise distinct GEP temporaries that can alias the
+    // same HI/LO or GPR field, so it could remove writes that a later load
+    // observes (e.g. MTHI1 followed by MFHI1).
+    //
+    // Keep all stores until we have memory-effect/alias analysis capable of
+    // proving a write redundant.  Level 1 intentionally performs no store
+    // elimination; higher levels still optimise pure SSA expressions.
+
+    // ---- Level 2: local common-subexpression elimination ----
+    // Within a basic block (between labels / terminators), if two pure binops
+    // share an identical RHS, rewrite later uses of the second def to the first.
+    if (level >= 2) {
+        std::map<std::string, std::string> rewrite; // old %t -> canonical %t
+        std::map<std::string, std::string> rhs_to_def; // rhs text -> first def
+        std::vector<std::string> cse_out;
+        cse_out.reserve(lines.size());
+
+        auto flush_block = [&]() {
+            rhs_to_def.clear();
+        };
+
+        for (const auto& line : lines) {
+            size_t lead = 0;
+            while (lead < line.size() &&
+                   (line[lead] == ' ' || line[lead] == '\t'))
+                ++lead;
+
+            // Label or terminator → end of local CSE scope.
+            bool is_label = !line.empty() && line.back() == ':' &&
+                            line.find('=') == std::string::npos;
+            bool is_term =
+                line.compare(lead, 3, "br ") == 0 ||
+                line.compare(lead, 4, "ret ") == 0;
+            if (is_label || is_term) {
+                if (is_term) {
+                    // Still emit terminator after applying rewrites.
+                } else {
+                    flush_block();
+                    cse_out.push_back(line);
+                    continue;
+                }
+            }
+
+            std::string def, rhs;
+            if (is_pure_binop_def(line, &def, &rhs)) {
+                // Apply prior rewrites to RHS so CSE chains.
+                std::string rhs2 = rhs;
+                for (const auto& kv : rewrite) {
+                    size_t p = 0;
+                    while ((p = rhs2.find(kv.first, p)) != std::string::npos) {
+                        // Ensure token boundary (simple digit/alpha end).
+                        size_t end = p + kv.first.size();
+                        if (end < rhs2.size() &&
+                            (std::isalnum(static_cast<unsigned char>(rhs2[end])) ||
+                             rhs2[end] == '_')) {
+                            p = end;
+                            continue;
+                        }
+                        rhs2.replace(p, kv.first.size(), kv.second);
+                        p += kv.second.size();
+                    }
+                }
+                auto it = rhs_to_def.find(rhs2);
+                if (it != rhs_to_def.end()) {
+                    rewrite[def] = it->second;
+                    continue; // drop duplicate pure def
+                }
+                rhs_to_def[rhs2] = def;
+                // Rebuild line with rewritten RHS if needed.
+                if (rhs2 != rhs) {
+                    size_t eq = line.find('=');
+                    cse_out.push_back(line.substr(0, eq + 1) + " " + rhs2);
+                } else {
+                    cse_out.push_back(line);
+                }
+                if (is_term) flush_block();
+                continue;
+            }
+
+            // Rewrite operands in non-pure lines.
+            std::string rewritten = line;
+            for (const auto& kv : rewrite) {
+                size_t p = 0;
+                while ((p = rewritten.find(kv.first, p)) != std::string::npos) {
+                    size_t end = p + kv.first.size();
+                    if (end < rewritten.size() &&
+                        (std::isalnum(static_cast<unsigned char>(rewritten[end])) ||
+                         rewritten[end] == '_')) {
+                        p = end;
+                        continue;
+                    }
+                    rewritten.replace(p, kv.first.size(), kv.second);
+                    p += kv.second.size();
+                }
+            }
+            cse_out.push_back(rewritten);
+            if (is_term) flush_block();
+        }
+        lines.swap(cse_out);
+    }
+
+    // ---- Level 3: dead temp elimination ----
+    // Drop pure %tN = ... definitions whose result is never used.
+    if (level >= 3) {
+        // Iterate to fixed point (removing a def can kill more).
+        for (int pass = 0; pass < 4; ++pass) {
+            std::set<std::string> used;
+            for (const auto& line : lines) {
+                auto eq = line.find('=');
+                size_t scan = (eq != std::string::npos) ? eq + 1 : 0;
+                size_t pos = scan;
+                while ((pos = line.find("%t", pos)) != std::string::npos) {
+                    size_t end = pos + 2;
+                    while (end < line.size() &&
+                           std::isdigit(static_cast<unsigned char>(line[end])))
+                        ++end;
+                    if (end > pos + 2)
+                        used.insert(line.substr(pos, end - pos));
+                    pos = end;
+                }
+            }
+            std::vector<std::string> kept;
+            kept.reserve(lines.size());
+            bool removed = false;
+            for (const auto& line : lines) {
+                std::string def, rhs;
+                if (is_pure_binop_def(line, &def, &rhs) &&
+                    used.find(def) == used.end()) {
+                    removed = true;
+                    continue;
+                }
+                kept.push_back(line);
+            }
+            lines.swap(kept);
+            if (!removed) break;
+        }
+    }
+
+    std::string result;
+    result.reserve(ir.size());
+    for (size_t i = 0; i < lines.size(); ++i) {
+        result += lines[i];
+        result += '\n';
+    }
+    return result;
+}
+
+} // namespace llvm
