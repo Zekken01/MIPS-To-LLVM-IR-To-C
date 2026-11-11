@@ -3017,9 +3017,27 @@ void module_builder::emit_function_cfg(const ee::s_ee_function& fn,
     begin_function(func_name);
 
     if (!fn.blocks.empty())
-        m_out += "  br label %" + block_label(fn.blocks[0].start_pc) + "\n";
+    {
+        // Re-enter at the block named by cpu.m_pc when a callee returns to a
+        // continuation inside this translated function. Unknown/initial PCs
+        // fall back to the function entry for compatibility with callers that
+        // initialise the CPU state without setting m_pc.
+        const std::string pc_ptr = state_field(6);
+        const std::string guest_pc = newtemp();
+        m_out += "  " + guest_pc + " = load i32, ptr " + pc_ptr + "\n";
+        m_out += "  switch i32 " + guest_pc + ", label %" +
+                 block_label(fn.blocks[0].start_pc) + " [\n";
+        for (size_t i = 1; i < fn.blocks.size(); ++i)
+        {
+            m_out += "    i32 " + std::to_string(fn.blocks[i].start_pc) +
+                     ", label %" + block_label(fn.blocks[i].start_pc) + "\n";
+        }
+        m_out += "  ]\n";
+    }
     else
+    {
         m_out += "  br label %" + block_label(0) + "\n";
+    }
 
     std::set<uint32_t> defined_pcs;
     std::set<uint32_t> referenced_pcs;
