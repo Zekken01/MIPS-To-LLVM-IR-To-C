@@ -23,14 +23,13 @@ std::set<uint32_t> collect_successors(const s_ee_instruction& ins)
         out.insert(after_delay);
         break;
     case e_ee_flow::FLOW_JUMP:
-        // Zero denotes an indirect target (JR) rather than a static PC.
-        if (ins.jump_target != 0)
+        // J has an immediate target; JR's register target is dynamic.
+        if (ins.opcode == e_ee_opcode::OP_J)
             out.insert(ins.jump_target);
         break;
     case e_ee_flow::FLOW_CALL:
-        // JALR has no statically discoverable target; retain only the
-        // post-delay return path until the runtime dispatcher resolves it.
-        if (ins.jump_target != 0)
+        // JAL has an immediate target; JALR is resolved by the dispatcher.
+        if (ins.opcode == e_ee_opcode::OP_JAL)
             out.insert(ins.jump_target);
         out.insert(after_delay);
         break;
@@ -216,7 +215,7 @@ void function_analyzer::split_into_blocks(
                     {
                         // Pure jump (J / JR-as-jump): follow target if in-function.
                         bb.target_pc = ins.jump_target;
-                        if (ins.jump_target != 0 &&
+                        if (ins.opcode == e_ee_opcode::OP_J &&
                             !is_foreign_entry(ins.jump_target))
                         {
                             bb.successors.insert(ins.jump_target);
