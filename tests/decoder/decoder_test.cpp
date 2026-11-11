@@ -3,6 +3,7 @@
 #include "ee_decoder.h"
 #include "instruction_lifter.h"
 #include "function_analyzer.h"
+#include "ee_recomp.h"
 #include <cstdio>
 #include <cstring>
 #include <set>
@@ -369,6 +370,32 @@ int main()
                         collect_successors(jalr) == jalr_expected;
         ok ? ++g_pass : ++g_fail;
         if (!ok) std::printf("FAIL indirect JR/JALR must not invent a static target\n");
+    }
+    {
+        s_recompiled_elf compiled{};
+        s_recompiled_fn caller{};
+        caller.name = "caller";
+        caller.vaddr = 0x00100000;
+        caller.block_pcs = {0x00100000, 0x00100008, 0x00100020};
+        s_recompiled_fn callee{};
+        callee.name = "callee";
+        callee.vaddr = 0x00102000;
+        callee.block_pcs = {0x00102000, 0x00102018};
+        compiled.functions.push_back(caller);
+        compiled.functions.push_back(callee);
+
+        const s_recompiled_fn* entry = find_recompiled_function(compiled, 0x00100000);
+        const s_recompiled_fn* continuation =
+            find_recompiled_function(compiled, 0x00100020);
+        const s_recompiled_fn* callee_body =
+            find_recompiled_function(compiled, 0x00102018);
+        const s_recompiled_fn* unknown =
+            find_recompiled_function(compiled, 0xDEAD0000);
+        const bool ok = entry != nullptr && entry->name == "caller" &&
+                        continuation == entry && callee_body != nullptr &&
+                        callee_body->name == "callee" && unknown == nullptr;
+        ok ? ++g_pass : ++g_fail;
+        if (!ok) std::printf("FAIL translated block-PC ownership lookup\\n");
     }
     std::printf("decoder_test: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
