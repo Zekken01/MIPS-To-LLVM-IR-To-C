@@ -100,7 +100,7 @@ target_link_libraries(ee_mmi1_ir_fixture PRIVATE ee_core)
 add_executable(ee_mmi_ops_test tests/smoke/mmi_ops_test.cpp)
 target_link_libraries(ee_mmi_ops_test PRIVATE ee_core)
 
-# JIT regression for unsupported indirect control transfers and mandatory delay slots.
+# JIT regressions for JAL/JALR/JR dispatch, link timing, and architectural delay slots.
 add_executable(ee_control_flow_ir_fixture tests/smoke/control_flow_ir_fixture.cpp)
 target_link_libraries(ee_control_flow_ir_fixture PRIVATE ee_core)
 
