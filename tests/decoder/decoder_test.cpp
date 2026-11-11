@@ -250,11 +250,13 @@ int main()
         const auto jr_ra = decode(0x100000, R(0x00,31,0,0,0,0x08));
         const auto jr_v0 = decode(0x100000, R(0x00,2,0,0,0,0x08));
         const auto jalr = decode(0x100000, R(0x00,2,0,16,0,0x09));
+        const auto jalr_bad_reserved = decode(0x100000, R(0x00,2,1,16,0,0x09));
         const bool ok = jr_ra.valid == V && jr_ra.flow == e_ee_flow::FLOW_RETURN &&
-                        jr_v0.valid == U && jr_v0.flow == e_ee_flow::FLOW_JUMP &&
-                        jalr.valid == U && jalr.flow == e_ee_flow::FLOW_CALL;
+                        jr_v0.valid == V && jr_v0.flow == e_ee_flow::FLOW_JUMP &&
+                        jalr.valid == V && jalr.flow == e_ee_flow::FLOW_CALL &&
+                        jalr.rd == 16 && jalr_bad_reserved.valid == U;
         ok ? ++g_pass : ++g_fail;
-        if (!ok) std::printf("FAIL indirect JR/JALR must fail closed without a dispatcher\n");
+        if (!ok) std::printf("FAIL JR/JALR dynamic-flow decode or reserved fields\n");
     }
 
     expect("mfc0", R(0x10,0x00,4,12,0,0), "mfc0", V);
@@ -331,6 +333,15 @@ int main()
         const bool ok = collect_successors(ins).empty();
         ok ? ++g_pass : ++g_fail;
         if (!ok) std::printf("FAIL ERET must not invent a delay slot\\n");
+    }
+    {
+        const auto jal_cross = decode(0x0ffffffc, (0x03u << 26) | 1u);
+        const auto j_cross = decode(0x0ffffffc, (0x02u << 26) | 1u);
+        const bool ok = jal_cross.valid == V && j_cross.valid == V &&
+                        jal_cross.jump_target == 0x10000004u &&
+                        j_cross.jump_target == 0x10000004u;
+        ok ? ++g_pass : ++g_fail;
+        if (!ok) std::printf("FAIL J/JAL target region must use PC+4 across 256MB boundary\n");
     }
     std::printf("decoder_test: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
