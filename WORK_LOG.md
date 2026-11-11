@@ -109,3 +109,12 @@ Further changes should be committed to this branch in small, testable increments
 - Ran the committed linker tool over all 7,849 objects and the matching runtime/dispatcher sources. It produced a **28,618,808-byte** x86-64 shared library exporting `ee_game_run` and `ee_fn_00100008`. The library loaded through `ctypes.CDLL`; `ldd -r` reported no unresolved dynamic symbols.
 - Full validation details: `FULL_GAME_NATIVE_LINK_VALIDATION.md`.
 - Limitation: the linked library is not a bootable PS2 game and the full game was not executed. The EE runtime still lacks BIOS/IOP, GS, DMA, TLB/MMIO devices, interrupts, and other console services. The in-tree `object_emitter::emit_object()` remains a stub; the persisted objects were emitted using the external llvmlite validation tool.
+
+
+## 2026-11-11 — CVT.S.W JIT regression coverage
+
+- Extended the existing COP1 LLVM fixture to emit the exact `fmt=W, funct=CVT.S.W` encoding.
+- Added O0 JIT runtime cases for zero, positive/negative values, the 16,777,217 single-precision rounding boundary, and signed 32-bit extrema.
+- The test verifies the low 32-bit signed source is used, the destination is written as a zero-extended FPR word, the source is preserved, and FCSR is unchanged.
+- The lowering itself was already present (`sitofp i32 to float`); this change adds execution coverage for the only supported `fmt=W` operation.
+- CI result for this follow-up is pending; do not treat it as verified until the Actions run completes.
