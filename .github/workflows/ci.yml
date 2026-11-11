@@ -38,5 +38,15 @@ jobs:
       - name: Build
         run: cmake --build build --parallel 2
 
+      - name: Upload real-game validation tools
+        uses: actions/upload-artifact@v4
+        with:
+          name: ee-recomp-linux
+          path: |
+            build/ee_recomp
+            tools/verify_ir.py
+          if-no-files-found: error
+          retention-days: 1
+
       - name: Test
         run: ctest --test-dir build --output-on-failure
