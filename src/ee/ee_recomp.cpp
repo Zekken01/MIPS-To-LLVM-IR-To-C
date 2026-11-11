@@ -431,7 +431,7 @@ bool ee_recomp(const char* elf_path,
             const auto& f = result->functions[i];
             os << "    {\n";
             os << "      \"name\": \"" << json_escape(f.name) << "\",\n";
-            os << "      \\"host_symbol\\": \\"" << json_escape(f.host_symbol) << "\\\",\\n";
+            os << "      \"host_symbol\": \"" << json_escape(f.host_symbol) << "\",\n";
             os << "      \"vaddr\": \"" << u32hex(f.vaddr) << "\",\n";
             os << "      \"size\": " << f.size << ",\n";
             os << "      \"insn_count\": " << f.insn_count << ",\n";
