@@ -310,6 +310,11 @@ static std::set<uint8_t> block_written(const std::vector<ee::s_ee_instruction>& 
         case e_ee_opcode::OP_JAL:
             w.insert(31);
             break;
+        case e_ee_opcode::OP_REGIMM:
+            // BLTZAL/BGEZAL and their likely forms always write $ra = PC+8.
+            if (ins.rt >= 0x10 && ins.rt <= 0x13)
+                w.insert(31);
+            break;
         case e_ee_opcode::OP_ADDIU:
         case e_ee_opcode::OP_DADDIU:
         case e_ee_opcode::OP_ANDI:
@@ -487,6 +492,10 @@ static std::set<uint8_t> block_read_before_write(const std::vector<ee::s_ee_inst
             break;
         case e_ee_opcode::OP_REGIMM:
             consider_read(ins.rs);
+            // The link is architecturally written before the delay slot, so
+            // later reads of $ra in this same block must see the new value.
+            if (ins.rt >= 0x10 && ins.rt <= 0x13)
+                written_so_far.insert(31);
             break;
         case e_ee_opcode::OP_ADDI:
             consider_read(ins.rs);
@@ -1855,6 +1864,22 @@ void module_builder::emit_block(const std::vector<ee::s_ee_instruction>& block,
             // The branch condition reads the PRE-delay-slot register values.
             std::string cmp = make_cond(ctrl);
 
+            // BLTZALL/BGEZALL write the link unconditionally, including when
+            // the branch is not taken and the delay slot is annulled.
+            const auto likely_rt = static_cast<e_ee_opcode>(ctrl.rt);
+            const bool likely_has_link =
+                ctrl.opcode == e_ee_opcode::OP_REGIMM &&
+                (likely_rt == e_ee_opcode::REGIMM_BLTZALL ||
+                 likely_rt == e_ee_opcode::REGIMM_BGEZALL);
+            if (likely_has_link)
+            {
+                std::string link = newtemp();
+                char link_pc[32];
+                std::snprintf(link_pc, sizeof(link_pc), "%u", (unsigned)(ctrl.pc + 8u));
+                m_out += "  " + link + " = add i64 " + link_pc + ", 0\\n";
+                set_gpr_lo64(31, link);
+            }
+
             // Flush all pre-delay architectural state in the common block, so
             // both successors start from it. (Previously the not-taken path
             // "invalidated" the delay slot's destinations, which also dropped
@@ -1891,7 +1916,7 @@ void module_builder::emit_block(const std::vector<ee::s_ee_instruction>& block,
                 (regimm_rt == e_ee_opcode::REGIMM_BLTZAL ||
                  regimm_rt == e_ee_opcode::REGIMM_BGEZAL);
             const bool supported_conditional =
-                ctrl.flow == ee::e_ee_flow::FLOW_BRANCH && !has_link &&
+                ctrl.flow == ee::e_ee_flow::FLOW_BRANCH &&
                 (ctrl.opcode == e_ee_opcode::OP_BEQ ||
                  ctrl.opcode == e_ee_opcode::OP_BNE ||
                  ctrl.opcode == e_ee_opcode::OP_BLEZ ||
@@ -1901,6 +1926,18 @@ void module_builder::emit_block(const std::vector<ee::s_ee_instruction>& block,
             if (supported_conditional)
             {
                 const std::string cmp = make_cond(ctrl);
+
+                // BLTZAL/BGEZAL always set $ra to PC+8 before the ordinary
+                // delay slot executes, independent of the branch outcome.
+                if (has_link)
+                {
+                    std::string link = newtemp();
+                    char link_pc[32];
+                    std::snprintf(link_pc, sizeof(link_pc), "%u", (unsigned)(ctrl.pc + 8u));
+                    m_out += "  " + link + " = add i64 " + link_pc + ", 0\\n";
+                    set_gpr_lo64(31, link);
+                }
+
                 emit_insn(block[delay_idx], false, 0);
                 store_dirty_regs(live_out);
                 m_out += "  br i1 " + cmp + ", label %" + block_label(target) +
