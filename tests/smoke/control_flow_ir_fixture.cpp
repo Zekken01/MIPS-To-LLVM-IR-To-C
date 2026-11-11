@@ -75,6 +75,13 @@ int main(int argc, char** argv)
         delay_word = make_i(0x09, 8, 9, 1);
         function_name = "guest_jalr_delay_test";
     }
+    else if (mode == "jalr_rd")
+    {
+        // JALR $s0,($t0): honour encoded rd independently of target register.
+        control_word = make_r(8, 0, 16, 0, 0x09);
+        delay_word = make_i(0x09, 16, 9, 1);
+        function_name = "guest_jalr_rd_delay_test";
+    }
     else if (mode == "beq_taken")
     {
         // BEQ must sample $v0 before its delay slot increments it.
