@@ -57,3 +57,20 @@ The MADD/MADDU behavior is implemented from the EE Core Instruction Set Manual v
 - CTest: **4/4 PASS** (`decoder`, `multi_function`, `smoke`, `mmi_ir_runtime`).
 - LLVM JIT runtime: PASS at O0–O3.
 - Added runtime coverage for signed `MULT1` and unsigned `MULTU1`, including HI1/LO1 writeback, sign-extension, and MFHI1/MFLO1 readback.
+
+## 2026-11-11 Pipeline-1 division follow-up
+
+Environment: GitHub Actions `ubuntu-latest`, GCC/CMake/Ninja, isolated Python virtual environment with `llvmlite`.
+
+- Clean configure: PASS.
+- Clean build: PASS.
+- CTest: **5/5 PASS** (`decoder`, `multi_function`, `smoke`, `mmi_ir_runtime`, `div1_ir_runtime`).
+- Existing MMI runtime fixture: PASS at O0–O3.
+- New DIV1/DIVU1 LLVM JIT fixture: PASS at O0–O3 for all five cases:
+  - Signed quotient/remainder (`-17 / 5`).
+  - Signed overflow (`INT_MIN / -1`).
+  - Signed divide-by-zero preservation.
+  - Unsigned quotient/remainder (`0xfffffffe / 3`).
+  - Unsigned divide-by-zero preservation.
+- Each case verifies HI1/LO1 state and MFHI1/MFLO1 readback.
+- GitHub Actions run: [43090955314](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43090955314).
