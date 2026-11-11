@@ -5,6 +5,42 @@
 
 namespace ee {
 
+std::set<uint32_t> collect_successors(const s_ee_instruction& ins)
+{
+    std::set<uint32_t> out;
+    if (ins.valid == e_ee_valid::INVALID)
+        return out;
+
+    const uint32_t after_delay = ins.pc + (ins.has_delay_slot ? 8u : 4u);
+    if (ins.has_delay_slot)
+        out.insert(ins.pc + 4u);
+
+    switch (ins.flow)
+    {
+    case e_ee_flow::FLOW_BRANCH:
+    case e_ee_flow::FLOW_BRANCH_LIKELY:
+        out.insert(static_cast<uint32_t>(ins.branch_target));
+        out.insert(after_delay);
+        break;
+    case e_ee_flow::FLOW_JUMP:
+        out.insert(ins.jump_target);
+        break;
+    case e_ee_flow::FLOW_CALL:
+        out.insert(ins.jump_target);
+        out.insert(after_delay);
+        break;
+    case e_ee_flow::FLOW_RETURN:
+    case e_ee_flow::FLOW_EXCEPTION:
+        break;
+    case e_ee_flow::FLOW_NONE:
+    default:
+        out.insert(ins.pc + 4u);
+        break;
+    }
+    return out;
+}
+
+
 namespace
 {
 bool is_control_transfer(const s_ee_instruction& ins)
