@@ -20,6 +20,14 @@ uint32_t make_mmi(uint8_t rs, uint8_t rt, uint8_t rd, uint8_t sa, uint8_t funct)
            (static_cast<uint32_t>(sa) << 6) |
            funct;
 }
+
+uint32_t make_regimm(uint8_t rs, uint8_t rt, int16_t immediate)
+{
+    return (0x01u << 26) |
+           (static_cast<uint32_t>(rs) << 21) |
+           (static_cast<uint32_t>(rt) << 16) |
+           static_cast<uint16_t>(immediate);
+}
 }
 
 int main(int argc, char** argv)
@@ -57,7 +65,10 @@ int main(int argc, char** argv)
         make_mmi(4, 5, 20, 26, 0x28), // PEXTUB $s4, $a0, $a1
         make_mmi(4, 5, 21, 22, 0x28), // PEXTUH $s5, $a0, $a1
         make_mmi(4, 5, 22, 18, 0x28), // PEXTUW $s6, $a0, $a1
-        make_mmi(4, 5, 23, 27, 0x28), // QFSRV  $s7, $a0, $a1 (SA set by runtime)
+        make_regimm(25, 0x18, 0),    // MTSAB $t9, 0
+        make_mmi(4, 5, 23, 27, 0x28), // QFSRV $s7, $a0, $a1
+        make_regimm(26, 0x19, 0),    // MTSAH $k0, 0
+        make_mmi(4, 5, 24, 27, 0x28), // QFSRV $t8, $a0, $a1
         make_mmi(4, 5, 4,  2, 0x28)  // PCEQW  $a0, $a0, $a1 (rd aliases rs)
     };
 

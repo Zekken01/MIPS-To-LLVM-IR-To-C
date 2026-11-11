@@ -841,12 +841,36 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
     case ee::e_ee_opcode::OP_REGIMM:
     {
         auto rt = static_cast<ee::e_ee_opcode>(ins.rt);
+        if (rt == ee::e_ee_opcode::REGIMM_MTSAB ||
+            rt == ee::e_ee_opcode::REGIMM_MTSAH)
+        {
+            // MTSAB: ((GPR[rs] low 4 bits XOR immediate low 4 bits) * 8).
+            // MTSAH: ((GPR[rs] low 3 bits XOR immediate low 3 bits) * 16).
+            const bool is_byte = rt == ee::e_ee_opcode::REGIMM_MTSAB;
+            const uint32_t lane_mask = is_byte ? 0x0fu : 0x07u;
+            const uint32_t bit_shift = is_byte ? 3u : 4u;
+            const std::string source = newtemp();
+            const std::string shifted = newtemp();
+            const std::string result = newtemp();
+            const std::string result32 = newtemp();
+            const std::string sa_ptr = state_field(5);
+            m_out += "  " + source + " = and i64 " + src_lo(ins.rs) + ", " +
+                     std::to_string(lane_mask) + "\n";
+            m_out += "  " + shifted + " = xor i64 " + source + ", " +
+                     std::to_string(ins.uimmediate & lane_mask) + "\n";
+            m_out += "  " + result + " = shl i64 " + shifted + ", " +
+                     std::to_string(bit_shift) + "\n";
+            m_out += "  " + result32 + " = trunc i64 " + result + " to i32\n";
+            m_out += "  store i32 " + result32 + ", ptr " + sa_ptr + "\n";
+            break;
+        }
         // Any REGIMM encoding not explicitly implemented below is not emitted
         // as a NOP. Decoder status normally exits before this switch for it.
         if ((ins.rt != 0x00 && ins.rt != 0x01 && ins.rt != 0x02 && ins.rt != 0x03 &&
              ins.rt != 0x08 && ins.rt != 0x09 && ins.rt != 0x0a && ins.rt != 0x0b &&
              ins.rt != 0x0c && ins.rt != 0x0e &&
-             ins.rt != 0x10 && ins.rt != 0x11 && ins.rt != 0x12 && ins.rt != 0x13)) {
+             ins.rt != 0x10 && ins.rt != 0x11 && ins.rt != 0x12 && ins.rt != 0x13 &&
+             ins.rt != 0x18 && ins.rt != 0x19)) {
             m_out += "  ; regimm rt=0x" + u32hex(ins.rt) + " reserved/nop\n";
             break;
         }
@@ -2566,10 +2590,88 @@ void module_builder::emit_mmi_insn(const ee::s_ee_instruction& ins)
                     store_vec16i8(result);
                 }
                 return;
-            case 0x10: // PADDUW
-                store_vec4i32(emit_unsigned_sat(va4, vb4, "<4 x i32>", "<4 x i64>",
-                                                "<4 x i1>", "i64", 4, 0xFFFFFFFFull, true));
+            case 0x04: // PADSBH: subtract low halfwords and add high halfwords.
+            {
+                const std::string diff = newtemp();
+                const std::string sum = newtemp();
+                const std::string result = newtemp();
+                m_out += "  " + diff + " = sub <8 x i16> " + va8 + ", " + vb8 + "\n";
+                m_out += "  " + sum + " = add <8 x i16> " + va8 + ", " + vb8 + "\n";
+                m_out += "  " + result + " = shufflevector <8 x i16> " + diff +
+                         ", <8 x i16> " + sum +
+                         ", <8 x i32> <i32 0, i32 1, i32 2, i32 3, i32 12, i32 13, i32 14, i32 15>\n";
+                store_vec8i16(result);
                 return;
+            }
+            case 0x12: // PEXTUW: interleave upper two words from rs and rt.
+            {
+                const std::string result = newtemp();
+                m_out += "  " + result + " = shufflevector <4 x i32> " + va4 +
+                         ", <4 x i32> " + vb4 +
+                         ", <4 x i32> <i32 6, i32 2, i32 7, i32 3>\n";
+                store_vec4i32(result);
+                return;
+            }
+            case 0x16: // PEXTUH: interleave upper four halfwords from rs and rt.
+            {
+                const std::string result = newtemp();
+                m_out += "  " + result + " = shufflevector <8 x i16> " + va8 +
+                         ", <8 x i16> " + vb8 +
+                         ", <8 x i32> <i32 12, i32 4, i32 13, i32 5, i32 14, i32 6, i32 15, i32 7>\n";
+                store_vec8i16(result);
+                return;
+            }
+            case 0x1a: // PEXTUB: interleave upper eight bytes from rs and rt.
+            {
+                const std::string result = newtemp();
+                m_out += "  " + result + " = shufflevector <16 x i8> " + va16 +
+                         ", <16 x i8> " + vb16 +
+                         ", <16 x i32> <i32 24, i32 8, i32 25, i32 9, i32 26, i32 10, i32 27, i32 11, i32 28, i32 12, i32 29, i32 13, i32 30, i32 14, i32 31, i32 15>\n";
+                store_vec16i8(result);
+                return;
+            }
+            case 0x1b: // QFSRV: right funnel shift of {rs,rt} by the SA register.
+            {
+                const std::string a_vec = build2i64(a.first, a.second);
+                const std::string b_vec = build2i64(b.first, b.second);
+                const std::string source_a = newtemp();
+                const std::string source_b = newtemp();
+                const std::string sa_raw = newtemp();
+                const std::string sa_masked = newtemp();
+                const std::string is_zero = newtemp();
+                const std::string sa_safe = newtemp();
+                const std::string sa128 = newtemp();
+                const std::string inverse = newtemp();
+                const std::string upper = newtemp();
+                const std::string lower = newtemp();
+                const std::string combined = newtemp();
+                const std::string result = newtemp();
+                const std::string result_lo = newtemp();
+                const std::string result_hi_shifted = newtemp();
+                const std::string result_hi = newtemp();
+                const std::string sa_ptr = state_field(5);
+
+                m_out += "  " + source_a + " = bitcast <2 x i64> " + a_vec + " to i128\n";
+                m_out += "  " + source_b + " = bitcast <2 x i64> " + b_vec + " to i128\n";
+                m_out += "  " + sa_raw + " = load i32, ptr " + sa_ptr + "\n";
+                // MTSAB/MTSAH generate aligned bit counts in 0..120. Keep
+                // malformed saved state from producing an out-of-range IR shift.
+                m_out += "  " + sa_masked + " = and i32 " + sa_raw + ", 127\n";
+                m_out += "  " + is_zero + " = icmp eq i32 " + sa_masked + ", 0\n";
+                m_out += "  " + sa_safe + " = select i1 " + is_zero + ", i32 1, i32 " + sa_masked + "\n";
+                m_out += "  " + sa128 + " = zext i32 " + sa_safe + " to i128\n";
+                m_out += "  " + inverse + " = sub i128 128, " + sa128 + "\n";
+                m_out += "  " + upper + " = shl i128 " + source_a + ", " + inverse + "\n";
+                m_out += "  " + lower + " = lshr i128 " + source_b + ", " + sa128 + "\n";
+                m_out += "  " + combined + " = or i128 " + upper + ", " + lower + "\n";
+                m_out += "  " + result + " = select i1 " + is_zero + ", i128 " + source_b + ", i128 " + combined + "\n";
+                m_out += "  " + result_lo + " = trunc i128 " + result + " to i64\n";
+                m_out += "  " + result_hi_shifted + " = lshr i128 " + result + ", 64\n";
+                m_out += "  " + result_hi + " = trunc i128 " + result_hi_shifted + " to i64\n";
+                store_gpr(ins.rd, result_lo, result_hi);
+                return;
+            }
+            case 0x10: // PADDUW
             case 0x11: // PSUBUW
                 store_vec4i32(emit_unsigned_sat(va4, vb4, "<4 x i32>", "<4 x i64>",
                                                 "<4 x i1>", "i64", 4, 0xFFFFFFFFull, false));

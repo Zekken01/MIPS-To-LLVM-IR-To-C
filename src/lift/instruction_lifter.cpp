@@ -177,13 +177,18 @@ s_lifted_op lift(const s_ee_instruction& insn)
             case 0x05: op.kind = LOP_MMI_ABS_H; break;
             case 0x06: op.kind = LOP_MMI_CEQ_H; break;
             case 0x07: op.kind = LOP_MMI_MINS_H; break;
+            case 0x04: op.kind = LOP_MMI_ADDSUB_H; break;
             case 0x0a: op.kind = LOP_MMI_CEQ_B; break;
             case 0x10: op.kind = LOP_MMI_ADDU_SAT_W; break;
             case 0x11: op.kind = LOP_MMI_SUBU_SAT_W; break;
+            case 0x12: op.kind = LOP_MMI_EXTU_W; break;
             case 0x14: op.kind = LOP_MMI_ADDU_SAT_H; break;
             case 0x15: op.kind = LOP_MMI_SUBU_SAT_H; break;
+            case 0x16: op.kind = LOP_MMI_EXTU_H; break;
             case 0x18: op.kind = LOP_MMI_ADDU_SAT_B; break;
             case 0x19: op.kind = LOP_MMI_SUBU_SAT_B; break;
+            case 0x1a: op.kind = LOP_MMI_EXTU_B; break;
+            case 0x1b: op.kind = LOP_MMI_QFSRV; break;
             default: op.kind = LOP_UNSUPPORTED; break;
             }
             break;
@@ -229,7 +234,9 @@ s_lifted_op lift(const s_ee_instruction& insn)
         case e_ee_opcode::REGIMM_TNEI:
             op.kind = LOP_ERET; break;
         case e_ee_opcode::REGIMM_MTSAB:
+            op.kind = LOP_MTSAB; break;
         case e_ee_opcode::REGIMM_MTSAH:
+            op.kind = LOP_MTSAH; break;
         default:
             op.kind = LOP_UNSUPPORTED; break;
         }

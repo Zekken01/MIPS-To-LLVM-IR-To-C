@@ -114,8 +114,8 @@ def split_u128(value):
     return value & mask64, (value >> 64) & mask64
 
 
-def run_opt_level(fixture_exe, temp_dir, opt_level, shift_amount):
-    ir_path = temp_dir / f"mmi1_o{opt_level}_sa{shift_amount}.ll"
+def run_opt_level(fixture_exe, temp_dir, opt_level, byte_shift, half_shift):
+    ir_path = temp_dir / f"mmi1_o{opt_level}_b{byte_shift}_h{half_shift}.ll"
     subprocess.run([str(fixture_exe), str(ir_path), str(opt_level)], check=True)
 
     module = llvm.parse_assembly(ir_path.read_text(encoding="utf-8"))
@@ -147,10 +147,11 @@ def run_opt_level(fixture_exe, temp_dir, opt_level, shift_amount):
     rhs = pack_lanes(rhs_words, 32)
     state.gpr[4].lo, state.gpr[4].hi = split_u128(lhs)
     state.gpr[5].lo, state.gpr[5].hi = split_u128(rhs)
-    state.sa = shift_amount
+    state.gpr[25].lo = byte_shift // 8
+    state.gpr[26].lo = half_shift // 16
 
     result = guest_fn(ctypes.pointer(state), None)
-    prefix = f"O{opt_level} SA={shift_amount}: "
+    prefix = f"O{opt_level} MTSAB={byte_shift} MTSAH={half_shift}: "
     require(result == 3, prefix + f"unexpected exit result {result}")
     require(state.exit_reason == 3, prefix + f"unexpected exit reason {state.exit_reason}")
 
@@ -172,7 +173,8 @@ def run_opt_level(fixture_exe, temp_dir, opt_level, shift_amount):
         20: pext_upper(lhs, rhs, 8),
         21: pext_upper(lhs, rhs, 16),
         22: pext_upper(lhs, rhs, 32),
-        23: qfsrv(lhs, rhs, shift_amount),
+        23: qfsrv(lhs, rhs, byte_shift),
+        24: qfsrv(lhs, rhs, half_shift),
         # Final PCEQW intentionally aliases rd with rs.
         4: lane_operation(lhs, rhs, 32, "equal"),
     }
@@ -205,15 +207,15 @@ def main():
     with tempfile.TemporaryDirectory(prefix="ee_mmi1_ir_") as directory:
         temp_dir = pathlib.Path(directory)
         for opt_level in range(4):
-            for shift_amount in (0, 8, 40, 120):
+            for byte_shift, half_shift in ((0, 0), (8, 16), (40, 32), (120, 112)):
                 engine, module, target_machine = run_opt_level(
-                    fixture_exe, temp_dir, opt_level, shift_amount
+                    fixture_exe, temp_dir, opt_level, byte_shift, half_shift
                 )
                 engines.append(engine)
                 modules.append(module)
                 target_machines.append(target_machine)
 
-    print("mmi1_ir_runtime: PASS (O0-O3; PABSW/PABSH; PADSBH; PCEQW/PCEQH/PCEQB; PMINW/PMINH; PADDU*/PSUBU*; PEXTU*/QFSRV; aliasing)")
+    print("mmi1_ir_runtime: PASS (O0-O3; PABSW/PABSH; PADSBH; PCEQW/PCEQH/PCEQB; PMINW/PMINH; PADDU*/PSUBU*; PEXTU*/QFSRV; MTSAB/MTSAH; aliasing)
 
 
 if __name__ == "__main__":

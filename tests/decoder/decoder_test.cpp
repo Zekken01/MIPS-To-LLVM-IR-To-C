@@ -43,6 +43,11 @@ int main()
     expect("pceqh",  R(0x1c,4,5,6,0x06,0x28), "pceqh",  V);
     expect("pminh",  R(0x1c,4,5,6,0x07,0x28), "pminh",  V);
     expect("pceqb",  R(0x1c,4,5,6,0x0a,0x28), "pceqb",  V);
+    expect("padsbh", R(0x1c,4,5,6,0x04,0x28), "padsbh", V);
+    expect("pextuw", R(0x1c,4,5,6,0x12,0x28), "pextuw", V);
+    expect("pextuh", R(0x1c,4,5,6,0x16,0x28), "pextuh", V);
+    expect("pextub", R(0x1c,4,5,6,0x1a,0x28), "pextub", V);
+    expect("qfsrv",  R(0x1c,4,5,6,0x1b,0x28), "qfsrv",  V);
     expect("padduw", R(0x1c,4,5,6,0x10,0x28), "padduw", V);
     expect("psubuw", R(0x1c,4,5,6,0x11,0x28), "psubuw", V);
     expect("padduh", R(0x1c,4,5,6,0x14,0x28), "padduh", V);
@@ -65,6 +70,8 @@ int main()
         const auto multu1 = decode(0x100000, R(0x1c,4,5,6,0,0x19));
         const auto div1 = decode(0x100000, R(0x1c,4,5,6,0,0x1a));
         const auto divu1 = decode(0x100000, R(0x1c,4,5,6,0,0x1b));
+        const auto mtsab = decode(0x100000, R(0x01,4,0x18,0,0,0));
+        const auto mtsah = decode(0x100000, R(0x01,4,0x19,0,0,0));
         const auto pabsw = decode(0x100000, R(0x1c,0,5,6,1,0x28));
         const auto pceqw = decode(0x100000, R(0x1c,4,5,6,2,0x28));
         const auto pminw = decode(0x100000, R(0x1c,4,5,6,3,0x28));
@@ -72,6 +79,11 @@ int main()
         const auto pceqh = decode(0x100000, R(0x1c,4,5,6,6,0x28));
         const auto pminh = decode(0x100000, R(0x1c,4,5,6,7,0x28));
         const auto pceqb = decode(0x100000, R(0x1c,4,5,6,10,0x28));
+        const auto padsbh = decode(0x100000, R(0x1c,4,5,6,4,0x28));
+        const auto pextuw = decode(0x100000, R(0x1c,4,5,6,18,0x28));
+        const auto pextuh = decode(0x100000, R(0x1c,4,5,6,22,0x28));
+        const auto pextub = decode(0x100000, R(0x1c,4,5,6,26,0x28));
+        const auto qfsrv = decode(0x100000, R(0x1c,4,5,6,27,0x28));
         const auto padduw = decode(0x100000, R(0x1c,4,5,6,16,0x28));
         const auto psubuw = decode(0x100000, R(0x1c,4,5,6,17,0x28));
         const auto padduh = decode(0x100000, R(0x1c,4,5,6,20,0x28));
@@ -86,6 +98,8 @@ int main()
                         lift(multu1).kind == LOP_MULTU1 &&
                         lift(div1).kind == LOP_DIV1 &&
                         lift(divu1).kind == LOP_DIVU1 &&
+                        lift(mtsab).kind == LOP_MTSAB &&
+                        lift(mtsah).kind == LOP_MTSAH &&
                         lift(pabsw).kind == LOP_MMI_ABS_W &&
                         lift(pceqw).kind == LOP_MMI_CEQ_W &&
                         lift(pminw).kind == LOP_MMI_MINS_W &&
@@ -93,6 +107,11 @@ int main()
                         lift(pceqh).kind == LOP_MMI_CEQ_H &&
                         lift(pminh).kind == LOP_MMI_MINS_H &&
                         lift(pceqb).kind == LOP_MMI_CEQ_B &&
+                        lift(padsbh).kind == LOP_MMI_ADDSUB_H &&
+                        lift(pextuw).kind == LOP_MMI_EXTU_W &&
+                        lift(pextuh).kind == LOP_MMI_EXTU_H &&
+                        lift(pextub).kind == LOP_MMI_EXTU_B &&
+                        lift(qfsrv).kind == LOP_MMI_QFSRV &&
                         lift(padduw).kind == LOP_MMI_ADDU_SAT_W &&
                         lift(psubuw).kind == LOP_MMI_SUBU_SAT_W &&
                         lift(padduh).kind == LOP_MMI_ADDU_SAT_H &&
@@ -223,8 +242,8 @@ int main()
     expect("bltzal", R(0x01,4,0x10,0,0,0), "bltzal", U);
     expect("bgezall", R(0x01,4,0x13,0,0,0), "bgezall", U);
     expect("tgei", R(0x01,4,0x08,0,0,0), "regimm_trap", U);
-    expect("mtsab", R(0x01,4,0x18,0,0,0), "mtsab", U);
-    expect("mtsah", R(0x01,4,0x19,0,0,0), "mtsah", U);
+    expect("mtsab", R(0x01,4,0x18,0,0,0), "mtsab", V);
+    expect("mtsah", R(0x01,4,0x19,0,0,0), "mtsah", V);
     expect("reserved regimm", R(0x01,4,0x1f,0,0,0), "regimm_reserved", X);
     {
         const auto jr_ra = decode(0x100000, R(0x00,31,0,0,0,0x08));

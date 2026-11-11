@@ -390,13 +390,13 @@ s_ee_instruction decode(uint32_t pc, uint32_t word)
         case e_ee_opcode::REGIMM_MTSAB:
             insn.flow = e_ee_flow::FLOW_NONE;
             insn.has_delay_slot = false;
-            insn.valid = e_ee_valid::UNSUPPORTED;
+            insn.valid = e_ee_valid::VALID;
             set_mnemonic(insn, "mtsab");
             break;
         case e_ee_opcode::REGIMM_MTSAH:
             insn.flow = e_ee_flow::FLOW_NONE;
             insn.has_delay_slot = false;
-            insn.valid = e_ee_valid::UNSUPPORTED;
+            insn.valid = e_ee_valid::VALID;
             set_mnemonic(insn, "mtsah");
             break;
         default:
