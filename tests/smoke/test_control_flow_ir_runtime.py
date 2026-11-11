@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JIT regressions for direct and register-indirect MIPS control transfers."""
+"""JIT regressions for indirect/direct transfers and link/delay-slot ordering."""
 
 import ctypes
 import pathlib
@@ -46,9 +46,9 @@ def require(condition, message):
         raise AssertionError(message)
 
 
-def compile_case(fixture_exe, temp_dir, mode, target_machine):
+def run_case(fixture_exe, temp_dir, target_machine, mode, function_name, setup, verify):
     ir_path = temp_dir / f"{mode}.ll"
-    subprocess.run([str(fixture_exe), str(ir_path), mode], check=True)
+    subprocess.run([str(fixture_exe), mode, str(ir_path)], check=True)
 
     module = llvm.parse_assembly(ir_path.read_text(encoding="utf-8"))
     module.verify()
@@ -58,121 +58,137 @@ def compile_case(fixture_exe, temp_dir, mode, target_machine):
     engine = llvm.create_mcjit_compiler(llvm.parse_assembly(""), target_machine)
     engine.add_module(module)
     engine.finalize_object()
-    address = engine.get_function_address("guest_control_flow_test")
-    require(address != 0, f"{mode}: JIT did not expose guest function")
+
+    address = engine.get_function_address(function_name)
+    require(address != 0, f"{mode}: JIT did not expose {function_name}")
 
     guest_fn_type = ctypes.CFUNCTYPE(
         ctypes.c_uint32, ctypes.POINTER(EEState), ctypes.c_void_p
     )
-    return engine, module, guest_fn_type(address)
+    guest_fn = guest_fn_type(address)
 
-
-def run_case(fixture_exe, temp_dir, mode, target_machine):
-    engine, module, guest_fn = compile_case(
-        fixture_exe, temp_dir, mode, target_machine
-    )
     backing, state = make_aligned_state()
-    _ = (backing, engine, module)
-
-    state.gpr[31].hi = 0x3131313131313131
-    state.gpr[16].hi = 0x1616161616161616
-    state.gpr[17].hi = 0x1717171717171717
-    state.gpr[8].hi = 0x0808080808080808
-    state.gpr[25].hi = 0x2525252525252525
-
-    if mode == "jal":
-        state.gpr[31].lo = 0xDEADBEEF
-        state.gpr[17].lo = 0xBAD
-        expected_pc = 0x00101000
-        expected_exit = 3
-        expected_return = 3
-    elif mode == "jalr":
-        state.gpr[8].lo = 0x00234560
-        state.gpr[16].lo = 0xAAAAAAAA
-        state.gpr[17].lo = 0xBBBBBBBB
-        expected_pc = 0x00234560
-        expected_exit = 3
-        expected_return = 3
-    elif mode == "jalr_alias":
-        state.gpr[8].lo = 0x00245670
-        state.gpr[17].lo = 0xBBBBBBBB
-        expected_pc = 0x00245670
-        expected_exit = 3
-        expected_return = 3
-    elif mode == "jr_ra":
-        state.gpr[31].lo = 0x00345670
-        expected_pc = 0x00345670
-        expected_exit = 0
-        expected_return = 0
-    elif mode == "jr_t9":
-        state.gpr[25].lo = 0x00456780
-        expected_pc = 0x00456780
-        expected_exit = 3
-        expected_return = 3
-    else:
-        raise AssertionError(f"unknown test mode: {mode}")
+    _ = backing
+    setup(state)
 
     result = guest_fn(ctypes.pointer(state), None)
-    prefix = f"{mode}: "
-    require(result == expected_return,
-            prefix + f"wrong function exit: {result}")
-    require(state.exit_reason == expected_exit,
-            prefix + f"wrong state exit reason: {state.exit_reason}")
-    require(state.pc == expected_pc,
-            prefix + f"wrong dispatched PC: 0x{state.pc:08x}")
-
-    if mode == "jal":
-        require(state.gpr[31].lo == 0x00100008,
-                prefix + "JAL did not write PC+8 to $ra")
-        require(state.gpr[17].lo == 0x00100008,
-                prefix + "JAL link was not visible in its delay slot")
-        require(state.gpr[31].hi == 0x3131313131313131,
-                prefix + "JAL clobbered the upper half of $ra")
-    elif mode == "jalr":
-        require(state.gpr[16].lo == 0x00100008,
-                prefix + "JALR did not write PC+8 to encoded rd")
-        require(state.gpr[17].lo == 0x00100008,
-                prefix + "JALR link was not visible in its delay slot")
-        require(state.gpr[16].hi == 0x1616161616161616,
-                prefix + "JALR clobbered the upper half of rd")
-    elif mode == "jalr_alias":
-        require(state.gpr[8].lo == 0x00100008,
-                prefix + "JALR rd=rs did not write the link")
-        require(state.gpr[17].lo == 0x00100008,
-                prefix + "JALR rd=rs delay slot did not read the link")
-        require(state.gpr[8].hi == 0x0808080808080808,
-                prefix + "JALR rd=rs clobbered the upper half")
-    elif mode == "jr_ra":
-        require(state.gpr[31].lo == 0x1234,
-                prefix + "JR $ra delay slot did not overwrite $ra")
-    elif mode == "jr_t9":
-        require(state.gpr[25].lo == 0x4321,
-                prefix + "JR $t9 delay slot did not overwrite $t9")
+    require(result == 3, f"{mode}: expected EE_EXIT_DISPATCH (3), got {result}")
+    require(state.exit_reason == 3,
+            f"{mode}: expected dispatch exit reason 3, got {state.exit_reason}")
+    verify(state)
 
 
 def main():
-    require(
-        len(sys.argv) == 2,
-        "usage: test_control_flow_ir_runtime.py path/to/ee_control_flow_ir_fixture",
-    )
-    fixture_exe = pathlib.Path(sys.argv[1]).resolve()
+    if len(sys.argv) != 2:
+        raise SystemExit("usage: test_control_flow_ir_runtime.py fixture_executable")
 
+    fixture_exe = pathlib.Path(sys.argv[1]).resolve()
     llvm.initialize_native_target()
     llvm.initialize_native_asmprinter()
     target = llvm.Target.from_default_triple()
     target_machine = target.create_target_machine(opt=0)
 
-    modes = ("jal", "jalr", "jalr_alias", "jr_ra", "jr_t9")
-    with tempfile.TemporaryDirectory(prefix="ee_control_flow_ir_") as directory:
-        temp_dir = pathlib.Path(directory)
-        for mode in modes:
-            run_case(fixture_exe, temp_dir, mode, target_machine)
+    with tempfile.TemporaryDirectory(prefix="ee-control-flow-") as temp:
+        temp_dir = pathlib.Path(temp)
 
-    print(
-        "control_flow_ir_runtime: PASS "
-        "(JAL/JALR link timing, JALR rd and rd=rs alias, "
-        "JR target snapshot, delay slots, return/dispatch PC)"
-    )
+        def check_jr(state):
+            state.gpr[2].lo = 0x00200000
+            state.gpr[2].hi = 0x2222333344445555
+
+        def verify_jr(state):
+            require(state.pc == 0x00200000,
+                    f"jr: delay slot changed captured target: 0x{state.pc:08x}")
+            require(state.gpr[2].lo == 0x1234,
+                    f"jr: delay-slot ADDIU did not execute: 0x{state.gpr[2].lo:x}")
+            require(state.gpr[2].hi == 0x2222333344445555,
+                    "jr: delay slot clobbered the upper GPR half")
+
+        run_case(fixture_exe, temp_dir, target_machine, "jr",
+                 "guest_jr_delay_test", check_jr, verify_jr)
+
+        def check_jal(state):
+            state.gpr[31].lo = 0xDEADBEEF
+            state.gpr[31].hi = 0x3131313131313131
+            state.gpr[8].lo = 0xAAAAAAAA
+
+        def verify_jal(state):
+            require(state.pc == 0x00102000,
+                    f"jal: wrong dispatched target: 0x{state.pc:08x}")
+            require(state.gpr[31].lo == 0x00100008,
+                    f"jal: wrong link value: 0x{state.gpr[31].lo:x}")
+            require(state.gpr[31].hi == 0x3131313131313131,
+                    "jal: link write clobbered upper GPR half")
+            require(state.gpr[8].lo == 0x00100008,
+                    f"jal: delay slot did not observe PC+8: 0x{state.gpr[8].lo:x}")
+
+        run_case(fixture_exe, temp_dir, target_machine, "jal",
+                 "guest_jal_delay_test", check_jal, verify_jal)
+
+        def check_jalr(state):
+            state.gpr[8].lo = 0x00200000
+            state.gpr[8].hi = 0x8888888888888888
+            state.gpr[9].lo = 0xAAAAAAAA
+
+        def verify_jalr(state):
+            require(state.pc == 0x00200000,
+                    f"jalr: target was not captured before rd/rs alias write: 0x{state.pc:08x}")
+            require(state.gpr[8].lo == 0x00100008,
+                    f"jalr: rd did not receive PC+8: 0x{state.gpr[8].lo:x}")
+            require(state.gpr[8].hi == 0x8888888888888888,
+                    "jalr: link write clobbered upper GPR half")
+            require(state.gpr[9].lo == 0x00100009,
+                    f"jalr: delay slot did not observe new link: 0x{state.gpr[9].lo:x}")
+
+        run_case(fixture_exe, temp_dir, target_machine, "jalr",
+                 "guest_jalr_delay_test", check_jalr, verify_jalr)
+
+        def check_link(state, taken):
+            state.gpr[2].lo = 0xFFFFFFFFFFFFFFFF if taken else 1
+            state.gpr[31].lo = 0xDEADBEEF
+            state.gpr[31].hi = 0x3131313131313131
+            state.gpr[8].lo = 0x55555555
+
+        def verify_bltzal(state, taken):
+            expected_pc = 0x00100014 if taken else 0x00100008
+            require(state.pc == expected_pc,
+                    f"bltzal: expected PC 0x{expected_pc:08x}, got 0x{state.pc:08x}")
+            require(state.gpr[31].lo == 0x00100008,
+                    f"bltzal: link must be written on either outcome: 0x{state.gpr[31].lo:x}")
+            require(state.gpr[31].hi == 0x3131313131313131,
+                    "bltzal: link write clobbered upper GPR half")
+            require(state.gpr[8].lo == 0x00100008,
+                    "bltzal: ordinary delay slot did not execute/read link")
+
+        for taken in (True, False):
+            mode = "bltzal_taken" if taken else "bltzal_not_taken"
+            def setup(state, taken=taken):
+                check_link(state, taken)
+            def verify(state, taken=taken):
+                verify_bltzal(state, taken)
+            run_case(fixture_exe, temp_dir, target_machine, "bltzal",
+                     "guest_bltzal_delay_test", setup, verify)
+
+        def verify_bltzall(state, taken):
+            expected_pc = 0x00100014 if taken else 0x00100008
+            require(state.pc == expected_pc,
+                    f"bltzall: expected PC 0x{expected_pc:08x}, got 0x{state.pc:08x}")
+            require(state.gpr[31].lo == 0x00100008,
+                    f"bltzall: link must be written on either outcome: 0x{state.gpr[31].lo:x}")
+            require(state.gpr[31].hi == 0x3131313131313131,
+                    "bltzall: link write clobbered upper GPR half")
+            expected_t0 = 0x00100008 if taken else 0x55555555
+            require(state.gpr[8].lo == expected_t0,
+                    f"bltzall: delay-slot annulment mismatch: 0x{state.gpr[8].lo:x}")
+
+        for taken in (True, False):
+            def setup(state, taken=taken):
+                check_link(state, taken)
+            def verify(state, taken=taken):
+                verify_bltzall(state, taken)
+            run_case(fixture_exe, temp_dir, target_machine, "bltzall",
+                     "guest_bltzall_delay_test", setup, verify)
+
+    print("control_flow_ir_runtime: PASS (JR/JAL/JALR; BLTZAL/BLTZALL taken and not-taken)")
 
 
 if __name__ == "__main__":
