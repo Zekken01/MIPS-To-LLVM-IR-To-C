@@ -195,6 +195,31 @@ def main():
         run_case(fixture_exe, temp_dir, target, retained, "jalr",
                  "guest_jalr_delay_test", check_jalr, verify_jalr)
 
+        def check_beq_taken(state):
+            state.gpr[2].lo = 0
+
+        def verify_beq_taken(state):
+            require(state.pc == 0x00100014,
+                    f"beq_taken: delay slot changed captured outcome: 0x{state.pc:08x}")
+            require(state.gpr[2].lo == 1,
+                    "beq_taken: delay-slot ADDIU did not execute")
+
+        run_case(fixture_exe, temp_dir, target, retained, "beq_taken",
+                 "guest_beq_taken_delay_test", check_beq_taken, verify_beq_taken)
+
+        def check_beq_not_taken(state):
+            state.gpr[2].lo = 1
+
+        def verify_beq_not_taken(state):
+            require(state.pc == 0x00100008,
+                    f"beq_not_taken: delay slot changed captured outcome: 0x{state.pc:08x}")
+            require(state.gpr[2].lo == 0,
+                    "beq_not_taken: delay-slot ADDIU did not execute")
+
+        run_case(fixture_exe, temp_dir, target, retained, "beq_not_taken",
+                 "guest_beq_not_taken_delay_test", check_beq_not_taken,
+                 verify_beq_not_taken)
+
         def check_link(state, taken):
             state.gpr[2].lo = 0xFFFFFFFFFFFFFFFF if taken else 1
             state.gpr[31].lo = 0xDEADBEEF
