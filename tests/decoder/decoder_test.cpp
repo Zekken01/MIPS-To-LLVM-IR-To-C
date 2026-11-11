@@ -2,6 +2,7 @@
 // contract. Words are composed from fields so each row documents the encoding.
 #include "ee_decoder.h"
 #include "instruction_lifter.h"
+#include "function_analyzer.h"
 #include <cstdio>
 #include <cstring>
 using namespace ee;
@@ -282,6 +283,54 @@ int main()
         s_ee_instruction i = decode(0x100008, 0x70000c28);
         bool ok = std::strcmp(i.mnemonic, "padduw") == 0 && i.valid == V;
         ok ? ++g_pass : ++g_fail; if (!ok) std::printf("FAIL entry word\n");
+    }
+
+    {
+        s_ee_instruction ins{};
+        ins.valid = e_ee_valid::VALID; ins.pc = 0x1000;
+        ins.flow = e_ee_flow::FLOW_JUMP; ins.has_delay_slot = true;
+        ins.jump_target = 0x2000;
+        const std::set<uint32_t> expected{0x1004, 0x2000};
+        const bool ok = collect_successors(ins) == expected;
+        ok ? ++g_pass : ++g_fail;
+        if (!ok) std::printf("FAIL J delay-slot successor discovery\\n");
+    }
+    {
+        s_ee_instruction ins{};
+        ins.valid = e_ee_valid::VALID; ins.pc = 0x1000;
+        ins.flow = e_ee_flow::FLOW_CALL; ins.has_delay_slot = true;
+        ins.jump_target = 0x3000;
+        const std::set<uint32_t> expected{0x1004, 0x1008, 0x3000};
+        const bool ok = collect_successors(ins) == expected;
+        ok ? ++g_pass : ++g_fail;
+        if (!ok) std::printf("FAIL JAL delay-slot/return-path discovery\\n");
+    }
+    {
+        s_ee_instruction ins{};
+        ins.valid = e_ee_valid::VALID; ins.pc = 0x1000;
+        ins.flow = e_ee_flow::FLOW_BRANCH_LIKELY; ins.has_delay_slot = true;
+        ins.branch_target = 0x1800;
+        const std::set<uint32_t> expected{0x1004, 0x1008, 0x1800};
+        const bool ok = collect_successors(ins) == expected;
+        ok ? ++g_pass : ++g_fail;
+        if (!ok) std::printf("FAIL branch-likely delay-slot successor discovery\\n");
+    }
+    {
+        s_ee_instruction ins{};
+        ins.valid = e_ee_valid::VALID; ins.pc = 0x1000;
+        ins.flow = e_ee_flow::FLOW_RETURN; ins.has_delay_slot = true;
+        const std::set<uint32_t> expected{0x1004};
+        const bool ok = collect_successors(ins) == expected;
+        ok ? ++g_pass : ++g_fail;
+        if (!ok) std::printf("FAIL JR return delay-slot discovery\\n");
+    }
+    {
+        s_ee_instruction ins{};
+        ins.valid = e_ee_valid::VALID; ins.pc = 0x1000;
+        ins.flow = e_ee_flow::FLOW_RETURN; ins.has_delay_slot = false;
+        const bool ok = collect_successors(ins).empty();
+        ok ? ++g_pass : ++g_fail;
+        if (!ok) std::printf("FAIL ERET must not invent a delay slot\\n");
     }
     std::printf("decoder_test: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
