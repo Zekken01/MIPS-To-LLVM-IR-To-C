@@ -69,7 +69,7 @@ ee::s_ee_u128 expected_lanes(const ee::s_ee_u128& a,
         case e_lane_op::equal: value = lhs == rhs ? mask : 0; break;
         case e_lane_op::min_signed:
             value = (uint64_t)(signed_lane(lhs, width) < signed_lane(rhs, width)
-                ? signed_lane(lhs, width) : signed_lane(rhs, width);
+                ? signed_lane(lhs, width) : signed_lane(rhs, width));
             break;
         case e_lane_op::add_unsigned_sat: value = lhs > mask - rhs ? mask : lhs + rhs; break;
         case e_lane_op::sub_unsigned_sat: value = lhs > rhs ? lhs - rhs : 0; break;

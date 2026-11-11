@@ -110,6 +110,55 @@ void native_codegen::touched_regs(const std::vector<s_lifted_op>& ops,
             if (op.kind != LOP_MTSAB && op.kind != LOP_MTSAH && op.rt != 0)
                 seen[op.rt] = true;
             break;
+        case LOP_MMI_AND:
+        case LOP_MMI_OR:
+        case LOP_MMI_XOR:
+        case LOP_MMI_NOR:
+        case LOP_MMI_ADD_B:
+        case LOP_MMI_ADD_H:
+        case LOP_MMI_ADD_W:
+        case LOP_MMI_ADD_D:
+        case LOP_MMI_SUB_B:
+        case LOP_MMI_SUB_H:
+        case LOP_MMI_SUB_W:
+        case LOP_MMI_SUB_D:
+        case LOP_MMI_ADDU_SAT_B:
+        case LOP_MMI_ADDU_SAT_H:
+        case LOP_MMI_ADDU_SAT_W:
+        case LOP_MMI_SUBU_SAT_B:
+        case LOP_MMI_SUBU_SAT_H:
+        case LOP_MMI_SUBU_SAT_W:
+        case LOP_MMI_SLL:
+        case LOP_MMI_SRL:
+        case LOP_MMI_SRA:
+        case LOP_MMI_MAXU_B:
+        case LOP_MMI_MAXU_H:
+        case LOP_MMI_MAXU_W:
+        case LOP_MMI_MAXS_B:
+        case LOP_MMI_MAXS_H:
+        case LOP_MMI_MAXS_W:
+        case LOP_MMI_MINU_B:
+        case LOP_MMI_MINU_H:
+        case LOP_MMI_MINU_W:
+        case LOP_MMI_MINS_B:
+        case LOP_MMI_MINS_H:
+        case LOP_MMI_MINS_W:
+        case LOP_MMI_ABS_H:
+        case LOP_MMI_ABS_W:
+        case LOP_MMI_CEQ_B:
+        case LOP_MMI_CEQ_H:
+        case LOP_MMI_CEQ_W:
+        case LOP_MMI_ADDSUB_H:
+        case LOP_MMI_EXTU_B:
+        case LOP_MMI_EXTU_H:
+        case LOP_MMI_EXTU_W:
+        case LOP_MMI_QFSRV:
+        case LOP_MMI_SHUFFLE:
+        case LOP_MMI_PACK:
+            seen[op.rd] = true;
+            if (op.rs != 0) seen[op.rs] = true;
+            if (op.rt != 0) seen[op.rt] = true;
+            break;
         case LOP_MFC1:
         case LOP_MTC1:
         case LOP_MFC0:
