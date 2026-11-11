@@ -146,11 +146,13 @@ if(EE_HAVE_LLVM_JIT_TEST)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/smoke/test_compare_ir_runtime.py
                 $<TARGET_FILE:ee_compare_ir_fixture>)
-    add_test(NAME object_emission
+    add_test(NAME object_emission_and_dispatch
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_object_emission.py
                 $<TARGET_FILE:ee_compare_ir_fixture>
-                ${CMAKE_SOURCE_DIR}/tools/verify_ir.py)
+                ${CMAKE_SOURCE_DIR}/tools/verify_ir.py
+                ${CMAKE_SOURCE_DIR}/tools/link_native_objects.py
+                ${CMAKE_SOURCE_DIR})
     add_test(NAME control_flow_ir_runtime
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/smoke/test_control_flow_ir_runtime.py
