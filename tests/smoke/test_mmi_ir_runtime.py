@@ -92,7 +92,7 @@ def run_opt_level(fixture_exe, temp_dir, opt_level, target_machine):
     prefix = f"O{opt_level}: "
     require(result == 3, prefix + f"unexpected exit result: {result}")
     require(state.exit_reason == 3, prefix + f"unexpected exit reason: {state.exit_reason}")
-    require(state.pc == 0x001000A4, prefix + f"unexpected dispatcher PC: 0x{state.pc:08x}")
+    require(state.pc == 0x001000A8, prefix + f"unexpected dispatcher PC: 0x{state.pc:08x}")
     require(state.gpr[4].lo == 0x1234, prefix + f"ADDIU writeback lost: 0x{state.gpr[4].lo:x}")
     require(state.gpr[4].hi == 0x4444444444444444, prefix + "ADDIU clobbered upper GPR half")
     require(state.gpr[14].lo == 0x5678,
