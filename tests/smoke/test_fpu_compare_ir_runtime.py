@@ -282,6 +282,55 @@ def run_arithmetic_cases(fixture, temp_dir, target, mode, cases):
                          f"expected 0x{expected_fcsr:08x}")
 
 
+def run_accumulator_cases(fixture, temp_dir, target, mode, cases):
+    guest_fn, engine, module, target_machine = compile_jit(
+        fixture, temp_dir, mode, target
+    )
+    retained = (engine, module, target_machine)
+    writes_fpr = mode in ("madd_s", "msub_s")
+    fpr_sentinel = 0xAABBCCDD11223344
+
+    for (fs_bits, ft_bits, acc_bits, expected_bits,
+         initial_fcsr, expected_fcsr, label) in cases:
+        backing, state = aligned_state()
+        _ = (backing, retained)
+        state.fpr[1] = fs_bits
+        state.fpr[2] = ft_bits
+        state.fpr[6] = fpr_sentinel
+        state.fpu_acc = acc_bits
+        state.fcsr = initial_fcsr
+
+        result = guest_fn(ctypes.pointer(state), None)
+        prefix = (
+            f"{mode}({label}, fs=0x{fs_bits:08x}, "
+            f"ft=0x{ft_bits:08x}, acc=0x{acc_bits:08x}): "
+        )
+        require(result == 3, prefix + f"expected EE_EXIT_DISPATCH (3), got {result}")
+        require(state.exit_reason == 3,
+                prefix + f"state exit reason was {state.exit_reason}")
+        require(state.pc == ENTRY_PC + 4,
+                prefix + f"wrong sequential PC 0x{state.pc:08x}")
+        require(state.fpr[1] == fs_bits and state.fpr[2] == ft_bits,
+                prefix + "source FPR was modified")
+
+        if writes_fpr:
+            require(state.fpr[6] == expected_bits,
+                    prefix + f"FPR[6] got 0x{state.fpr[6]:016x}, "
+                             f"expected 0x{expected_bits:08x}")
+            require(state.fpu_acc == acc_bits,
+                    prefix + f"ACC changed to 0x{state.fpu_acc:08x}")
+        else:
+            require(state.fpu_acc == expected_bits,
+                    prefix + f"ACC got 0x{state.fpu_acc:08x}, "
+                             f"expected 0x{expected_bits:08x}")
+            require(state.fpr[6] == fpr_sentinel,
+                    prefix + "accumulator-only operation modified FPR[6]")
+
+        require(state.fcsr == expected_fcsr,
+                prefix + f"FCSR got 0x{state.fcsr:08x}, "
+                         f"expected 0x{expected_fcsr:08x}")
+
+
 def f32_value(bits):
     return struct.unpack("<f", struct.pack("<I", bits & 0xFFFFFFFF))[0]
 
@@ -472,6 +521,60 @@ def main():
         (0xFFC00000, 0x0000000080000000, "negative quiet NaN saturates"),
     ]
 
+    # Accumulator operations use distinct EE arithmetic paths:
+    # MADD/MSUB normalise the accumulator and rounded product; MADDA/MSUBA
+    # keep both raw after multiplying normalised source operands.
+    accumulator_normal_flags = 0xA592F45E
+    accumulator_no_exception = accumulator_normal_flags & ~0xC000
+    adda_cases = [
+        (0x3FC00000, 0x40100000, 0x3F800000, 0x40700000,
+         accumulator_normal_flags, accumulator_no_exception, "1.5 + 2.25"),
+    ]
+    suba_cases = [
+        (0x3FC00000, 0x40100000, 0x3F800000, 0xBF400000,
+         accumulator_normal_flags, accumulator_no_exception, "1.5 - 2.25"),
+    ]
+    mula_cases = [
+        (0x3FC00000, 0x40000000, 0x3F800000, 0x40400000,
+         accumulator_normal_flags, accumulator_no_exception, "1.5 * 2.0"),
+    ]
+    madd_cases = [
+        (0x3FC00000, 0x40000000, 0x3F800000, 0x40800000,
+         accumulator_normal_flags, accumulator_no_exception, "1.0 + 1.5 * 2.0"),
+        # The rounded product is subnormal, then fpuDouble flushes it to zero.
+        (0x00800000, 0x3F000000, 0x00000000, 0x00000000,
+         accumulator_normal_flags, accumulator_no_exception, "rounded product denormal normalises before accumulation"),
+        # An Inf product is saturated to FMAX before the accumulator add.
+        (0x7F7FFFFF, 0x40000000, 0x00000000, 0x7F7FFFFF,
+         accumulator_normal_flags, accumulator_no_exception, "product infinity normalises to FMAX"),
+        # A denormal ACC is normalised to zero before accumulation.
+        (0x00000000, 0x00000000, 0x00000001, 0x00000000,
+         accumulator_normal_flags, accumulator_no_exception, "denormal ACC normalises to zero"),
+    ]
+    msub_cases = [
+        (0x3FC00000, 0x40000000, 0x3F800000, 0xC0000000,
+         accumulator_normal_flags, accumulator_no_exception, "1.0 - 1.5 * 2.0"),
+    ]
+    madda_cases = [
+        (0x3FC00000, 0x40000000, 0x3F800000, 0x40800000,
+         accumulator_normal_flags, accumulator_no_exception, "1.0 + 1.5 * 2.0"),
+        # Unlike MADD.S, the denormal product is not normalised before the
+        # accumulator add, so the final result is flushed and U|SU is set.
+        (0x00800000, 0x3F000000, 0x00000000, 0x00000000,
+         0xA592B456, 0xA592745E, "raw subnormal product flushes after accumulation"),
+        # MADDA.S keeps the infinity product raw, so the final operation
+        # overflows, saturates, and returns before clearing the U cause bit.
+        (0x7F7FFFFF, 0x40000000, 0x00000000, 0x7F7FFFFF,
+         0xA592744E, 0xA592F45E, "raw infinity product overflows"),
+        # The raw denormal accumulator participates in the final sum.
+        (0x00000000, 0x00000000, 0x00000001, 0x00000000,
+         0xA592B456, 0xA592745E, "raw denormal ACC flushes after accumulation"),
+    ]
+    msuba_cases = [
+        (0x3FC00000, 0x40000000, 0x3F800000, 0xC0000000,
+         accumulator_normal_flags, accumulator_no_exception, "1.0 - 1.5 * 2.0"),
+    ]
+
     # PCSX2 EE reference semantics:
     # - ADD/SUB/MUL normalise zero/denormal and Inf/NaN operands first.
     # - Arithmetic overflow clamps to signed FMAX and sets O|SO.
@@ -590,6 +693,13 @@ def main():
         run_arithmetic_cases(fixture, temp_dir, target, "sub_s", sub_cases)
         run_arithmetic_cases(fixture, temp_dir, target, "mul_s", mul_cases)
         run_arithmetic_cases(fixture, temp_dir, target, "div_s", div_cases)
+        run_accumulator_cases(fixture, temp_dir, target, "adda_s", adda_cases)
+        run_accumulator_cases(fixture, temp_dir, target, "suba_s", suba_cases)
+        run_accumulator_cases(fixture, temp_dir, target, "mula_s", mula_cases)
+        run_accumulator_cases(fixture, temp_dir, target, "madd_s", madd_cases)
+        run_accumulator_cases(fixture, temp_dir, target, "msub_s", msub_cases)
+        run_accumulator_cases(fixture, temp_dir, target, "madda_s", madda_cases)
+        run_accumulator_cases(fixture, temp_dir, target, "msuba_s", msuba_cases)
         run_sqrt_cases(fixture, temp_dir, target, sqrt_words)
         run_rsqrt_cases(fixture, temp_dir, target, rsqrt_pairs)
         run_max_min_cases(fixture, temp_dir, target, "max_s", extreme_pairs)
@@ -603,7 +713,7 @@ def main():
 
     print(
         "fpu_compare_ir_runtime: PASS (C.F/C.EQ/C.LT/C.LE; CVT.W.S/CVT.S.W; "
-        "ADD.S/SUB.S/MUL.S/DIV.S and SQRT.S/RSQRT.S normalisation; "
+        "ADD.S/SUB.S/MUL.S/DIV.S, SQRT.S/RSQRT.S and accumulator arithmetic; "
         "FCSR cause/sticky semantics; "
         "MAX.S/MIN.S bitwise ordering; ABS.S/NEG.S raw-bit sign operations; "
         "EE NaN/Inf normalisation, integer "
