@@ -90,7 +90,7 @@ def run_opt_level(fixture_exe, temp_dir, opt_level, target_machine):
     prefix = f"O{opt_level}: "
     require(result == 3, prefix + f"unexpected exit result: {result}")
     require(state.exit_reason == 3, prefix + f"unexpected exit reason: {state.exit_reason}")
-    require(state.pc == 0x0010003C, prefix + f"unexpected dispatcher PC: 0x{state.pc:08x}")
+    require(state.pc == 0x0010005C, prefix + f"unexpected dispatcher PC: 0x{state.pc:08x}")
     require(state.gpr[4].lo == 0x1234, prefix + f"ADDIU writeback lost: 0x{state.gpr[4].lo:x}")
     require(state.gpr[4].hi == 0x4444444444444444, prefix + "ADDIU clobbered upper GPR half")
     require(state.gpr[14].lo == 0x5678,
@@ -106,14 +106,49 @@ def run_opt_level(fixture_exe, temp_dir, opt_level, target_machine):
 
     a_lo, a_hi = source_a_lo, source_a_hi
     b_lo, b_hi = source_b_lo, source_b_hi
+    mask64 = 0xFFFFFFFFFFFFFFFF
+    mask128 = (1 << 128) - 1
+    a128 = (a_hi << 64) | a_lo
+    b128 = (b_hi << 64) | b_lo
+
+    def packed_lanes(width, operation):
+        lane_mask = (1 << width) - 1
+        result = 0
+        for shift in range(0, 128, width):
+            lhs = (a128 >> shift) & lane_mask
+            rhs = (b128 >> shift) & lane_mask
+            if operation == "add":
+                value = lhs + rhs
+            elif operation == "sub":
+                value = lhs - rhs
+            elif operation == "max_signed":
+                sign = 1 << (width - 1)
+                lhs_signed = lhs - (1 << width) if lhs & sign else lhs
+                rhs_signed = rhs - (1 << width) if rhs & sign else rhs
+                value = max(lhs_signed, rhs_signed)
+            else:
+                raise AssertionError("unknown packed operation")
+            result |= (value & lane_mask) << shift
+        return result & mask128
+
+    def halves(value):
+        return value & mask64, (value >> 64) & mask64
+
     expected = {
         7: (a_lo & b_lo, a_hi & b_hi),
         10: (a_lo ^ b_lo, a_hi ^ b_hi),
         11: (a_lo | b_lo, a_hi | b_hi),
-        12: (~(a_lo | b_lo) & 0xFFFFFFFFFFFFFFFF,
-             ~(a_hi | b_hi) & 0xFFFFFFFFFFFFFFFF),
+        12: (~(a_lo | b_lo) & mask64, ~(a_hi | b_hi) & mask64),
         8: (a_lo & b_lo, a_hi & b_hi),
         13: ((a_lo & b_lo) ^ b_lo, (a_hi & b_hi) ^ b_hi),
+        15: halves(packed_lanes(32, "add")),
+        16: halves(packed_lanes(32, "sub")),
+        17: halves(packed_lanes(32, "max_signed")),
+        18: halves(packed_lanes(16, "add")),
+        19: halves(packed_lanes(16, "sub")),
+        20: halves(packed_lanes(16, "max_signed")),
+        21: halves(packed_lanes(8, "add")),
+        22: halves(packed_lanes(8, "sub")),
     }
     for register, (expected_lo, expected_hi) in expected.items():
         actual = state.gpr[register]
@@ -144,7 +179,7 @@ def main():
             engines.append(result[0])
             modules.append(result[1])
 
-    print("mmi_ir_runtime: PASS (O0-O3; CFG writeback; HI1/LO1; aliasing; upper-GPR preservation; PAND/PXOR/POR/PNOR)")
+    print("mmi_ir_runtime: PASS (O0-O3; CFG writeback; HI1/LO1; aliasing; upper-GPR preservation; PAND/PXOR/POR/PNOR; PADD/PSUB/PMAX lanes)")
 
 
 if __name__ == "__main__":
