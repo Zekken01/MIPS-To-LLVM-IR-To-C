@@ -411,9 +411,13 @@ def main():
         recursive_backing, recursive_state = make_aligned_state()
         _ = recursive_backing
         recursive_state.pc = 0x00100000
-        recursive_state.gpr[31].lo = 0x00300000
+        recursive_state.gpr[2].hi = 0x0202020202020202
+        recursive_state.gpr[31].lo = 0xDEAD0000
         recursive_state.gpr[31].hi = 0x3131313131313131
         recursive_state.gpr[26].hi = 0x2626262626262626
+        recursive_state.gpr[8].hi = 0x0808080808080808
+        recursive_state.gpr[9].hi = 0x0909090909090909
+        recursive_state.gpr[10].hi = 0x1010101010101010
 
         recursive_exits = []
         recursive_block_pcs = {
@@ -429,75 +433,28 @@ def main():
 
         require(recursive_exits == [3, 0, 3],
                 f"recursive guest: wrong dispatcher exit sequence: {recursive_exits}")
-        require(recursive_state.pc == 0x00300000,
+        require(recursive_state.pc == 0xDEAD0000,
                 f"recursive guest: outer return target wrong: 0x{recursive_state.pc:08x}")
         require(recursive_state.gpr[2].lo == 2,
                 f"recursive guest: expected two BEQ delay-slot increments, got {recursive_state.gpr[2].lo}")
         require(recursive_state.gpr[31].lo == 0x00100020,
                 f"recursive guest: recursive JAL link wrong: 0x{recursive_state.gpr[31].lo:x}")
-        require(recursive_state.gpr[26].lo == 0x00300000,
+        require(recursive_state.gpr[26].lo == 0xFFFFFFFFDEAD0000,
                 f"recursive guest: saved outer return address lost: 0x{recursive_state.gpr[26].lo:x}")
+        require(recursive_state.gpr[26].hi == 0x2626262626262626 and
+                recursive_state.gpr[2].hi == 0x0202020202020202 and
+                recursive_state.gpr[8].hi == 0x0808080808080808 and
+                recursive_state.gpr[9].hi == 0x0909090909090909 and
+                recursive_state.gpr[10].hi == 0x1010101010101010 and
+                recursive_state.gpr[31].hi == 0x3131313131313131,
+                "recursive guest: control flow clobbered an upper 64-bit GPR half")
         require(recursive_state.gpr[8].lo == 0x77 and
                 recursive_state.gpr[9].lo == 0x11 and
                 recursive_state.gpr[10].lo == 0x22,
                 "recursive guest: one of the three delay-slot side effects was lost")
         print("control-flow recursive call/return: PASS", flush=True)
-
         print("control-flow nested call/resume: PASS", flush=True)
 
-        # One-level self-recursion: the first activation takes the recursive
-        # call path; the second takes the base case, returns to the suspended
-        # continuation block, and that block returns to the external sentinel.
-        recursive_fn = load_function("recursive", "guest_recursive_call_test")
-        recursive_backing, recursive_state = make_aligned_state()
-        _ = recursive_backing
-        recursive_state.gpr[2].lo = 0
-        recursive_state.gpr[2].hi = 0x0202020202020202
-        recursive_state.gpr[31].lo = 0xDEAD0000
-        recursive_state.gpr[31].hi = 0x3131313131313131
-        recursive_state.gpr[26].hi = 0x2626262626262626
-        recursive_state.gpr[8].hi = 0x0808080808080808
-        recursive_state.gpr[9].hi = 0x0909090909090909
-        recursive_state.gpr[10].hi = 0x1010101010101010
-
-        recursive_call_exit = recursive_fn(ctypes.pointer(recursive_state), None)
-        require(recursive_call_exit == 3 and recursive_state.exit_reason == 3,
-                "recursive call: expected dispatch to the same function")
-        require(recursive_state.pc == 0x00100000,
-                f"recursive call: wrong self-call target 0x{recursive_state.pc:08x}")
-        require(recursive_state.gpr[2].lo == 1,
-                "recursive call: initial branch delay slot did not increment the depth marker")
-        require(recursive_state.gpr[26].lo == 0xFFFFFFFFDEAD0000,
-                f"recursive call: caller return address was not saved in $k0: 0x{recursive_state.gpr[26].lo:x}")
-        require(recursive_state.gpr[31].lo == 0x00100020,
-                f"recursive call: JAL link must be PC+8: 0x{recursive_state.gpr[31].lo:x}")
-        require(recursive_state.gpr[9].lo == 0x11,
-                "recursive call: JAL delay slot did not execute")
-
-        recursive_return_exit = recursive_fn(ctypes.pointer(recursive_state), None)
-        require(recursive_return_exit == 0 and recursive_state.exit_reason == 0,
-                "recursive base case: JR $ra did not return")
-        require(recursive_state.pc == 0x00100020,
-                f"recursive base case: wrong caller continuation 0x{recursive_state.pc:08x}")
-        require(recursive_state.gpr[2].lo == 2,
-                "recursive base case: branch delay slot did not execute")
-        require(recursive_state.gpr[8].lo == 0x77,
-                "recursive base case: JR $ra delay slot did not execute")
-
-        recursive_finish_exit = recursive_fn(ctypes.pointer(recursive_state), None)
-        require(recursive_finish_exit == 3 and recursive_state.exit_reason == 3,
-                "recursive continuation: expected indirect dispatch to external sentinel")
-        require(recursive_state.pc == 0xDEAD0000,
-                f"recursive continuation: caller return target was lost: 0x{recursive_state.pc:08x}")
-        require(recursive_state.gpr[10].lo == 0x22,
-                "recursive continuation: JR $k0 delay slot did not execute")
-        require(recursive_state.gpr[26].hi == 0x2626262626262626 and
-                recursive_state.gpr[8].hi == 0x0808080808080808 and
-                recursive_state.gpr[9].hi == 0x0909090909090909 and
-                recursive_state.gpr[10].hi == 0x1010101010101010,
-                "recursive call sequence clobbered an upper 64-bit GPR half")
-        print("control-flow recursive JAL/return: PASS", flush=True)
-    
     print("control_flow_ir_runtime: PASS (JR return/dispatch; JAL/JALR; BEQ condition sampling; BLTZAL/BGEZAL/BLTZALL/BGEZALL taken and not-taken)")
 
 
