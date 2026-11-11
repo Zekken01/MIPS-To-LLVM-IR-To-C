@@ -75,6 +75,20 @@ int main(int argc, char** argv)
         delay_word = make_i(0x09, 8, 9, 1);
         function_name = "guest_jalr_delay_test";
     }
+    else if (mode == "beq_taken")
+    {
+        // BEQ must sample $v0 before its delay slot increments it.
+        control_word = make_i(0x04, 2, 0, 4);
+        delay_word = make_i(0x09, 2, 2, 1);
+        function_name = "guest_beq_taken_delay_test";
+    }
+    else if (mode == "beq_not_taken")
+    {
+        // BEQ must remain not-taken even though the delay slot makes $v0 zero.
+        control_word = make_i(0x04, 2, 0, 4);
+        delay_word = make_i(0x09, 0, 2, 0);
+        function_name = "guest_beq_not_taken_delay_test";
+    }
     else if (mode == "bltzal")
     {
         // BLTZAL $v0, +4; its delay slot executes on both branch outcomes and
