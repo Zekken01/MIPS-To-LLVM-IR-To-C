@@ -1589,10 +1589,21 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
             }
             else if (fmt == 0x10 && fp_funct == 0x05) // ABS.S
             {
-                std::string fa = load_fpr_f32(fs);
-                std::string fr = newtemp();
-                m_out += "  " + fr + " = call float @llvm.fabs.f32(float " + fa + ")\n";
-                store_fpr_f32(fd, fr);
+                // ABS.S is a raw sign-bit clear in the EE interpreter. Keep
+                // NaN payloads and signalling encodings untouched.
+                const std::string raw = load_fpr_i32(fs);
+                const std::string result = newtemp();
+                m_out += "  " + result + " = and i32 " + raw + ", 2147483647\n";
+                store_fpr_i32(fd, result);
+
+                // ABS.S clears overflow/underflow cause flags only.
+                const std::string fcsr = newtemp();
+                const std::string fcsr_value = newtemp();
+                const std::string fcsr_updated = newtemp();
+                m_out += "  " + fcsr + " = " + fcsr_ptr() + "\n";
+                m_out += "  " + fcsr_value + " = load i32, ptr " + fcsr + "\n";
+                m_out += "  " + fcsr_updated + " = and i32 " + fcsr_value + ", -49153\n";
+                m_out += "  store i32 " + fcsr_updated + ", ptr " + fcsr + "\n";
             }
             else if (fmt == 0x10 && fp_funct == 0x06) // MOV.S
             {
@@ -1600,10 +1611,21 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
             }
             else if (fmt == 0x10 && fp_funct == 0x07) // NEG.S
             {
-                std::string fa = load_fpr_f32(fs);
-                std::string fr = newtemp();
-                m_out += "  " + fr + " = fneg float " + fa + "\n";
-                store_fpr_f32(fd, fr);
+                // NEG.S toggles only the sign bit, preserving every payload
+                // bit (including NaN payloads and denormal encodings).
+                const std::string raw = load_fpr_i32(fs);
+                const std::string result = newtemp();
+                m_out += "  " + result + " = xor i32 " + raw + ", -2147483648\n";
+                store_fpr_i32(fd, result);
+
+                // NEG.S clears overflow/underflow cause flags only.
+                const std::string fcsr = newtemp();
+                const std::string fcsr_value = newtemp();
+                const std::string fcsr_updated = newtemp();
+                m_out += "  " + fcsr + " = " + fcsr_ptr() + "\n";
+                m_out += "  " + fcsr_value + " = load i32, ptr " + fcsr + "\n";
+                m_out += "  " + fcsr_updated + " = and i32 " + fcsr_value + ", -49153\n";
+                m_out += "  store i32 " + fcsr_updated + ", ptr " + fcsr + "\n";
             }
             else if (fmt == 0x10 && fp_funct == 0x16) // RSQRT.S  fd = fs / sqrt(ft)
             {
