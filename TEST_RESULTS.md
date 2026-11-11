@@ -49,3 +49,11 @@ Environment: GitHub Actions `ubuntu-latest`, GCC/CMake/Ninja, isolated Python vi
   - PAND/PXOR/POR/PNOR, source/destination aliasing, and cross-CFG-block writeback.
 
 The MADD/MADDU behavior is implemented from the EE Core Instruction Set Manual v6.0 operation definitions: the low 32-bit halves of the appropriate HI/LO pair form the 64-bit accumulator; the low and high result words are sign-extended into LO/HI, and the low result word is also written to rd.
+
+
+## 2026-11-11 Pipeline-1 multiply follow-up
+
+- Clean configure/build: PASS.
+- CTest: **4/4 PASS** (`decoder`, `multi_function`, `smoke`, `mmi_ir_runtime`).
+- LLVM JIT runtime: PASS at O0–O3.
+- Added runtime coverage for signed `MULT1` and unsigned `MULTU1`, including HI1/LO1 writeback, sign-extension, and MFHI1/MFLO1 readback.
