@@ -83,6 +83,18 @@ int main(int argc, char** argv)
         delay_word = make_i(0x09, 31, 8, 0);
         function_name = "guest_bltzall_delay_test";
     }
+    else if (mode == "bgezal")
+    {
+        control_word = make_i(0x01, 2, 0x11, 4);
+        delay_word = make_i(0x09, 31, 8, 0);
+        function_name = "guest_bgezal_delay_test";
+    }
+    else if (mode == "bgezall")
+    {
+        control_word = make_i(0x01, 2, 0x13, 4);
+        delay_word = make_i(0x09, 31, 8, 0);
+        function_name = "guest_bgezall_delay_test";
+    }
     else
     {
         std::fprintf(stderr, "unknown control-flow fixture case: %s\n", mode.c_str());
