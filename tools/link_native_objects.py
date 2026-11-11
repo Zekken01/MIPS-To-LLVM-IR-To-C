@@ -14,7 +14,6 @@ import hashlib
 import json
 import os
 import re
-import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -43,6 +42,7 @@ def build_dispatch_source(metadata, functions):
     lines = [
         '#include "ee_dispatcher.h"',
         "#include <cstdint>",
+        "#include <utility>",
         "",
         "extern \"C\"",
         "{",
