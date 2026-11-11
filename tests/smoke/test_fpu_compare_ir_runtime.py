@@ -102,6 +102,34 @@ def run_case(fixture, temp_dir, target, mode, lhs, rhs, expected_fcc):
             prefix + f"FCSR got 0x{state.fcsr:08x}, expected 0x{expected_fcsr:08x}")
 
 
+def run_cvt_w_case(fixture, temp_dir, target, source_bits, expected_bits, label):
+    guest_fn, engine, module, target_machine = compile_jit(
+        fixture, temp_dir, "cvt_w", target
+    )
+    backing, state = aligned_state()
+    _ = (backing, engine, module, target_machine)
+
+    state.fpr[1] = source_bits
+    state.fpr[6] = 0xAABBCCDD11223344
+    initial_fcsr = 0xA5923456
+    state.fcsr = initial_fcsr
+
+    result = guest_fn(ctypes.pointer(state), None)
+    prefix = f"cvt_w({label}, 0x{source_bits:08x}): "
+    require(result == 3, prefix + f"expected EE_EXIT_DISPATCH (3), got {result}")
+    require(state.exit_reason == 3,
+            prefix + f"state exit reason was {state.exit_reason}")
+    require(state.pc == ENTRY_PC + 4,
+            prefix + f"wrong sequential PC 0x{state.pc:08x}")
+    require(state.fpr[6] == expected_bits,
+            prefix + f"FPR[6] got 0x{state.fpr[6]:016x}, "
+                     f"expected 0x{expected_bits:016x}")
+    require(state.fpr[1] == source_bits,
+            prefix + "source FPR was modified")
+    require(state.fcsr == initial_fcsr,
+            prefix + f"CVT.W.S unexpectedly modified FCSR: 0x{state.fcsr:08x}")
+
+
 def main():
     require(
         len(sys.argv) == 2,
@@ -138,14 +166,42 @@ def main():
         ("c_le", -1.0, qnan, True),
     ]
 
+    # CVT.W.S uses the EE's truncating conversion and saturates values whose
+    # exponent is outside the signed 32-bit range. These expected results match
+    # the PCSX2 EE interpreter's CVT_W implementation.
+    cvt_cases = [
+        (0x40700000, 0x00000003, "positive fraction truncates"),
+        (0xC0700000, 0xFFFFFFFFFFFFFFFD, "negative fraction truncates toward zero"),
+        (0x3F000000, 0x00000000, "positive half"),
+        (0xBF000000, 0x00000000, "negative half"),
+        (0x00000000, 0x00000000, "positive zero"),
+        (0x80000000, 0x00000000, "negative zero"),
+        (0x00000001, 0x00000000, "positive denormal"),
+        (0x80000001, 0x00000000, "negative denormal"),
+        (0x4EFFFFFF, 0x000000007F7FFF80, "largest value below 2^31"),
+        (0xCEFFFFFF, 0xFFFFFFFF80000080, "negative value just above -2^31"),
+        (0x4F000000, 0x000000007FFFFFFF, "positive 2^31 saturates"),
+        (0xCF000000, 0xFFFFFFFF80000000, "negative 2^31 clamps"),
+        (0xCF000001, 0xFFFFFFFF80000000, "negative overflow saturates"),
+        (0x7F800000, 0x000000007FFFFFFF, "positive infinity saturates"),
+        (0xFF800000, 0xFFFFFFFF80000000, "negative infinity saturates"),
+        (0x7FC00000, 0x000000007FFFFFFF, "positive quiet NaN saturates"),
+        (0xFFC00000, 0xFFFFFFFF80000000, "negative quiet NaN saturates"),
+    ]
+
     with tempfile.TemporaryDirectory(prefix="ee-fpu-compare-") as directory:
         temp_dir = pathlib.Path(directory)
         for mode, lhs, rhs, expected in cases:
             run_case(fixture, temp_dir, target, mode, lhs, rhs, expected)
+        for source_bits, expected_bits, label in cvt_cases:
+            run_cvt_w_case(
+                fixture, temp_dir, target, source_bits, expected_bits, label
+            )
 
     print(
-        "fpu_compare_ir_runtime: PASS (C.F/C.EQ/C.LT/C.LE; "
-        "ordered NaN handling; signed zero; FCC0-only FCSR update; O0 JIT)"
+        "fpu_compare_ir_runtime: PASS (C.F/C.EQ/C.LT/C.LE; CVT.W.S; "
+        "EE NaN/Inf normalisation, integer saturation, truncation, FCSR "
+        "preservation; O0 JIT)"
     )
 
 
