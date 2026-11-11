@@ -38,7 +38,11 @@ int main()
     expect("pcpyld",  R(0x1c,4,5,6,0x0e,0x09), "pcpyld", U);   // was lowered as AND
     expect("padduw",  R(0x1c,0,0,0,0x10,0x28), "padduw", U);   // the game's entry-point word 0x70000c28
     expect("pminw",   R(0x1c,4,5,6,0x03,0x28), "pminw",  U);
-    expect("madd",    R(0x1c,4,5,6,0,0x00),    "madd",   U);   // "approximate" lowering replaced HI/LO
+    expect("madd",    R(0x1c,4,5,6,0,0x00),    "madd",   V);
+    expect("maddu",   R(0x1c,4,5,6,0,0x01),    "maddu",  V);
+    expect("madd1",   R(0x1c,4,5,6,0,0x20),    "madd1",  V);
+    expect("maddu1",  R(0x1c,4,5,6,0,0x21),    "maddu1", V);
+    expect("madd bad sa", R(0x1c,4,5,6,1,0x00), "madd", U);
     expect("mult1",   R(0x1c,4,5,6,0,0x18),    "mult1",  U);
     expect("pmfhl",   R(0x1c,0,0,6,0,0x30),    "pmfhl",  U);
     expect("psllh",   R(0x1c,0,5,6,3,0x34),    "psllh",  U);
