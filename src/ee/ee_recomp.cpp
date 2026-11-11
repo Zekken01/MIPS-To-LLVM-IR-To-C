@@ -90,27 +90,41 @@ void add_successors(const s_ee_instruction& ins,
     // so keep following it (the builder turns it into an explicit exit).
     if (ins.valid == e_ee_valid::INVALID) return;
 
-    bool fallthrough = true;
+    // Delay slots are real instructions and must be decoded even when the
+    // transfer itself has no sequential successor (J, JR, return, exception).
+    // The post-delay PC is the only valid fallthrough for branches and calls.
+    const uint32_t after_delay = ins.pc + (ins.has_delay_slot ? 8u : 4u);
+    if (ins.has_delay_slot)
+        out.insert(ins.pc + 4u);
+
     switch (ins.flow)
     {
     case e_ee_flow::FLOW_BRANCH:
     case e_ee_flow::FLOW_BRANCH_LIKELY:
-        out.insert((uint32_t)ins.branch_target);
+        out.insert(static_cast<uint32_t>(ins.branch_target));
+        out.insert(after_delay);
         break;
+
     case e_ee_flow::FLOW_JUMP:
+        out.insert(ins.jump_target);
+        break;
+
     case e_ee_flow::FLOW_CALL:
         out.insert(ins.jump_target);
-        if (ins.flow == e_ee_flow::FLOW_CALL) out.insert(ins.pc + 4);
-        fallthrough = false;
+        out.insert(after_delay);
         break;
+
     case e_ee_flow::FLOW_RETURN:
     case e_ee_flow::FLOW_EXCEPTION:
-    case e_ee_flow::FLOW_NONE:
+        // The delay slot, if present, was queued above. There is no statically
+        // discoverable successor after a return or exception transfer.
         break;
+
+    case e_ee_flow::FLOW_NONE:
     default:
+        out.insert(ins.pc + 4u);
         break;
     }
-    if (fallthrough) out.insert(ins.pc + 4);
 }
 } // namespace
 
