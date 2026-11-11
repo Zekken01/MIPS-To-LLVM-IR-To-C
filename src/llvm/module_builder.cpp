@@ -1876,7 +1876,7 @@ void module_builder::emit_block(const std::vector<ee::s_ee_instruction>& block,
                 std::string link = newtemp();
                 char link_pc[32];
                 std::snprintf(link_pc, sizeof(link_pc), "%u", (unsigned)(ctrl.pc + 8u));
-                m_out += "  " + link + " = add i64 " + link_pc + ", 0\\n";
+                m_out += "  " + link + " = add i64 " + link_pc + ", 0\n";
                 set_gpr_lo64(31, link);
             }
 
@@ -1934,7 +1934,7 @@ void module_builder::emit_block(const std::vector<ee::s_ee_instruction>& block,
                     std::string link = newtemp();
                     char link_pc[32];
                     std::snprintf(link_pc, sizeof(link_pc), "%u", (unsigned)(ctrl.pc + 8u));
-                    m_out += "  " + link + " = add i64 " + link_pc + ", 0\\n";
+                    m_out += "  " + link + " = add i64 " + link_pc + ", 0\n";
                     set_gpr_lo64(31, link);
                 }
 
