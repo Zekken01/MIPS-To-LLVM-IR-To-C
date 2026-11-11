@@ -403,6 +403,51 @@ def main():
         require(state.gpr[16].lo == 0x55 and state.gpr[17].lo == 0x66,
                 "unknown caller PC unexpectedly restarted the function")
 
+        # Cross-function dynamic JALR: target $t0 points at the separately
+        # translated callee, while the delay slot overwrites $t0 with the new
+        # link value. The dispatcher must use the target captured before slot
+        # execution, then resume this caller at PC+8 after JR $ra.
+        caller_jalr_fn = load_function("caller_jalr", "guest_caller_jalr_test")
+        jalr_backing, jalr_state = make_aligned_state()
+        _ = jalr_backing
+        jalr_state.pc = 0x00100000
+        jalr_state.gpr[8].lo = 0x00102000
+        jalr_state.gpr[8].hi = 0x8888888888888888
+        jalr_state.gpr[17].hi = 0x1717171717171717
+        jalr_state.gpr[31].lo = 0xDEADBEEF
+        jalr_state.gpr[31].hi = 0x3131313131313131
+
+        jalr_exit = caller_jalr_fn(ctypes.pointer(jalr_state), None)
+        require(jalr_exit == 3 and jalr_state.exit_reason == 3,
+                f"caller JALR: expected dispatch exit 3, got {jalr_exit}/{jalr_state.exit_reason}")
+        require(jalr_state.pc == 0x00102000,
+                f"caller JALR: target was not captured before delay slot: 0x{jalr_state.pc:08x}")
+        require(jalr_state.gpr[31].lo == 0x00100008,
+                f"caller JALR: wrong link value 0x{jalr_state.gpr[31].lo:x}")
+        require(jalr_state.gpr[8].lo == 0x00100008,
+                f"caller JALR: delay slot did not overwrite rs with link: 0x{jalr_state.gpr[8].lo:x}")
+        require(jalr_state.gpr[8].hi == 0x8888888888888888 and
+                jalr_state.gpr[31].hi == 0x3131313131313131,
+                "caller JALR: link/delay slot clobbered an upper GPR half")
+
+        jalr_callee_exit = callee_fn(ctypes.pointer(jalr_state), None)
+        require(jalr_callee_exit == 0 and jalr_state.exit_reason == 0,
+                f"JALR callee: expected return exit 0, got {jalr_callee_exit}/{jalr_state.exit_reason}")
+        require(jalr_state.pc == 0x00100008,
+                f"JALR callee: wrong caller continuation 0x{jalr_state.pc:08x}")
+        require(jalr_state.gpr[8].lo == 0x77,
+                "JALR callee: return delay slot did not execute")
+
+        jalr_resume_exit = caller_jalr_fn(ctypes.pointer(jalr_state), None)
+        require(jalr_resume_exit == 3 and jalr_state.exit_reason == 3,
+                f"JALR caller resume: expected dispatch exit 3, got {jalr_resume_exit}/{jalr_state.exit_reason}")
+        require(jalr_state.pc == 0x0010000C,
+                f"JALR caller resume: wrong next PC 0x{jalr_state.pc:08x}")
+        require(jalr_state.gpr[17].lo == 0x66 and
+                jalr_state.gpr[17].hi == 0x1717171717171717,
+                "JALR caller continuation did not execute or clobbered upper GPR half")
+        print("control-flow cross-function JALR dispatch/resume: PASS", flush=True)
+
         # Execute one recursive JAL activation through the same host
         # dispatcher. The guest saves the outer $ra in $k0, then the inner
         # invocation returns to its caller continuation before the outer
