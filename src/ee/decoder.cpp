@@ -115,11 +115,11 @@ bool mmi_lowered_exactly(uint32_t funct, uint32_t sa, uint32_t rs)
         {
         case 0x01: case 0x05:                            // pabsw/pabsh use rt only
             return rs == 0;
-        case 0x02: case 0x03: case 0x06: case 0x07:    // pceq*/pmin*
+        case 0x02: case 0x03: case 0x04: case 0x06: case 0x07: // pceq*/pmin*/padsbh
         case 0x0a:                                      // pceqb
-        case 0x10: case 0x11:                            // padduw/psubuw
-        case 0x14: case 0x15:                            // padduh/psubuh
-        case 0x18: case 0x19:                            // paddub/psubub
+        case 0x10: case 0x11: case 0x12:               // padduw/psubuw/pextuw
+        case 0x14: case 0x15: case 0x16:               // padduh/psubuh/pextuh
+        case 0x18: case 0x19: case 0x1a: case 0x1b:     // paddub/psubub/pextub/qfsrv
             return true;
         default:
             return false;
