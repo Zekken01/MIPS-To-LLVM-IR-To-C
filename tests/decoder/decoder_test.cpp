@@ -295,6 +295,7 @@ int main()
     {
         s_ee_instruction ins{};
         ins.valid = e_ee_valid::VALID; ins.pc = 0x1000;
+        ins.opcode = e_ee_opcode::OP_J;
         ins.flow = e_ee_flow::FLOW_JUMP; ins.has_delay_slot = true;
         ins.jump_target = 0x2000;
         const std::set<uint32_t> expected{0x1004, 0x2000};
@@ -305,6 +306,7 @@ int main()
     {
         s_ee_instruction ins{};
         ins.valid = e_ee_valid::VALID; ins.pc = 0x1000;
+        ins.opcode = e_ee_opcode::OP_JAL;
         ins.flow = e_ee_flow::FLOW_CALL; ins.has_delay_slot = true;
         ins.jump_target = 0x3000;
         const std::set<uint32_t> expected{0x1004, 0x1008, 0x3000};
