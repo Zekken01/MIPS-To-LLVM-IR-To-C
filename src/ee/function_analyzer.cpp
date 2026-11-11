@@ -23,10 +23,15 @@ std::set<uint32_t> collect_successors(const s_ee_instruction& ins)
         out.insert(after_delay);
         break;
     case e_ee_flow::FLOW_JUMP:
-        out.insert(ins.jump_target);
+        // Zero denotes an indirect target (JR) rather than a static PC.
+        if (ins.jump_target != 0)
+            out.insert(ins.jump_target);
         break;
     case e_ee_flow::FLOW_CALL:
-        out.insert(ins.jump_target);
+        // JALR has no statically discoverable target; retain only the
+        // post-delay return path until the runtime dispatcher resolves it.
+        if (ins.jump_target != 0)
+            out.insert(ins.jump_target);
         out.insert(after_delay);
         break;
     case e_ee_flow::FLOW_RETURN:
