@@ -95,6 +95,7 @@ bool cop1_s_lowered_exactly(uint32_t funct)
     return funct <= 7 || funct == 0x16 ||
            funct == 0x18 || funct == 0x19 || funct == 0x1a ||
            (funct >= 0x1c && funct <= 0x1f) ||
+           funct == 0x24 || // CVT.W.S (truncating, saturating EE conversion)
            funct == 0x30 || funct == 0x32 ||
            funct == 0x34 || funct == 0x36;
 }
