@@ -60,9 +60,10 @@ jobs:
               report.append(f"decode-each-part failed: {exc}")
 
           joined = "".join(texts)
+          joined_unpadded = joined.replace("=", "")
           try:
               variants["joined-strip-padding"] = base64.b64decode(
-                  joined.replace("=", "") + "=" * ((-len(joined.replace("=", ""))) % 4),
+                  joined_unpadded + "=" * ((-len(joined_unpadded)) % 4),
                   validate=False
               )
           except Exception as exc:
@@ -76,79 +77,82 @@ jobs:
           except Exception as exc:
               report.append(f"joined-as-is failed: {exc}")
 
-          valid_zip = None
-          for name, data in variants.items():
+          recovered_files = {}
+
+          # ZIP central directories can still enumerate entries when one member is
+          # corrupt. Read every member independently and keep only CRC-verified data.
+          for variant_name, data in variants.items():
               try:
                   with zipfile.ZipFile(io.BytesIO(data)) as zf:
-                      bad = zf.testzip()
-                      names = zf.namelist()
-                      report.append(f"{name}: ZIP entries={len(names)}, testzip={bad!r}, bytes={len(data)}")
-                      if bad is None:
-                          valid_zip = (name, data, names)
-                          break
-              except Exception as exc:
-                  report.append(f"{name}: not a complete ZIP ({type(exc).__name__}: {exc})")
+                      infos = zf.infolist()
+                      report.append(f"{variant_name}: ZIP entries={len(infos)}, bytes={len(data)}")
+                      valid = {}
+                      for info in infos:
+                          rel = pathlib.PurePosixPath(info.filename)
+                          if rel.is_absolute() or ".." in rel.parts or info.is_dir():
+                              continue
+                          try:
+                              payload = zf.read(info)
+                              if len(payload) != info.file_size:
+                                  continue
+                              valid[info.filename] = payload
+                          except (zipfile.BadZipFile, RuntimeError, OSError, EOFError, zlib.error) as exc:
+                              report.append(f"Rejected ZIP member {info.filename}: {type(exc).__name__}")
+                      report.append(f"{variant_name}: independently CRC-verified members={len(valid)}")
+                      if len(valid) > len(recovered_files) or (
+                          len(valid) == len(recovered_files)
+                          and sum(map(len, valid.values())) > sum(map(len, recovered_files.values()))
+                      ):
+                          recovered_files = valid
+              except (zipfile.BadZipFile, OSError, ValueError) as exc:
+                  report.append(f"{variant_name}: no readable ZIP directory ({type(exc).__name__}: {exc})")
 
-          recovered_files = {}
-          if valid_zip:
-              name, data, names = valid_zip
-              with zipfile.ZipFile(io.BytesIO(data)) as zf:
-                  for info in zf.infolist():
-                      item = pathlib.PurePosixPath(info.filename)
-                      if item.is_absolute() or ".." in item.parts:
-                          report.append(f"Skipped unsafe path: {info.filename}")
+          # If the central directory is missing or corrupt, scan local file headers.
+          # Keep only entries with valid compressed streams, declared sizes and CRCs.
+          signature = bytes((0x50, 0x4b, 0x03, 0x04))
+          for variant_name, data in variants.items():
+              found = {}
+              cursor = 0
+              while True:
+                  pos = data.find(signature, cursor)
+                  if pos < 0:
+                      break
+                  cursor = pos + len(signature)
+                  if pos + 30 > len(data):
+                      continue
+                  try:
+                      sig, ver, flags, method, mtime, mdate, crc, csize, usize, nlen, elen = struct.unpack_from(
+                          "<IHHHHHIIIHH", data, pos
+                      )
+                      if sig != 0x04034b50 or flags & 0x08:
                           continue
-                      if info.is_dir():
+                      start = pos + 30 + nlen + elen
+                      end = start + csize
+                      if end > len(data):
                           continue
-                      payload = zf.read(info)
-                      recovered_files[info.filename] = payload
-              report.append(f"Used complete archive variant: {name}")
-          else:
-              # The archive may be truncated. Recover only local ZIP entries whose
-              # compressed bytes, decompressed size, and CRC all validate.
-              for variant_name, data in variants.items():
-                  found = {}
-                  cursor = 0
-                  while True:
-                      pos = data.find(b"PK\\x03\\x04", cursor)
-                      if pos < 0:
-                          break
-                      cursor = pos + 4
-                      if pos + 30 > len(data):
+                      raw_name = data[pos + 30:pos + 30 + nlen]
+                      name = raw_name.decode("utf-8")
+                      rel = pathlib.PurePosixPath(name)
+                      if rel.is_absolute() or ".." in rel.parts or not name or chr(0) in name:
                           continue
-                      try:
-                          sig, ver, flags, method, mtime, mdate, crc, csize, usize, nlen, elen = struct.unpack_from(
-                              "<IHHHHHIIIHH", data, pos
-                          )
-                          if sig != 0x04034b50 or flags & 0x08:
-                              continue
-                          start = pos + 30 + nlen + elen
-                          end = start + csize
-                          if end > len(data):
-                              continue
-                          raw_name = data[pos + 30:pos + 30 + nlen]
-                          name = raw_name.decode("utf-8")
-                          rel = pathlib.PurePosixPath(name)
-                          if rel.is_absolute() or ".." in rel.parts or not name or "\\x00" in name:
-                              continue
-                          comp = data[start:end]
-                          if method == 0:
-                              payload = comp
-                          elif method == 8:
-                              payload = zlib.decompress(comp, -15)
-                          else:
-                              continue
-                          if len(payload) != usize or (zlib.crc32(payload) & 0xffffffff) != crc:
-                              continue
-                          # Prefer a later CRC-verified copy if the ZIP contains duplicates.
-                          found[name] = payload
-                      except (ValueError, UnicodeDecodeError, struct.error, zlib.error):
+                      comp = data[start:end]
+                      if method == 0:
+                          payload = comp
+                      elif method == 8:
+                          payload = zlib.decompress(comp, -15)
+                      else:
                           continue
-                  report.append(f"{variant_name}: CRC-verified local entries={len(found)}")
-                  if len(found) > len(recovered_files) or (
-                      len(found) == len(recovered_files) and sum(map(len, found.values())) > sum(map(len, recovered_files.values()))
-                  ):
-                      recovered_files = found
+                      if len(payload) != usize or (zlib.crc32(payload) & 0xffffffff) != crc:
+                          continue
+                      found[name] = payload
+                  except (ValueError, UnicodeDecodeError, struct.error, zlib.error):
+                      continue
+              report.append(f"{variant_name}: CRC-verified local entries={len(found)}")
+              if len(found) > len(recovered_files) or (
+                  len(found) == len(recovered_files)
+                  and sum(map(len, found.values())) > sum(map(len, recovered_files.values()))
+              ):
+                  recovered_files = found
 
           for name, payload in recovered_files.items():
               rel = pathlib.PurePosixPath(name)
@@ -169,6 +173,15 @@ jobs:
           ]
           missing = [name for name in required if not (recovered / name).is_file()]
           report.append("Missing required files: " + (", ".join(missing) if missing else "none"))
+
+          ready = not missing
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"source_ready={'true' if ready else 'false'}\n")
+              f.write(f"recovered_count={len(recovered_files)}\n")
+          print("# Source Snapshot Reassembly Report\n\n" + "\n".join(report))
+          if not recovered_files:
+              raise SystemExit("No CRC-verified source files could be recovered")
+
           report_path = root / "reassembly_report.md"
           report_path.write_text("# Source Snapshot Reassembly Report\n\n" + "\n".join(report) + "\n", encoding="utf-8")
 
