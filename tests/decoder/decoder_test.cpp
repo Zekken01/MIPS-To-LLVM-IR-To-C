@@ -293,7 +293,7 @@ int main()
         const std::set<uint32_t> expected{0x1004, 0x2000};
         const bool ok = collect_successors(ins) == expected;
         ok ? ++g_pass : ++g_fail;
-        if (!ok) std::printf("FAIL J delay-slot successor discovery\\n");
+        if (!ok) std::printf("FAIL J delay-slot successor discovery\n");
     }
     {
         s_ee_instruction ins{};
@@ -303,7 +303,7 @@ int main()
         const std::set<uint32_t> expected{0x1004, 0x1008, 0x3000};
         const bool ok = collect_successors(ins) == expected;
         ok ? ++g_pass : ++g_fail;
-        if (!ok) std::printf("FAIL JAL delay-slot/return-path discovery\\n");
+        if (!ok) std::printf("FAIL JAL delay-slot/return-path discovery\n");
     }
     {
         s_ee_instruction ins{};
