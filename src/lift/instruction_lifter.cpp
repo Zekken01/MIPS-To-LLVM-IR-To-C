@@ -142,6 +142,10 @@ s_lifted_op lift(const s_ee_instruction& insn)
         // R5900 top-level funct or the class-specific sa sub-op.
         switch (insn.funct)
         {
+        case 0x00: op.kind = LOP_MADD; break;
+        case 0x01: op.kind = LOP_MADDU; break;
+        case 0x20: op.kind = LOP_MADD1; break;
+        case 0x21: op.kind = LOP_MADDU1; break;
         case 0x10: op.kind = LOP_MFHI1; break;
         case 0x11: op.kind = LOP_MTHI1; break;
         case 0x12: op.kind = LOP_MFLO1; break;
