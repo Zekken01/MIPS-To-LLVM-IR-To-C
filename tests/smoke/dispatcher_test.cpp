@@ -1,6 +1,7 @@
 #include "ee_dispatcher.h"
 
 #include <cstdio>
+#include <initializer_list>
 #include <string>
 
 namespace
