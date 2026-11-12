@@ -45,6 +45,21 @@ struct alignas(16) s_ee_vu0_state
     // fetches paired 32-bit lower/upper words from m_micro_memory.
     alignas(16) uint8_t m_data_memory[0x1000];
     alignas(16) uint8_t m_micro_memory[0x1000];
+
+    // Integer-ALU writes are visible in VI immediately in the interpreter,
+    // but their destination registers remain interlocked for the instruction
+    // latency. This four-entry ring tracks those reservations.
+    struct s_ialu_pipe_entry
+    {
+        uint32_t m_register_mask;
+        uint32_t m_latency;
+        uint64_t m_start_cycle;
+    };
+
+    s_ialu_pipe_entry m_ialu[4];
+    uint32_t m_ialu_read_pos;
+    uint32_t m_ialu_write_pos;
+    uint32_t m_ialu_count;
 };
 
 // Architectural EE CPU state. GPRs are 128 bits wide in the lifter (i128);
