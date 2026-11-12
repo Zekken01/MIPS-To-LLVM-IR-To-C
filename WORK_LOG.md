@@ -234,3 +234,16 @@ Further changes should be committed to this branch in small, testable increments
 - GitHub Actions [run 43189469757](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43189469757): clean configure/build and **14/14 CTest passed**.
 - This is a deliberately narrow micro-engine foundation, not full VU0 support. Branches, data memory, I/D/T modes, upper vector ops, full dual-issue ordering, VF/flag forwarding and FMAC/FDIV/EFU pipelines remain unsupported.
 - Next: implement lower integer branches with explicit branch-delay state and IALU read interlocks; keep vector/memory paths unsupported until separately validated.
+
+
+## 2026-11-12 — Conservative static JALR target recovery
+
+- Added `collect_static_jalr_targets`, a forward constant-propagation pass over each caller's basic-block CFG. It recognizes LUI/ORI/ANDI/XORI/ADDIU/DADDIU and selected SPECIAL integer arithmetic/shift operations. GPR0 is hardwired to zero; unmodelled writes and memory loads invalidate affected constants.
+- A JALR target is collected only when its source register is known at the instruction, nonzero and four-byte aligned. The target is sampled before the JALR delay slot. Branch-likely CFG edges carry separate taken and annulled-fallthrough states, so a delay-slot write is not applied to a not-taken path.
+- Integrated the pass into `ee_recomp`'s discovery worklist as a fixed-point process. Static JALR call targets are validated against executable ELF ranges, added as entries, decoded, and scanned again for further calls. Dynamic targets and register values derived from unmodelled memory/table loads remain unresolved.
+- Function discovery now pre-collects leaders from all decoded conditional branches, branch-likely instructions and direct jumps. Linear block construction stops at those leaders even before they have been visited; a later-discovered target inside an already scanned block is split into its own block with a connecting predecessor edge. This fixes overlapping basic blocks that hid merge predecessors from the data-flow analysis.
+- Added `function_discovery_test` with fixtures for LUI/ORI, signed LUI/ADDIU, $zero, JALR target sampling before its delay slot, unknown load clobbers, conflicting/equal CFG predecessor constants, and branch-likely delay-slot annulment.
+- CI initially exposed C++ scoped-enum conversions in the new analysis, a missing parenthesis in REGIMM link handling, a fixture namespace issue, and then the overlapping-basic-block bug. Those were corrected from the compiler/test output. The new branch-likely fixture is included in the final passing run.
+- GitHub Actions [run 43207855948](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43207855948): clean configure/build and **15/15 CTest passed**, including `function_discovery`.
+- The preserved USA `SLUS_214.42` full-image validation (7,849 functions) predates this JALR recovery. Do not update or reuse that count as a result of the new pass until the full ELF is re-run. A fresh full-image native-link validation is the next check.
+- Remaining limits: JALR targets that depend on GOT/table loads, runtime values, interprocedural register states, or unsupported transformations are not guessed. Function discovery is still conservative and is not proof that every stripped-image function is found.
