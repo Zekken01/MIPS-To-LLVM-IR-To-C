@@ -82,6 +82,9 @@ class VU0State(ctypes.Structure):
         ("branch_pc", ctypes.c_uint32),
         ("delay_branch_pc", ctypes.c_uint32),
         ("take_delay_branch", ctypes.c_uint32),
+        ("vi_backup_cycles", ctypes.c_uint32),
+        ("vi_backup_register", ctypes.c_uint32),
+        ("vi_backup_old_value", ctypes.c_uint32),
     ]
 
 
@@ -95,7 +98,10 @@ assert VU0State.branch.offset == 8508
 assert VU0State.branch_pc.offset == 8512
 assert VU0State.delay_branch_pc.offset == 8516
 assert VU0State.take_delay_branch.offset == 8520
-assert ctypes.sizeof(VU0State) == 8528
+assert VU0State.vi_backup_cycles.offset == 8524
+assert VU0State.vi_backup_register.offset == 8528
+assert VU0State.vi_backup_old_value.offset == 8532
+assert ctypes.sizeof(VU0State) == 8544
 
 
 class Runtime(ctypes.Structure):
