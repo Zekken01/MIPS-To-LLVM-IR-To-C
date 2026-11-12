@@ -73,12 +73,14 @@ void write_le32(std::vector<uint8_t>& bytes, size_t offset, uint32_t value)
     bytes[offset + 3] = static_cast<uint8_t>(value >> 24);
 }
 
-std::vector<uint8_t> make_static_data_elf(bool relocate_readonly_word = false)
+std::vector<uint8_t> make_static_data_elf(
+    bool relocate_readonly_word = false,
+    bool overlap_readonly_word = false
+)
 {
-    // Minimal ET_EXEC with one executable segment, one read-only data segment,
-    // one writable data segment, and a valid section table. Each data segment
-    // stores the same target; the optional SHT_REL relocates the read-only word.
-    std::vector<uint8_t> bytes(0x270, 0);
+    // Minimal ET_EXEC with executable, read-only and writable PT_LOAD
+    // segments, a valid section table, and optional relocation/overlap probes.
+    std::vector<uint8_t> bytes(0x274, 0);
     bytes[0] = 0x7f;
     bytes[1] = 'E';
     bytes[2] = 'L';
@@ -95,7 +97,7 @@ std::vector<uint8_t> make_static_data_elf(bool relocate_readonly_word = false)
     write_le32(bytes, 32, 0x220); // section header table
     write_le16(bytes, 40, 52);
     write_le16(bytes, 42, 32);
-    write_le16(bytes, 44, 3);
+    write_le16(bytes, 44, overlap_readonly_word ? 4 : 3);
     write_le16(bytes, 46, 40);
     write_le16(bytes, 48, relocate_readonly_word ? 2 : 1);
     write_le16(bytes, 50, 0);
@@ -121,6 +123,13 @@ std::vector<uint8_t> make_static_data_elf(bool relocate_readonly_word = false)
     write_le32(bytes, 0x200, 0x00001020);
     write_le32(bytes, 0x210, 0x00001020);
 
+    if (overlap_readonly_word)
+    {
+        // A writable mapping aliases the read-only pointer word.
+        write_segment(148, 0x270, 0x2000, 4, 4, 6);
+        write_le32(bytes, 0x270, 0x00004000);
+    }
+
     if (relocate_readonly_word)
     {
         // Second section header is SHT_REL for the read-only pointer word.
@@ -129,7 +138,7 @@ std::vector<uint8_t> make_static_data_elf(bool relocate_readonly_word = false)
         write_le32(bytes, section + 16, 0x260); // relocation entries
         write_le32(bytes, section + 20, 8);     // one Elf32_Rel
         write_le32(bytes, section + 36, 8);     // Elf32_Rel size
-        write_le32(bytes, 0x260, 0x2000);       // relocated word address
+        write_le32(bytes, 0x260, 0x1fff);       // relocation overlaps word at 0x2000
         write_le32(bytes, 0x264, 0x00000102);   // relocation info
     }
     return bytes;
@@ -270,6 +279,28 @@ int main()
         const auto targets = recover(insns, 0x1000, &image);
         check(targets == std::set<uint32_t>{0x00001020u},
               "recover JALR target loaded from immutable ELF data");
+    }
+
+    // A writable PT_LOAD mapping that aliases a read-only pointer word
+    // prevents static folding because it can replace the bytes at load time.
+    {
+        const std::vector<uint8_t> elf_bytes = make_static_data_elf(false, true);
+        ee::elf_loader image;
+        std::string error;
+        const bool loaded = image.load_buffer(
+            elf_bytes.data(), elf_bytes.size(), &error
+        );
+        uint32_t word = 0;
+        check(loaded && !image.read32_const_at(0x2000, &word),
+              "reject read-only data overlapped by a writable PT_LOAD");
+
+        std::map<uint32_t, ee::s_ee_instruction> insns;
+        add(insns, 0x1140, encode_ori(0, 8, 0x2000));
+        add(insns, 0x1144, encode_lw(8, 25, 0));
+        add(insns, 0x1148, encode_jalr(25));
+        add(insns, 0x114c, 0);
+        check(recover(insns, 0x1140, &image).empty(),
+              "keep JALR target dynamic for overlapping ELF mappings");
     }
 
     // Writable globals are never treated as constants, even when their
