@@ -154,6 +154,11 @@ if(Python3_Interpreter_FOUND)
 endif()
 
 enable_testing()
+if(Python3_Interpreter_FOUND)
+    add_test(NAME vu0_trace_comparator
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/tools/test_compare_vu0_traces.py)
+endif()
 add_test(NAME decoder COMMAND ee_decoder_test)
 add_test(NAME dispatcher COMMAND ee_dispatcher_test)
 add_test(NAME vu0_runtime COMMAND ee_vu0_runtime_test)
