@@ -2593,6 +2593,9 @@ void module_builder::emit_function(const std::vector<ee::s_ee_instruction>& insn
             if (ins.rs != 0) touched.insert(ins.rs);
             touched.insert(ins.rt);
             break;
+        case e_ee_opcode::OP_COP2:
+            if (ins.rt != 0) touched.insert(ins.rt);
+            break;
         default:
             break;
         }
