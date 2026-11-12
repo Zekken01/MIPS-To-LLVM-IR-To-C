@@ -889,12 +889,12 @@ s_ee_instruction decode(uint32_t pc, uint32_t word)
         {
             static const char* const names[] = {
                 "qmfc2", "cfc2", "reserved", "reserved",
-                "reserved", "qmtc2", "ctc2"
+                "qmtc2", "ctc2"
             };
             const uint32_t selector = insn.rs;
             insn.valid = (insn.sa == 0 && insn.funct == 0)
                 ? e_ee_valid::UNSUPPORTED : e_ee_valid::INVALID;
-            set_mnemonic(insn, names[selector]);
+            set_mnemonic(insn, names[selector - 1]);
             break;
         }
         case 0x08: // BC2F/T/FL/TL; the full rt field selects the table entry
