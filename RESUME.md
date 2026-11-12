@@ -4,7 +4,7 @@
 
 This branch is a reconstructed baseline from the preserved 2026-11-11 09:57 MMI/HI1/LO1 follow-up, with subsequent decoder, lifting, control-flow, dispatcher, and validation work. Do not merge it into `main` until source provenance and the latest changes have been reviewed.
 
-Latest fully verified CI: [Actions run #43224000835](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43224000835), **15/15 CTest passed**, including the VU0 VI-backup issue-age and branch-stall regressions, per-site JALR audit, function-discovery/data-flow tests, COP1/COP2 JIT tests, native object emission/linking, dispatcher execution, and MMI/HI1/LO1 suites.
+Latest fully verified CI: [Actions run #43224000835](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43224000835), **15/15 CTest passed**, including the 256-pair VU0 scalar reference oracle, VI-backup issue-age and forced branch-stall regressions, per-site JALR audit, function-discovery/data-flow tests, COP1/COP2 JIT tests, native object emission/linking, dispatcher execution, and MMI/HI1/LO1 suites.
 
 Latest USA `SLUS_214.42` full-image revalidation:
 - **7,901 function entries discovered**; **418,898 unique instruction PCs** in the function-scoped CFG set.
@@ -59,7 +59,7 @@ The VU0 integer/branch slice, 256-pair scalar reference-model check, VI-backup i
 
 ## Remaining priorities
 
-1. **VU0 semantic differential testing:** compare the implemented lower integer/branch slice against PCSX2 over instruction and edge-case fixtures, especially branch-in-delay behaviour, VI-backup timing, cycle-budget boundaries, nested branches, and E/M interaction. The current tests exercise the implementation directly but are not a full interpreter differential run.
+1. **VU0 semantic differential testing:** extend the 256-pair scalar oracle to branches and control flow, then compare branch-in-delay behaviour, VI-backup timing, cycle-budget boundaries, nested branches, and E/M interaction against PCSX2. The current scalar oracle is PCSX2-derived but does not execute the PCSX2 interpreter.
 2. **Memory-aware indirect-call recovery:** the USA JALR audit found 3,475 unresolved caller/site records, dominated by function pointers loaded from runtime objects/vtables and global slots. Do not add guessed constant rules. First model a bounded set of read-only/static loads with proof that no runtime write or relocation can affect them; leave object/vtable calls dynamic until their runtime class/object state is known.
 3. **VU0 memory and vector issue:** add LQ/SQ/ILW/ISW and a carefully tested dual-issue model before enabling vector arithmetic or macro instructions.
 4. **Runtime completeness:** EE memory/TLB/MMIO, scratchpad/ROM aliases, alignment exceptions, DMA, interrupts, plus BIOS/IOP/GS host services.
