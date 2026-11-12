@@ -1,10 +1,13 @@
 #include "Common.h"
 #include "VUmicro.h"
+#include "vu0_trace_fixture.h"
 
 #include <gtest/gtest.h>
 
 #include <array>
 #include <cstdint>
+#include <cstdlib>
+#include <fstream>
 
 namespace
 {
@@ -12,6 +15,9 @@ namespace
 constexpr u32 VU0_LOWER_IBEQ = 0x28u;
 constexpr u32 VU0_LOWER_IADDIU = 0x08u;
 constexpr u32 VU0_UPPER_NOP = 0x3fu | (11u << 6);
+constexpr u32 VU0_M_PROGRAM_FLAG = 0x20000000u;
+constexpr u32 VU0_E_PROGRAM_FLAG = 0x40000000u;
+constexpr u32 VU0_MICRO_PC_MASK = 0x0fffu;
 
 void store_le32(u8* destination, u32 value)
 {
@@ -19,6 +25,14 @@ void store_le32(u8* destination, u32 value)
     destination[1] = static_cast<u8>(value >> 8);
     destination[2] = static_cast<u8>(value >> 16);
     destination[3] = static_cast<u8>(value >> 24);
+}
+
+u32 load_le32(const u8* source)
+{
+    return static_cast<u32>(source[0]) |
+           (static_cast<u32>(source[1]) << 8) |
+           (static_cast<u32>(source[2]) << 16) |
+           (static_cast<u32>(source[3]) << 24);
 }
 
 u32 make_branch(u32 primary, u32 it, u32 is, u32 immediate)
@@ -31,6 +45,71 @@ u32 make_iaddiu(u32 it, u32 is, u32 immediate)
 {
     return (VU0_LOWER_IADDIU << 25) | (it << 16) | (is << 11) |
            ((immediate & 0x7800u) << 10) | (immediate & 0x07ffu);
+}
+
+void write_vi(std::ostream& output)
+{
+    output << "\"vi\":[";
+    for (u32 index = 0; index < 32; ++index)
+    {
+        if (index != 0)
+            output << ',';
+        output << VU0.VI[index].UL;
+    }
+    output << ']';
+}
+
+void write_state(std::ostream& output)
+{
+    const u32 micro_pc = VU0.VI[REG_TPC].UL & VU0_MICRO_PC_MASK;
+    write_vi(output);
+    output << ",\"cycle\":" << VU0.cycle
+           << ",\"micro_pc\":" << micro_pc
+           << ",\"tpc\":" << ((micro_pc >> 3) & 0x1ffu)
+           << ",\"branch\":" << VU0.branch
+           << ",\"branch_pc\":" << VU0.branchpc
+           << ",\"delay_branch_pc\":" << VU0.delaybranchpc
+           << ",\"take_delay_branch\":"
+           << (VU0.takedelaybranch ? "true" : "false")
+           << ",\"vi_backup_cycles\":" << static_cast<u32>(VU0.VIBackupCycles)
+           << ",\"vi_backup_register\":" << VU0.VIRegNumber
+           << ",\"vi_backup_old_value\":" << VU0.VIOldValue
+           << ",\"e_bit\":" << VU0.ebit
+           << ",\"m_bit\":"
+           << ((VU0.flags & VUFLAG_MFLAGSET) != 0 ? "true" : "false")
+           << ",\"vpu_status\":" << VU0.VI[REG_VPU_STAT].UL
+           << ",\"running\":"
+           << ((VU0.VI[REG_VPU_STAT].UL & 1u) != 0 ? "true" : "false");
+}
+
+void write_header(std::ostream& output)
+{
+    output << "{\"schema\":\"mips-to-llvm-vu0-trace-v1\""
+           << ",\"kind\":\"header\""
+           << ",\"engine\":\"pcsx2-interpreter\""
+           << ",\"revision\":\"82cac38b2af19d593dedfd9ddaa63448e7ec493c\""
+           << ",\"program_sha256\":\""
+           << vu0_trace_fixture::k_program_sha256
+           << "\",\"initial_state\":{";
+    write_state(output);
+    output << "}}\n";
+}
+
+void write_step(
+    std::ostream& output,
+    u32 step,
+    u32 pair_pc,
+    u32 lower,
+    u32 upper
+)
+{
+    output << "{\"kind\":\"step\",\"step\":" << step
+           << ",\"pc\":" << pair_pc
+           << ",\"lower\":" << lower
+           << ",\"upper\":" << upper
+           << ",\"state\":{";
+    write_state(output);
+    output << "}}\n";
 }
 
 class VU0IssueOrder : public ::testing::Test
@@ -74,6 +153,7 @@ protected:
 
     void execute_one_pair()
     {
+        VU0.flags &= ~VUFLAG_MFLAGSET;
         vu0Exec(&VU0);
     }
 };
@@ -146,4 +226,54 @@ TEST_F(VU0IssueOrder, IALUWriteStartsFreshTwoCycleBackup)
     EXPECT_EQ(VU0.VIBackupCycles, 2u);
     EXPECT_EQ(VU0.VIRegNumber, 1u);
     EXPECT_EQ(VU0.VIOldValue, 7u);
+}
+
+TEST_F(VU0IssueOrder, EmitDeterministicPerPairTrace)
+{
+    const char* trace_path = std::getenv("VU0_TRACE_OUTPUT");
+    if (trace_path == nullptr || trace_path[0] == '\0')
+    {
+        GTEST_SKIP() << "Set VU0_TRACE_OUTPUT to write a PCSX2 trace file.";
+    }
+
+    std::ofstream output(trace_path, std::ios::out | std::ios::trunc);
+    ASSERT_TRUE(output.good()) << "Cannot open VU0_TRACE_OUTPUT=" << trace_path;
+
+    vu0_trace_fixture::install_program(m_micro.data(), static_cast<u32>(m_micro.size()));
+    VU0.VI[REG_TPC].UL = 0;
+    VU0.VI[REG_VPU_STAT].UL = 1;
+    VU0.cycle = 0;
+    VU0.branch = 0;
+    VU0.branchpc = 0;
+    VU0.delaybranchpc = 0;
+    VU0.takedelaybranch = false;
+    VU0.ebit = 0;
+    VU0.VIBackupCycles = 0;
+    VU0.VIRegNumber = 0;
+    VU0.VIOldValue = 0;
+    VU0.flags &= ~VUFLAG_MFLAGSET;
+
+    write_header(output);
+
+    u32 step = 0;
+    while ((VU0.VI[REG_VPU_STAT].UL & 1u) != 0 &&
+           step < vu0_trace_fixture::k_step_limit)
+    {
+        const u32 pair_pc = VU0.VI[REG_TPC].UL & VU0_MICRO_PC_MASK;
+        const u32 lower = load_le32(&m_micro[pair_pc]);
+        const u32 upper = load_le32(&m_micro[pair_pc + 4u]);
+
+        // A call to vu0Exec is one interpreter pair. Clear the M marker at
+        // each boundary just as InterpVU0::Execute does before a new slice.
+        VU0.flags &= ~VUFLAG_MFLAGSET;
+        vu0Exec(&VU0);
+
+        write_step(output, step, pair_pc, lower, upper);
+        ++step;
+    }
+
+    output.flush();
+    ASSERT_TRUE(output.good()) << "Failed writing PCSX2 trace " << trace_path;
+    EXPECT_EQ(step, vu0_trace_fixture::k_expected_step_count);
+    EXPECT_EQ(VU0.VI[REG_VPU_STAT].UL & 1u, 0u);
 }
