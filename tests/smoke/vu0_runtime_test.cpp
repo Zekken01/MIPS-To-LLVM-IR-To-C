@@ -315,7 +315,9 @@ static_assert(offsetof(ee::s_ee_vu0_state, m_vi_backup_cycles) == 8524);
 static_assert(offsetof(ee::s_ee_vu0_state, m_vi_backup_register) == 8528);
 static_assert(offsetof(ee::s_ee_vu0_state, m_vi_backup_old_value) == 8532);
 static_assert(offsetof(ee::s_ee_vu0_state, m_vf_memory_ready_cycle) == 8536);
-static_assert(sizeof(ee::s_ee_vu0_state) == 8544);
+static_assert(offsetof(ee::s_ee_vu0_state, m_vf_memory_issues) == 8544);
+static_assert(offsetof(ee::s_ee_vu0_state, m_vf_memory_issue_index) == 8608);
+static_assert(sizeof(ee::s_ee_vu0_state) == 8624);
 
 int main()
 {
@@ -2434,6 +2436,40 @@ int main()
               state.m_cycle == 5 && state.m_micro_pc == 24 &&
               state.m_vf_memory_ready_cycle == 0,
               "E termination drains outstanding LQ FMAC issue latency");
+    }
+
+    // PCSX2 stalls a store reading a lane still reserved by an earlier LQ,
+    // but a disjoint SQ lane must not stall on that same destination.
+    for (uint32_t store_mask : { 0x8u, 0x4u })
+    {
+        ee::s_ee_vu0_state state{};
+        ee::s_ee_cpu_state vector_cpu{};
+        ee::s_ee_vu0_ialu_engine ialu_engine{};
+        state.m_vpu_status = 1u;
+        state.m_data_memory[16] = 0x78u;
+        state.m_data_memory[17] = 0x56u;
+        state.m_data_memory[18] = 0x34u;
+        state.m_data_memory[19] = 0x12u;
+        vector_cpu.m_vu0[2].m_lo = 0xabcdef0011223344ull;
+        install_vu0_pair(&state, 0, make_vu0_memory(0x00, 0x8u, 2, 0, 1),
+                         make_vu0_upper_nop()); // LQ VF2.x
+        install_vu0_pair(&state, 1, make_vu0_memory(0x01, store_mask, 0, 2, 2),
+                         make_vu0_upper_nop()); // SQ VF2.x or VF2.y
+        const uint32_t result = ee::ee_vu0_execute_ialu_callback(
+            &ialu_engine, &vector_cpu, &state, 2,
+            ee::EE_VU0_EXECUTE_EXACT_CYCLES, 0x0010200cu
+        );
+        const bool overlap = store_mask == 0x8u;
+        const uint32_t offset = overlap ? 32u : 36u;
+        check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              state.m_cycle == (overlap ? 5u : 2u) &&
+              state.m_micro_pc == 16u,
+              overlap ? "SQ overlapping LQ VF lane waits for four-cycle FMAC" :
+                        "SQ disjoint VF lane bypasses LQ reservation");
+        check(state.m_data_memory[offset] == (overlap ? 0x78u : 0x00u) &&
+              state.m_data_memory[offset + 1u] == (overlap ? 0x56u : 0xefu),
+              overlap ? "dependent SQ writes loaded VF lane after interlock" :
+                        "disjoint SQ writes preserved VF lane without stall");
     }
 
     // The generic four-entry IALU interlock queue is used by lower
