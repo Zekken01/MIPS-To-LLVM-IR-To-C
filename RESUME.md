@@ -4,7 +4,7 @@
 
 This branch is a reconstructed baseline from the preserved 2026-11-11 09:57 MMI/HI1/LO1 follow-up, with subsequent decoder, lifting, control-flow, dispatcher, and validation work. Do not merge it into `main` until source provenance and the latest changes have been reviewed.
 
-Latest fully verified CI: [run #234](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43125195580), **12/12 CTest passed**, including native object emission/linking, dispatcher execution, instruction-level LLVM JIT tests, and the COP1 transfer/control-flow regressions.
+Latest fully verified CI: [Actions run #43180405182](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43180405182), **14/14 CTest passed**, including native object emission/linking, dispatcher execution, COP1 JIT tests, VU0 runtime scheduler tests, COP2 transfer/BC2 JIT tests, and the MMI/HI1/LO1 regression suites.
 
 Latest USA `SLUS_214.42` validation:
 - **7,849 functions discovered and emitted**.
@@ -28,16 +28,26 @@ COP1 JIT coverage now includes the supported R5900 instruction-table forms:
 - FCSR cause/sticky semantics, denormal handling, signed infinities/NaNs, saturation and accumulator-path distinctions.
 - BC1 condition sampling before an ordinary delay slot and BC1FL delay-slot annulment.
 
-## Latest COP2 research
+## Latest COP2/VU0 status
 
-See [`COP2_RESEARCH.md`](COP2_RESEARCH.md). VU0/COP2 remains deliberately unsupported in the lifter. PCSX2's QMFC2/QMTC2/CFC2/CTC2 paths require VU0 synchronization, and CFC2/CTC2 also need VI/control-register state and side effects. The CPU state carries the VF bank in `m_vu0[32]`; the runtime now has a `s_ee_vu0_state` sidecar for VI/ACC/Q/P, visible control/flag state, micro-PC, cycle counters and E/M state. A host VU0 scheduler and deeper pipeline bookkeeping are still required. Implementing these as plain copies would be incorrect.
+See [`COP2_RESEARCH.md`](COP2_RESEARCH.md) for the PCSX2 reference and semantic caveats.
+
+- QMFC2/QMTC2/CFC2/CTC2 and BC2F/T/FL/TL are now decoder-VALID for their documented encodings and lowered through the generated LLVM runtime-helper calls.
+- The aligned `s_ee_vu0_state` sidecar carries VI[32], ACC, Q/P, visible control/flag values, micro-PC, cycle counters and E/M/running state. The established `s_ee_cpu_state::m_vu0[32]` remains the VF bank, so the previous CPU/LLVM ABI offsets are preserved.
+- Runtime transfer helpers apply synchronization before reads/writes; cover VF0, GPR0, CFC2 R and CTC2 special-register cases; and fail closed when the required scheduler/control callback is missing or fails.
+- BC2 reads VPU_STAT bit 8 and has ordinary/likely branch JIT coverage, including delay-slot execution and annulment.
+- `ee_vu0_scheduler_sync_callback` now provides bounded catch-up, finish-to-E, and wait-to-E-or-M orchestration, including VU1 catch-up and EE event callbacks. It does **not** execute VU micro-instructions. A real host VU0 engine remains to be supplied.
+- VU0 SPECIAL1/SPECIAL2 macro instructions remain UNSUPPORTED. Do not enable them until the engine models dual-issue scheduling and FMAC/FDIV/EFU pipelines, flags, ACC/Q/P forwarding and branch timing.
+
+The scheduler/runtime test suite plus all existing tests passed **14/14** in [Actions run #43180405182](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43180405182).
 
 ## Remaining priorities
 
-1. **VU0/COP2 runtime integration:** connect the runtime transfer helpers to generated LLVM IR, implement the remaining BC2 condition state, then differential-test delay-slot synchronization and control-register side effects against PCSX2. COP2 opcodes remain unsupported until that integration is complete.
-2. **Runtime completeness:** EE memory/TLB/MMIO, scratchpad/ROM aliases, alignment exceptions, DMA, interrupts, plus BIOS/IOP/GS host services.
-3. **Semantic validation:** differential instruction and function testing against PCSX2's interpreter. LLVM verification and native linking do not establish R5900 equivalence.
-4. **Production backend:** replace the current external llvmlite object-emission path with an integrated LLVM backend or supported `llc`/LLVM library path; keep the current script as a validation/reference path until then.
+1. **Host VU0 micro-engine:** implement the callback that executes bounded VU0 instruction slices and updates architectural registers, cycle counters, E/M status, micro-PC and pipeline state. Then differential-test transfer interlocks and real microprograms against PCSX2.
+2. **VU0 macro instructions:** after the engine exists, add macro families incrementally with dual-issue/pipeline/flag tests. Keep undocumented or unmodelled forms unsupported.
+3. **Runtime completeness:** EE memory/TLB/MMIO, scratchpad/ROM aliases, alignment exceptions, DMA, interrupts, plus BIOS/IOP/GS host services.
+4. **Semantic validation:** differential instruction and function testing against PCSX2's interpreter. LLVM verification and native linking do not establish R5900 equivalence.
+5. **Production backend:** replace the current external llvmlite object-emission path with an integrated LLVM backend or supported `llc`/LLVM library path; keep the current script as a validation/reference path until then.
 
 The exact later temporary worktree associated with the historical 2/4 CTest report was never exported. This branch remains a reconstructed source baseline, not recovery of that inaccessible working directory.
 
