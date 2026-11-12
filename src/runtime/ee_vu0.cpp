@@ -773,11 +773,36 @@ void vu0_write_ialu_vi(s_ee_vu0_state* vu0, uint32_t index, uint16_t value)
     vu0->m_vi[index] = (vu0->m_vi[index] & 0xffff0000u) | value;
 }
 
+bool vu0_is_supported_lower_ialu(const s_ee_vu0_micro_instruction& instruction)
+{
+    using op = e_ee_vu0_micro_opcode;
+    switch (instruction.m_lower_fields.m_operation)
+    {
+    case op::IADD:
+    case op::ISUB:
+    case op::IAND:
+    case op::IOR:
+    case op::IADDI:
+    case op::IADDIU:
+    case op::ISUBIU:
+        return true;
+    default:
+        return false;
+    }
+}
+
 bool vu0_execute_lower_ialu(
     s_ee_vu0_state* vu0,
-    const s_ee_vu0_micro_instruction& instruction
+    const s_ee_vu0_micro_instruction& instruction,
+    uint32_t* write_mask
 )
 {
+    if (!vu0 || !write_mask)
+    {
+        return false;
+    }
+
+    *write_mask = 0;
     using op = e_ee_vu0_micro_opcode;
     const s_ee_vu0_micro_op_fields& fields = instruction.m_lower_fields;
     const uint16_t source_s = vu0_read_ialu_vi(vu0, fields.m_is);
@@ -854,6 +879,10 @@ bool vu0_execute_lower_ialu(
     }
 
     vu0_write_ialu_vi(vu0, destination, result);
+    if (destination != 0)
+    {
+        *write_mask = 1u << destination;
+    }
     return true;
 }
 } // namespace
@@ -912,15 +941,40 @@ uint32_t ee_vu0_execute_ialu_callback(
         if ((instruction.m_flags &
              (EE_VU0_MICRO_FLAG_I | EE_VU0_MICRO_FLAG_D | EE_VU0_MICRO_FLAG_T)) != 0 ||
             instruction.m_upper_fields.m_operation != e_ee_vu0_micro_opcode::NOP ||
-            !vu0_execute_lower_ialu(vu0, instruction))
+            !vu0_is_supported_lower_ialu(instruction))
         {
             vu0->m_micro_pc = pair_pc;
             return static_cast<uint32_t>(e_ee_vu0_sync_result::UNAVAILABLE);
         }
 
-        // IALU results update the architectural low halfword; VI0 ignores
-        // writes. One issued pair consumes one VU cycle.
+        // VU cycle increments before the issue point. Retire previously
+        // completed IALU reservations, execute the operation, then reserve
+        // its destination for one cycle. This mirrors the interpreter's
+        // immediate VI write plus delayed read-interlock behaviour.
         ++vu0->m_cycle;
+        uint32_t retired_count = 0;
+        const uint32_t retire_result =
+            ee_vu0_ialu_retire_matured(vu0, &retired_count);
+        if (retire_result != static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE))
+        {
+            vu0->m_micro_pc = pair_pc;
+            return retire_result;
+        }
+
+        uint32_t write_mask = 0;
+        if (!vu0_execute_lower_ialu(vu0, instruction, &write_mask))
+        {
+            vu0->m_micro_pc = pair_pc;
+            return static_cast<uint32_t>(e_ee_vu0_sync_result::UNAVAILABLE);
+        }
+
+        const uint32_t schedule_result =
+            ee_vu0_ialu_schedule_write(vu0, write_mask, write_mask != 0 ? 1u : 0u);
+        if (schedule_result != static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE))
+        {
+            return schedule_result;
+        }
+
         ++executed;
         vu0->m_tpc = (vu0->m_micro_pc >> 3) & 0x1ffu;
 
@@ -940,6 +994,11 @@ uint32_t ee_vu0_execute_ialu_callback(
             if (vu0->m_e_bit == 0)
             {
                 vu0->m_vpu_status &= ~1u;
+                const uint32_t flush_result = ee_vu0_ialu_flush_all(vu0);
+                if (flush_result != static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE))
+                {
+                    return flush_result;
+                }
             }
         }
 
