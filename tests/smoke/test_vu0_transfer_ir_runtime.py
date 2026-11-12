@@ -117,6 +117,7 @@ def register_runtime_symbols(library_path):
         "ee_vu0_qmtc2",
         "ee_vu0_cfc2",
         "ee_vu0_ctc2",
+        "ee_vu0_get_branch_condition",
     ):
         symbol = getattr(library, name)
         address = ctypes.cast(symbol, ctypes.c_void_p).value
@@ -175,7 +176,8 @@ def make_runtime(vu0, sync_result=VU0_SYNC_COMPLETE,
 
 def run_guest(fixture, temp_dir, target, mode, setup=None,
               sync_result=VU0_SYNC_COMPLETE,
-              control_result=VU0_SYNC_COMPLETE):
+              control_result=VU0_SYNC_COMPLETE,
+              vu0_state_available=True):
     guest_fn, engine, module, target_machine = compile_jit(
         fixture, temp_dir, mode, target
     )
@@ -184,6 +186,8 @@ def run_guest(fixture, temp_dir, target, mode, setup=None,
     runtime, sync_ref, control_ref, sync_state, control_state = make_runtime(
         vu0, sync_result=sync_result, control_result=control_result
     )
+    if not vu0_state_available:
+        runtime.vu0_state = None
 
     if setup:
         setup(cpu, vu0)
@@ -404,6 +408,49 @@ def main():
         require(cpu.gpr[10].lo == 0xffffffff80000000,
                 "later ALU instruction must reload the GPR written by CFC2")
 
+        # BC2 samples VPU_STAT bit 8 before the architectural delay slot.
+        # Both ordinary and likely forms must route to the same successors as
+        # the PCSX2 interpreter, with likely-not-taken slots annulled.
+        def run_bc2(mode, condition, taken, likely, label):
+            def init_branch(cpu, vu0):
+                cpu.gpr[8].lo = 0x7777
+                cpu.gpr[9].lo = 0x8888
+                cpu.gpr[10].lo = 0x9999
+                vu0.vpu_status = (1 << 8) if condition else 0
+
+            result, cpu, vu0, sync, control, keep = run_guest(
+                fixture, temp_dir, target, mode, init_branch
+            )
+            expected_exit = EE_EXIT_RETURN if taken else EE_EXIT_DISPATCH
+            require(result == expected_exit and cpu.exit_reason == expected_exit,
+                    f"{label}: wrong branch exit for condition={condition}")
+            delay_executed = not likely or taken
+            require(cpu.gpr[8].lo == (0xaaaa if delay_executed else 0x7777),
+                    f"{label}: wrong delay-slot execution for condition={condition}")
+            require(cpu.gpr[9].lo == (0x8888 if taken else 0x1111),
+                    f"{label}: wrong fallthrough state for condition={condition}")
+            require(cpu.gpr[10].lo == (0x2222 if taken else 0x9999),
+                    f"{label}: wrong taken-target state for condition={condition}")
+
+        run_bc2("bc2_f_delay", False, True, False, "BC2F taken")
+        run_bc2("bc2_f_delay", True, False, False, "BC2F not taken")
+        run_bc2("bc2_t_delay", True, True, False, "BC2T taken")
+        run_bc2("bc2_t_delay", False, False, False, "BC2T not taken")
+        run_bc2("bc2_fl_annul", False, True, True, "BC2FL taken")
+        run_bc2("bc2_fl_annul", True, False, True, "BC2FL annulled")
+        run_bc2("bc2_tl_delay", True, True, True, "BC2TL taken")
+        run_bc2("bc2_tl_delay", False, False, True, "BC2TL annulled")
+
+        # Without a VU0 state object there is no valid predicate. The
+        # generated branch must fail closed at the BC2 instruction.
+        result, cpu, vu0, sync, control, keep = run_guest(
+            fixture, temp_dir, target, "bc2_t_delay",
+            vu0_state_available=False
+        )
+        require(result == EE_EXIT_UNSUPPORTED and
+                cpu.exit_reason == EE_EXIT_UNSUPPORTED and cpu.pc == ENTRY_PC,
+                "BC2 must not guess a branch direction without VU0 state")
+
         # Runtime callback failure stops at the transfer PC and leaves the
         # helper's destination untouched.
         def init_failure(cpu, vu0):
@@ -426,8 +473,8 @@ def main():
     _ = runtime_library
     print(
         "vu0_transfer_ir_runtime: PASS (QMFC2/QMTC2/CFC2/CTC2 helper calls, "
-        "VF0/R special cases, CTC2 control callbacks, GPR cache barriers, "
-        "delay-slot synchronization, failure exits)"
+        "VF0/R special cases, CTC2 control callbacks, BC2 ordinary/likely "
+        "branches, GPR cache barriers, delay-slot synchronization, failure exits)"
     )
 
 
