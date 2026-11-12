@@ -60,6 +60,14 @@ struct alignas(16) s_ee_vu0_state
     uint32_t m_ialu_read_pos;
     uint32_t m_ialu_write_pos;
     uint32_t m_ialu_count;
+
+    // Interpreter-compatible lower-branch pipeline state. A branch issued
+    // with m_branch=2 has one delay pair remaining; a branch in that delay
+    // pair is held in m_delay_branch_pc until the first target is entered.
+    uint32_t m_branch;
+    uint32_t m_branch_pc;
+    uint32_t m_delay_branch_pc;
+    uint32_t m_take_delay_branch;
 };
 
 // Architectural EE CPU state. GPRs are 128 bits wide in the lifter (i128);
