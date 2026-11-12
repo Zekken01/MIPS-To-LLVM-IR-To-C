@@ -138,6 +138,7 @@ bool elf_loader::parse_header(const uint8_t* data, size_t size)
 
     m_entry = hdr->e_entry;
     m_machine = hdr->e_machine;
+    m_type = hdr->e_type;
     return true;
 }
 
@@ -247,6 +248,37 @@ bool elf_loader::read32_at(uint32_t addr, uint32_t* out) const
     *out = (uint32_t)buf[0] | ((uint32_t)buf[1] << 8) |
            ((uint32_t)buf[2] << 16) | ((uint32_t)buf[3] << 24);
     return true;
+}
+
+bool elf_loader::read32_const_at(uint32_t addr, uint32_t* out) const
+{
+    if (!out || m_type != ET_EXEC)
+    {
+        return false;
+    }
+
+    for (const auto& seg : m_segments)
+    {
+        if (!seg.readable || seg.writable || addr < seg.vaddr)
+        {
+            continue;
+        }
+
+        const uint64_t offset = static_cast<uint64_t>(addr) - seg.vaddr;
+        if (offset > seg.filesz || seg.filesz - offset < 4u)
+        {
+            continue;
+        }
+
+        const uint8_t* const bytes = seg.data.data() + offset;
+        *out = static_cast<uint32_t>(bytes[0]) |
+               (static_cast<uint32_t>(bytes[1]) << 8) |
+               (static_cast<uint32_t>(bytes[2]) << 16) |
+               (static_cast<uint32_t>(bytes[3]) << 24);
+        return true;
+    }
+
+    return false;
 }
 
 bool elf_loader::is_executable_address(uint32_t addr) const
