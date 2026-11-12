@@ -13,6 +13,9 @@
 #include <vector>
 
 #if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #else
 #include <dlfcn.h>
@@ -103,7 +106,7 @@ bool parse_u32(const char* value, uint32_t* out)
     char* end = nullptr;
     const unsigned long long parsed = std::strtoull(value, &end, 0);
     if (errno != 0 || end == value || *end != '\0' ||
-        parsed > std::numeric_limits<uint32_t>::max())
+        parsed > (std::numeric_limits<uint32_t>::max)())
     {
         return false;
     }
