@@ -1236,10 +1236,41 @@ int main()
               state.m_cycle == 2 && state.m_micro_pc == 16 &&
               state.m_branch == 0 && static_cast<uint16_t>(state.m_vi[1]) == 0,
               "VU0 conditional branch sees the backed-up VI value in its hazard window");
-        check(state.m_vi_backup_cycles == 1 &&
+        check(state.m_vi_backup_cycles == 0 &&
               state.m_vi_backup_register == 1 &&
               static_cast<uint16_t>(state.m_vi_backup_old_value) == 1,
-              "VU0 VI backup retains the pre-write halfword for two-cycle timing");
+              "VU0 VI backup expires after the branch has sampled its final visible cycle");
+    }
+    {
+        // PCSX2 evaluates the lower branch before _vuTestLowerStalls(), then
+        // ages VIBackupCycles by the full elapsed issue/stall cycles. The
+        // branch must therefore use the backed-up value even when its source
+        // reservation forces the branch pair to stall past backup expiry.
+        ee::s_ee_vu0_state state{};
+        ee::s_ee_vu0_ialu_engine ialu_engine{};
+        state.m_vpu_status = 1u;
+        state.m_cycle = 10;
+        state.m_vi[1] = 0;
+        state.m_vi_backup_cycles = 1;
+        state.m_vi_backup_register = 1;
+        state.m_vi_backup_old_value = 1;
+        install_vu0_pair(&state, 0, make_vu0_branch(0x28, 1, 0, 2),
+                         make_vu0_upper_nop());
+
+        const uint32_t scheduled = ee::ee_vu0_ialu_schedule_write(
+            &state, 1u << 1, 3
+        );
+        const uint32_t result = ee::ee_vu0_execute_ialu_callback(
+            &ialu_engine, &cpu, &state, 3,
+            ee::EE_VU0_EXECUTE_EXACT_CYCLES, 0x0010200au
+        );
+        check(scheduled == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              state.m_cycle == 13 && state.m_micro_pc == 8 &&
+              state.m_branch == 0 && state.m_ialu_count == 0,
+              "VU0 branch read interlock consumes the outstanding IALU reservation");
+        check(state.m_vi_backup_cycles == 0,
+              "VU0 VI backup expires after the stalled branch issue");
     }
     {
         ee::s_ee_vu0_state state{};
