@@ -53,7 +53,7 @@ jobs:
             libxcb-sync-dev libxcb-util-dev libxcb-xfixes0-dev \
             libxcb-xinput-dev libxcb-xkb-dev libxext-dev libxi-dev \
             libxkbcommon-x11-dev libxrandr-dev lld-17 llvm-17 nasm \
-            ninja-build pkg-config zlib1g-dev
+            ccache ninja-build pkg-config zlib1g-dev
 
       - name: Cache PCSX2 third-party dependencies
         id: pcsx2-deps
@@ -75,6 +75,20 @@ jobs:
         with:
           path: ~/deps
           key: ubuntu-22.04-pcsx2-${{ env.PCSX2_REVISION }}-${{ hashFiles('pcsx2/.github/workflows/scripts/linux/build-dependencies-qt.sh', 'pcsx2/.github/workflows/scripts/common/*.patch') }}
+
+      - name: Restore PCSX2 compiler cache
+        id: pcsx2-ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: .ccache
+          key: ubuntu-22.04-pcsx2-ccache-${{ env.PCSX2_REVISION }}-clang17-${{ hashFiles('.github/workflows/vu0-differential.yml', 'tools/vu0_diff/integrate_pcsx2_test.py', 'tools/vu0_diff/pcsx2_issue_order_test.cpp', 'tools/vu0_diff/vu0_trace_fixture.h') }}
+          restore-keys: |
+            ubuntu-22.04-pcsx2-ccache-${{ env.PCSX2_REVISION }}-clang17-
+
+      - name: Configure PCSX2 compiler cache
+        run: |
+          ccache --set-config=max_size=2G
+          ccache --zero-stats
 
       - name: Verify PCSX2 revision and install trace adapter
         run: |
@@ -106,6 +120,8 @@ jobs:
             -DCMAKE_MODULE_LINKER_FLAGS_INIT="-fuse-ld=lld" \
             -DCMAKE_SHARED_LINKER_FLAGS_INIT="-fuse-ld=lld" \
             -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DENABLE_TESTS=ON \
             -DENABLE_QT_UI=OFF \
             -DDISABLE_ADVANCE_SIMD=ON \
@@ -121,6 +137,17 @@ jobs:
         run: |
           cmake --build "pcsx2/$PCSX2_BUILD" \
             --target core_test --parallel 2
+
+      - name: Save PCSX2 compiler cache
+        if: always() && steps.pcsx2-ccache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: ubuntu-22.04-pcsx2-ccache-${{ env.PCSX2_REVISION }}-clang17-${{ hashFiles('.github/workflows/vu0-differential.yml', 'tools/vu0_diff/integrate_pcsx2_test.py', 'tools/vu0_diff/pcsx2_issue_order_test.cpp', 'tools/vu0_diff/vu0_trace_fixture.h') }}
+
+      - name: Show PCSX2 compiler cache statistics
+        if: always()
+        run: ccache --show-stats
 
       - name: Produce candidate trace
         run: |
