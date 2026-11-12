@@ -1102,8 +1102,10 @@ uint32_t ee_vu0_execute_ialu_callback(
     // PCSX2 clears the per-run M-bit marker whenever it enters the VU engine.
     vu0->m_m_bit = 0;
 
+    const uint64_t slice_start_cycle = vu0->m_cycle;
     uint64_t executed = 0;
-    while (executed < max_cycles && executed < instruction_limit &&
+    while ((vu0->m_cycle - slice_start_cycle) < max_cycles &&
+           executed < instruction_limit &&
            (vu0->m_vpu_status & 1u) != 0)
     {
         if (vu0->m_cycle == UINT64_MAX)
@@ -1120,23 +1122,37 @@ uint32_t ee_vu0_execute_ialu_callback(
             return fetch_result;
         }
 
-        // This first executable slice deliberately accepts only lower IALU
-        // operations paired with upper NOP. I/D/T flags require other paths
-        // (immediate-mode vector execution and interrupt delivery).
+        const bool lower_ialu = vu0_is_supported_lower_ialu(instruction);
+        const bool lower_branch = vu0_is_supported_lower_branch(instruction);
+
+        // This execution slice accepts lower IALU or branch operations paired
+        // with upper NOP. I/D/T flags and all other lower/upper families remain
+        // explicitly unsupported.
         if ((instruction.m_flags &
              (EE_VU0_MICRO_FLAG_I | EE_VU0_MICRO_FLAG_D | EE_VU0_MICRO_FLAG_T)) != 0 ||
             instruction.m_upper_fields.m_operation != e_ee_vu0_micro_opcode::NOP ||
-            !vu0_is_supported_lower_ialu(instruction))
+            (!lower_ialu && !lower_branch))
         {
             vu0->m_micro_pc = pair_pc;
             return static_cast<uint32_t>(e_ee_vu0_sync_result::UNAVAILABLE);
         }
 
-        // VU cycle increments before the issue point. Retire previously
-        // completed IALU reservations, execute the operation, then reserve
-        // its destination for one cycle. This mirrors the interpreter's
-        // immediate VI write plus delayed read-interlock behaviour.
+        // VU cycle increments before lower issue. Branch instructions interlock
+        // against pending IALU writes to their source VI registers; the branch
+        // may therefore consume more than one cycle before it executes.
         ++vu0->m_cycle;
+        if (lower_branch)
+        {
+            const uint32_t wait_result = ee_vu0_ialu_wait_for_reads(
+                vu0, vu0_lower_branch_read_mask(instruction)
+            );
+            if (wait_result != static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE))
+            {
+                vu0->m_micro_pc = pair_pc;
+                return wait_result;
+            }
+        }
+
         uint32_t retired_count = 0;
         const uint32_t retire_result =
             ee_vu0_ialu_retire_matured(vu0, &retired_count);
@@ -1146,21 +1162,33 @@ uint32_t ee_vu0_execute_ialu_callback(
             return retire_result;
         }
 
-        uint32_t write_mask = 0;
-        if (!vu0_execute_lower_ialu(vu0, instruction, &write_mask))
+        if (lower_ialu)
+        {
+            uint32_t write_mask = 0;
+            if (!vu0_execute_lower_ialu(vu0, instruction, &write_mask))
+            {
+                vu0->m_micro_pc = pair_pc;
+                return static_cast<uint32_t>(e_ee_vu0_sync_result::UNAVAILABLE);
+            }
+
+            const uint32_t schedule_result =
+                ee_vu0_ialu_schedule_write(vu0, write_mask, write_mask != 0 ? 1u : 0u);
+            if (schedule_result != static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE))
+            {
+                return schedule_result;
+            }
+        }
+        else if (!vu0_execute_lower_branch(vu0, instruction))
         {
             vu0->m_micro_pc = pair_pc;
             return static_cast<uint32_t>(e_ee_vu0_sync_result::UNAVAILABLE);
         }
 
-        const uint32_t schedule_result =
-            ee_vu0_ialu_schedule_write(vu0, write_mask, write_mask != 0 ? 1u : 0u);
-        if (schedule_result != static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE))
-        {
-            return schedule_result;
-        }
-
         ++executed;
+
+        // Branch issue/retirement is a two-pair pipeline. A branch in an
+        // existing delay pair is deferred until after the first target pair.
+        vu0_advance_branch_pipeline(vu0);
         vu0->m_tpc = (vu0->m_micro_pc >> 3) & 0x1ffu;
 
         if ((instruction.m_flags & EE_VU0_MICRO_FLAG_M) != 0)
@@ -1191,16 +1219,26 @@ uint32_t ee_vu0_execute_ialu_callback(
 
         // PCSX2's micro-engine returns from each Execute() slice on M,
         // regardless of the caller's wait policy. FINISH_TO_E is implemented
-        // by the outer scheduler invoking another slice after M; only that
-        // scheduler decides whether M ends the complete interlock.
+        // by the outer scheduler invoking another slice after M.
         if (vu0->m_m_bit != 0)
         {
             break;
         }
     }
 
+    // If E stopped execution while a branch was still pending, PCSX2 applies
+    // that branch target before returning from InterpVU0::Execute().
+    if ((vu0->m_vpu_status & 1u) == 0 && vu0->m_branch != 0)
+    {
+        vu0->m_micro_pc = vu0->m_branch_pc & EE_VU0_MICRO_MEMORY_MASK;
+        vu0->m_branch = 0;
+        vu0->m_take_delay_branch = 0;
+        vu0->m_tpc = (vu0->m_micro_pc >> 3) & 0x1ffu;
+    }
+
+    const uint64_t cycles_consumed = vu0->m_cycle - slice_start_cycle;
     if (executed >= instruction_limit &&
-        executed < max_cycles &&
+        cycles_consumed < max_cycles &&
         (vu0->m_vpu_status & 1u) != 0 &&
         vu0->m_m_bit == 0)
     {
@@ -1208,7 +1246,7 @@ uint32_t ee_vu0_execute_ialu_callback(
     }
 
     if ((flags & EE_VU0_EXECUTE_EXACT_CYCLES) == 0 &&
-        executed < max_cycles &&
+        cycles_consumed < max_cycles &&
         (vu0->m_vpu_status & 1u) != 0 &&
         vu0->m_m_bit == 0)
     {
