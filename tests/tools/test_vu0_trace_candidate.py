@@ -11,7 +11,7 @@ TOOL_ARGS = sys.argv[1:]
 sys.argv = [sys.argv[0]]
 
 EXPECTED_PROGRAM_SHA256 = (
-    "27cd26fb9a1a1e05aa1d9b6986904e2b860d6afd8a2688ec4e2d5270da8fe3a8"
+    "984f9d7d89e4716062437b7b38a87d44188dbce40aef0ce220eb4e96b9461f23"
 )
 EXPECTED_PAIR_PCS = [
     0, 8, 16, 24, 32, 40, 48, 56, 64,
@@ -22,12 +22,12 @@ EXPECTED_PAIR_PCS = [
 
 
 def executed_operation(lower):
-    primary = (lower >> 25) & 0x3f
+    primary = (lower >> 25) & 0x7f
     if primary == 0x08:
         return "IADDIU"
     if primary == 0x09:
         return "ISUBIU"
-    if primary == 0x3c:
+    if primary == 0x40:
         secondary = lower & 0x3f
         return {
             0x30: "IADD",
