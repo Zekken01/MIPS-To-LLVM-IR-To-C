@@ -1351,8 +1351,8 @@ int main()
                     write_vi = true;
                     destination = id;
                     result_value = static_cast<uint16_t>(
-                        static_cast<uint16_t>(reference_vi[is]) &
-                        static_cast<uint16_t>(reference_vi[it])
+                        static_cast<uint16_t>(source_s) &
+                        static_cast<uint16_t>(source_t)
                     );
                     executed_operation_mask |= 1u << 2;
                     break;
@@ -1360,8 +1360,8 @@ int main()
                     write_vi = true;
                     destination = id;
                     result_value = static_cast<uint16_t>(
-                        static_cast<uint16_t>(reference_vi[is]) |
-                        static_cast<uint16_t>(reference_vi[it])
+                        static_cast<uint16_t>(source_s) |
+                        static_cast<uint16_t>(source_t)
                     );
                     executed_operation_mask |= 1u << 3;
                     break;
