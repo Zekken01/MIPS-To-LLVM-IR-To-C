@@ -150,11 +150,11 @@ def compare_traces(left_path, right_path):
                         )
             elif field == "vf":
                 for register, (va, vb) in enumerate(zip(a, b)):
-                    for lane, (left, right) in enumerate(zip(va, vb)):
-                        if left != right:
+                    for lane, (left_lane, right_lane) in enumerate(zip(va, vb)):
+                        if left_lane != right_lane:
                             mismatches.append(
                                 f"step {index} VF{register}.{('x', 'y', 'z', 'w')[lane]}: "
-                                f"0x{left:08x} != 0x{right:08x}"
+                                f"0x{left_lane:08x} != 0x{right_lane:08x}"
                             )
             else:
                 mismatches.append(
