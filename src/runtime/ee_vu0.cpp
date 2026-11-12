@@ -852,6 +852,8 @@ bool vu0_is_supported_lower_branch(const s_ee_vu0_micro_instruction& instruction
     {
     case op::B:
     case op::BAL:
+    case op::JR:
+    case op::JALR:
     case op::IBEQ:
     case op::IBNE:
     case op::IBLTZ:
@@ -874,6 +876,11 @@ uint32_t vu0_lower_branch_read_mask(
 
     switch (fields.m_operation)
     {
+    case op::JR:
+    case op::JALR:
+        if (fields.m_is != 0) read_mask |= 1u << fields.m_is;
+        break;
+
     case op::IBEQ:
     case op::IBNE:
         if (fields.m_it != 0) read_mask |= 1u << fields.m_it;
@@ -975,6 +982,8 @@ bool vu0_execute_lower_branch(
         vu0_read_branch_vi(vu0, fields.m_it)
     );
     bool taken = false;
+    bool absolute_target = false;
+    uint32_t target = 0;
 
     switch (fields.m_operation)
     {
@@ -984,6 +993,32 @@ bool vu0_execute_lower_branch(
 
     case op::BAL:
         taken = true;
+        if (fields.m_it != 0)
+        {
+            const uint32_t link_pc = vu0->m_branch == 1
+                ? (vu0->m_branch_pc + 8u)
+                : (vu0->m_micro_pc + 8u);
+            vu0_write_ialu_vi(vu0, fields.m_it,
+                static_cast<uint16_t>((link_pc >> 3) & 0xffffu));
+        }
+        break;
+
+    case op::JR:
+        taken = true;
+        absolute_target = true;
+        target = static_cast<uint32_t>(
+            vu0_read_ialu_vi(vu0, fields.m_is)
+        ) << 3;
+        break;
+
+    case op::JALR:
+        taken = true;
+        absolute_target = true;
+        // Sample the jump target before writing the link register. This also
+        // handles the legal Is == It overlap without corrupting the target.
+        target = static_cast<uint32_t>(
+            vu0_read_ialu_vi(vu0, fields.m_is)
+        ) << 3;
         if (fields.m_it != 0)
         {
             const uint32_t link_pc = vu0->m_branch == 1
@@ -1024,7 +1059,9 @@ bool vu0_execute_lower_branch(
 
     if (taken)
     {
-        vu0_set_branch(vu0, vu0_relative_branch_target(vu0, instruction));
+        vu0_set_branch(vu0, absolute_target
+            ? (target & EE_VU0_MICRO_MEMORY_MASK)
+            : vu0_relative_branch_target(vu0, instruction));
     }
 
     return true;
