@@ -58,6 +58,8 @@ def main(argv=None):
     parser.add_argument("--entry", type=lambda value: int(value, 0))
     parser.add_argument("--stack", type=lambda value: int(value, 0))
     parser.add_argument("--trace", action="store_true")
+    parser.add_argument("--hle-startup", action="store_true",
+                        help="Experimentally handle SetupThread (0x3c) and resume")
     parser.add_argument("--no-recompile", action="store_true",
                         help="Reuse existing metadata, objects and linked library")
     args = parser.parse_args(argv)
@@ -132,6 +134,8 @@ def main(argv=None):
             command.append(f"--stack=0x{args.stack:08x}")
         if args.trace:
             command.append("--trace")
+        if args.hle_startup:
+            command.append("--hle-startup")
         print("\n== Executing translated EE code ==", flush=True)
         run(command)
         return 0
