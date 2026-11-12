@@ -2353,7 +2353,8 @@ int main()
         ee::s_ee_vu0_state state{};
         ee::s_ee_vu0_ialu_engine ialu_engine{};
         state.m_vpu_status = 1u;
-        install_vu0_pair(&state, 0, 0x00000000u, make_vu0_upper_nop()); // LQ: decoded, not implemented.
+        install_vu0_pair(&state, 0, (0x40u << 25) | (13u << 6) | 0x3cu,
+                         make_vu0_upper_nop()); // LQI remains unsupported.
 
         const uint32_t result = ee::ee_vu0_execute_ialu_callback(
             &ialu_engine, &cpu, &state, 4,
@@ -2378,6 +2379,39 @@ int main()
               state.m_micro_pc == 0 && state.m_cycle == 0 &&
               state.m_vi[1] == 0,
               "unsupported upper operation leaves the pair unconsumed");
+    }
+
+    {
+        ee::s_ee_vu0_state state{};
+        ee::s_ee_cpu_state vector_cpu{};
+        ee::s_ee_vu0_ialu_engine ialu_engine{};
+        state.m_vpu_status = 1u;
+        state.m_vi[1] = 1u; // Load/store address is one quadword from base.
+        vector_cpu.m_vu0[2].m_lo = 0x1122334455667788ull;
+        vector_cpu.m_vu0[2].m_hi = 0x99aabbccddeeff00ull;
+        vector_cpu.m_vu0[3].m_lo = 0xaaaabbbbccccddddull;
+        vector_cpu.m_vu0[3].m_hi = 0xeeeeffff12345678ull;
+        // SQ uses FT as the VI base and FS as the VF source, unlike LQ.
+        install_vu0_pair(&state, 0, make_vu0_memory(0x01, 0xau, 1, 2, 1),
+                         make_vu0_upper_nop()); // SQ X/Z to quadword 2.
+        install_vu0_pair(&state, 1, make_vu0_memory(0x00, 0xfu, 3, 1, 1),
+                         make_vu0_upper_nop()); // LQ all lanes from quadword 2.
+        const uint32_t result = ee::ee_vu0_execute_ialu_callback(
+            &ialu_engine, &vector_cpu, &state, 2,
+            ee::EE_VU0_EXECUTE_EXACT_CYCLES, 0x0010200cu
+        );
+        check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              state.m_cycle == 2 && state.m_micro_pc == 16,
+              "LQ/SQ execute as ordinary masked quadword memory operations");
+        check(vector_cpu.m_vu0[3].m_lo == 0x0000000055667788ull &&
+              vector_cpu.m_vu0[3].m_hi == 0x00000000ddeeff00ull &&
+              vector_cpu.m_vu0[2].m_lo == 0x1122334455667788ull,
+              "LQ/SQ respect the XYZW mask and preserve source VF");
+        check(state.m_data_memory[32] == 0x88u &&
+              state.m_data_memory[35] == 0x55u &&
+              state.m_data_memory[40] == 0x00u &&
+              state.m_data_memory[43] == 0xddu,
+              "SQ stores selected VF lanes in little-endian order");
     }
 
     // The generic four-entry IALU interlock queue is used by lower
