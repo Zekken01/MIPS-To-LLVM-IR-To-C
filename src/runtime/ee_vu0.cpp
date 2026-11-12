@@ -1415,6 +1415,28 @@ uint32_t ee_vu0_execute_ialu_callback(
         // post-stall state rather than values sampled before the interlock.
         const uint64_t cycles_before_pair = vu0->m_cycle;
         ++vu0->m_cycle;
+        // PCSX2 tests lower FMAC read dependencies before pipe retirement.
+        // SQ reads its FS vector, and stalls only when an earlier LQ
+        // destination matches both the register and an enabled lane.
+        if (lower_memory &&
+            instruction.m_lower_fields.m_operation ==
+                e_ee_vu0_micro_opcode::SQ)
+        {
+            const uint32_t source = instruction.m_lower_fields.m_fs;
+            const uint32_t lanes = instruction.m_lower_fields.m_xyzw;
+            if (source != 0 && lanes != 0)
+            {
+                for (const auto& issue : vu0->m_vf_memory_issues)
+                {
+                    if (issue.m_register == source &&
+                        (issue.m_lane_mask & lanes) != 0 &&
+                        issue.m_ready_cycle > vu0->m_cycle)
+                    {
+                        vu0->m_cycle = issue.m_ready_cycle;
+                    }
+                }
+            }
+        }
         // PCSX2 only tests IALU read dependencies for VUPIPE_BRANCH.
         // ILW/ISW are VUPIPE_IALU: loads reserve their destination for
         // four cycles, but an adjacent store does not stall on that pipe.
@@ -1481,7 +1503,19 @@ uint32_t ee_vu0_execute_ialu_callback(
             if (memory_op == e_ee_vu0_micro_opcode::LQ ||
                 memory_op == e_ee_vu0_micro_opcode::SQ)
             {
-                vu0->m_vf_memory_ready_cycle = vu0->m_cycle + 4u;
+                const uint64_t ready = vu0->m_cycle + 4u;
+                vu0->m_vf_memory_ready_cycle = ready;
+                auto& issue = vu0->m_vf_memory_issues[
+                    vu0->m_vf_memory_issue_index & 3u
+                ];
+                ++vu0->m_vf_memory_issue_index;
+                issue.m_ready_cycle = ready;
+                issue.m_register =
+                    memory_op == e_ee_vu0_micro_opcode::LQ
+                        ? instruction.m_lower_fields.m_ft : 0u;
+                issue.m_lane_mask =
+                    issue.m_register != 0
+                        ? instruction.m_lower_fields.m_xyzw : 0u;
             }
             const uint32_t schedule_result = ee_vu0_ialu_schedule_write(
                 vu0, write_mask, 4
