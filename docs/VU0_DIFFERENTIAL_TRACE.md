@@ -76,8 +76,14 @@ subset:
 }
 ```
 
+The shared fixture now provides a deterministic 37-pair program. The
+candidate producer executes one runtime pair per exact-cycle callback and
+writes a trace. The pinned PCSX2 adapter executes one interpreter pair through
+vu0Exec(&VU0) and writes the same format when VU0_TRACE_OUTPUT is set. The
+trace records the executed pair PC as well as both instruction words.
+
 The comparator checks program identity and initial state, then compares every
-instruction word and every listed architectural field exactly after each pair.
+pair PC, instruction word and listed architectural field exactly after each pair.
 Engine name and source revision are informational and intentionally need not
 match. A mismatch reports the first differing VI register or state field.
 
