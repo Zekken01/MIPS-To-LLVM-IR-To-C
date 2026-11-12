@@ -387,3 +387,7 @@ Further changes should be committed to this branch in small, testable increments
 - Added CTest coverage for candidate trace length, executed pair PCs, all 17 lower opcode classes, M/E boundaries, final VI state, and comparator acceptance. The first CI attempts found and corrected a Python unittest argument-parsing error and an incorrect test expectation for the encoded ISUB operand order.
 - GitHub Actions [run #458](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43240924661): clean build, artifact upload, and **17/17 CTest passed**.
 - This verifies the candidate trace producer and comparator path. The pinned PCSX2 adapter has been authored and integrated by the installer, but the PCSX2 test binary has not yet been built and a real cross-engine trace comparison has **not** yet been run. Do not claim live differential equivalence until that comparison succeeds.
+
+
+- Follow-up validation: GitHub Actions [run #465](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43241884674) passed **18/18 CTest**, including the new differential-driver help smoke test. Updated README/resume status and corrected the runner's PCSX2 help text.
+- The candidate trace is reproducible and CI-validated. A live trace from the pinned PCSX2 test executable has still not been generated in this environment; the first cross-engine compare remains pending.
