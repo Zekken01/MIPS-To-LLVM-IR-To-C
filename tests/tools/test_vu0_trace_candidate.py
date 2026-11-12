@@ -11,7 +11,7 @@ TOOL_ARGS = sys.argv[1:]
 sys.argv = [sys.argv[0]]
 
 EXPECTED_PROGRAM_SHA256 = (
-    "a614bfe81e239efe97983c377d0486b33387963743a4e51928771463bd4a0672"
+    "c44f3f1e0ad5718c1ea94435605d60acd141aad36dd2e6264a3c4f560618c32c"
 )
 EXPECTED_PAIR_PCS = [
     0, 8, 16, 24, 32, 40, 48, 56, 64,
@@ -19,6 +19,7 @@ EXPECTED_PAIR_PCS = [
     168, 176, 192, 200, 208, 216, 224, 232, 240, 248,
     256, 264, 280, 288,
     296, 304, 312, 320, 328, 336, 344, 352, 360, 368, 376,
+    384, 392, 400, 408,
 ]
 
 
@@ -123,18 +124,27 @@ class VU0CandidateTraceTests(unittest.TestCase):
             self.assertEqual(final["vi"][5], 1)
             self.assertEqual(final["vi"][6], 5)
             self.assertEqual(final["vi"][7], 4)
-            self.assertEqual(final["vi"][8], 47)
+            self.assertEqual(final["vi"][8], 51)
             self.assertEqual(final["vi"][9], 0x7fef)
             self.assertEqual(final["vi"][10], 0xbfed)
             self.assertEqual(final["vi"][11], 0xc001)
             self.assertEqual(final["vi"][12], 0x4001)
             self.assertEqual(final["vi"][13], 16)
-            self.assertEqual(final["vi"][14], 0xffef)
+            self.assertEqual(final["vi"][14], 0x7fef)
             self.assertEqual(final["vi"][15], 18)
-            self.assertEqual(final["vi"][26], 384)
+            self.assertEqual(final["vi"][2], 0x7fef)
+            self.assertEqual(final["vi"][26], 416)
             self.assertEqual(final["vi"][29], 0)
-            self.assertEqual(final["micro_pc"], 384)
-            self.assertEqual(final["tpc"], 48)
+            self.assertEqual(final["micro_pc"], 416)
+            self.assertEqual(final["tpc"], 52)
+            self.assertNotEqual(
+                steps[39]["state"]["data_sha256"],
+                steps[40]["state"]["data_sha256"],
+            )
+            self.assertNotEqual(
+                steps[41]["state"]["data_sha256"],
+                steps[42]["state"]["data_sha256"],
+            )
             self.assertEqual(final["e_bit"], 0)
             self.assertFalse(final["running"])
 
