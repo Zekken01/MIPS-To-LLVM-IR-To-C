@@ -1340,14 +1340,14 @@ bool vu0_execute_lower_ialu(
 
 uint32_t ee_vu0_execute_ialu_callback(
     void* user,
-    s_ee_cpu_state*,
+    s_ee_cpu_state* cpu,
     s_ee_vu0_state* vu0,
     uint64_t max_cycles,
     uint32_t flags,
     uint32_t
 )
 {
-    if (!user || !vu0 ||
+    if (!user || !cpu || !vu0 ||
         (flags & ~(EE_VU0_EXECUTE_STOP_AT_E |
                    EE_VU0_EXECUTE_STOP_AT_M |
                    EE_VU0_EXECUTE_EXACT_CYCLES)) != 0)
