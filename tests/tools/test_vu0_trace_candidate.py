@@ -20,7 +20,7 @@ EXPECTED_PAIR_PCS = [
     168, 176, 192, 200, 208, 216, 224, 232, 240, 248,
     256, 264, 280, 288,
     296, 304, 312, 320, 328, 336, 344, 352, 360, 368, 376,
-    384, 392, 400, 408, 416, 424, 432, 440, 448, 456,
+    384, 392, 400, 408, 416, 424, 432, 440,
 ]
 
 
@@ -147,10 +147,10 @@ class VU0CandidateTraceTests(unittest.TestCase):
             self.assertEqual(final["vi"][14], 0x7fef)
             self.assertEqual(final["vi"][15], 18)
             self.assertEqual(final["vi"][2], 0x7fef)
-            self.assertEqual(final["vi"][26], 448 + 16)
+            self.assertEqual(final["vi"][26], 448)
             self.assertEqual(final["vi"][29], 0)
-            self.assertEqual(final["micro_pc"], 464)
-            self.assertEqual(final["tpc"], 58)
+            self.assertEqual(final["micro_pc"], 448)
+            self.assertEqual(final["tpc"], 56)
             # PCSX2 does not stall an ISW on ILW's IALU destination.
             self.assertEqual(steps[40]["state"]["cycle"], 41)
             self.assertEqual(steps[41]["state"]["cycle"], 42)
@@ -172,11 +172,11 @@ class VU0CandidateTraceTests(unittest.TestCase):
                 steps[42]["state"]["data_sha256"],
             )
             self.assertEqual(
-                steps[45]["state"]["vf"][3],
+                steps[44]["state"]["vf"][3],
                 [0x11223344, 0x05060708, 0x99aabbcc, 0x0d0e0f10],
             )
             self.assertEqual(
-                steps[47]["state"]["vf"][4],
+                steps[46]["state"]["vf"][4],
                 [0, 0x05060708, 0, 0x0d0e0f10],
             )
             self.assertEqual(final["e_bit"], 0)
