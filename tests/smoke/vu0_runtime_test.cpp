@@ -2369,8 +2369,8 @@ int main()
         ee::s_ee_vu0_state state{};
         ee::s_ee_vu0_ialu_engine ialu_engine{};
         state.m_vpu_status = 1u;
-        install_vu0_pair(&state, 0, (0x40u << 25) | (13u << 6) | 0x3cu,
-                         make_vu0_upper_nop()); // LQI remains unsupported.
+        install_vu0_pair(&state, 0, (0x40u << 25) | (15u << 6) | 0x3cu,
+                         make_vu0_upper_nop()); // MTIR remains unsupported.
 
         const uint32_t result = ee::ee_vu0_execute_ialu_callback(
             &ialu_engine, &cpu, &state, 4,
