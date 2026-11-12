@@ -424,7 +424,7 @@ def main():
             require(result == expected_exit and cpu.exit_reason == expected_exit,
                     f"{label}: wrong branch exit for condition={condition}")
             delay_executed = not likely or taken
-            expected_gpr8 = 0xaaaa if delay_executed else 0x7777
+            expected_gpr8 = 0xffffffffffffaaaa if delay_executed else 0x7777
             require(cpu.gpr[8].lo == expected_gpr8,
                     f"{label}: GPR8=0x{cpu.gpr[8].lo:016x}, "
                     f"expected 0x{expected_gpr8:016x}; "
