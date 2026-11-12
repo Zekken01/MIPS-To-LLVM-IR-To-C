@@ -171,20 +171,73 @@ bool elf_loader::parse_program_headers(const uint8_t* data, size_t size)
 
 bool elf_loader::parse_sections(const uint8_t* data, size_t size)
 {
+    constexpr uint32_t SHT_RELA = 4;
+    constexpr uint32_t SHT_REL = 9;
+
+    m_relocations_complete = false;
+    m_relocation_addresses.clear();
+
     const Elf32_Ehdr* hdr = reinterpret_cast<const Elf32_Ehdr*>(data);
-    if (hdr->e_shoff == 0 || hdr->e_shnum == 0) return true;
-    if (hdr->e_shoff + (size_t)hdr->e_shnum * hdr->e_shentsize > size) return true;
-    if (hdr->e_shstrndx == SHN_UNDEF) return true;
+    if (hdr->e_shoff == 0 || hdr->e_shnum == 0 ||
+        hdr->e_shentsize < sizeof(Elf32_Shdr))
+    {
+        return true;
+    }
 
-    // Section headers.
-    const Elf32_Shdr* shdrs = reinterpret_cast<const Elf32_Shdr*>(
-        data + hdr->e_shoff);
-    // Section name string table.
-    const Elf32_Shdr& shstr = shdrs[hdr->e_shstrndx];
-    const char* shstrtab = reinterpret_cast<const char*>(data + shstr.sh_offset);
+    const uint64_t section_table_end =
+        static_cast<uint64_t>(hdr->e_shoff) +
+        static_cast<uint64_t>(hdr->e_shnum) * hdr->e_shentsize;
+    if (section_table_end > size)
+    {
+        return true;
+    }
 
-    // Just validate; sections are not otherwise needed for the loader.
-    (void)shdrs; (void)shstrtab; (void)size;
+    m_relocations_complete = true;
+    for (Elf32_Half i = 0; i < hdr->e_shnum; ++i)
+    {
+        Elf32_Shdr section{};
+        std::memcpy(
+            &section,
+            data + hdr->e_shoff + static_cast<size_t>(i) * hdr->e_shentsize,
+            sizeof(section)
+        );
+
+        uint32_t relocation_entry_size = 0;
+        if (section.sh_type == SHT_REL)
+        {
+            relocation_entry_size = 8;
+        }
+        else if (section.sh_type == SHT_RELA)
+        {
+            relocation_entry_size = 12;
+        }
+        else
+        {
+            continue;
+        }
+
+        if (section.sh_entsize < relocation_entry_size ||
+            section.sh_entsize == 0 ||
+            (section.sh_size % section.sh_entsize) != 0 ||
+            static_cast<uint64_t>(section.sh_offset) + section.sh_size > size)
+        {
+            m_relocations_complete = false;
+            m_relocation_addresses.clear();
+            return true;
+        }
+
+        const size_t relocation_count =
+            section.sh_size / section.sh_entsize;
+        for (size_t j = 0; j < relocation_count; ++j)
+        {
+            const uint8_t* const relocation =
+                data + section.sh_offset + j * section.sh_entsize;
+            uint32_t relocation_address = 0;
+            std::memcpy(&relocation_address, relocation, sizeof(relocation_address));
+            m_relocation_addresses.insert(relocation_address);
+        }
+    }
+
     return true;
 }
 
@@ -252,7 +305,15 @@ bool elf_loader::read32_at(uint32_t addr, uint32_t* out) const
 
 bool elf_loader::read32_const_at(uint32_t addr, uint32_t* out) const
 {
-    if (!out || m_type != ET_EXEC)
+    if (!out || m_type != ET_EXEC || !m_relocations_complete)
+    {
+        return false;
+    }
+
+    const uint64_t word_end = static_cast<uint64_t>(addr) + 4u;
+    const auto relocation = m_relocation_addresses.lower_bound(addr);
+    if (relocation != m_relocation_addresses.end() &&
+        static_cast<uint64_t>(*relocation) < word_end)
     {
         return false;
     }
