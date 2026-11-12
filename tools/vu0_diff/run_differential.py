@@ -68,7 +68,7 @@ def main() -> int:
         "--pcsx2-root",
         type=Path,
         required=True,
-        help="PCXS2 Git checkout at the pinned interpreter revision",
+        help="PCSX2 Git checkout at the pinned interpreter revision",
     )
     parser.add_argument(
         "--pcsx2-build-dir",
