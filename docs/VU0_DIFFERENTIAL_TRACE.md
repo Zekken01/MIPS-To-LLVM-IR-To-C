@@ -112,7 +112,7 @@ subset:
 }
 ```
 
-The shared fixture provides a deterministic 56-pair program, 49 of whose pairs execute. The
+The shared fixture provides a deterministic 60-pair program, 53 of whose pairs execute. The
 candidate producer executes one runtime pair per exact-cycle callback and
 writes a trace. The pinned PCSX2 adapter executes one interpreter pair through
 vu0Exec(&VU0) and writes the same format when VU0_TRACE_OUTPUT is set. The
