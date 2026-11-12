@@ -4,7 +4,7 @@
 
 This branch is a reconstructed baseline from the preserved 2026-11-11 09:57 MMI/HI1/LO1 follow-up, with subsequent decoder, lifting, control-flow, dispatcher, and validation work. Do not merge it into `main` until source provenance and the latest changes have been reviewed.
 
-Latest fully verified CI: [Actions run #43185325450](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43185325450), **14/14 CTest passed**, including native object emission/linking, dispatcher execution, COP1 JIT tests, VU0 runtime scheduler tests, COP2 transfer/BC2 JIT tests, and the MMI/HI1/LO1 regression suites.
+Latest fully verified CI: [Actions run #43189469757](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43189469757), **14/14 CTest passed**, including native object emission/linking, dispatcher execution, COP1 JIT tests, VU0 micro fetch/decode/IALU/scheduler tests, COP2 transfer/BC2 JIT tests, and the MMI/HI1/LO1 regression suites.
 
 Latest USA `SLUS_214.42` validation:
 - **7,849 functions discovered and emitted**.
@@ -38,15 +38,19 @@ See [`COP2_RESEARCH.md`](COP2_RESEARCH.md) for the PCSX2 reference and semantic 
 - Fetch also classifies lower and upper operations using the PCSX2 primary/secondary tables. Lower primary `0x3c` dispatches through the lower sub-op/T3 tables; upper primary `0x3c..0x3f` dispatches through the four FD tables. Unassigned entries return `UNKNOWN`; this is classification, not execution.
 - Runtime transfer helpers apply synchronization before reads/writes; cover VF0, GPR0, CFC2 R and CTC2 special-register cases; and fail closed when the required scheduler/control callback is missing or fails.
 - BC2 reads VPU_STAT bit 8 and has ordinary/likely branch JIT coverage, including delay-slot execution and annulment.
-- `ee_vu0_scheduler_sync_callback` now provides bounded catch-up, finish-to-E, and wait-to-E-or-M orchestration, including VU1 catch-up and EE event callbacks. Interlocked waits add only the VU0 cycles consumed to the original EE cycle counter; they do not collapse EE time to the VU0 counter unless taking PCSX2's separate early M-bit/already-ahead path. It does **not** execute VU micro-instructions. A real host VU0 engine remains to be supplied.
-- VU0 SPECIAL1/SPECIAL2 macro instructions remain UNSUPPORTED. Do not enable them until the engine models dual-issue scheduling and FMAC/FDIV/EFU pipelines, flags, ACC/Q/P forwarding and branch timing.
+- `ee_vu0_scheduler_sync_callback` provides bounded catch-up, finish-to-E, and wait-to-E-or-M orchestration, including VU1 catch-up and EE event callbacks. Interlocked waits add only the VU0 cycles consumed to the original EE cycle counter; they do not collapse EE time to the VU0 counter unless taking PCSX2's separate early M-bit/already-ahead path.
+- `ee_vu0_execute_ialu_callback` is the first executable micro-engine slice. It supports lower IADD/ISUB/IAND/IOR/IADDI/IADDIU/ISUBIU paired with upper NOP only. It performs 16-bit VI writes, keeps VI0 hardwired, reserves IALU destinations in the four-entry queue, retires ready reservations, processes E's two-pair termination delay and flushes pending IALU writes at termination.
+- Each engine execution slice returns at an M-flagged pair. The outer scheduler decides whether M ends the wait: WAIT_TO_E_OR_M returns, while FINISH_TO_E invokes another slice and continues toward E. The integration tests cover resuming after M, E delay execution and the final IALU flush cycle.
+- This is **not** a general VU0 interpreter. Branch lower ops, VU data-memory operations, I/D/T flags, upper vector operations, dual-issue dependencies, VF forwarding and FMAC/FDIV/EFU pipelines remain unsupported. Any unsupported pair fails closed without consuming its micro-PC.
+- VU0 SPECIAL1/SPECIAL2 macro instructions remain UNSUPPORTED. Do not enable them until dual-issue scheduling and the FMAC/FDIV/EFU pipelines, flags, ACC/Q/P forwarding and branch timing are implemented.
 
-The scheduler, micro-memory/fetch, opcode classification and existing regression suites passed **14/14** in [Actions run #43185325450](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43185325450).
+The scheduler, micro-memory/fetch, opcode classification, first IALU execution slice and existing regression suites passed **14/14** in [Actions run #43189469757](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43189469757).
 
 ## Remaining priorities
 
-1. **VU0 issue/retirement engine:** schedule paired lower/upper operations, track delayed VI/VF writes and IALU/FMAC/FDIV/EFU hazards, and model branch-delay plus E/M termination. Start with a conservative lower-integer subset only after its register forwarding and dual-issue timing are covered by tests.
-2. **VU0 macro instructions:** after the engine exists, add macro families incrementally with dual-issue/pipeline/flag tests. Keep undocumented or unmodelled forms unsupported.
+1. **VU0 lower control-flow and hazards:** implement B/BAL/JR/JALR and conditional integer branches with branch-delay state and IALU read interlocks. Keep memory and upper operations unsupported during this stage.
+2. **VU0 memory and vector issue:** add LQ/SQ/ILW/ISW and a carefully tested dual-issue model before enabling vector arithmetic.
+3. **VU0 macro instruction pipelines:** implement FMAC/FDIV/EFU, flags, ACC/Q/P forwarding and dual-issue dependencies incrementally.
 3. **Runtime completeness:** EE memory/TLB/MMIO, scratchpad/ROM aliases, alignment exceptions, DMA, interrupts, plus BIOS/IOP/GS host services.
 4. **Semantic validation:** differential instruction and function testing against PCSX2's interpreter. LLVM verification and native linking do not establish R5900 equivalence.
 5. **Production backend:** replace the current external llvmlite object-emission path with an integrated LLVM backend or supported `llc`/LLVM library path; keep the current script as a validation/reference path until then.
