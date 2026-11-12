@@ -124,6 +124,7 @@ def main():
                 "--work-dir", str(root / "out"),
                 "--max-dispatches=8",
                 "--trace",
+                "--kseg-ram",
                 "--report", str(root / "first_boot.json"),
             ],
             capture_output=True,
