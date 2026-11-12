@@ -331,6 +331,102 @@ def run_accumulator_cases(fixture, temp_dir, target, mode, cases):
                          f"expected 0x{expected_fcsr:08x}")
 
 
+def run_cop1_transfer_cases(fixture, temp_dir, target):
+    gpr_hi_sentinel = 0x8877665544332211
+    guest_fn, engine, module, target_machine = compile_jit(
+        fixture, temp_dir, "mfc1", target
+    )
+    backing, state = aligned_state()
+    _ = (backing, engine, module, target_machine)
+    state.fpr[1] = 0xDEADBEEFBF800000
+    state.gpr[6][0] = 0x0123456789ABCDEF
+    state.gpr[6][1] = gpr_hi_sentinel
+
+    result = guest_fn(ctypes.pointer(state), None)
+    require(result == 3, f"MFC1: expected EE_EXIT_DISPATCH (3), got {result}")
+    require(state.gpr[6][0] == 0xFFFFFFFFBF800000,
+            f"MFC1 failed to sign-extend the FPR word: 0x{state.gpr[6][0]:016x}")
+    require(state.gpr[6][1] == gpr_hi_sentinel,
+            "MFC1 clobbered the upper 64-bit GPR half")
+    require(state.fpr[1] == 0xDEADBEEFBF800000,
+            "MFC1 modified its source FPR")
+
+    guest_fn, engine, module, target_machine = compile_jit(
+        fixture, temp_dir, "mtc1", target
+    )
+    backing, state = aligned_state()
+    _ = (backing, engine, module, target_machine)
+    state.gpr[8][0] = 0x12345678ABCDEF01
+    state.gpr[8][1] = gpr_hi_sentinel
+    state.fpr[6] = 0xAABBCCDD11223344
+
+    result = guest_fn(ctypes.pointer(state), None)
+    require(result == 3, f"MTC1: expected EE_EXIT_DISPATCH (3), got {result}")
+    require(state.fpr[6] == 0x00000000ABCDEF01,
+            f"MTC1 failed to transfer the low GPR word: 0x{state.fpr[6]:016x}")
+    require(state.gpr[8][0] == 0x12345678ABCDEF01 and
+            state.gpr[8][1] == gpr_hi_sentinel,
+            "MTC1 modified its source GPR")
+
+    initial_fcsr = 0xA592F456
+    guest_fn, engine, module, target_machine = compile_jit(
+        fixture, temp_dir, "cfc1", target
+    )
+    backing, state = aligned_state()
+    _ = (backing, engine, module, target_machine)
+    state.fcsr = initial_fcsr
+    state.gpr[6][0] = 0x0123456789ABCDEF
+    state.gpr[6][1] = gpr_hi_sentinel
+
+    result = guest_fn(ctypes.pointer(state), None)
+    expected_fcsr = initial_fcsr
+    expected_gpr = ctypes.c_int32(expected_fcsr).value & 0xFFFFFFFFFFFFFFFF
+    require(result == 3, f"CFC1: expected EE_EXIT_DISPATCH (3), got {result}")
+    require(state.gpr[6][0] == expected_gpr,
+            f"CFC1 failed to sign-extend FCSR: 0x{state.gpr[6][0]:016x}")
+    require(state.gpr[6][1] == gpr_hi_sentinel,
+            "CFC1 clobbered the upper 64-bit GPR half")
+    require(state.fcsr == initial_fcsr, "CFC1 modified FCSR")
+
+    guest_fn, engine, module, target_machine = compile_jit(
+        fixture, temp_dir, "ctc1", target
+    )
+    backing, state = aligned_state()
+    _ = (backing, engine, module, target_machine)
+    state.fcsr = 0x01234567
+    state.gpr[8][0] = 0x12345678ABCDEF01
+    state.gpr[8][1] = gpr_hi_sentinel
+
+    result = guest_fn(ctypes.pointer(state), None)
+    require(result == 3, f"CTC1: expected EE_EXIT_DISPATCH (3), got {result}")
+    require(state.fcsr == 0xABCDEF01,
+            f"CTC1 failed to write the low GPR word to FCSR: 0x{state.fcsr:08x}")
+    require(state.gpr[8][0] == 0x12345678ABCDEF01 and
+            state.gpr[8][1] == gpr_hi_sentinel,
+            "CTC1 modified its source GPR")
+
+    guest_fn, engine, module, target_machine = compile_jit(
+        fixture, temp_dir, "ctc1_after_branch", target
+    )
+    backing, state = aligned_state()
+    _ = (backing, engine, module, target_machine)
+    state.fcsr = 0xDEADBEEF
+    state.gpr[8][0] = 0xDEADBEEF
+    state.gpr[8][1] = gpr_hi_sentinel
+
+    result = guest_fn(ctypes.pointer(state), None)
+    require(result == 3,
+            f"CTC1 after branch: expected EE_EXIT_DISPATCH (3), got {result}")
+    require(state.pc == ENTRY_PC + 16,
+            f"CTC1 after branch: unexpected exit PC 0x{state.pc:08x}")
+    require(state.fcsr == 0x2345,
+            f"CTC1 successor read stale GPR state: FCSR=0x{state.fcsr:08x}")
+    require(state.gpr[8][0] == 0x2345,
+            f"ADDIU predecessor write was lost: GPR8=0x{state.gpr[8][0]:016x}")
+    require(state.gpr[8][1] == gpr_hi_sentinel,
+            "ADDIU/CTC1 sequence clobbered the upper GPR half")
+
+
 def f32_value(bits):
     return struct.unpack("<f", struct.pack("<I", bits & 0xFFFFFFFF))[0]
 
@@ -693,6 +789,7 @@ def main():
         run_arithmetic_cases(fixture, temp_dir, target, "sub_s", sub_cases)
         run_arithmetic_cases(fixture, temp_dir, target, "mul_s", mul_cases)
         run_arithmetic_cases(fixture, temp_dir, target, "div_s", div_cases)
+        run_cop1_transfer_cases(fixture, temp_dir, target)
         run_accumulator_cases(fixture, temp_dir, target, "adda_s", adda_cases)
         run_accumulator_cases(fixture, temp_dir, target, "suba_s", suba_cases)
         run_accumulator_cases(fixture, temp_dir, target, "mula_s", mula_cases)
@@ -713,6 +810,7 @@ def main():
 
     print(
         "fpu_compare_ir_runtime: PASS (C.F/C.EQ/C.LT/C.LE; CVT.W.S/CVT.S.W; "
+        "MFC1/MTC1/CFC1/CTC1 transfer and liveness; "
         "ADD.S/SUB.S/MUL.S/DIV.S, SQRT.S/RSQRT.S and accumulator arithmetic; "
         "FCSR cause/sticky semantics; "
         "MAX.S/MIN.S bitwise ordering; ABS.S/NEG.S raw-bit sign operations; "
