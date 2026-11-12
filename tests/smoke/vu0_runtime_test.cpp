@@ -1066,7 +1066,7 @@ int main()
         ee::s_ee_vu0_state state{};
         ee::s_ee_vu0_ialu_engine ialu_engine{};
         state.m_vpu_status = 1u;
-        install_vu0_pair(&state, 0, make_vu0_iaddiu(1, 0, 1), make_vu0_upper_nop());
+        install_vu0_pair(&state, 0, 0x00000000u, make_vu0_upper_nop()); // LQ: decoded, not implemented.
 
         const uint32_t result = ee::ee_vu0_execute_ialu_callback(
             &ialu_engine, &cpu, &state, 4,
