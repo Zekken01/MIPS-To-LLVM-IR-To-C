@@ -15,8 +15,6 @@ namespace
 constexpr u32 VU0_LOWER_IBEQ = 0x28u;
 constexpr u32 VU0_LOWER_IADDIU = 0x08u;
 constexpr u32 VU0_UPPER_NOP = 0x3fu | (11u << 6);
-constexpr u32 VU0_M_PROGRAM_FLAG = 0x20000000u;
-constexpr u32 VU0_E_PROGRAM_FLAG = 0x40000000u;
 constexpr u32 VU0_MICRO_PC_MASK = 0x0fffu;
 
 void store_le32(u8* destination, u32 value)
