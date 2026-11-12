@@ -127,24 +127,27 @@ bool ee_recomp(const char* elf_path,
             seed_entry(sym.value);
     }
 
-    while (!worklist.empty())
-    {
-        uint32_t pc = *worklist.begin();
-        worklist.erase(worklist.begin());
-        if (!discovered.insert(pc).second) continue;   // already decoded
+    auto decode_worklist = [&]() {
+        while (!worklist.empty())
+        {
+            const uint32_t pc = *worklist.begin();
+            worklist.erase(worklist.begin());
+            if (!discovered.insert(pc).second) continue;
 
-        uint32_t word = 0;
-        if (!loader.read32_at(pc, &word)) continue;    // not readable: stop trace
+            uint32_t word = 0;
+            if (!loader.read32_at(pc, &word)) continue;
 
-        s_ee_instruction ins = decode(pc, word);
-        global_insns[pc] = ins;
+            const s_ee_instruction ins = decode(pc, word);
+            global_insns[pc] = ins;
 
-        const std::set<uint32_t> successors = collect_successors(ins);
-        worklist.insert(successors.begin(), successors.end());
-    }
+            const std::set<uint32_t> successors = collect_successors(ins);
+            worklist.insert(successors.begin(), successors.end());
+        }
+    };
+    decode_worklist();
 
-    // Function entry points: entry point + STT_FUNC symbols in executable
-    // segments, plus any call-target addresses discovered during the walk.
+    // Seed entries from the ELF entry point and all defined STT_FUNC symbols
+    // in executable segments. Calls discovered below are added to this set.
     std::vector<uint32_t> entries;
     if (loader.entry_point() != 0 &&
         loader.is_executable_address(loader.entry_point())) {
@@ -157,43 +160,74 @@ bool ee_recomp(const char* elf_path,
             entries.push_back(sym.value);
         }
     }
-    // Add any call-target addresses found during the worklist walk that
-    // weren't already in the symbol table.
-    std::set<uint32_t> call_targets;
-    for (const auto& kv : global_insns)
-    {
-        const s_ee_instruction& ins = kv.second;
-        const bool direct_jal =
-            ins.flow == e_ee_flow::FLOW_CALL &&
-            ins.opcode == e_ee_opcode::OP_JAL;
-        const bool regimm_link =
-            ins.valid == e_ee_valid::VALID &&
-            ins.opcode == e_ee_opcode::OP_REGIMM &&
-            (ins.rt == static_cast<uint8_t>(e_ee_opcode::REGIMM_BLTZAL) ||
-             ins.rt == static_cast<uint8_t>(e_ee_opcode::REGIMM_BGEZAL) ||
-             ins.rt == static_cast<uint8_t>(e_ee_opcode::REGIMM_BLTZALL) ||
-             ins.rt == static_cast<uint8_t>(e_ee_opcode::REGIMM_BGEZALL));
-        if (!direct_jal && !regimm_link)
-            continue;
-
-        // Conditional branch-and-link forms are FLOW_BRANCH/FLOW_BRANCH_LIKELY
-        // for CFG execution, but their taken destination is still a function
-        // entry and must be emitted independently like a JAL callee.
-        const uint32_t target = direct_jal
-            ? ins.jump_target
-            : static_cast<uint32_t>(ins.branch_target);
-        if (loader.is_executable_address(target))
-            call_targets.insert(target);
-    }
-    for (uint32_t ct : call_targets)
-    {
-        bool already = false;
-        for (uint32_t e : entries) if (e == ct) { already = true; break; }
-        if (!already) entries.push_back(ct);
-    }
 
     std::sort(entries.begin(), entries.end());
     entries.erase(std::unique(entries.begin(), entries.end()), entries.end());
+    std::set<uint32_t> entry_set(entries.begin(), entries.end());
+
+    // Iterate to a fixed point. Direct JAL/branch-and-link targets are
+    // harvested as before. JALR targets are added only when CFG constant
+    // propagation proves the target register has one value on every path.
+    // Newly decoded callees may themselves contain additional indirect calls.
+    bool added_entries = true;
+    while (added_entries)
+    {
+        added_entries = false;
+        std::set<uint32_t> call_targets;
+
+        for (const auto& kv : global_insns)
+        {
+            const s_ee_instruction& ins = kv.second;
+            const bool direct_jal =
+                ins.flow == e_ee_flow::FLOW_CALL &&
+                ins.opcode == e_ee_opcode::OP_JAL;
+            const bool regimm_link =
+                ins.valid == e_ee_valid::VALID &&
+                ins.opcode == e_ee_opcode::OP_REGIMM &&
+                (ins.rt == static_cast<uint8_t>(e_ee_opcode::REGIMM_BLTZAL) ||
+                 ins.rt == static_cast<uint8_t>(e_ee_opcode::REGIMM_BGEZAL) ||
+                 ins.rt == static_cast<uint8_t>(e_ee_opcode::REGIMM_BLTZALL) ||
+                 ins.rt == static_cast<uint8_t>(e_ee_opcode::REGIMM_BGEZALL));
+            if (!direct_jal && !regimm_link)
+            {
+                continue;
+            }
+
+            const uint32_t target = direct_jal
+                ? ins.jump_target
+                : static_cast<uint32_t>(ins.branch_target);
+            if (target != 0 && loader.is_executable_address(target))
+            {
+                call_targets.insert(target);
+            }
+        }
+
+        const std::set<uint32_t> indirect_targets =
+            collect_static_jalr_targets(global_insns, entries, entries);
+        for (uint32_t target : indirect_targets)
+        {
+            if (loader.is_executable_address(target))
+            {
+                call_targets.insert(target);
+            }
+        }
+
+        for (uint32_t target : call_targets)
+        {
+            if (entry_set.insert(target).second)
+            {
+                entries.push_back(target);
+                worklist.insert(target);
+                added_entries = true;
+            }
+        }
+
+        if (added_entries)
+        {
+            std::sort(entries.begin(), entries.end());
+            decode_worklist();
+        }
+    }
 
     function_analyzer analyzer;
     llvm::llvm_context ctx("ee_game");
