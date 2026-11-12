@@ -199,6 +199,8 @@ int main()
         "unknown synchronization mode is rejected"
     );
 
+    scheduler.m_result = static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE);
+
     // QMFC2 copies both halves of VF[fs] after synchronization.
     cpu.m_vu0[3] = {0x0123456789abcdefULL, 0xfedcba9876543210ULL};
     cpu.m_gpr[9] = {};
