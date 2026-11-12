@@ -570,6 +570,186 @@ extern "C" uint32_t ee_vu0_fetch_micro_instruction(
     return static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE);
 }
 
+namespace
+{
+bool ialu_completion_cycle(
+    const s_ee_vu0_state::s_ialu_pipe_entry& entry,
+    uint64_t* completion_cycle
+)
+{
+    if (!completion_cycle ||
+        entry.m_start_cycle > UINT64_MAX - entry.m_latency)
+    {
+        return false;
+    }
+
+    *completion_cycle = entry.m_start_cycle + entry.m_latency;
+    return true;
+}
+
+void ialu_pop_front(s_ee_vu0_state* vu0)
+{
+    vu0->m_ialu[vu0->m_ialu_read_pos] = {};
+    vu0->m_ialu_read_pos = (vu0->m_ialu_read_pos + 1u) & 3u;
+    --vu0->m_ialu_count;
+}
+} // namespace
+
+extern "C" uint32_t ee_vu0_ialu_schedule_write(
+    s_ee_vu0_state* vu0,
+    uint32_t register_mask,
+    uint32_t latency
+)
+{
+    if (!vu0)
+    {
+        return static_cast<uint32_t>(e_ee_vu0_sync_result::INVALID_ARGUMENT);
+    }
+
+    if (register_mask == 0 || latency == 0)
+    {
+        return static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE);
+    }
+
+    if (vu0->m_ialu_count >= 4 ||
+        vu0->m_ialu_read_pos >= 4 ||
+        vu0->m_ialu_write_pos >= 4)
+    {
+        return static_cast<uint32_t>(e_ee_vu0_sync_result::FAILED);
+    }
+
+    auto& entry = vu0->m_ialu[vu0->m_ialu_write_pos];
+    entry.m_register_mask = register_mask;
+    entry.m_latency = latency;
+    entry.m_start_cycle = vu0->m_cycle;
+
+    vu0->m_ialu_write_pos = (vu0->m_ialu_write_pos + 1u) & 3u;
+    ++vu0->m_ialu_count;
+    return static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE);
+}
+
+extern "C" uint32_t ee_vu0_ialu_retire_matured(
+    s_ee_vu0_state* vu0,
+    uint32_t* retired_count
+)
+{
+    if (!vu0 || !retired_count)
+    {
+        return static_cast<uint32_t>(e_ee_vu0_sync_result::INVALID_ARGUMENT);
+    }
+
+    if (vu0->m_ialu_count > 4 ||
+        vu0->m_ialu_read_pos >= 4 ||
+        vu0->m_ialu_write_pos >= 4)
+    {
+        return static_cast<uint32_t>(e_ee_vu0_sync_result::FAILED);
+    }
+
+    uint32_t retired = 0;
+    while (vu0->m_ialu_count != 0)
+    {
+        const auto& entry = vu0->m_ialu[vu0->m_ialu_read_pos];
+        uint64_t completion_cycle = 0;
+        if (!ialu_completion_cycle(entry, &completion_cycle))
+        {
+            return static_cast<uint32_t>(e_ee_vu0_sync_result::FAILED);
+        }
+
+        if (vu0->m_cycle < completion_cycle)
+        {
+            break;
+        }
+
+        ialu_pop_front(vu0);
+        ++retired;
+    }
+
+    *retired_count = retired;
+    return static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE);
+}
+
+extern "C" uint32_t ee_vu0_ialu_wait_for_reads(
+    s_ee_vu0_state* vu0,
+    uint32_t read_mask
+)
+{
+    if (!vu0)
+    {
+        return static_cast<uint32_t>(e_ee_vu0_sync_result::INVALID_ARGUMENT);
+    }
+
+    if (vu0->m_ialu_count > 4 ||
+        vu0->m_ialu_read_pos >= 4 ||
+        vu0->m_ialu_write_pos >= 4)
+    {
+        return static_cast<uint32_t>(e_ee_vu0_sync_result::FAILED);
+    }
+
+    if (read_mask == 0)
+    {
+        return static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE);
+    }
+
+    uint64_t stall_until = vu0->m_cycle;
+    uint32_t index = vu0->m_ialu_read_pos;
+    for (uint32_t i = 0; i < vu0->m_ialu_count; ++i)
+    {
+        const auto& entry = vu0->m_ialu[index];
+        if ((entry.m_register_mask & read_mask) != 0)
+        {
+            uint64_t completion_cycle = 0;
+            if (!ialu_completion_cycle(entry, &completion_cycle))
+            {
+                return static_cast<uint32_t>(e_ee_vu0_sync_result::FAILED);
+            }
+
+            if (completion_cycle > stall_until)
+            {
+                stall_until = completion_cycle;
+            }
+        }
+
+        index = (index + 1u) & 3u;
+    }
+
+    vu0->m_cycle = stall_until;
+    return static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE);
+}
+
+extern "C" uint32_t ee_vu0_ialu_flush_all(s_ee_vu0_state* vu0)
+{
+    if (!vu0)
+    {
+        return static_cast<uint32_t>(e_ee_vu0_sync_result::INVALID_ARGUMENT);
+    }
+
+    if (vu0->m_ialu_count > 4 ||
+        vu0->m_ialu_read_pos >= 4 ||
+        vu0->m_ialu_write_pos >= 4)
+    {
+        return static_cast<uint32_t>(e_ee_vu0_sync_result::FAILED);
+    }
+
+    while (vu0->m_ialu_count != 0)
+    {
+        const auto& entry = vu0->m_ialu[vu0->m_ialu_read_pos];
+        uint64_t completion_cycle = 0;
+        if (!ialu_completion_cycle(entry, &completion_cycle))
+        {
+            return static_cast<uint32_t>(e_ee_vu0_sync_result::FAILED);
+        }
+
+        if (completion_cycle > vu0->m_cycle)
+        {
+            vu0->m_cycle = completion_cycle;
+        }
+
+        ialu_pop_front(vu0);
+    }
+
+    return static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE);
+}
+
 extern "C" uint32_t ee_vu0_read_vi(
     const s_ee_vu0_state* vu0,
     uint32_t index
