@@ -164,6 +164,8 @@ bool ee_recomp(const char* elf_path,
     std::sort(entries.begin(), entries.end());
     entries.erase(std::unique(entries.begin(), entries.end()), entries.end());
     std::set<uint32_t> entry_set(entries.begin(), entries.end());
+    std::set<uint32_t> static_jalr_targets;
+    std::set<uint32_t> jalr_only_entries;
 
     // Iterate to a fixed point. Direct JAL/branch-and-link targets are
     // harvested as before. JALR targets are added only when CFG constant
@@ -173,6 +175,7 @@ bool ee_recomp(const char* elf_path,
     while (added_entries)
     {
         added_entries = false;
+        std::set<uint32_t> direct_call_targets;
         std::set<uint32_t> call_targets;
 
         for (const auto& kv : global_insns)
@@ -198,6 +201,7 @@ bool ee_recomp(const char* elf_path,
                 : static_cast<uint32_t>(ins.branch_target);
             if (target != 0 && loader.is_executable_address(target))
             {
+                direct_call_targets.insert(target);
                 call_targets.insert(target);
             }
         }
@@ -210,6 +214,7 @@ bool ee_recomp(const char* elf_path,
         {
             if (loader.is_executable_address(target))
             {
+                static_jalr_targets.insert(target);
                 call_targets.insert(target);
             }
         }
@@ -219,6 +224,11 @@ bool ee_recomp(const char* elf_path,
             if (entry_set.insert(target).second)
             {
                 entries.push_back(target);
+                if (indirect_targets.count(target) != 0 &&
+                    direct_call_targets.count(target) == 0)
+                {
+                    jalr_only_entries.insert(target);
+                }
                 worklist.insert(target);
                 added_entries = true;
             }
@@ -302,7 +312,7 @@ bool ee_recomp(const char* elf_path,
     auto emit_entry = [&](uint32_t entry) -> bool {
         // Pass full entry set so CFGs stop at other functions (stop-at-other-entry).
         std::vector<s_ee_function> fns =
-            analyzer.analyze(global_insns, {entry}, entries);
+            analyzer.analyze(global_insns, {entry}, entries, &block_starts);
         if (fns.empty()) return false;
         s_ee_function& fn = fns[0];
         fn.name = loader.find_symbol(entry) ?
@@ -463,6 +473,30 @@ bool ee_recomp(const char* elf_path,
         os << "  \"linear_insns\": " << result->linear_insns << ",\n";
         os << "  \"linear_supported\": " << result->linear_supported << ",\n";
         os << "  \"linear_unsupported\": " << result->linear_unsupported << ",\n";
+        os << "  \"discovered_entries\": [";
+        size_t entry_index = 0;
+        for (uint32_t entry : entries)
+        {
+            if (entry_index++ != 0) os << ", ";
+            os << "\"" << u32hex(entry) << "\"";
+        }
+        os << "],\n";
+        os << "  \"static_jalr_targets\": [";
+        size_t jalr_index = 0;
+        for (uint32_t target : static_jalr_targets)
+        {
+            if (jalr_index++ != 0) os << ", ";
+            os << "\"" << u32hex(target) << "\"";
+        }
+        os << "],\n";
+        os << "  \"jalr_only_entries\": [";
+        size_t jalr_only_index = 0;
+        for (uint32_t entry : jalr_only_entries)
+        {
+            if (jalr_only_index++ != 0) os << ", ";
+            os << "\"" << u32hex(entry) << "\"";
+        }
+        os << "],\n";
         os << "  \"functions\": [\n";
         for (size_t i = 0; i < result->functions.size(); ++i)
         {
