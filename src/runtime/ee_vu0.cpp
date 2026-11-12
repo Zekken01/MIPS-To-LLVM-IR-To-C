@@ -134,6 +134,8 @@ uint32_t ee_vu0_scheduler_sync_callback(
         return static_cast<uint32_t>(e_ee_vu0_sync_result::UNAVAILABLE);
     }
 
+    const uint64_t start_vu0_cycle = vu0->m_cycle;
+    const uint64_t start_ee_cycle = vu0->m_ee_cycle;
     const bool wait_for_m = sync_mode == e_ee_vu0_sync_mode::WAIT_TO_E_OR_M;
     if (wait_for_m && vu0->m_m_bit != 0 &&
         vu0->m_ee_cycle <= vu0->m_cycle)
@@ -192,9 +194,14 @@ uint32_t ee_vu0_scheduler_sync_callback(
         return static_cast<uint32_t>(e_ee_vu0_sync_result::FAILED);
     }
 
-    // PCSX2's addCycles epilogue advances EE time by (VU0.cycle - old EE
-    // cycle), making the new EE cycle equal to the VU0 cycle.
-    vu0->m_ee_cycle = vu0->m_cycle;
+    // PCSX2's addCycles epilogue advances EE time by the amount of VU0
+    // execution consumed in this call. Do not assign EE time to VU0 time:
+    // VU0 may already have been ahead when the interlocked wait began.
+    if (vu0->m_cycle < start_vu0_cycle)
+    {
+        return static_cast<uint32_t>(e_ee_vu0_sync_result::FAILED);
+    }
+    vu0->m_ee_cycle = start_ee_cycle + (vu0->m_cycle - start_vu0_cycle);
 
     const uint32_t vu1_result = validate_vu0_callback_result(
         scheduler->m_vu1_catch_up(scheduler->m_user, cpu, vu0, pc)
