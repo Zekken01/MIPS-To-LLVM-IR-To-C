@@ -13,7 +13,8 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel 2
 python3 tools/run_game.py /path/to/SLUS_214.42 \
   --build-dir=build --work-dir=build/sdbz \
-  --hle-startup --trace --auto-expand=16 \
+  --hle-startup --kseg-ram --trace --auto-expand=16 \
+  --report=build/sdbz/first-boot.json \
   --max-dispatches=128 --timeout-seconds=10
 ```
 
@@ -24,6 +25,16 @@ compiles one newly reached guest function, relinks, and replays from entry,
 up to N times; this is not an instruction-step emulator. `--max-dispatches`
 counts *native function entries*, not MIPS instructions. A replay timeout
 catches guest loops that do not return to the dispatcher.
+
+`--report=FILE` produces a JSON report with the stop reason, COP0 exception
+fields, all 32 low GPR halves, the instruction at EPC when available, and the
+last 64 native dispatch transitions. Reports are written even when the guest
+returns a non-zero blocked-execution status. Report history tracks **native
+function dispatches**, not individual MIPS instructions. With `--auto-expand`,
+the report is overwritten on each replay and reflects the final attempted
+run. `--kseg-ram` opts into mapping the EE KSEG0/KSEG1 direct-RAM mirrors
+onto physical RAM; it does not implement TLB, PS2 hardware MMIO, or device
+side effects.
 
 The runner initializes 32 MiB of EE RAM, copies PT_LOAD segments, initializes
 PC and SP and stops on exceptions, uncompiled PCs, exhaustion, or unsupported
@@ -62,7 +73,8 @@ ELFs, translates and links them to native host code and verifies that
 dispatch and selected kernel calls resume correctly. The real-game observations
 above were captured locally from the user's privately supplied ELF, not in CI.
 
-The legacy `ee_memory` host is a flat RAM backing with no general KSEG/TLB,
+The legacy `ee_memory` host is flat RAM backing with optional KSEG0/KSEG1
+RAM-only aliases, but no general TLB,
 MMIO, BIOS, device or interrupt emulation. The syscall handling is deliberately
 opt-in, experimental, and incomplete. Reaching the PCs above is not evidence
 of full console initialization, correct kernel behaviour or graphical output.
