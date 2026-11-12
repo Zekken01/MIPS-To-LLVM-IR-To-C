@@ -1,0 +1,145 @@
+name: VU0 PCSX2 differential
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  differential:
+    name: Compare against pinned PCSX2 interpreter
+    runs-on: ubuntu-22.04
+    timeout-minutes: 240
+    env:
+      PCSX2_REVISION: 82cac38b2af19d593dedfd9ddaa63448e7ec493c
+      PROJECT_BUILD: build-vu0-candidate
+      PCSX2_BUILD: build-vu0-reference
+
+    steps:
+      - name: Checkout recompiler
+        uses: actions/checkout@v4
+
+      - name: Checkout pinned PCSX2 source
+        uses: actions/checkout@v4
+        with:
+          repository: PCSX2/pcsx2
+          ref: 82cac38b2af19d593dedfd9ddaa63448e7ec493c
+          path: pcsx2
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install PCSX2 build packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc >/dev/null
+          sudo apt-add-repository -n 'deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-17 main'
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential clang-17 cmake curl extra-cmake-modules git \
+            libasound2-dev libaio-dev libcurl4-openssl-dev libdbus-1-dev \
+            libdecor-0-dev libegl-dev libevdev-dev libfontconfig-dev \
+            libfreetype-dev libgtk-3-dev libgudev-1.0-dev libharfbuzz-dev \
+            libinput-dev libopengl-dev libopus-dev libpcap-dev \
+            libpipewire-0.3-dev libpulse-dev libssl-dev libudev-dev \
+            libva-dev libvpl2 libvpl-dev libwayland-dev libx11-dev \
+            libx11-xcb-dev libx264-dev libxcb1-dev libxcb-composite0-dev \
+            libxcb-cursor-dev libxcb-damage0-dev libxcb-glx0-dev \
+            libxcb-icccm4-dev libxcb-image0-dev libxcb-keysyms1-dev \
+            libxcb-present-dev libxcb-randr-dev libxcb-render0-dev \
+            libxcb-render-util0-dev libxcb-shape0-dev libxcb-shm0-dev \
+            libxcb-sync-dev libxcb-util-dev libxcb-xfixes0-dev \
+            libxcb-xinput-dev libxcb-xkb-dev libxext-dev \
+            libxkbcommon-x11-dev libxrandr-dev lld-17 llvm-17 nasm \
+            ninja-build pkg-config zlib1g-dev
+
+      - name: Cache PCSX2 third-party dependencies
+        id: pcsx2-deps
+        uses: actions/cache@v4
+        with:
+          path: ~/deps
+          key: ubuntu-22.04-pcsx2-\${{ env.PCSX2_REVISION }}-\${{ hashFiles('pcsx2/.github/workflows/scripts/linux/build-dependencies-qt.sh', 'pcsx2/.github/workflows/scripts/common/*.patch') }}
+
+      - name: Build PCSX2 dependencies
+        if: steps.pcsx2-deps.outputs.cache-hit != 'true'
+        working-directory: pcsx2
+        env:
+          BUILD_FFMPEG: 1
+        run: .github/workflows/scripts/linux/build-dependencies-qt.sh "$HOME/deps"
+
+      - name: Verify PCSX2 revision and install trace adapter
+        run: |
+          test "$(git -C pcsx2 rev-parse HEAD)" = "$PCSX2_REVISION"
+          python3 tools/vu0_diff/integrate_pcsx2_test.py --pcsx2-root pcsx2
+
+      - name: Configure recompiler candidate
+        run: |
+          cmake -S . -B "$PROJECT_BUILD" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build recompiler candidate trace producer
+        run: |
+          cmake --build "$PROJECT_BUILD" \
+            --target ee_vu0_trace_candidate --parallel 2
+
+      - name: Configure PCSX2 interpreter tests
+        run: |
+          cmake -S pcsx2 -B "pcsx2/$PCSX2_BUILD" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$HOME/deps" \
+            -DCMAKE_C_COMPILER=clang-17 \
+            -DCMAKE_CXX_COMPILER=clang++-17 \
+            -DCMAKE_EXE_LINKER_FLAGS_INIT="-fuse-ld=lld" \
+            -DCMAKE_MODULE_LINKER_FLAGS_INIT="-fuse-ld=lld" \
+            -DCMAKE_SHARED_LINKER_FLAGS_INIT="-fuse-ld=lld" \
+            -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON \
+            -DENABLE_TESTS=ON \
+            -DENABLE_QT_UI=OFF \
+            -DDISABLE_ADVANCE_SIMD=ON \
+            -DENABLE_SETCAP=OFF \
+            -DUSE_LINKED_FFMPEG=ON \
+            -DUSE_OPENGL=OFF \
+            -DUSE_VULKAN=OFF \
+            -DX11_API=OFF \
+            -DWAYLAND_API=OFF \
+            -DUSE_BACKTRACE=OFF
+
+      - name: Build PCSX2 core test target
+        run: |
+          cmake --build "pcsx2/$PCSX2_BUILD" \
+            --target core_test --parallel 2
+
+      - name: Produce candidate trace
+        run: |
+          "$PROJECT_BUILD/ee_vu0_trace_candidate" \
+            "$PROJECT_BUILD/candidate-vu0.jsonl"
+
+      - name: Produce PCSX2 interpreter trace
+        shell: bash
+        run: |
+          set -euo pipefail
+          core_test="$(find "pcsx2/$PCSX2_BUILD" -type f -name core_test -perm -u+x -print -quit)"
+          test -n "$core_test"
+          VU0_TRACE_OUTPUT="$GITHUB_WORKSPACE/$PROJECT_BUILD/pcsx2-vu0.jsonl" \
+            "$core_test" \
+            --gtest_filter='VU0IssueOrder.EmitDeterministicPerPairTrace'
+          test -s "$PROJECT_BUILD/pcsx2-vu0.jsonl"
+
+      - name: Compare interpreter and candidate traces
+        run: |
+          python3 tools/compare_vu0_traces.py \
+            "$PROJECT_BUILD/pcsx2-vu0.jsonl" \
+            "$PROJECT_BUILD/candidate-vu0.jsonl"
+
+      - name: Upload differential traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vu0-differential-traces
+          path: |
+            build-vu0-candidate/pcsx2-vu0.jsonl
+            build-vu0-candidate/candidate-vu0.jsonl
+          if-no-files-found: ignore
+          retention-days: 7
