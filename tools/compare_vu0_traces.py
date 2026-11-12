@@ -5,7 +5,7 @@ Each input is JSON Lines. The first record is a header:
   {"schema":"mips-to-llvm-vu0-trace-v1","kind":"header",
    "program_sha256":"...", "initial_state":{...}, "engine":"..."}
 Subsequent records are:
-  {"kind":"step","step":0,"lower":0,"upper":0,
+  {"kind":"step","step":0,"pc":0,"lower":0,"upper":0,
    "state":{"vi":[32 integers], "cycle":1, "micro_pc":8, "tpc":1,
             "branch":0, "branch_pc":0, "delay_branch_pc":0,
             "take_delay_branch":false, "vi_backup_cycles":0,
@@ -71,6 +71,12 @@ def read_trace(path):
     for index, record in enumerate(records[1:]):
         if record.get("kind") != "step":
             raise TraceError(f"{path}: record {index + 2} is not a step")
+        for field in ("pc", "lower", "upper"):
+            value = record.get(field)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise TraceError(
+                    f"{path}: record {index + 2} has invalid {field}: {value!r}"
+                )
         step = record.get("step")
         if not isinstance(step, int) or isinstance(step, bool) or step != index:
             raise TraceError(
@@ -106,7 +112,7 @@ def compare_traces(left_path, right_path):
 
     mismatches = []
     for index, (left, right) in enumerate(zip(left_steps, right_steps)):
-        for field in ("lower", "upper"):
+        for field in ("pc", "lower", "upper"):
             if left.get(field) != right.get(field):
                 mismatches.append(
                     f"step {index} instruction {field}: "
