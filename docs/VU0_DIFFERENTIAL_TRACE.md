@@ -165,7 +165,12 @@ preservation of unselected vector lanes. The direct pinned PCSX2 comparison
 passed in [the 49-pair differential run](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43316781870):
 all 49 executed pairs, VF/VI state, 4 KB data-memory digests, and E-bit
 termination timing matched exactly (51 cycles). The runtime models the
-four-cycle FMAC completion deadline for ordinary LQ/SQ at E termination;
-general VF operand interlocks remain outside this verified slice.
+four-cycle FMAC completion deadline for ordinary LQ/SQ at E termination.
+The follow-up [VF hazard differential run](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43318464992)
+also passed all 49 executed pairs, now including a masked LQ-to-SQ
+read-after-write dependency on VF3.x. The candidate and PCSX2 agreed on
+the dependent store's stall, final cycle count, VF/VI registers, and memory
+digests. Only lower ordinary memory VF lane interlocks are covered; general
+upper-vector dependencies remain outside this verified slice.
 Memory-mapped VU1 register accesses and other unsupported VU0 operations
 remain out of scope.
