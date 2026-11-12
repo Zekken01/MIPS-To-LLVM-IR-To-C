@@ -306,4 +306,17 @@ extern "C" uint32_t ee_vu0_ctc2(
     }
 }
 
+extern "C" uint32_t ee_vu0_get_branch_condition(const s_ee_runtime* rt)
+{
+    if (!rt || !rt->m_vu0_state)
+    {
+        // 0 and 1 are valid branch predicates. 2 is the fail-closed sentinel.
+        return 2;
+    }
+
+    // PCSX2's BC2 predicate is VU0.VI[REG_VPU_STAT].US[0] bit 8.
+    return (rt->m_vu0_state->m_vpu_status & (1u << 8)) != 0 ? 1u : 0u;
+}
+
+
 } // namespace ee
