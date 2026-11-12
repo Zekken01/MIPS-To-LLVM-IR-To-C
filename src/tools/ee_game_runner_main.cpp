@@ -505,10 +505,12 @@ int main(int argc, char** argv)
                         out_pc, exit_name(reason), reason, status);
         }
 
+        // A bounded one-dispatch slice reports DISPATCH_LIMIT even when
+        // the translated callback just returned to the synthetic sentinel.
         if (callback_active &&
             count != 0u &&
             cpu.m_pc == k_callback_return_pc &&
-            status == 0u &&
+            status != 2u &&
             (reason == static_cast<uint32_t>(ee::e_ee_exit_reason::EE_EXIT_RETURN) ||
              reason == static_cast<uint32_t>(ee::e_ee_exit_reason::EE_EXIT_DISPATCH)))
         {
