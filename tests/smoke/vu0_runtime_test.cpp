@@ -619,7 +619,9 @@ int main()
         ee::s_ee_vu0_scheduler scheduler = make_mock_vu0_scheduler(&engine);
         ee::s_ee_vu0_state state{};
         state.m_vpu_status = 1u;
-        state.m_cycle = 20;
+        // VU0 is already ahead of EE at entry. The interlocked path must
+        // add only the cycles consumed during this wait to the EE counter.
+        state.m_cycle = 80;
         state.m_ee_cycle = 40;
 
         const uint32_t result = ee::ee_vu0_scheduler_sync_callback(
@@ -632,8 +634,8 @@ int main()
               "finish-to-E continues through an M-bit and stops at E");
         check((engine.m_last_flags & ee::EE_VU0_EXECUTE_STOP_AT_M) == 0,
               "finish-to-E does not request M-bit termination");
-        check(state.m_cycle == 40 && state.m_ee_cycle == 40,
-              "finish-to-E accounts VU0 elapsed cycles on EE");
+        check(state.m_cycle == 100 && state.m_ee_cycle == 60,
+              "finish-to-E adds consumed cycles without collapsing EE/VU0 offset");
         check(engine.m_vu1_calls == 1 && engine.m_event_calls == 0,
               "finish-to-E catches VU1 up without scheduling a stopped VU0");
     }
@@ -656,8 +658,8 @@ int main()
               "wait-to-E-or-M stops on the first M-bit");
         check((engine.m_last_flags & ee::EE_VU0_EXECUTE_STOP_AT_M) != 0,
               "wait-to-E-or-M requests M-bit termination");
-        check(state.m_ee_cycle == state.m_cycle && state.m_cycle == 30,
-              "wait-to-E-or-M catches EE time up to the VU0 cycle");
+        check(state.m_ee_cycle == 110 && state.m_cycle == 30,
+              "wait-to-E-or-M adds consumed VU0 cycles to the original EE time");
         check(engine.m_vu1_calls == 1 && engine.m_event_calls == 1 &&
               engine.m_last_event_delta == 4,
               "wait-to-E-or-M catches VU1 up and schedules a running VU0");
