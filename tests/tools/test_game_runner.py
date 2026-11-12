@@ -44,6 +44,19 @@ def make_elf(path, startup=False):
     path.write_bytes(image)
 
 
+def make_call_elf(path):
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    # JAL 0x00100030; NOP; JR $zero; NOP. The callee returns with JR $ra.
+    struct.pack_into("<I", image, 0x108, 0x0c04000c)
+    struct.pack_into("<I", image, 0x10c, 0x00000000)
+    struct.pack_into("<I", image, 0x110, 0x00000008)
+    struct.pack_into("<I", image, 0x114, 0x00000000)
+    struct.pack_into("<I", image, 0x130, 0x03e00008)
+    struct.pack_into("<I", image, 0x134, 0x00000000)
+    path.write_bytes(image)
+
+
 def main():
     if len(sys.argv) != 4:
         raise SystemExit(
@@ -120,6 +133,35 @@ def main():
         assert "guest left compiled code" in result.stderr, (
             result.stdout + result.stderr
         )
+
+    with tempfile.TemporaryDirectory(prefix="ee-native-auto-expand-") as tmp:
+        root = Path(tmp)
+        elf = root / "caller-callee.elf"
+        make_call_elf(elf)
+        result = subprocess.run(
+            [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf),
+                "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--max-dispatches=8",
+                "--auto-expand=1",
+                "--trace",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert "auto-expand: compiling reachable PC 0x00100030" in result.stdout, (
+            result.stdout + result.stderr
+        )
+        assert "EE stopped: dispatched=" in result.stdout, (
+            result.stdout + result.stderr
+        )
+        metadata = __import__("json").loads(
+            (root / "out" / "ir" / "ee_functions.json").read_text(encoding="utf-8")
+        )
+        assert metadata["function_count"] == 2, metadata
 
     print("game_runner end-to-end ELF/native smoke: PASS")
     return 0
