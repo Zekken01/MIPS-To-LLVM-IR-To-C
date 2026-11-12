@@ -197,7 +197,7 @@ void invalidate_unmodelled_destination(
         if (ins.rt == static_cast<uint8_t>(e_ee_opcode::REGIMM_BLTZAL) ||
             ins.rt == static_cast<uint8_t>(e_ee_opcode::REGIMM_BGEZAL) ||
             ins.rt == static_cast<uint8_t>(e_ee_opcode::REGIMM_BLTZALL) ||
-            ins.rt == static_cast<uint8_t>(e_ee_opcode::REGIMM_BGEZALL)
+            ins.rt == static_cast<uint8_t>(e_ee_opcode::REGIMM_BGEZALL))
         {
             clear_gpr_constant(state, 31);
         }
