@@ -129,9 +129,9 @@ The first runtime foundation is now represented in source, while COP2 transfer e
 - The transfer policy selector maps non-delay-slot transfers to catch-up-to-EE-cycle; delay-slot reads to finish-to-E; and delay-slot writes to wait-to-E-or-M.
 - VI0 is exposed as a hardwired zero register by the new read/write helpers.
 
-This is deliberately only an integration contract. It does not implement a VU0 execution engine or cycle scheduler, and the host callback must provide those. The current transfer opcodes remain UNSUPPORTED until a real scheduler is connected and differential transfer tests exercise both ordinary and delay-slot paths. FBRST/CMSAR1 side effects and the CFC2 special R-register mask still require explicit per-register handling.
+This was the initial state/scheduler contract. It was subsequently extended with the bounded `ee_vu0_scheduler_sync_callback` adapter described below. The adapter still delegates actual micro-instruction execution to the host; it is not a VU0 interpreter. Transfer forms are now integrated into the LLVM path and remain guarded by missing/failed scheduler callbacks.
 
-The new `vu0_runtime_test` checks sidecar layout, VI0 behavior, all three synchronization modes, callback state identity, error propagation, and fail-closed behaviour for absent state/callback.
+The `vu0_runtime_test` suite checks sidecar layout, VI0 behavior, transfer helpers, synchronization modes, callback state identity, error propagation, and fail-closed behaviour. Its mock-engine cases validate orchestration, not instruction semantics.
 
 
 ## Initial synchronized transfer helpers
@@ -143,7 +143,7 @@ The runtime now has first-pass implementations for QMFC2, QMTC2 and CFC2. They a
 - CFC2 reads the VI bank after synchronization, sign-extends ordinary 32-bit VI values into the low GPR doubleword, and applies the 23-bit mask for R (VI index 20). It preserves the GPR's upper 64-bit half, consistent with the current scalar write helpers.
 - All three helpers leave architectural destinations untouched when synchronization is unavailable or reports failure.
 
-These are runtime-callable helpers with unit tests. The LLVM lifter has not yet been taught to emit them and the decoder deliberately continues to report these instructions as UNSUPPORTED. CTC2 remains deferred until its read-only, R, FBRST, CMSAR1 and CLIP_FLAG behavior is mapped and tested.
+These runtime-callable helpers are now emitted by the LLVM lifter for QMFC2, QMTC2, CFC2 and CTC2, and the decoder validates their reserved bits before classifying them as VALID. CTC2's read-only, R, FBRST, CMSAR1 and CLIP_FLAG cases are handled explicitly; side-effectful FBRST/CMSAR1 operations still depend on a host control callback. JIT integration tests exercise transfers, cache barriers, failure exits and delay-slot synchronization.
 
 ### Transfer edge cases verified against PCSX2
 
@@ -164,7 +164,7 @@ The first CTC2 runtime helper now implements the interpreter's explicit register
 - CMSAR1 is routed through the host control callback, which is responsible for finishing/starting the VU1 micro subroutine using the low 16-bit address.
 - Missing/failed host control callbacks fail closed before the helper commits the relevant register state.
 
-The helper does not emulate VU1 or execute FBRST hardware actions itself. These remain responsibilities of the host callback. All COP2 transfer/control opcodes still remain UNSUPPORTED in the decoder and LLVM emitter until generated-code integration is completed.
+The helper does not emulate VU1 or execute FBRST hardware actions itself. These remain responsibilities of the host control callback. QMFC2/QMTC2/CFC2/CTC2 and BC2F/T/FL/TL are now decoded and lowered through the runtime boundary; VU0 SPECIAL1/SPECIAL2 macro instructions remain UNSUPPORTED.
 ## Bounded scheduler policy adapter
 
 `ee_vu0_scheduler_sync_callback` now implements the orchestration around a host-provided micro-engine slice callback:
