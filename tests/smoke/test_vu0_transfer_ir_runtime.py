@@ -1,0 +1,348 @@
+#!/usr/bin/env python3
+"""JIT-test COP2 transfers through the real VU0 runtime helper ABI."""
+
+import ctypes
+import pathlib
+import subprocess
+import sys
+import tempfile
+
+import llvmlite.binding as llvm
+
+
+ENTRY_PC = 0x00130000
+EE_EXIT_RETURN = 0
+EE_EXIT_DISPATCH = 3
+EE_EXIT_UNSUPPORTED = 4
+VU0_SYNC_COMPLETE = 0
+VU0_SYNC_FAILED = 3
+
+
+class U128(ctypes.Structure):
+    _fields_ = [
+        ("lo", ctypes.c_uint64),
+        ("hi", ctypes.c_uint64),
+    ]
+
+
+class EEState(ctypes.Structure):
+    _fields_ = [
+        ("gpr", U128 * 32),
+        ("hi", ctypes.c_uint64),
+        ("lo", ctypes.c_uint64),
+        ("hi1", ctypes.c_uint64),
+        ("lo1", ctypes.c_uint64),
+        ("sa", ctypes.c_uint32),
+        ("pc", ctypes.c_uint32),
+        ("exit_reason", ctypes.c_uint32),
+        ("pad", ctypes.c_uint32),
+        ("cop0", ctypes.c_uint32 * 32),
+        ("fpr", ctypes.c_uint64 * 32),
+        ("vu0", U128 * 32),
+        ("fcsr", ctypes.c_uint32),
+        ("fpu_acc", ctypes.c_uint32),
+    ]
+
+
+class VU0State(ctypes.Structure):
+    _fields_ = [
+        ("vi", ctypes.c_uint32 * 32),
+        ("acc", U128),
+        ("q", U128),
+        ("p", U128),
+        ("mac_flags", ctypes.c_uint32),
+        ("clip_flags", ctypes.c_uint32),
+        ("status_flags", ctypes.c_uint32),
+        ("vpu_status", ctypes.c_uint32),
+        ("fbrst", ctypes.c_uint32),
+        ("cmsar1", ctypes.c_uint32),
+        ("tpc", ctypes.c_uint32),
+        ("micro_pc", ctypes.c_uint32),
+        ("cycle", ctypes.c_uint64),
+        ("ee_cycle", ctypes.c_uint64),
+        ("running", ctypes.c_uint32),
+        ("e_bit", ctypes.c_uint32),
+        ("m_bit", ctypes.c_uint32),
+    ]
+
+
+class Runtime(ctypes.Structure):
+    _fields_ = [
+        ("user", ctypes.c_void_p),
+        ("vu0_state", ctypes.c_void_p),
+        ("vu0_user", ctypes.c_void_p),
+        ("vu0_sync", ctypes.c_void_p),
+        ("vu0_control_user", ctypes.c_void_p),
+        ("vu0_control", ctypes.c_void_p),
+    ]
+
+
+SYNC_CALLBACK = ctypes.CFUNCTYPE(
+    ctypes.c_uint32,
+    ctypes.c_void_p,
+    ctypes.POINTER(EEState),
+    ctypes.POINTER(VU0State),
+    ctypes.c_uint32,
+    ctypes.c_uint32,
+)
+
+CONTROL_CALLBACK = ctypes.CFUNCTYPE(
+    ctypes.c_uint32,
+    ctypes.c_void_p,
+    ctypes.POINTER(EEState),
+    ctypes.POINTER(VU0State),
+    ctypes.c_uint32,
+    ctypes.c_uint32,
+    ctypes.c_uint32,
+)
+
+
+def require(condition, message):
+    if not condition:
+        raise AssertionError(message)
+
+
+def aligned_instance(struct_type):
+    backing = ctypes.create_string_buffer(ctypes.sizeof(struct_type) + 15)
+    address = ctypes.addressof(backing)
+    aligned = (address + 15) & ~15
+    value = ctypes.cast(aligned, ctypes.POINTER(struct_type)).contents
+    return backing, value
+
+
+def register_runtime_symbols(library_path):
+    library = ctypes.CDLL(str(library_path))
+    for name in (
+        "ee_vu0_qmfc2",
+        "ee_vu0_qmtc2",
+        "ee_vu0_cfc2",
+        "ee_vu0_ctc2",
+    ):
+        symbol = getattr(library, name)
+        address = ctypes.cast(symbol, ctypes.c_void_p).value
+        require(address is not None and address != 0,
+                f"runtime helper {name} was not exported")
+        llvm.add_symbol(name, address)
+    return library
+
+
+def compile_jit(fixture, temp_dir, mode, target):
+    ir_path = temp_dir / f"{mode}.ll"
+    subprocess.run([str(fixture), str(ir_path), mode], check=True)
+
+    module = llvm.parse_assembly(ir_path.read_text(encoding="utf-8"))
+    module.verify()
+    target_machine = target.create_target_machine(opt=0)
+    module.triple = llvm.get_default_triple()
+    module.data_layout = str(target_machine.target_data)
+    module.verify()
+
+    engine = llvm.create_mcjit_compiler(llvm.parse_assembly(""), target_machine)
+    engine.add_module(module)
+    engine.finalize_object()
+    address = engine.get_function_address("guest_vu0_transfer_test")
+    require(address != 0, f"{mode}: JIT function was not emitted")
+
+    function_type = ctypes.CFUNCTYPE(
+        ctypes.c_uint32, ctypes.POINTER(EEState), ctypes.c_void_p
+    )
+    return function_type(address), engine, module, target_machine
+
+
+def make_runtime(vu0, sync_result=VU0_SYNC_COMPLETE,
+                 control_result=VU0_SYNC_COMPLETE):
+    sync_state = {"calls": [], "result": sync_result}
+    control_state = {"calls": [], "result": control_result}
+
+    def sync_callback(_user, _cpu, _vu0, mode, pc):
+        sync_state["calls"].append((int(mode), int(pc)))
+        return sync_state["result"]
+
+    def control_callback(_user, _cpu, _vu0, register_index, value, pc):
+        control_state["calls"].append(
+            (int(register_index), int(value), int(pc))
+        )
+        return control_state["result"]
+
+    sync_ref = SYNC_CALLBACK(sync_callback)
+    control_ref = CONTROL_CALLBACK(control_callback)
+    runtime = Runtime()
+    runtime.vu0_state = ctypes.addressof(vu0)
+    runtime.vu0_sync = ctypes.cast(sync_ref, ctypes.c_void_p).value
+    runtime.vu0_control = ctypes.cast(control_ref, ctypes.c_void_p).value
+    return runtime, sync_ref, control_ref, sync_state, control_state
+
+
+def run_guest(fixture, temp_dir, target, mode, setup=None,
+              sync_result=VU0_SYNC_COMPLETE):
+    guest_fn, engine, module, target_machine = compile_jit(
+        fixture, temp_dir, mode, target
+    )
+    cpu_backing, cpu = aligned_instance(EEState)
+    vu0_backing, vu0 = aligned_instance(VU0State)
+    runtime, sync_ref, control_ref, sync_state, control_state = make_runtime(
+        vu0, sync_result=sync_result
+    )
+
+    if setup:
+        setup(cpu, vu0)
+
+    result = guest_fn(ctypes.pointer(cpu), ctypes.byref(runtime))
+    retained = (
+        cpu_backing, vu0_backing, engine, module, target_machine,
+        sync_ref, control_ref,
+    )
+    return result, cpu, vu0, sync_state, control_state, retained
+
+
+def check_sync(sync_state, mode, pc, label):
+    require(sync_state["calls"] == [(mode, pc)],
+            f"{label}: expected one sync call {(mode, pc)}, "
+            f"got {sync_state['calls']}")
+
+
+def main():
+    require(
+        len(sys.argv) == 3,
+        "usage: test_vu0_transfer_ir_runtime.py fixture helper_library",
+    )
+    fixture = pathlib.Path(sys.argv[1]).resolve()
+    helper_library = pathlib.Path(sys.argv[2]).resolve()
+
+    llvm.initialize_native_target()
+    llvm.initialize_native_asmprinter()
+    target = llvm.Target.from_default_triple()
+    runtime_library = register_runtime_symbols(helper_library)
+
+    with tempfile.TemporaryDirectory(prefix="ee-vu0-transfer-") as directory:
+        temp_dir = pathlib.Path(directory)
+
+        def init_qmfc(cpu, vu0):
+            cpu.gpr[8] = U128(0x0123456789abcdef, 0xfedcba9876543210)
+            cpu.gpr[8] = U128(0xaaaaaaaa55555555, 0xbbbbbbbb66666666)
+            cpu.gpr[8] = U128(0, 0)
+            cpu.vu0[6] = U128(0x0123456789abcdef, 0xfedcba9876543210)
+
+        result, cpu, vu0, sync, control, keep = run_guest(
+            fixture, temp_dir, target, "qmfc2", init_qmfc
+        )
+        require(result == EE_EXIT_DISPATCH and cpu.exit_reason == EE_EXIT_DISPATCH,
+                "QMFC2 should return to the dispatcher")
+        require(cpu.gpr[8].lo == 0x0123456789abcdef and
+                cpu.gpr[8].hi == 0xfedcba9876543210,
+                "QMFC2 must copy both VF halves into the destination GPR")
+        check_sync(sync, 0, ENTRY_PC, "QMFC2")
+
+        def init_qmtc(cpu, _vu0):
+            cpu.gpr[8] = U128(0x8877665544332211, 0x0123456789abcdef)
+
+        result, cpu, vu0, sync, control, keep = run_guest(
+            fixture, temp_dir, target, "qmtc2", init_qmtc
+        )
+        require(result == EE_EXIT_DISPATCH,
+                "QMTC2 should return to the dispatcher")
+        require(cpu.vu0[6].lo == 0x8877665544332211 and
+                cpu.vu0[6].hi == 0x0123456789abcdef,
+                "QMTC2 must copy both GPR halves into VF")
+        check_sync(sync, 0, ENTRY_PC, "QMTC2")
+
+        def init_cfc(cpu, vu0):
+            cpu.gpr[8].hi = 0x123456789abcdef0
+            vu0.vi[6] = 0x81234567
+
+        result, cpu, vu0, sync, control, keep = run_guest(
+            fixture, temp_dir, target, "cfc2", init_cfc
+        )
+        require(result == EE_EXIT_DISPATCH,
+                "CFC2 should return to the dispatcher")
+        require(cpu.gpr[8].lo == 0xffffffff81234567,
+                "CFC2 must sign-extend an ordinary VI value")
+        require(cpu.gpr[8].hi == 0x123456789abcdef0,
+                "CFC2 must preserve the upper 64-bit GPR half")
+        check_sync(sync, 0, ENTRY_PC, "CFC2")
+
+        def init_ctc(cpu, _vu0):
+            cpu.gpr[8].lo = 0x89abcdef
+
+        result, cpu, vu0, sync, control, keep = run_guest(
+            fixture, temp_dir, target, "ctc2", init_ctc
+        )
+        require(result == EE_EXIT_DISPATCH and vu0.vi[6] == 0x89abcdef,
+                "CTC2 must write the low GPR word to VI")
+        check_sync(sync, 0, ENTRY_PC, "CTC2")
+
+        # The same operations in a standard branch delay slot use the
+        # direction-specific wait policy, not the ordinary catch-up policy.
+        for mode, expected_mode in (
+            ("qmfc2_delay", 1),
+            ("cfc2_delay", 1),
+            ("qmtc2_delay", 2),
+            ("ctc2_delay", 2),
+        ):
+            def init_delay(cpu, vu0):
+                cpu.gpr[8] = U128(0x1122334455667788, 0x99aabbccddeeff00)
+                vu0.vi[6] = 0x12345678
+                vu0.m_vi[6] = 0x12345678
+
+            result, cpu, vu0, sync, control, keep = run_guest(
+                fixture, temp_dir, target, mode, init_delay
+            )
+            check_sync(sync, expected_mode, ENTRY_PC + 4, mode)
+
+        # GPR writes made in SSA before a helper call must be visible to the
+        # helper, and GPR writes made by a helper must be visible afterwards.
+        def init_qmtc_after_addiu(cpu, _vu0):
+            cpu.gpr[8].hi = 0x1020304050607080
+
+        result, cpu, vu0, sync, control, keep = run_guest(
+            fixture, temp_dir, target, "qmtc2_after_addiu",
+            init_qmtc_after_addiu
+        )
+        require(vu0.vu0[6].lo == 0x1234 and
+                vu0.vu0[6].hi == 0x1020304050607080,
+                "QMTC2 must observe preceding ADDIU after the GPR cache flush")
+
+        result, cpu, vu0, sync, control, keep = run_guest(
+            fixture, temp_dir, target, "ctc2_after_addiu"
+        )
+        require(vu0.vi[6] == 0x1234,
+                "CTC2 must observe preceding ADDIU after the GPR cache flush")
+
+        def init_cfc_then_addiu(_cpu, vu0):
+            vu0.vi[6] = 0x7fffffff
+
+        result, cpu, vu0, sync, control, keep = run_guest(
+            fixture, temp_dir, target, "cfc2_then_addiu",
+            init_cfc_then_addiu
+        )
+        require(cpu.gpr[10].lo == 0xffffffff80000000,
+                "later ALU instruction must reload the GPR written by CFC2")
+
+        # Runtime callback failure stops at the transfer PC and leaves the
+        # helper's destination untouched.
+        def init_failure(cpu, vu0):
+            cpu.gpr[8] = U128(0xaaaaaaaa55555555, 0xbbbbbbbb66666666)
+            vu0.vu0[6] = U128(0x0123456789abcdef, 0xfedcba9876543210)
+
+        result, cpu, vu0, sync, control, keep = run_guest(
+            fixture, temp_dir, target, "qmfc2", init_failure,
+            sync_result=VU0_SYNC_FAILED
+        )
+        require(result == EE_EXIT_UNSUPPORTED and
+                cpu.exit_reason == EE_EXIT_UNSUPPORTED and cpu.pc == ENTRY_PC,
+                "failed VU0 sync must exit at the transfer instruction")
+        require(cpu.gpr[8].lo == 0xaaaaaaaa55555555 and
+                cpu.gpr[8].hi == 0xbbbbbbbb66666666,
+                "failed QMFC2 must not modify its destination")
+        check_sync(sync, 0, ENTRY_PC, "failed QMFC2")
+
+    # Keep the library loaded until every JIT engine has been destroyed.
+    _ = runtime_library
+    print(
+        "vu0_transfer_ir_runtime: PASS (QMFC2/QMTC2/CFC2/CTC2 helper calls, "
+        "GPR cache barriers, delay-slot synchronization, failure exits)"
+    )
+
+
+if __name__ == "__main__":
+    main()
