@@ -1088,10 +1088,10 @@ int main()
         );
         check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE),
               "finish-to-E resumes after M and completes at E");
-        check(state.m_cycle == 4,
-              "finish-to-E executes the M slice plus the E delay pair");
-        check(state.m_ee_cycle == 24,
-              "finish-to-E adds both execution slices to the EE cycle count");
+        check(state.m_cycle == 5,
+              "finish-to-E flushes the final IALU reservation after the E delay pair");
+        check(state.m_ee_cycle == 25,
+              "finish-to-E accounts the final IALU flush cycle on the EE");
         check(state.m_micro_pc == 32,
               "finish-to-E preserves the E delay pair's next micro-PC");
         check(static_cast<uint16_t>(state.m_vi[1]) == 1 &&
