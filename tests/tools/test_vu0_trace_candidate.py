@@ -112,7 +112,7 @@ class VU0CandidateTraceTests(unittest.TestCase):
             self.assertEqual(final["vi"][1], 5)
             self.assertEqual(final["vi"][2], 4)
             self.assertEqual(final["vi"][3], 0x333)
-            self.assertEqual(final["vi"][4], 1)
+            self.assertEqual(final["vi"][4], 0xffff)
             self.assertEqual(final["vi"][5], 1)
             self.assertEqual(final["vi"][6], 5)
             self.assertEqual(final["vi"][7], 4)
