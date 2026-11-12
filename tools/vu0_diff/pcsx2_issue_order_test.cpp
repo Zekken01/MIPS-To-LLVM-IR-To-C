@@ -7,6 +7,8 @@
 #include <array>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
+#include <type_traits>
 #include <fstream>
 #include <string>
 
@@ -121,7 +123,12 @@ protected:
 
     void SetUp() override
     {
-        VU0 = VURegs{};
+        static_assert(std::is_trivially_copyable_v<VURegs>);
+        // VURegs has a user-provided constructor that only clears Micro/Mem.
+        // Value-initializing it does not reset VI/VF banks or pipeline state.
+        // Clear the complete trivially-copyable state before assigning the
+        // fixture memories so the PCSX2 trace starts from the candidate state.
+        std::memset(&VU0, 0, sizeof(VU0));
         VU0.Micro = m_micro.data();
         VU0.Mem = m_data.data();
         VU0.VF[0].f.x = 0.0f;
