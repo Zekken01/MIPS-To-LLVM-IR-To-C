@@ -1088,9 +1088,12 @@ int main()
         );
         check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE),
               "finish-to-E resumes after M and completes at E");
-        check(state.m_cycle == 4 && state.m_ee_cycle == 24 &&
-              state.m_micro_pc == 32,
-              "finish-to-E counts both slices and preserves the E delay pair");
+        check(state.m_cycle == 4,
+              "finish-to-E executes the M slice plus the E delay pair");
+        check(state.m_ee_cycle == 24,
+              "finish-to-E adds both execution slices to the EE cycle count");
+        check(state.m_micro_pc == 32,
+              "finish-to-E preserves the E delay pair's next micro-PC");
         check(static_cast<uint16_t>(state.m_vi[1]) == 1 &&
               static_cast<uint16_t>(state.m_vi[2]) == 2 &&
               static_cast<uint16_t>(state.m_vi[3]) == 3 &&
