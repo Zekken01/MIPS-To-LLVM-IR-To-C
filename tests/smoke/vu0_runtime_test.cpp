@@ -1060,6 +1060,26 @@ int main()
         ee::s_ee_vu0_state state{};
         ee::s_ee_vu0_ialu_engine ialu_engine{};
         state.m_vpu_status = 1u;
+        state.m_vi[1] = 0xabcd0007u;
+        install_vu0_pair(&state, 0, make_vu0_iaddiu(1, 0, 0x1234),
+                         make_vu0_upper_nop(0x20000000u)); // M
+
+        const uint32_t result = ee::ee_vu0_execute_ialu_callback(
+            &ialu_engine, &cpu, &state, 1,
+            ee::EE_VU0_EXECUTE_EXACT_CYCLES, 0x00102000u
+        );
+        check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              state.m_m_bit == 1 &&
+              static_cast<uint16_t>(state.m_vi[1]) == 0x1234u &&
+              state.m_vi_backup_register == 1 &&
+              static_cast<uint16_t>(state.m_vi_backup_old_value) == 7u &&
+              state.m_vi_backup_cycles == 1,
+              "VU0 IALU write ages its new VI backup to one cycle after issue");
+    }
+    {
+        ee::s_ee_vu0_state state{};
+        ee::s_ee_vu0_ialu_engine ialu_engine{};
+        state.m_vpu_status = 1u;
         install_vu0_pair(&state, 0, make_vu0_branch(0x20, 0, 0, 2),
                          make_vu0_upper_nop());
         install_vu0_pair(&state, 1, make_vu0_iaddiu(2, 0, 2),
