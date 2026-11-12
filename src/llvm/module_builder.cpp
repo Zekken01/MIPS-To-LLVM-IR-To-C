@@ -369,7 +369,12 @@ static std::set<uint8_t> block_written(const std::vector<ee::s_ee_instruction>& 
             if (ins.rs == static_cast<uint8_t>(e_ee_opcode::COP0_MFC0) && ins.rt != 0) w.insert(ins.rt);
             break;
         case e_ee_opcode::OP_COP1:
-            if (ins.rs == static_cast<uint8_t>(e_ee_opcode::COP1_MFC1) && ins.rt != 0) w.insert(ins.rt);
+            if ((ins.rs == static_cast<uint8_t>(e_ee_opcode::COP1_MFC1) ||
+                 ins.rs == static_cast<uint8_t>(e_ee_opcode::COP1_CFC1)) &&
+                ins.rt != 0)
+            {
+                w.insert(ins.rt);
+            }
             break;
         case e_ee_opcode::OP_MMI:
             switch (ins.funct)
@@ -505,7 +510,11 @@ static std::set<uint8_t> block_read_before_write(const std::vector<ee::s_ee_inst
             if (ins.rs == static_cast<uint8_t>(e_ee_opcode::COP0_MTC0)) consider_read(ins.rt);
             break;
         case e_ee_opcode::OP_COP1:
-            if (ins.rs == static_cast<uint8_t>(e_ee_opcode::COP1_MTC1)) consider_read(ins.rt);
+            if (ins.rs == static_cast<uint8_t>(e_ee_opcode::COP1_MTC1) ||
+                ins.rs == static_cast<uint8_t>(e_ee_opcode::COP1_CTC1))
+            {
+                consider_read(ins.rt);
+            }
             if (ins.rs == static_cast<uint8_t>(e_ee_opcode::COP1_LWC1)) {
                 consider_read(ins.rs);
                 if (ins.rt != 0) written_so_far.insert(ins.rt);
