@@ -1,11 +1,6 @@
 name: VU0 PCSX2 differential
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - .github/workflows/vu0-differential.yml
   workflow_dispatch:
 
 permissions:
