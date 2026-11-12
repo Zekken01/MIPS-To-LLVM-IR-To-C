@@ -84,6 +84,10 @@ target_link_libraries(ee_dispatcher_test PRIVATE ee_core)
 add_executable(ee_vu0_runtime_test tests/smoke/vu0_runtime_test.cpp)
 target_link_libraries(ee_vu0_runtime_test PRIVATE ee_core)
 
+# Emit a deterministic per-pair VU0 trace from the in-tree candidate runtime.
+add_executable(ee_vu0_trace_candidate tests/tools/vu0_trace_candidate.cpp)
+target_link_libraries(ee_vu0_trace_candidate PRIVATE ee_core)
+
 # Build the real runtime helper symbols into a loadable library so the LLVM
 # MCJIT regression can resolve the helper calls exactly as generated.
 add_library(ee_vu0_jit_helpers SHARED src/runtime/ee_vu0.cpp)
@@ -158,6 +162,11 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME vu0_trace_comparator
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_compare_vu0_traces.py)
+    add_test(NAME vu0_candidate_trace
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/tools/test_vu0_trace_candidate.py
+                $<TARGET_FILE:ee_vu0_trace_candidate>
+                ${CMAKE_SOURCE_DIR}/tools/compare_vu0_traces.py)
 endif()
 add_test(NAME decoder COMMAND ee_decoder_test)
 add_test(NAME dispatcher COMMAND ee_dispatcher_test)
