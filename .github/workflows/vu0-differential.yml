@@ -69,6 +69,13 @@ jobs:
           BUILD_FFMPEG: 1
         run: .github/workflows/scripts/linux/build-dependencies-qt.sh "$HOME/deps"
 
+      - name: Save PCSX2 dependency cache before configure
+        if: steps.pcsx2-deps.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/deps
+          key: ubuntu-22.04-pcsx2-${{ env.PCSX2_REVISION }}-${{ hashFiles('pcsx2/.github/workflows/scripts/linux/build-dependencies-qt.sh', 'pcsx2/.github/workflows/scripts/common/*.patch') }}
+
       - name: Verify PCSX2 revision and install trace adapter
         run: |
           test "$(git -C pcsx2 rev-parse HEAD)" = "$PCSX2_REVISION"
