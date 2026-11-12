@@ -141,13 +141,14 @@ malformed/incompatible traces.
 The repository now contains all pieces needed to produce both sides of the
 trace:
 
-- A shared deterministic 56-pair microprogram fixture, including ILW/ISW and masked LQ/SQ.
+- A shared deterministic 60-pair microprogram fixture, including ILW/ISW,
+  masked LQ/SQ, and indexed LQI/SQI/LQD/SQD.
 - The in-tree candidate trace executable, built as `ee_vu0_trace_candidate`.
 - A pinned PCSX2 GoogleTest adapter that captures one pair after each
   `vu0Exec(&VU0)` call when `VU0_TRACE_OUTPUT` is set.
 - The JSONL comparator and regression tests, including executed-PC comparison.
 
-CTest validates the candidate trace path and its expected 49 executed pairs.
+CTest validates the candidate trace path and its expected 53 executed pairs.
 To run the real cross-engine comparison, use either
 `tools/vu0_diff/run_differential.py` with a PCSX2 checkout and its dependencies,
 or trigger the manual GitHub Actions workflow named **VU0 PCSX2 differential**.
@@ -170,7 +171,10 @@ The follow-up [VF hazard differential run](https://github.com/twist84/MIPS-To-LL
 also passed all 49 executed pairs, now including a masked LQ-to-SQ
 read-after-write dependency on VF3.x. The candidate and PCSX2 agreed on
 the dependent store's stall, final cycle count, VF/VI registers, and memory
-digests. Only lower ordinary memory VF lane interlocks are covered; general
-upper-vector dependencies remain outside this verified slice.
-Memory-mapped VU1 register accesses and other unsupported VU0 operations
-remain out of scope.
+digests. The [53-pair indexed-memory differential run](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43320848379)
+then passed with LQI/SQI/LQD/SQD, covering post-increment and pre-decrement
+VI address updates, masked VF loads and stores, and a dependent indexed VF
+store. PCSX2 and the candidate matched after every one of the 53 executed
+pairs, finishing at cycle 61 and micro-PC 0x1e0. Only lower memory VF
+lane interlocks are verified; upper-vector dependencies and VU1-mapped
+memory accesses remain out of scope.
