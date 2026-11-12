@@ -251,9 +251,10 @@ uint32_t ee_vu0_fetch_micro_instruction(
     s_ee_vu0_micro_instruction* out
 );
 
-// Conservative VU0 interpreter slice: lower integer ALU/control-flow
-// operations paired with upper NOP only. Memory, flags, and vector arithmetic
-// remain unsupported; rejected pairs leave the micro-PC at the pair start.
+// Conservative VU0 interpreter slice: lower integer ALU/control-flow and
+// ordinary data-memory ILW/ISW operations paired with upper NOP only.
+// VU1-mapped register memory, upper vector arithmetic and I/D/T flags remain
+// unsupported; rejected pairs leave the micro-PC at the pair start.
 struct s_ee_vu0_ialu_engine
 {
     uint32_t m_max_instructions_per_call = 65536;
