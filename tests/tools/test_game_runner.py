@@ -5,6 +5,7 @@ Runs a real MIPS ELF entry through the full emitter, object linker and
 bounded native dispatcher. This is not a claim of PS2 BIOS bootability.
 """
 from pathlib import Path
+import json
 import struct
 import subprocess
 import sys
@@ -123,6 +124,7 @@ def main():
                 "--work-dir", str(root / "out"),
                 "--max-dispatches=8",
                 "--trace",
+                "--report", str(root / "first_boot.json"),
             ],
             capture_output=True,
             text=True,
@@ -140,6 +142,13 @@ def main():
         assert "guest left compiled code" in result.stderr or (
             "guest blocked" in result.stderr
         ), result.stdout + result.stderr
+        report = json.loads((root / "first_boot.json").read_text(encoding="utf-8"))
+        assert report["schema"] == "ee-game-run-report-v1", report
+        assert report["entry_pc"] == 0x00100008, report
+        assert report["dispatches"] >= 1, report
+        assert report["history"][0]["from_pc"] == 0x00100008, report
+        assert report["history"][-1]["dispatch"] == report["dispatches"], report
+        assert len(report["gpr_lo"]) == 32, report
         assert (root / "out" / "ir" / "ee_functions.json").is_file()
         assert (root / "out" / "objects" / "objects.json").is_file()
 
