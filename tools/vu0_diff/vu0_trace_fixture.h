@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include "sha256.h"
 
 namespace vu0_trace_fixture
 {
@@ -11,8 +12,6 @@ constexpr uint32_t k_upper_nop = 0x000002ffu;
 constexpr uint32_t k_idle_lower = 0x10000000u; // IADDIU VI0, VI0, 0
 constexpr uint32_t k_step_limit = 64u;
 constexpr uint32_t k_expected_step_count = 30u;
-constexpr char k_program_sha256[] =
-    "27cd26fb9a1a1e05aa1d9b6986904e2b860d6afd8a2688ec4e2d5270da8fe3a8";
 
 struct s_pair
 {
