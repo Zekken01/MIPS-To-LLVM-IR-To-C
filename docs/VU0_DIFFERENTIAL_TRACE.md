@@ -112,10 +112,11 @@ trace:
 - The JSONL comparator and regression tests, including executed-PC comparison.
 
 CTest validates the candidate trace path and its expected 30 executed pairs.
-To run the real cross-engine comparison, build a PCSX2 checkout at the pinned
-revision, install the adapter with
-`tools/vu0_diff/integrate_pcsx2_test.py`, and follow the commands in
-`tools/vu0_diff/README.md`.
+To run the real cross-engine comparison, use either
+`tools/vu0_diff/run_differential.py` with a PCSX2 checkout and its dependencies,
+or trigger the manual GitHub Actions workflow named **VU0 PCSX2 differential**.
+That workflow checks out the pinned PCSX2 revision, builds its core test target,
+runs the paired trace capture, compares both JSONL files, and uploads the traces.
 
 The PCSX2 trace has not yet been produced and compared in this environment.
 Do not claim live differential validation until that comparison succeeds.
