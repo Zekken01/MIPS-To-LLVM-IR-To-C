@@ -875,19 +875,6 @@ uint32_t vu0_memory_byte_address(
     return (static_cast<uint32_t>((base + offset) * 16) & 0xffffu);
 }
 
-uint32_t vu0_lower_memory_read_mask(
-    const s_ee_vu0_micro_instruction& instruction
-)
-{
-    const auto& fields = instruction.m_lower_fields;
-    uint32_t mask = fields.m_is != 0 ? 1u << fields.m_is : 0u;
-    if (fields.m_operation == e_ee_vu0_micro_opcode::ISW && fields.m_it != 0)
-    {
-        mask |= 1u << fields.m_it;
-    }
-    return mask;
-}
-
 bool vu0_execute_lower_memory(
     s_ee_vu0_state* vu0,
     const s_ee_vu0_micro_instruction& instruction,
@@ -1376,13 +1363,13 @@ uint32_t ee_vu0_execute_ialu_callback(
         // post-stall state rather than values sampled before the interlock.
         const uint64_t cycles_before_pair = vu0->m_cycle;
         ++vu0->m_cycle;
-        if (lower_branch || lower_memory)
+        // PCSX2 only tests IALU read dependencies for VUPIPE_BRANCH.
+        // ILW/ISW are VUPIPE_IALU: loads reserve their destination for
+        // four cycles, but an adjacent store does not stall on that pipe.
+        if (lower_branch)
         {
-            const uint32_t read_mask = lower_branch
-                ? vu0_lower_branch_read_mask(instruction)
-                : vu0_lower_memory_read_mask(instruction);
             const uint32_t wait_result = ee_vu0_ialu_wait_for_reads(
-                vu0, read_mask
+                vu0, vu0_lower_branch_read_mask(instruction)
             );
             if (wait_result != static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE))
             {
