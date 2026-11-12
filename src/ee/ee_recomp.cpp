@@ -202,8 +202,10 @@ bool ee_recomp(const char* elf_path,
             }
         }
 
+        const std::set<uint32_t> block_starts =
+            collect_function_block_starts(global_insns, entries);
         const std::set<uint32_t> indirect_targets =
-            collect_static_jalr_targets(global_insns, entries, entries);
+            collect_static_jalr_targets(global_insns, entries, entries, &block_starts);
         for (uint32_t target : indirect_targets)
         {
             if (loader.is_executable_address(target))
@@ -237,13 +239,15 @@ bool ee_recomp(const char* elf_path,
     // discovered entry. Data regions are never decoded, so they never
     // appear here.
     // ------------------------------------------------------------------
+    const std::set<uint32_t> block_starts =
+        collect_function_block_starts(global_insns, entries);
     std::set<uint32_t> function_pcs;
     std::set<uint32_t> analyzed_entries;
     for (uint32_t ep : entries)
     {
         if (!analyzed_entries.insert(ep).second) continue;
         std::vector<s_ee_function> fns =
-            analyzer.analyze(global_insns, {ep}, entries);
+            analyzer.analyze(global_insns, {ep}, entries, &block_starts);
         if (fns.empty()) continue;
         for (const auto& bb : fns[0].blocks)
         {
