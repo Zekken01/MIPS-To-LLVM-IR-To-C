@@ -24,7 +24,8 @@ std::set<uint32_t> collect_static_jalr_targets(
     const std::map<uint32_t, s_ee_instruction>& insns,
     const std::vector<uint32_t>& entry_points,
     const std::vector<uint32_t>& all_entries = {},
-    const std::set<uint32_t>* block_starts = nullptr
+    const std::set<uint32_t>* block_starts = nullptr,
+    std::vector<s_static_jalr_site>* site_audit = nullptr
 );
 
 class function_analyzer
