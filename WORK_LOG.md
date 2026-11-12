@@ -282,3 +282,15 @@ Further changes should be committed to this branch in small, testable increments
 - LLVM 20.1.8 parsed and verified **100/100** modules and emitted **100/100** objects at `opt=0` (601,056 bytes). The 100-function sample linked into a **580,176-byte** shared library; `ldd -r` found no unresolved symbols and `ctypes.CDLL` loaded it with `ee_game_run` and `ee_fn_00100008` exported.
 - GitHub Actions [run 43215631986](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43215631986): **15/15 CTest passed**.
 - The complete 7,901-module LLVM/object/link pass remains the outstanding validation task. The full title has not been executed.
+
+
+## 2026-11-12 — Complete 7,901-function backend pass and per-site JALR audit
+
+- Completed the unrestricted USA `SLUS_214.42` backend validation after reusing the shared CFG leader index in the final per-function emission pass: 7,901/7,901 LLVM modules parsed and verified, 7,901/7,901 host objects emitted at `opt=0` (33,823,808 aggregate bytes), and all 7,901 objects linked into a 28,187,040-byte `libee_game.so`.
+- The shared library loads through `ctypes.CDLL`; `ldd -r` reports no unresolved dynamic symbols; `ee_game_run` and `ee_fn_00100008` are exported. This is a translated-code backend result, not proof that the game executes; the full title was not run.
+- Added per-site static JALR audit records to `ee_functions.json`. Each record captures caller entry, JALR PC, source register, whether the source is known at that instruction, sampled 64-bit value, 32-bit target candidate, alignment and executable-range status. Sampling occurs before the link write and delay slot.
+- Audited the USA image: 3,535 caller/site records, 3,505 distinct JALR PCs; 3,475 unknown-source records, 56 resolved executable records (53 distinct PCs), and four known but invalid targets. The 56 resolved contexts identify 52 unique executable targets.
+- The dominant unresolved source is `$t9` (`$25`): 2,955 records / 2,944 distinct PCs, with 2,890 of those distinct PCs having an immediately preceding load into `$t9`. The common pattern is runtime object/vtable dispatch. Most unknown `$v0` and `$v1` targets are also loaded from memory. A fixed-address function-pointer slot observed at `0x0043c948` is zero in the on-disk ELF.
+- No additional arithmetic-only constant-propagation rule is justified by this audit. Memory-loaded function pointers remain unresolved until memory initialization, aliasing and possible writes are modelled; do not guess targets.
+- Added regression tests for known, unknown and misaligned JALR site states plus conflicting CFG predecessors. GitHub Actions [run #43219107693](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43219107693): clean build and **15/15 CTest passed**.
+- Full backend measurements: `FULL_GAME_NATIVE_LINK_VALIDATION.md`. Indirect-call analysis: `JALR_COVERAGE_AUDIT.md`.
