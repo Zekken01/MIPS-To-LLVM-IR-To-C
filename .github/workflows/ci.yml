@@ -3,10 +3,10 @@ name: Build and test
 on:
   push:
     branches:
-      - recovery/reassembled-source-2026-11-11
+      - main
   pull_request:
     branches:
-      - recovery/reassembled-source-2026-11-11
+      - main
   workflow_dispatch:
 
 permissions:
