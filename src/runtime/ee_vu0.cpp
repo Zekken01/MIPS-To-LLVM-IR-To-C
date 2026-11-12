@@ -761,6 +761,60 @@ uint16_t vu0_read_ialu_vi(const s_ee_vu0_state* vu0, uint32_t index)
     return static_cast<uint16_t>(vu0->m_vi[index]);
 }
 
+uint16_t vu0_read_branch_vi(const s_ee_vu0_state* vu0, uint32_t index)
+{
+    if (index == 0 || index >= 16)
+    {
+        return 0;
+    }
+
+    if (vu0->m_vi_backup_cycles != 0 &&
+        vu0->m_vi_backup_register == index)
+    {
+        return static_cast<uint16_t>(vu0->m_vi_backup_old_value);
+    }
+
+    return vu0_read_ialu_vi(vu0, index);
+}
+
+void vu0_backup_ialu_vi(s_ee_vu0_state* vu0, uint32_t index)
+{
+    if (index == 0 || index >= 16)
+    {
+        return;
+    }
+
+    // Consecutive writes to the same VI preserve the value from before the
+    // chain of writes, while refreshing the two-cycle visibility window.
+    if (vu0->m_vi_backup_cycles != 0 &&
+        vu0->m_vi_backup_register == index)
+    {
+        vu0->m_vi_backup_cycles = 2;
+        return;
+    }
+
+    vu0->m_vi_backup_cycles = 2;
+    vu0->m_vi_backup_register = index;
+    vu0->m_vi_backup_old_value = static_cast<uint16_t>(vu0->m_vi[index]);
+}
+
+void vu0_advance_vi_backup(s_ee_vu0_state* vu0, uint64_t elapsed_cycles)
+{
+    if (vu0->m_vi_backup_cycles == 0)
+    {
+        return;
+    }
+
+    if (elapsed_cycles >= vu0->m_vi_backup_cycles)
+    {
+        vu0->m_vi_backup_cycles = 0;
+    }
+    else
+    {
+        vu0->m_vi_backup_cycles -= static_cast<uint32_t>(elapsed_cycles);
+    }
+}
+
 void vu0_write_ialu_vi(s_ee_vu0_state* vu0, uint32_t index, uint16_t value)
 {
     if (index == 0 || index >= 16)
@@ -915,10 +969,10 @@ bool vu0_execute_lower_branch(
     using op = e_ee_vu0_micro_opcode;
     const auto& fields = instruction.m_lower_fields;
     const int16_t source_s = static_cast<int16_t>(
-        vu0_read_ialu_vi(vu0, fields.m_is)
+        vu0_read_branch_vi(vu0, fields.m_is)
     );
     const int16_t source_t = static_cast<int16_t>(
-        vu0_read_ialu_vi(vu0, fields.m_it)
+        vu0_read_branch_vi(vu0, fields.m_it)
     );
     bool taken = false;
 
@@ -1063,6 +1117,10 @@ bool vu0_execute_lower_ialu(
         return false;
     }
 
+    if (destination != 0)
+    {
+        vu0_backup_ialu_vi(vu0, destination);
+    }
     vu0_write_ialu_vi(vu0, destination, result);
     if (destination != 0)
     {
@@ -1140,6 +1198,7 @@ uint32_t ee_vu0_execute_ialu_callback(
         // VU cycle increments before lower issue. Branch instructions interlock
         // against pending IALU writes to their source VI registers; the branch
         // may therefore consume more than one cycle before it executes.
+        const uint64_t cycles_before_pair = vu0->m_cycle;
         ++vu0->m_cycle;
         if (lower_branch)
         {
@@ -1161,6 +1220,10 @@ uint32_t ee_vu0_execute_ialu_callback(
             vu0->m_micro_pc = pair_pc;
             return retire_result;
         }
+
+        // PCSX2 ages VIBackupCycles by the exact elapsed cycles (including
+        // lower-pipe stalls) before the current lower operation executes.
+        vu0_advance_vi_backup(vu0, vu0->m_cycle - cycles_before_pair);
 
         if (lower_ialu)
         {
@@ -1206,6 +1269,7 @@ uint32_t ee_vu0_execute_ialu_callback(
             --vu0->m_e_bit;
             if (vu0->m_e_bit == 0)
             {
+                vu0->m_vi_backup_cycles = 0;
                 vu0->m_vpu_status &= ~1u;
                 const uint32_t flush_result = ee_vu0_ialu_flush_all(vu0);
                 if (flush_result != static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE))
