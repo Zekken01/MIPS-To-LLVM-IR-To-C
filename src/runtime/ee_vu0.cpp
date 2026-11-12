@@ -98,12 +98,13 @@ uint32_t ee_vu0_scheduler_sync_callback(
     if (sync_mode == e_ee_vu0_sync_mode::CATCH_UP_TO_EE_CYCLE)
     {
         // vu0Sync() is catch-up-only: VU0 ahead of the EE means no work.
-        if (vu0->m_ee_cycle <= vu0->m_cycle)
+        if (vu0->m_ee_cycle < vu0->m_cycle)
         {
             return static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE);
         }
 
         const uint64_t cycle_budget = vu0->m_ee_cycle - vu0->m_cycle;
+        const uint64_t previous_cycle = vu0->m_cycle;
         const uint32_t result = validate_vu0_callback_result(
             scheduler->m_execute(
                 scheduler->m_user, cpu, vu0, cycle_budget,
@@ -117,7 +118,7 @@ uint32_t ee_vu0_scheduler_sync_callback(
 
         vu0->m_running = vu0_is_running(vu0) ? 1u : 0u;
         if (vu0_is_running(vu0) && cycle_budget != 0 &&
-            vu0->m_cycle == 0)
+            vu0->m_cycle <= previous_cycle)
         {
             return static_cast<uint32_t>(e_ee_vu0_sync_result::FAILED);
         }
