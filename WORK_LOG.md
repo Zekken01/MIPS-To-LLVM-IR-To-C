@@ -316,3 +316,12 @@ Further changes should be committed to this branch in small, testable increments
 - The first CI run exposed four stale assumptions in the tests (M queue occupancy and E/FINISH_TO_E flush cycles). Corrected those expectations rather than reverting the semantic fix.
 - GitHub Actions [run #43222225891](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43222225891): clean build and **15/15 CTest passed**.
 - This does not enable any additional VU0 instruction family. The reservation queue is retained for later nonzero-latency lower operations; memory/vector and full dual-issue execution remain unsupported.
+
+
+## 2026-11-12 — Deterministic VU0 scalar reference-model sequence
+
+- Added a test-side scalar oracle independent of the runtime micro-op decoder. It derives each of the seven supported lower integer operations from the raw instruction word and models VI0, signed 16-bit arithmetic, immediate decoding, low-halfword writes, and the PCSX2 VI-backup window.
+- Generated a deterministic 256-pair program using mixed VI source/destination registers and immediate values. Each pair is executed through the real runtime callback with a one-cycle budget, then compared against the oracle for all 16 VI values, backup register/value/lifetime, micro-PC, TPC, cycle count and empty scalar IALU reservation state.
+- The first run caught an error in the test oracle's timing assumption: PCSX2 samples branch state before stalls and ages VIBackupCycles after lower execution; a newly written VI backup therefore reads as one remaining cycle at the end of its issue pair. Corrected the oracle to age the window after the operation, consistent with the dedicated M-bit issue-age test.
+- The final run passed the deterministic sequence and the complete suite. GitHub Actions [run #43224000835](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43224000835): clean build and **15/15 CTest passed**.
+- This is test-side reference-model coverage derived from PCSX2 semantics; it is not a live instruction-by-instruction differential run against the PCSX2 executable/interpreter.
