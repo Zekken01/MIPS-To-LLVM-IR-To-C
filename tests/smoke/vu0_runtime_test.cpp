@@ -269,14 +269,16 @@ int main()
               "VU0 micro fetch extracts upper primary opcode and operands");
         check(
             instruction.m_lower_fields.m_operation ==
-                ee::e_ee_vu0_micro_opcode::UNKNOWN,
-            "VU0 micro fetch marks an unassigned lower opcode as unknown"
+                ee::e_ee_vu0_micro_opcode::IADDIU,
+            "VU0 lower primary table classifies IADDIU"
         );
         check(
             instruction.m_upper_fields.m_operation ==
-                ee::e_ee_vu0_micro_opcode::MADDA_I,
-            "VU0 upper secondary table classifies its FD/operation slot"
+                ee::e_ee_vu0_micro_opcode::ADD_I,
+            "VU0 upper primary table classifies ADDi"
         );
+        check(micro_state.m_micro_pc == 0x28u,
+              "VU0 micro fetch advances PC by one 8-byte instruction");
 
         // Lower primary 0x60 selects the secondary integer-ALU table;
         // primary 0x60 with sub-op 0x3c selects T3_00.
@@ -336,9 +338,6 @@ int main()
                 ee::e_ee_vu0_micro_opcode::NOP,
             "VU0 upper FD secondary table classifies NOP"
         );
-        check(micro_state.m_micro_pc == 0x28u,
-              "VU0 micro fetch advances PC by one 8-byte instruction");
-
         write_le32(&micro_state.m_micro_memory[0xff8], 0xaabbccddu);
         write_le32(&micro_state.m_micro_memory[0xffc], 0x40000000u);
         micro_state.m_micro_pc = 0xff8u;
