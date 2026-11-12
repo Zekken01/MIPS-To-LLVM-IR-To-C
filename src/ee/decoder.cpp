@@ -914,7 +914,7 @@ s_ee_instruction decode(uint32_t pc, uint32_t word)
             insn.branch_likely = (branch_kind & 2) != 0;
             insn.has_delay_slot = true;
             insn.branch_target = (int32_t)(pc + 4) + ((int32_t)insn.immediate << 2);
-            insn.valid = e_ee_valid::UNSUPPORTED;
+            insn.valid = e_ee_valid::VALID;
             static const char* const names[] = {"bc2f", "bc2t", "bc2fl", "bc2tl"};
             set_mnemonic(insn, names[branch_kind]);
             break;
