@@ -58,9 +58,22 @@ bool build_words(const std::string& mode, std::vector<uint32_t>& words)
     else
         return false;
 
-    const uint32_t transfer = make_cop2(cop2_rs, 8, 6);
+    uint8_t vu_index = 6;
+    if (mode == "qmfc2_vf0" || mode == "qmtc2_vf0")
+        vu_index = 0;
+    else if (mode == "cfc2_r" || mode == "ctc2_r")
+        vu_index = 20;
+    else if (mode == "ctc2_fbrst")
+        vu_index = 28;
+    else if (mode == "ctc2_cmsar1")
+        vu_index = 31;
+
+    const uint32_t transfer = make_cop2(cop2_rs, 8, vu_index);
     if (mode == "qmfc2" || mode == "qmtc2" ||
-        mode == "cfc2" || mode == "ctc2")
+        mode == "cfc2" || mode == "ctc2" ||
+        mode == "qmfc2_vf0" || mode == "qmtc2_vf0" ||
+        mode == "cfc2_r" || mode == "ctc2_r" ||
+        mode == "ctc2_fbrst" || mode == "ctc2_cmsar1")
     {
         words = {transfer};
         return true;
