@@ -213,7 +213,11 @@ static_assert(offsetof(ee::s_ee_vu0_state, m_ee_cycle) == 216);
 static_assert(offsetof(ee::s_ee_vu0_state, m_running) == 224);
 static_assert(offsetof(ee::s_ee_vu0_state, m_data_memory) == 240);
 static_assert(offsetof(ee::s_ee_vu0_state, m_micro_memory) == 4336);
-static_assert(sizeof(ee::s_ee_vu0_state) == 8432);
+static_assert(offsetof(ee::s_ee_vu0_state, m_ialu) == 8432);
+static_assert(offsetof(ee::s_ee_vu0_state, m_ialu_read_pos) == 8496);
+static_assert(offsetof(ee::s_ee_vu0_state, m_ialu_write_pos) == 8500);
+static_assert(offsetof(ee::s_ee_vu0_state, m_ialu_count) == 8504);
+static_assert(sizeof(ee::s_ee_vu0_state) == 8512);
 
 int main()
 {
@@ -919,6 +923,115 @@ int main()
         check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::FAILED) &&
               engine.m_run_calls == 2,
               "finish-to-E enforces the configured execution-call budget");
+    }
+
+    // Integer ALU reservations model the VU's four-deep destination
+    // interlock queue. Scheduling records a future availability cycle;
+    // reads stall only when their VI masks overlap a pending destination.
+    {
+        ee::s_ee_vu0_state state{};
+        state.m_cycle = 10;
+
+        check(ee::ee_vu0_ialu_schedule_write(&state, 1u << 3, 2) ==
+                  static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE),
+              "IALU schedules a VI destination");
+        check(ee::ee_vu0_ialu_schedule_write(&state, 1u << 5, 4) ==
+                  static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE),
+              "IALU queues a second destination");
+        check(ee::ee_vu0_ialu_schedule_write(&state, 1u << 7, 3) ==
+                  static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE),
+              "IALU queues a third destination");
+        check(state.m_ialu_count == 3 && state.m_ialu_read_pos == 0 &&
+              state.m_ialu_write_pos == 3,
+              "IALU queue maintains FIFO count and positions");
+
+        check(ee::ee_vu0_ialu_wait_for_reads(&state, 1u << 4) ==
+                  static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              state.m_cycle == 10,
+              "IALU read of an unrelated VI register does not stall");
+        check(ee::ee_vu0_ialu_wait_for_reads(&state, 1u << 3) ==
+                  static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              state.m_cycle == 12,
+              "IALU read stall advances to the matching destination ready cycle");
+        check(state.m_ialu_count == 3,
+              "IALU read stall does not retire queue entries implicitly");
+
+        uint32_t retired = 0xffffffffu;
+        check(ee::ee_vu0_ialu_retire_matured(&state, &retired) ==
+                  static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              retired == 1 && state.m_ialu_count == 2 &&
+              state.m_ialu_read_pos == 1,
+              "IALU retirement removes only the matured FIFO head");
+
+        check(ee::ee_vu0_ialu_wait_for_reads(
+                  &state, (1u << 5) | (1u << 7)) ==
+                  static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              state.m_cycle == 14,
+              "IALU read stall waits through the latest overlapping reservation");
+        check(ee::ee_vu0_ialu_retire_matured(&state, &retired) ==
+                  static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              retired == 2 && state.m_ialu_count == 0 &&
+              state.m_ialu_read_pos == state.m_ialu_write_pos,
+              "IALU retirement drains all matured reservations in FIFO order");
+
+        check(ee::ee_vu0_ialu_schedule_write(&state, 0, 3) ==
+                  static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              ee::ee_vu0_ialu_schedule_write(&state, 1u << 8, 0) ==
+                  static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              state.m_ialu_count == 0,
+              "IALU ignores empty masks and zero-cycle reservations");
+    }
+    {
+        ee::s_ee_vu0_state state{};
+        state.m_cycle = 20;
+        for (uint32_t i = 0; i < 4; ++i)
+        {
+            check(ee::ee_vu0_ialu_schedule_write(
+                      &state, 1u << (i + 1), 2) ==
+                      static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE),
+                  "IALU fills each slot in its four-entry ring");
+        }
+
+        const uint32_t write_pos = state.m_ialu_write_pos;
+        check(state.m_ialu_count == 4 && write_pos == 0,
+              "IALU ring wraps write position after four enqueues");
+        check(ee::ee_vu0_ialu_schedule_write(&state, 1u << 9, 2) ==
+                  static_cast<uint32_t>(e_ee_vu0_sync_result::FAILED) &&
+              state.m_ialu_count == 4 && state.m_ialu_write_pos == write_pos,
+              "IALU full queue rejects overflow without corrupting ring state");
+
+        state.m_cycle = 22;
+        uint32_t retired = 0;
+        check(ee::ee_vu0_ialu_retire_matured(&state, &retired) ==
+                  static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              retired == 4 && state.m_ialu_count == 0 &&
+              state.m_ialu_read_pos == state.m_ialu_write_pos,
+              "IALU queue drains correctly across ring wrap");
+
+        check(ee::ee_vu0_ialu_schedule_write(&state, 1u << 10, 3) ==
+                  static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              state.m_ialu_count == 1 && state.m_ialu_write_pos == 1,
+              "IALU ring accepts a new reservation after wrap and drain");
+    }
+    {
+        ee::s_ee_vu0_state state{};
+        state.m_cycle = 30;
+        check(ee::ee_vu0_ialu_schedule_write(&state, 1u << 2, 3) ==
+                  static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              ee::ee_vu0_ialu_schedule_write(&state, 1u << 4, 7) ==
+                  static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE),
+              "IALU schedules reservations for flush-all");
+        check(ee::ee_vu0_ialu_flush_all(&state) ==
+                  static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              state.m_cycle == 37 && state.m_ialu_count == 0 &&
+              state.m_ialu_read_pos == state.m_ialu_write_pos,
+              "IALU flush-all advances to the final ready cycle and empties queue");
+        check(ee::ee_vu0_ialu_flush_all(nullptr) ==
+                  static_cast<uint32_t>(e_ee_vu0_sync_result::INVALID_ARGUMENT),
+              "IALU flush-all rejects missing state");
+        check(ee::ee_vu0_ialu_retire_matured(&state, nullptr) ==
+                  static_cast<uint32_t>(e_ee_vu0_sync_result::INVALID_ARGUMENT),
+              "IALU retirement rejects missing output counter");
     }
 
     std::printf("vu0_runtime_test: %d passed, %d failed\n", g_pass, g_fail);
