@@ -878,22 +878,25 @@ s_ee_instruction decode(uint32_t pc, uint32_t word)
         insn.flow = e_ee_flow::FLOW_NONE;
         switch (insn.rs)
         {
-        case 0x01: // QMFC2: 128-bit VU0 vector -> GPR pair
-            insn.valid = e_ee_valid::UNSUPPORTED;
-            set_mnemonic(insn, "qmfc2");
+        // Transfer encodings use rd as the VU register index. The low
+        // eleven bits (sa/funct) are reserved and must be zero. Keep valid
+        // transfers UNSUPPORTED until the VU0 synchronization boundary is
+        // implemented; malformed encodings are INVALID.
+        case 0x01: // QMFC2: GPR rt <- VU0 VF[rd]
+        case 0x02: // CFC2: GPR rt <- VU0 VI[rd]
+        case 0x05: // QMTC2: VU0 VF[rd] <- GPR rt
+        case 0x06: // CTC2: VU0 VI[rd] <- GPR rt
+        {
+            static const char* const names[] = {
+                "qmfc2", "cfc2", "reserved", "reserved",
+                "reserved", "qmtc2", "ctc2"
+            };
+            const uint32_t selector = insn.rs;
+            insn.valid = (insn.sa == 0 && insn.funct == 0)
+                ? e_ee_valid::UNSUPPORTED : e_ee_valid::INVALID;
+            set_mnemonic(insn, names[selector]);
             break;
-        case 0x02: // CFC2: VU0 control register -> GPR
-            insn.valid = e_ee_valid::UNSUPPORTED;
-            set_mnemonic(insn, "cfc2");
-            break;
-        case 0x05: // QMTC2: GPR pair -> 128-bit VU0 vector
-            insn.valid = e_ee_valid::UNSUPPORTED;
-            set_mnemonic(insn, "qmtc2");
-            break;
-        case 0x06: // CTC2: GPR -> VU0 control register
-            insn.valid = e_ee_valid::UNSUPPORTED;
-            set_mnemonic(insn, "ctc2");
-            break;
+        }
         case 0x08: // BC2F/T/FL/TL; the full rt field selects the table entry
         {
             // PCSX2's 32-entry BC2 table defines only rt=0..3. Masking the
