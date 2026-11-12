@@ -7,6 +7,9 @@ import unittest
 from pathlib import Path
 
 
+TOOL_ARGS = sys.argv[1:]
+sys.argv = [sys.argv[0]]
+
 EXPECTED_PROGRAM_SHA256 = (
     "27cd26fb9a1a1e05aa1d9b6986904e2b860d6afd8a2688ec4e2d5270da8fe3a8"
 )
@@ -49,11 +52,11 @@ def executed_operation(lower):
 
 class VU0CandidateTraceTests(unittest.TestCase):
     def test_candidate_trace_covers_fixture_and_comparator(self):
-        if len(sys.argv) != 3:
+        if len(TOOL_ARGS) != 2:
             self.fail("expected candidate executable and comparator script paths")
 
-        candidate_exe = Path(sys.argv[1]).resolve()
-        comparator = Path(sys.argv[2]).resolve()
+        candidate_exe = Path(TOOL_ARGS[0]).resolve()
+        comparator = Path(TOOL_ARGS[1]).resolve()
         self.assertTrue(candidate_exe.is_file(), candidate_exe)
         self.assertTrue(comparator.is_file(), comparator)
 
