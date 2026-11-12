@@ -157,22 +157,22 @@ bool is_special_no_gpr_write(uint8_t funct)
 {
     switch (funct)
     {
-    case e_ee_opcode::FUNCT_JR:
-    case e_ee_opcode::FUNCT_SYSCALL:
-    case e_ee_opcode::FUNCT_BREAK:
-    case e_ee_opcode::FUNCT_SYNC:
-    case e_ee_opcode::FUNCT_MTHI:
-    case e_ee_opcode::FUNCT_MTLO:
-    case e_ee_opcode::FUNCT_MULT:
-    case e_ee_opcode::FUNCT_MULTU:
-    case e_ee_opcode::FUNCT_DIV:
-    case e_ee_opcode::FUNCT_DIVU:
-    case e_ee_opcode::FUNCT_TGE:
-    case e_ee_opcode::FUNCT_TGEU:
-    case e_ee_opcode::FUNCT_TLT:
-    case e_ee_opcode::FUNCT_TLTU:
-    case e_ee_opcode::FUNCT_TEQ:
-    case e_ee_opcode::FUNCT_TNE:
+    case static_cast<uint8_t>(e_ee_opcode::FUNCT_JR):
+    case static_cast<uint8_t>(e_ee_opcode::FUNCT_SYSCALL):
+    case static_cast<uint8_t>(e_ee_opcode::FUNCT_BREAK):
+    case static_cast<uint8_t>(e_ee_opcode::FUNCT_SYNC):
+    case static_cast<uint8_t>(e_ee_opcode::FUNCT_MTHI):
+    case static_cast<uint8_t>(e_ee_opcode::FUNCT_MTLO):
+    case static_cast<uint8_t>(e_ee_opcode::FUNCT_MULT):
+    case static_cast<uint8_t>(e_ee_opcode::FUNCT_MULTU):
+    case static_cast<uint8_t>(e_ee_opcode::FUNCT_DIV):
+    case static_cast<uint8_t>(e_ee_opcode::FUNCT_DIVU):
+    case static_cast<uint8_t>(e_ee_opcode::FUNCT_TGE):
+    case static_cast<uint8_t>(e_ee_opcode::FUNCT_TGEU):
+    case static_cast<uint8_t>(e_ee_opcode::FUNCT_TLT):
+    case static_cast<uint8_t>(e_ee_opcode::FUNCT_TLTU):
+    case static_cast<uint8_t>(e_ee_opcode::FUNCT_TEQ):
+    case static_cast<uint8_t>(e_ee_opcode::FUNCT_TNE):
         return true;
     default:
         return false;
@@ -194,10 +194,10 @@ void invalidate_unmodelled_destination(
         return;
 
     case e_ee_opcode::OP_REGIMM:
-        if (ins.rt == e_ee_opcode::REGIMM_BLTZAL ||
-            ins.rt == e_ee_opcode::REGIMM_BGEZAL ||
-            ins.rt == e_ee_opcode::REGIMM_BLTZALL ||
-            ins.rt == e_ee_opcode::REGIMM_BGEZALL)
+        if (ins.rt == static_cast<uint8_t>(e_ee_opcode::REGIMM_BLTZAL) ||
+            ins.rt == static_cast<uint8_t>(e_ee_opcode::REGIMM_BGEZAL) ||
+            ins.rt == static_cast<uint8_t>(e_ee_opcode::REGIMM_BLTZAL)L ||
+            ins.rt == static_cast<uint8_t>(e_ee_opcode::REGIMM_BGEZAL)L)
         {
             clear_gpr_constant(state, 31);
         }
@@ -231,23 +231,23 @@ void invalidate_unmodelled_destination(
         return;
 
     case e_ee_opcode::OP_COP0:
-        if (ins.rs == e_ee_opcode::COP0_MFC0)
+        if (ins.rs == static_cast<uint8_t>(e_ee_opcode::COP0_MFC0))
         {
             clear_gpr_constant(state, ins.rt);
         }
         return;
 
     case e_ee_opcode::OP_COP1:
-        if (ins.rs == e_ee_opcode::COP1_MFC1 ||
-            ins.rs == e_ee_opcode::COP1_CFC1)
+        if (ins.rs == static_cast<uint8_t>(e_ee_opcode::COP1_MFC1) ||
+            ins.rs == static_cast<uint8_t>(e_ee_opcode::COP1_CFC1))
         {
             clear_gpr_constant(state, ins.rt);
         }
         return;
 
     case e_ee_opcode::OP_COP2:
-        if (ins.rs == e_ee_opcode::COP2_QMFC2 ||
-            ins.rs == e_ee_opcode::COP2_CFC2)
+        if (ins.rs == static_cast<uint8_t>(e_ee_opcode::COP2_QMFC2) ||
+            ins.rs == static_cast<uint8_t>(e_ee_opcode::COP2_CFC2))
         {
             clear_gpr_constant(state, ins.rt);
         }
@@ -366,71 +366,71 @@ void transfer_gpr_constants(
     using op = e_ee_opcode;
     switch (ins.funct)
     {
-    case op::FUNCT_ADDU:
+    case static_cast<uint8_t>(op::FUNCT_ADDU):
         if (has_s && has_t)
             set_gpr_constant(state, ins.rd,
                 sign_extend_u32(static_cast<uint32_t>(source_s + source_t)));
         else clear_gpr_constant(state, ins.rd);
         return;
 
-    case op::FUNCT_DADDU:
+    case static_cast<uint8_t>(op::FUNCT_DADDU):
         if (has_s && has_t)
             set_gpr_constant(state, ins.rd, source_s + source_t);
         else clear_gpr_constant(state, ins.rd);
         return;
 
-    case op::FUNCT_SUBU:
+    case static_cast<uint8_t>(op::FUNCT_SUBU):
         if (has_s && has_t)
             set_gpr_constant(state, ins.rd,
                 sign_extend_u32(static_cast<uint32_t>(source_s - source_t)));
         else clear_gpr_constant(state, ins.rd);
         return;
 
-    case op::FUNCT_DSUBU:
+    case static_cast<uint8_t>(op::FUNCT_DSUBU):
         if (has_s && has_t)
             set_gpr_constant(state, ins.rd, source_s - source_t);
         else clear_gpr_constant(state, ins.rd);
         return;
 
-    case op::FUNCT_AND:
+    case static_cast<uint8_t>(op::FUNCT_AND):
         if (has_s && has_t)
             set_gpr_constant(state, ins.rd, source_s & source_t);
         else clear_gpr_constant(state, ins.rd);
         return;
 
-    case op::FUNCT_OR:
+    case static_cast<uint8_t>(op::FUNCT_OR):
         if (has_s && has_t)
             set_gpr_constant(state, ins.rd, source_s | source_t);
         else clear_gpr_constant(state, ins.rd);
         return;
 
-    case op::FUNCT_XOR:
+    case static_cast<uint8_t>(op::FUNCT_XOR):
         if (has_s && has_t)
             set_gpr_constant(state, ins.rd, source_s ^ source_t);
         else clear_gpr_constant(state, ins.rd);
         return;
 
-    case op::FUNCT_NOR:
+    case static_cast<uint8_t>(op::FUNCT_NOR):
         if (has_s && has_t)
             set_gpr_constant(state, ins.rd, ~(source_s | source_t));
         else clear_gpr_constant(state, ins.rd);
         return;
 
-    case op::FUNCT_SLL:
+    case static_cast<uint8_t>(op::FUNCT_SLL):
         if (has_t)
             set_gpr_constant(state, ins.rd, sign_extend_u32(
                 static_cast<uint32_t>(source_t) << ins.sa));
         else clear_gpr_constant(state, ins.rd);
         return;
 
-    case op::FUNCT_SRL:
+    case static_cast<uint8_t>(op::FUNCT_SRL):
         if (has_t)
             set_gpr_constant(state, ins.rd, sign_extend_u32(
                 static_cast<uint32_t>(source_t) >> ins.sa));
         else clear_gpr_constant(state, ins.rd);
         return;
 
-    case op::FUNCT_SRA:
+    case static_cast<uint8_t>(op::FUNCT_SRA):
         if (has_t)
             set_gpr_constant(state, ins.rd, sign_extend_u32(
                 static_cast<uint32_t>(
@@ -438,51 +438,51 @@ void transfer_gpr_constants(
         else clear_gpr_constant(state, ins.rd);
         return;
 
-    case op::FUNCT_DSLL:
-    case op::FUNCT_DSLL32:
+    case static_cast<uint8_t>(op::FUNCT_DSLL):
+    case static_cast<uint8_t>(op::FUNCT_DSLL32):
         if (has_t)
             set_gpr_constant(state, ins.rd,
-                source_t << (ins.sa + (ins.funct == op::FUNCT_DSLL32 ? 32u : 0u)));
+                source_t << (ins.sa + (ins.funct == static_cast<uint8_t>(op::FUNCT_DSLL32) ? 32u : 0u)));
         else clear_gpr_constant(state, ins.rd);
         return;
 
-    case op::FUNCT_DSRL:
-    case op::FUNCT_DSRL32:
+    case static_cast<uint8_t>(op::FUNCT_DSRL):
+    case static_cast<uint8_t>(op::FUNCT_DSRL32):
         if (has_t)
             set_gpr_constant(state, ins.rd,
-                source_t >> (ins.sa + (ins.funct == op::FUNCT_DSRL32 ? 32u : 0u)));
+                source_t >> (ins.sa + (ins.funct == static_cast<uint8_t>(op::FUNCT_DSRL32) ? 32u : 0u)));
         else clear_gpr_constant(state, ins.rd);
         return;
 
-    case op::FUNCT_DSRA:
-    case op::FUNCT_DSRA32:
+    case static_cast<uint8_t>(op::FUNCT_DSRA):
+    case static_cast<uint8_t>(op::FUNCT_DSRA32):
         if (has_t)
             set_gpr_constant(state, ins.rd, static_cast<uint64_t>(
                 static_cast<int64_t>(source_t) >>
-                (ins.sa + (ins.funct == op::FUNCT_DSRA32 ? 32u : 0u))));
+                (ins.sa + (ins.funct == static_cast<uint8_t>(op::FUNCT_DSRA32) ? 32u : 0u))));
         else clear_gpr_constant(state, ins.rd);
         return;
 
-    case op::FUNCT_DSLLV:
+    case static_cast<uint8_t>(op::FUNCT_DSLLV):
         if (has_s && has_t)
             set_gpr_constant(state, ins.rd, source_t << (source_s & 0x3fu));
         else clear_gpr_constant(state, ins.rd);
         return;
 
-    case op::FUNCT_DSRLV:
+    case static_cast<uint8_t>(op::FUNCT_DSRLV):
         if (has_s && has_t)
             set_gpr_constant(state, ins.rd, source_t >> (source_s & 0x3fu));
         else clear_gpr_constant(state, ins.rd);
         return;
 
-    case op::FUNCT_DSRAV:
+    case static_cast<uint8_t>(op::FUNCT_DSRAV):
         if (has_s && has_t)
             set_gpr_constant(state, ins.rd, static_cast<uint64_t>(
                 static_cast<int64_t>(source_t) >> (source_s & 0x3fu)));
         else clear_gpr_constant(state, ins.rd);
         return;
 
-    case op::FUNCT_JALR:
+    case static_cast<uint8_t>(op::FUNCT_JALR):
         set_gpr_constant(state, ins.rd, sign_extend_u32(ins.pc + 8u));
         return;
 
@@ -533,7 +533,7 @@ std::set<uint32_t> collect_jalr_targets_in_block(
         const s_ee_instruction& ins = it->second;
         if (ins.valid == e_ee_valid::VALID &&
             ins.opcode == e_ee_opcode::OP_SPECIAL &&
-            ins.funct == e_ee_opcode::FUNCT_JALR)
+            ins.funct == static_cast<uint8_t>(e_ee_opcode::FUNCT_JALR))
         {
             uint64_t target_value = 0;
             if (read_gpr_constant(state, ins.rs, &target_value))
