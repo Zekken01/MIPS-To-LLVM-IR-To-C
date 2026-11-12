@@ -44,6 +44,9 @@ public:
     const std::vector<symbol>& symbols() const { return m_symbols; }
     size_t read_at(uint32_t addr, uint8_t* out, size_t max_len) const;
     bool read32_at(uint32_t addr, uint32_t* out) const;
+    // Read a file-backed word only from an ET_EXEC PT_LOAD segment marked
+    // readable and not writable. Used for conservative static pointer dataflow.
+    bool read32_const_at(uint32_t addr, uint32_t* out) const;
     bool is_executable_address(uint32_t addr) const;
     const symbol* find_symbol(uint32_t addr) const;
     const symbol* find_function_at(uint32_t addr) const;
@@ -56,6 +59,7 @@ private:
 
     uint32_t m_entry = 0;
     uint16_t m_machine = 0;
+    uint16_t m_type = 0;
     std::vector<load_segment> m_segments;
     std::vector<symbol> m_symbols;
     std::vector<uint8_t> m_file;
