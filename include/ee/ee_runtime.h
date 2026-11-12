@@ -39,15 +39,32 @@ enum e_ee_vu0_micro_flags : uint32_t
     EE_VU0_MICRO_FLAG_T = 1u << 4
 };
 
+// Bit fields shared by lower and upper VU micro-op encodings. xyzw uses
+// bit 3 for X, bit 2 for Y, bit 1 for Z and bit 0 for W.
+struct s_ee_vu0_micro_op_fields
+{
+    uint8_t m_opcode;
+    uint8_t m_ft;
+    uint8_t m_fs;
+    uint8_t m_fd;
+    uint8_t m_it;
+    uint8_t m_is;
+    uint8_t m_id;
+    uint8_t m_xyzw;
+};
+
 // VU micro-instructions are 64-bit pairs: lower word at +0, upper word at +4.
 // m_pc is a byte address in the 4 KB micro-program memory. Flags are decoded
-// from the upper word and normalized to e_ee_vu0_micro_flags.
+// from the upper word and normalized to e_ee_vu0_micro_flags. Opcode fields
+// identify the primary decode slots only; they do not imply implementation.
 struct s_ee_vu0_micro_instruction
 {
     uint32_t m_pc;
     uint32_t m_lower;
     uint32_t m_upper;
     uint32_t m_flags;
+    s_ee_vu0_micro_op_fields m_lower_fields;
+    s_ee_vu0_micro_op_fields m_upper_fields;
 };
 
 // Callback supplied by the host's VU0 scheduler. It must execute the requested
