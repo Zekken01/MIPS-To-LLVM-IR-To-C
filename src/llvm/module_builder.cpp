@@ -2122,10 +2122,78 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
         break;
     }
     case ee::e_ee_opcode::OP_COP2:
-        // COP2 macro/transfer encodings are intentionally not lowered until
-        // their true subtable fields and full VU0 semantics are implemented.
-        m_out += "  ; COP2 intentionally unsupported\n";
+    {
+        const char* helper = nullptr;
+        bool reads_vu0 = false;
+        switch (ins.rs)
+        {
+        case static_cast<uint8_t>(e_ee_opcode::COP2_QMFC2):
+            helper = "ee_vu0_qmfc2";
+            reads_vu0 = true;
+            break;
+        case static_cast<uint8_t>(e_ee_opcode::COP2_CFC2):
+            helper = "ee_vu0_cfc2";
+            reads_vu0 = true;
+            break;
+        case static_cast<uint8_t>(e_ee_opcode::COP2_QMTC2):
+            helper = "ee_vu0_qmtc2";
+            break;
+        case static_cast<uint8_t>(e_ee_opcode::COP2_CTC2):
+            helper = "ee_vu0_ctc2";
+            break;
+        default:
+            break;
+        }
+
+        if (!helper)
+        {
+            // BC2 and VU0 macro instructions remain unsupported until their
+            // condition/pipeline semantics have dedicated lowerings.
+            m_out += "  ; COP2 operation has no runtime lowering\n";
+            break;
+        }
+
+        // The helpers access architectural state in memory. Flush the
+        // block-local GPR cache before crossing that boundary, then invalidate
+        // it so later guest instructions reload any GPR changed by QMFC2/CFC2.
+        std::set<uint8_t> dirty;
+        for (uint8_t reg : m_dirty_regs)
+            dirty.insert(reg);
+        store_dirty_regs(dirty);
+        reset_tracking();
+
+        // PCSX2's delay-slot policy differs for reads and writes: reads finish
+        // the active microprogram to E, while writes wait for E or M.
+        const uint32_t sync_mode = !in_delay_slot
+            ? 0u
+            : (reads_vu0 ? 1u : 2u);
+        const std::string result = newtemp();
+        m_out += "  " + result + " = call i32 @" + helper +
+                 "(ptr %cpu, ptr %rt, i32 " + std::to_string(ins.rt) +
+                 ", i32 " + std::to_string(ins.rd) +
+                 ", i32 " + std::to_string(sync_mode) +
+                 ", i32 " + std::to_string(ins.pc) + ")\n";
+
+        // Do not execute following guest instructions when the scheduler or
+        // control callback is unavailable/fails. Keep the guest PC at the
+        // transfer and surface the existing unsupported exit reason until a
+        // dedicated VU0 runtime-failure exit is introduced.
+        const std::string succeeded = newtemp();
+        m_out += "  " + succeeded + " = icmp eq i32 " + result + ", 0\n";
+        const std::string suffix = std::to_string(m_temp_counter++);
+        const std::string fail_label = "vu0_fail_" + suffix;
+        const std::string success_label = "vu0_success_" + suffix;
+        m_out += "  br i1 " + succeeded + ", label %" + success_label +
+                 ", label %" + fail_label + "\n";
+        m_out += fail_label + ":\n";
+        const std::string pc_ptr = state_field(6);
+        const std::string exit_ptr = state_field(7);
+        m_out += "  store i32 " + std::to_string(ins.pc) + ", ptr " + pc_ptr + "\n";
+        m_out += "  store i32 4, ptr " + exit_ptr + "\n";
+        m_out += "  ret i32 4\n";
+        m_out += success_label + ":\n";
         break;
+    }
     default:
         break;
     }
