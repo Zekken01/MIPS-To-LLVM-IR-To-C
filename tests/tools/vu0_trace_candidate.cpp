@@ -31,7 +31,8 @@ uint32_t architectural_vi(const ee::s_ee_vu0_state& vu0, uint32_t index)
     }
 }
 
-void write_state(std::ostream& output, const ee::s_ee_vu0_state& vu0)
+void write_state(std::ostream& output, const ee::s_ee_cpu_state& cpu,
+                 const ee::s_ee_vu0_state& vu0)
 {
     output << "\"vi\":[";
     for (uint32_t index = 0; index < 32; ++index)
@@ -41,7 +42,18 @@ void write_state(std::ostream& output, const ee::s_ee_vu0_state& vu0)
         output << architectural_vi(vu0, index);
     }
 
-    output << "],\"cycle\":" << vu0.m_cycle
+    output << "],\\\"vf\\\":["; 
+    for (uint32_t index = 0; index < 32; ++index)
+    {
+        if (index != 0)
+            output << ',';
+        const ee::s_ee_u128& value = cpu.m_vu0[index];
+        output << '[' << static_cast<uint32_t>(value.m_lo)
+               << ',' << static_cast<uint32_t>(value.m_lo >> 32)
+               << ',' << static_cast<uint32_t>(value.m_hi)
+               << ',' << static_cast<uint32_t>(value.m_hi >> 32) << ']';
+    }
+    output << "],\\\"cycle\\\":" << vu0.m_cycle
            << ",\"micro_pc\":" << vu0.m_micro_pc
            << ",\"tpc\":" << vu0.m_tpc
            << ",\"branch\":" << vu0.m_branch
@@ -64,6 +76,7 @@ void write_state(std::ostream& output, const ee::s_ee_vu0_state& vu0)
 
 void write_header(
     std::ostream& output,
+    const ee::s_ee_cpu_state& cpu,
     const ee::s_ee_vu0_state& vu0,
     const std::string& program_sha256
 )
@@ -74,7 +87,7 @@ void write_header(
            << ",\"revision\":\"main\""
            << ",\"program_sha256\":\"" << program_sha256 << "\""
            << ",\"initial_state\":{";
-    write_state(output, vu0);
+    write_state(output, cpu, vu0);
     output << "}}\n";
 }
 
@@ -84,6 +97,7 @@ void write_step(
     uint32_t pair_pc,
     uint32_t lower,
     uint32_t upper,
+    const ee::s_ee_cpu_state& cpu,
     const ee::s_ee_vu0_state& vu0
 )
 {
@@ -114,6 +128,7 @@ int main(int argc, char** argv)
     }
 
     ee::s_ee_cpu_state cpu{};
+    cpu.m_vu0[0].m_hi = uint64_t{0x3f800000u} << 32; // Constant VF0.w = 1.
     ee::s_ee_vu0_state vu0{};
     ee::s_ee_vu0_ialu_engine engine{};
 
@@ -128,7 +143,7 @@ int main(int argc, char** argv)
     const std::string program_sha256 = vu0_trace_fixture::sha256_hex(
         vu0.m_micro_memory, ee::EE_VU0_MICRO_MEMORY_SIZE
     );
-    write_header(output, vu0, program_sha256);
+    write_header(output, cpu, vu0, program_sha256);
 
     uint32_t step = 0;
     while ((vu0.m_vpu_status & 1u) != 0 &&
@@ -164,7 +179,7 @@ int main(int argc, char** argv)
             return 1;
         }
 
-        write_step(output, step, pair_pc, lower, upper, vu0);
+        write_step(output, step, pair_pc, lower, upper, cpu, vu0);
         ++step;
     }
 
