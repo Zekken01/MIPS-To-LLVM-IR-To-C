@@ -81,6 +81,11 @@ def main() -> int:
         help="This project's build directory (default: <repo>/build-vu0-diff)",
     )
     parser.add_argument(
+        "--pcsx2-prefix-path",
+        type=Path,
+        help="Optional CMAKE_PREFIX_PATH for PCSX2 third-party dependencies",
+    )
+    parser.add_argument(
         "--generator",
         help="Optional CMake generator, for example Ninja or Visual Studio 18 2026",
     )
@@ -147,12 +152,32 @@ def main() -> int:
             "--parallel", str(args.jobs),
         ])
 
+        pcsx2_cmake_args = [
+            "-DENABLE_TESTS=ON",
+            "-DENABLE_QT_UI=OFF",
+            "-DDISABLE_ADVANCE_SIMD=ON",
+            "-DENABLE_SETCAP=OFF",
+            "-DUSE_LINKED_FFMPEG=ON",
+            "-DUSE_OPENGL=OFF",
+            "-DUSE_VULKAN=OFF",
+            "-DX11_API=OFF",
+            "-DWAYLAND_API=OFF",
+            "-DUSE_BACKTRACE=OFF",
+        ]
+        pcsx2_prefix = (
+            args.pcsx2_prefix_path.resolve()
+            if args.pcsx2_prefix_path
+            else (pcsx2_root / "deps")
+        )
+        if pcsx2_prefix.is_dir():
+            pcsx2_cmake_args.append(f"-DCMAKE_PREFIX_PATH={pcsx2_prefix}")
+
         cmake_configure(
             pcsx2_root,
             pcsx2_build,
             args.build_type,
             args.generator,
-            ["-DENABLE_TESTS=ON", "-DENABLE_QT_UI=OFF"],
+            pcsx2_cmake_args,
         )
         run([
             "cmake", "--build", str(pcsx2_build),
