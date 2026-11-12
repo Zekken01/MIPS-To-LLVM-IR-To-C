@@ -1241,6 +1241,18 @@ int main()
             reference_vi[reg] = actual.m_vi[reg];
         }
 
+        // Keep the first path deterministic and linear while visiting every
+        // supported lower opcode family. The four unconditional transfers
+        // target the instruction after their delay pair; all conditional
+        // branches are arranged to fall through. This guarantees that the
+        // mixed oracle exercises each of its 17 operation classes before the
+        // randomized control-flow tail begins.
+        reference_vi[1] = actual.m_vi[1] = 1u;
+        reference_vi[2] = actual.m_vi[2] = 2u;
+        reference_vi[4] = actual.m_vi[4] = 0x8000u;
+        reference_vi[13] = actual.m_vi[13] = 13u;
+        reference_vi[15] = actual.m_vi[15] = 15u;
+
         for (uint32_t slot = 0; slot < program_slots; ++slot)
         {
             const uint32_t operation = slot % 17u;
@@ -1250,9 +1262,39 @@ int main()
             const uint32_t immediate = next_random() & 0x07ffu;
             uint32_t lower = 0;
 
-            switch (operation)
+            if (slot < 21u)
             {
-            case 0: lower = make_vu0_ialu_3r(0x30u, it, is, id); break;
+                switch (slot)
+                {
+                case 0: lower = make_vu0_ialu_3r(0x30u, 2, 1, 3); break;
+                case 1: lower = make_vu0_ialu_3r(0x31u, 2, 3, 5); break;
+                case 2: lower = make_vu0_ialu_3r(0x34u, 2, 1, 6); break;
+                case 3: lower = make_vu0_ialu_3r(0x35u, 2, 1, 7); break;
+                case 4: lower = make_vu0_iaddi(8, 7, -1); break;
+                case 5: lower = make_vu0_iaddiu(9, 8, 3); break;
+                case 6: lower = make_vu0_isubiu(10, 9, 1); break;
+                case 7: lower = make_vu0_branch(0x20u, 0, 0, 1); break;
+                case 8: lower = make_vu0_iaddiu(11, 0, 5); break;
+                case 9: lower = make_vu0_branch(0x21u, 12, 0, 1); break;
+                case 10: lower = make_vu0_iaddiu(6, 0, 6); break;
+                case 11: lower = make_vu0_branch(0x24u, 0, 13, 0); break;
+                case 12: lower = make_vu0_iaddiu(7, 0, 7); break;
+                case 13: lower = make_vu0_branch(0x25u, 14, 15, 0); break;
+                case 14: lower = make_vu0_iaddiu(8, 0, 8); break;
+                case 15: lower = make_vu0_branch(0x28u, 1, 2, 1); break;
+                case 16: lower = make_vu0_branch(0x29u, 1, 1, 1); break;
+                case 17: lower = make_vu0_branch(0x2cu, 0, 1, 1); break;
+                case 18: lower = make_vu0_branch(0x2du, 0, 0, 1); break;
+                case 19: lower = make_vu0_branch(0x2eu, 0, 1, 1); break;
+                case 20: lower = make_vu0_branch(0x2fu, 0, 4, 1); break;
+                default: break;
+                }
+            }
+            else
+            {
+                switch (operation)
+                {
+                case 0: lower = make_vu0_ialu_3r(0x30u, it, is, id); break;
             case 1: lower = make_vu0_ialu_3r(0x31u, it, is, id); break;
             case 2: lower = make_vu0_ialu_3r(0x34u, it, is, id); break;
             case 3: lower = make_vu0_ialu_3r(0x35u, it, is, id); break;
@@ -1273,10 +1315,11 @@ int main()
             case 14: lower = make_vu0_branch(0x2du, it, is, immediate); break;
             case 15: lower = make_vu0_branch(0x2eu, it, is, immediate); break;
             case 16: lower = make_vu0_branch(0x2fu, it, is, immediate); break;
-            default: break;
+                default: break;
+                }
             }
 
-            uint32_t flags = (next_random() % 23u) == 0
+            uint32_t flags = slot >= 21u && (next_random() % 23u) == 0
                 ? 0x20000000u : 0u; // M
             if (slot == program_slots - 1u)
             {
@@ -1696,8 +1739,9 @@ int main()
             }
         }
 
-        check(reference_matches,
-              "384-pair mixed VU0 branch/IALU program matches the PCSX2-derived control-flow oracle");
+        check(reference_matches &&
+              executed_operation_mask == ((1u << 17) - 1u),
+              "384-pair mixed VU0 trace matches the reference oracle and executes all 17 supported opcode classes");
     }
 
     // Execute the conservative lower-IALU/upper-NOP subset through the
