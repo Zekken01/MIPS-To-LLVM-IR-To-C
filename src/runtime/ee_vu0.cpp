@@ -963,16 +963,26 @@ void vu0_advance_branch_pipeline(s_ee_vu0_state* vu0)
     }
 }
 
-bool vu0_execute_lower_branch(
-    s_ee_vu0_state* vu0,
-    const s_ee_vu0_micro_instruction& instruction
+struct s_vu0_branch_action
+{
+    bool m_taken = false;
+    uint32_t m_target = 0;
+    uint32_t m_link_register = 0;
+    uint16_t m_link_value = 0;
+};
+
+bool vu0_prepare_lower_branch(
+    const s_ee_vu0_state* vu0,
+    const s_ee_vu0_micro_instruction& instruction,
+    s_vu0_branch_action* action
 )
 {
-    if (!vu0)
+    if (!vu0 || !action)
     {
         return false;
     }
 
+    *action = {};
     using op = e_ee_vu0_micro_opcode;
     const auto& fields = instruction.m_lower_fields;
     const int16_t source_s = static_cast<int16_t>(
@@ -981,30 +991,30 @@ bool vu0_execute_lower_branch(
     const int16_t source_t = static_cast<int16_t>(
         vu0_read_branch_vi(vu0, fields.m_it)
     );
-    bool taken = false;
     bool absolute_target = false;
     uint32_t target = 0;
 
     switch (fields.m_operation)
     {
     case op::B:
-        taken = true;
+        action->m_taken = true;
         break;
 
     case op::BAL:
-        taken = true;
+        action->m_taken = true;
         if (fields.m_it != 0)
         {
             const uint32_t link_pc = vu0->m_branch == 1
                 ? (vu0->m_branch_pc + 8u)
                 : (vu0->m_micro_pc + 8u);
-            vu0_write_ialu_vi(vu0, fields.m_it,
-                static_cast<uint16_t>((link_pc >> 3) & 0xffffu));
+            action->m_link_register = fields.m_it;
+            action->m_link_value =
+                static_cast<uint16_t>((link_pc >> 3) & 0xffffu);
         }
         break;
 
     case op::JR:
-        taken = true;
+        action->m_taken = true;
         absolute_target = true;
         target = static_cast<uint32_t>(
             vu0_read_ialu_vi(vu0, fields.m_is)
@@ -1012,10 +1022,10 @@ bool vu0_execute_lower_branch(
         break;
 
     case op::JALR:
-        taken = true;
+        action->m_taken = true;
         absolute_target = true;
-        // Sample the jump target before writing the link register. This also
-        // handles the legal Is == It overlap without corrupting the target.
+        // Sample the jump target before the link write. This also handles the
+        // legal Is == It overlap without corrupting the sampled target.
         target = static_cast<uint32_t>(
             vu0_read_ialu_vi(vu0, fields.m_is)
         ) << 3;
@@ -1024,47 +1034,66 @@ bool vu0_execute_lower_branch(
             const uint32_t link_pc = vu0->m_branch == 1
                 ? (vu0->m_branch_pc + 8u)
                 : (vu0->m_micro_pc + 8u);
-            vu0_write_ialu_vi(vu0, fields.m_it,
-                static_cast<uint16_t>((link_pc >> 3) & 0xffffu));
+            action->m_link_register = fields.m_it;
+            action->m_link_value =
+                static_cast<uint16_t>((link_pc >> 3) & 0xffffu);
         }
         break;
 
     case op::IBEQ:
-        taken = source_t == source_s;
+        action->m_taken = source_t == source_s;
         break;
 
     case op::IBNE:
-        taken = source_t != source_s;
+        action->m_taken = source_t != source_s;
         break;
 
     case op::IBLTZ:
-        taken = source_s < 0;
+        action->m_taken = source_s < 0;
         break;
 
     case op::IBGTZ:
-        taken = source_s > 0;
+        action->m_taken = source_s > 0;
         break;
 
     case op::IBLEZ:
-        taken = source_s <= 0;
+        action->m_taken = source_s <= 0;
         break;
 
     case op::IBGEZ:
-        taken = source_s >= 0;
+        action->m_taken = source_s >= 0;
         break;
 
     default:
         return false;
     }
 
-    if (taken)
+    if (action->m_taken)
     {
-        vu0_set_branch(vu0, absolute_target
+        action->m_target = absolute_target
             ? (target & EE_VU0_MICRO_MEMORY_MASK)
-            : vu0_relative_branch_target(vu0, instruction));
+            : vu0_relative_branch_target(vu0, instruction);
     }
 
     return true;
+}
+
+void vu0_apply_lower_branch(
+    s_ee_vu0_state* vu0,
+    const s_vu0_branch_action& action
+)
+{
+    if (action.m_link_register != 0)
+    {
+        vu0_write_ialu_vi(
+            vu0, action.m_link_register, action.m_link_value
+        );
+    }
+
+    if (action.m_taken)
+    {
+        vu0_set_branch(vu0, action.m_target);
+    }
 }
 
 bool vu0_execute_lower_ialu(
@@ -1232,10 +1261,20 @@ uint32_t ee_vu0_execute_ialu_callback(
             return static_cast<uint32_t>(e_ee_vu0_sync_result::UNAVAILABLE);
         }
 
-        // VU cycle increments before lower issue. Branch instructions interlock
-        // against pending IALU writes to their source VI registers; the branch
-        // may therefore consume more than one cycle before it executes.
+        // PCSX2 executes the lower operation before applying lower-pipe
+        // stalls. Branch conditions therefore sample VI/VIBackup before an
+        // interlock advances the VU cycle. Keep that decision local until the
+        // stall has completed so an invalid queue cannot partially issue a
+        // branch or write its link register.
         const uint64_t cycles_before_pair = vu0->m_cycle;
+        s_vu0_branch_action branch_action{};
+        if (lower_branch &&
+            !vu0_prepare_lower_branch(vu0, instruction, &branch_action))
+        {
+            vu0->m_micro_pc = pair_pc;
+            return static_cast<uint32_t>(e_ee_vu0_sync_result::UNAVAILABLE);
+        }
+
         ++vu0->m_cycle;
         if (lower_branch)
         {
@@ -1258,10 +1297,6 @@ uint32_t ee_vu0_execute_ialu_callback(
             return retire_result;
         }
 
-        // PCSX2 ages VIBackupCycles by the exact elapsed cycles (including
-        // lower-pipe stalls) before the current lower operation executes.
-        vu0_advance_vi_backup(vu0, vu0->m_cycle - cycles_before_pair);
-
         if (lower_ialu)
         {
             uint32_t write_mask = 0;
@@ -1272,8 +1307,7 @@ uint32_t ee_vu0_execute_ialu_callback(
             }
 
             // The scalar integer ALU operations in this slice have zero
-            // IALU-pipeline latency in PCSX2's lower-op metadata. Their
-            // two-cycle VI-backup window is tracked separately above.
+            // IALU-pipeline latency in PCSX2's lower-op metadata.
             const uint32_t schedule_result =
                 ee_vu0_ialu_schedule_write(vu0, write_mask, 0);
             if (schedule_result != static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE))
@@ -1281,11 +1315,15 @@ uint32_t ee_vu0_execute_ialu_callback(
                 return schedule_result;
             }
         }
-        else if (!vu0_execute_lower_branch(vu0, instruction))
+        else
         {
-            vu0->m_micro_pc = pair_pc;
-            return static_cast<uint32_t>(e_ee_vu0_sync_result::UNAVAILABLE);
+            vu0_apply_lower_branch(vu0, branch_action);
         }
+
+        // PCSX2 ages VIBackupCycles after lower execution and all lower stalls.
+        // This preserves the old value for a branch issued at the last visible
+        // backup cycle, while accounting for the full interlock duration.
+        vu0_advance_vi_backup(vu0, vu0->m_cycle - cycles_before_pair);
 
         ++executed;
 
