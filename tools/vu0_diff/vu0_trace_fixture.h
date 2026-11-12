@@ -84,9 +84,9 @@ constexpr std::array<s_pair, 37> k_program =
     { make_iaddiu(15, 0, 21), k_upper_nop },                       // 15 delay
     { make_branch(0x25, 15, 15, 0), k_upper_nop },                 // 16 JALR VI15 -> 21, link VI15
     { make_iaddiu(8, 0, 17), k_upper_nop },                        // 17 delay
-    { { k_idle_lower }, k_upper_nop },                             // 18 skipped
-    { { k_idle_lower }, k_upper_nop },                             // 19 skipped
-    { { k_idle_lower }, k_upper_nop },                             // 20 skipped
+    { k_idle_lower, k_upper_nop },                             // 18 skipped
+    { k_idle_lower, k_upper_nop },                             // 19 skipped
+    { k_idle_lower, k_upper_nop },                             // 20 skipped
     { make_branch(0x28, 1, 1, 2), k_upper_nop },                   // 21 IBEQ true -> 24
     { make_iaddiu(8, 0, 22), k_upper_nop },                        // 22 delay
     { make_iaddiu(9, 0, 23), k_upper_nop },                        // 23 skipped
@@ -100,7 +100,7 @@ constexpr std::array<s_pair, 37> k_program =
     { make_iaddiu(8, 0, 31), k_upper_nop },                        // 31 sequential/delay
     { make_branch(0x2f, 0, 1, 2), k_upper_nop },                   // 32 IBGEZ true -> 35
     { make_iaddiu(8, 0, 33), k_upper_nop },                        // 33 delay
-    { { k_idle_lower }, k_upper_nop },                             // 34 skipped
+    { k_idle_lower, k_upper_nop },                             // 34 skipped
     { make_iaddiu(3, 0, 0x333), k_upper_nop | 0x40000000u },       // 35 E
     { make_iaddiu(8, 0, 36), k_upper_nop }                         // 36 E delay
 }};
