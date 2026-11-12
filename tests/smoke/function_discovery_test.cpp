@@ -59,7 +59,7 @@ uint32_t encode_beq(uint32_t rs, uint32_t rt, int16_t immediate)
 uint32_t encode_jalr(uint32_t rs, uint32_t rd = 31)
 {
     return (rs << 21) | (rd << 11) |
-           static_cast<uint32_t>(e_ee_opcode::FUNCT_JALR);
+           static_cast<uint32_t>(ee::e_ee_opcode::FUNCT_JALR);
 }
 
 void add(std::map<uint32_t, ee::s_ee_instruction>& insns,
