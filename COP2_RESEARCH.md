@@ -2,7 +2,7 @@
 
 ## Decision
 
-The decoder and LLVM lifter support the COP2 transfer/control forms QMFC2, QMTC2, CFC2, CTC2 and the four BC2 branches through runtime helpers. The in-tree runtime also has a deliberately narrow VU0 micro-instruction slice: lower IADD, ISUB, IAND, IOR, IADDI, IADDIU and ISUBIU, plus B, BAL, JR, JALR, IBEQ, IBNE, IBLTZ, IBGTZ, IBLEZ and IBGEZ, each paired with upper NOP. It models the lower integer destination reservations, branch delay/nested-branch state, conditional-branch VI backup window and source interlocks. The scheduler remains host-integrated: the host supplies VU1 catch-up and EE event services, while unsupported VU0 pairs fail closed.
+The decoder and LLVM lifter support the COP2 transfer/control forms QMFC2, QMTC2, CFC2, CTC2 and the four BC2 branches through runtime helpers. The in-tree runtime also has a deliberately narrow VU0 micro-instruction slice: lower IADD, ISUB, IAND, IOR, IADDI, IADDIU and ISUBIU, plus B, BAL, JR, JALR, IBEQ, IBNE, IBLTZ, IBGTZ, IBLEZ and IBGEZ, each paired with upper NOP. It models zero-latency lower integer writes, branch delay/nested-branch state, the conditional-branch VI-backup window and source interlocks. The generic four-entry IALU reservation queue remains available for future lower operations with nonzero latency; it is not used by this scalar integer subset. The scheduler remains host-integrated: the host supplies VU1 catch-up and EE event services, while unsupported VU0 pairs fail closed.
 
 This is not a general VU0 micro-engine. VU data-memory operations, I/D/T modes, upper vector operations, full dual-issue ordering and FMAC/FDIV/EFU pipelines remain unsupported. The implemented branch subset is limited to lower integer control flow paired with upper NOP; it does not establish complete VU0 branch/pipeline equivalence.
 
@@ -105,7 +105,7 @@ PCSX2's VU register set contains substantially more than the 32 vector registers
 
 The project retains `s_ee_cpu_state::m_vu0[32]` as the VF bank and adds a separate aligned `s_ee_vu0_state` sidecar. The sidecar provides VI[32], ACC, Q/P, visible control/flag values, micro-PC, EE/VU cycle counters, E/M/running state, and separate 4 KB VU data and micro-program memories without shifting the established CPU-state offsets.
 
-The sidecar is not a full `VURegs` equivalent. It now includes the restricted lower-branch pipeline state (including deferred nested branches), an IALU destination-reservation queue and VI-backup state for conditional branch reads. It still does not contain a complete dual-issue pipeline scoreboard, VF write/forwarding state, upper-pipeline dependencies, FMAC/FDIV/EFU internal state, or a VU1 execution engine. Those remain unimplemented. A helper-only mock can validate ABI, fetch and transfer rules, but cannot establish correct behaviour while a real VU microprogram is executing.
+The sidecar is not a full `VURegs` equivalent. It now includes the restricted lower-branch pipeline state (including deferred nested branches), a generic IALU destination-reservation queue and VI-backup state for conditional branch reads. The supported scalar IADD-family operations bypass the queue because their lower-op metadata specifies zero IALU latency. It still does not contain a complete dual-issue pipeline scoreboard, VF write/forwarding state, upper-pipeline dependencies, FMAC/FDIV/EFU internal state, or a VU1 execution engine. Those remain unimplemented. A helper-only mock can validate ABI, fetch and transfer rules, but cannot establish correct behaviour while a real VU microprogram is executing.
 
 ## Implementation path
 
@@ -120,7 +120,7 @@ The sidecar is not a full `VURegs` equivalent. It now includes the restricted lo
 
 ## Current guardrail
 
-QMFC2/QMTC2/CFC2/CTC2 and BC2 are enabled only through the fail-closed runtime boundary and only when the required host callbacks/state exist. The in-tree micro-engine executes only the explicitly listed lower integer/branch subset paired with upper NOP. Its direct runtime regression tests passed as part of [Actions run #43214060713](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43214060713) (15/15 CTest). These tests are not yet a full differential execution harness against PCSX2. This is integration and a limited execution slice, not a general VU0 engine. All VU0 macro instructions remain unsupported.
+QMFC2/QMTC2/CFC2/CTC2 and BC2 are enabled only through the fail-closed runtime boundary and only when the required host callbacks/state exist. The in-tree micro-engine executes only the explicitly listed lower integer/branch subset paired with upper NOP. Its direct runtime regression tests passed as part of [Actions run #43214060713](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43214060713) (15/15 CTest). These tests are not yet a full differential execution harness against PCSX2. The scalar ALU cases now explicitly check zero IALU-pipeline latency. This is integration and a limited execution slice, not a general VU0 engine. All VU0 macro instructions remain unsupported.
 
 
 ## Runtime state and synchronization interface
@@ -185,11 +185,11 @@ The helper does not emulate VU1 or execute FBRST hardware actions itself. These 
 
 The scheduler adapter itself does not execute VU micro-instructions; it orchestrates the host engine callback. The in-tree `ee_vu0_execute_ialu_callback` currently supplies a restricted lower-integer execution slice, with every supported pair required to have upper NOP:
 
-- Lower IADD/ISUB/IAND/IOR/IADDI/IADDIU/ISUBIU perform 16-bit VI writes, preserve the upper halfword and keep VI0 hardwired. Destination availability is tracked by the four-entry IALU reservation queue; matured entries retire before issue and pending entries flush at E.
+- Lower IADD/ISUB/IAND/IOR/IADDI/IADDIU/ISUBIU perform immediate 16-bit VI writes, preserve the upper halfword and keep VI0 hardwired. PCSX2 lower-op metadata assigns these scalar integer operations zero IALU-pipeline latency, so they bypass the reservation queue. The four-entry queue remains a generic facility for future nonzero-latency operations such as ILW/ILWR.
 - Lower B/BAL/IBEQ/IBNE/IBLTZ/IBGTZ/IBLEZ/IBGEZ/JR/JALR execute through the same callback. Relative branch offsets use the already-advanced TPC plus the signed 11-bit immediate field (bit 10 is the sign bit). JR/JALR targets are the VI low halfword multiplied by eight and wrapped to the 4 KB micro store.
 - The branch state applies a one-pair delay after branch issue. A second branch in that delay pair is deferred until after the first target instruction. BAL/JALR link values account for this nested-delay case; JALR samples its target before writing the link, including when Is == It.
 - Conditional branch reads observe PCSX2's VI-backup window. An IALU write retains the old low halfword for two cycles; repeated writes to the same VI preserve the value from before the chain, while another VI write replaces the backup register. Branch predicates/targets are sampled before _vuTestLowerStalls; after the interlock, the backup window is aged by the full elapsed issue/stall cycles. This ordering is covered by a forced-stall regression.
-- E sets a two-pair delay, then clears VI backup state and flushes outstanding IALU reservations. M returns from one engine slice regardless of wait policy; the outer scheduler resumes for FINISH_TO_E or stops for WAIT_TO_E_OR_M.
+- E sets a two-pair delay and then clears VI backup state. With the current scalar-only subset there are no outstanding IALU reservations to flush, so E adds no spurious extra cycle. M returns from one engine slice regardless of wait policy; the outer scheduler resumes for FINISH_TO_E or stops for WAIT_TO_E_OR_M.
 
 The runtime regression suite covers the supported lower integer ops, all six conditional branch predicates, B/BAL/JR/JALR, ordinary and nested delay slots, JALR source/destination overlap, signed backward offsets, VI-backup windows and E/M scheduling. GitHub Actions [run 43210588688](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43210588688) passed **15/15 CTest**.
 
