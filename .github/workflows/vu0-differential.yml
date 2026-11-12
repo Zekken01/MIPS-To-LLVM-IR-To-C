@@ -51,7 +51,7 @@ jobs:
             libxcb-present-dev libxcb-randr0-dev libxcb-render0-dev \
             libxcb-render-util0-dev libxcb-shape0-dev libxcb-shm0-dev \
             libxcb-sync-dev libxcb-util-dev libxcb-xfixes0-dev \
-            libxcb-xinput-dev libxcb-xkb-dev libxext-dev \
+            libxcb-xinput-dev libxcb-xkb-dev libxext-dev libxi-dev \
             libxkbcommon-x11-dev libxrandr-dev lld-17 llvm-17 nasm \
             ninja-build pkg-config zlib1g-dev
 
@@ -106,7 +106,6 @@ jobs:
             -DUSE_LINKED_FFMPEG=ON \
             -DUSE_OPENGL=OFF \
             -DUSE_VULKAN=OFF \
-            -DX11_API=OFF \
             -DWAYLAND_API=OFF \
             -DUSE_BACKTRACE=OFF
 
