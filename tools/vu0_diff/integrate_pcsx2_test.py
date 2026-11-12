@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install the VU0 issue-order probe into a pinned PCSX2 source checkout."""
+"""Install/remove the pinned PCSX2 VU0 issue-order and trace tests."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from pathlib import Path
 
 PCSX2_REVISION = "82cac38b2af19d593dedfd9ddaa63448e7ec493c"
 TEST_RELATIVE_PATH = Path("tests/ctest/core/vu0_issue_order_test.cpp")
+FIXTURE_RELATIVE_PATH = Path("tests/ctest/core/vu0_trace_fixture.h")
 CMAKE_RELATIVE_PATH = Path("tests/ctest/core/CMakeLists.txt")
 CMAKE_ANCHOR = "\tStubHost.cpp\n)"
 CMAKE_INSERTION = "\tStubHost.cpp\n\tvu0_issue_order_test.cpp\n)"
@@ -27,7 +28,7 @@ def get_revision(source_root: Path) -> str:
     return result.stdout.strip()
 
 
-def install(source_root: Path, adapter_source: Path) -> None:
+def install(source_root: Path, adapter_source: Path, fixture_source: Path) -> None:
     revision = get_revision(source_root)
     if revision != PCSX2_REVISION:
         raise RuntimeError(
@@ -36,29 +37,46 @@ def install(source_root: Path, adapter_source: Path) -> None:
 
     cmake_path = source_root / CMAKE_RELATIVE_PATH
     test_path = source_root / TEST_RELATIVE_PATH
+    fixture_path = source_root / FIXTURE_RELATIVE_PATH
     cmake_text = cmake_path.read_text(encoding="utf-8")
 
     if CMAKE_MARKER in cmake_text:
-        if not test_path.exists():
+        if not test_path.is_file() or not fixture_path.is_file():
             raise RuntimeError(
-                "PCSX2 CMakeLists already references the adapter, "
-                "but the adapter source is missing"
+                "PCSX2 CMakeLists references the VU0 adapter, "
+                "but the adapter source or shared fixture is missing"
             )
-        print("PCSX2 VU0 issue-order test is already installed.")
+        print("PCSX2 VU0 issue-order and trace tests are already installed.")
         return
 
     if CMAKE_ANCHOR not in cmake_text:
         raise RuntimeError(
             f"Could not find the expected CMake anchor in {cmake_path}"
         )
+    if test_path.exists() or fixture_path.exists():
+        raise RuntimeError(
+            "Refusing to overwrite an existing PCSX2 test source or fixture"
+        )
 
-    test_path.write_bytes(adapter_source.read_bytes())
-    cmake_path.write_text(
-        cmake_text.replace(CMAKE_ANCHOR, CMAKE_INSERTION, 1),
-        encoding="utf-8",
-        newline="",
+    test_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        test_path.write_bytes(adapter_source.read_bytes())
+        fixture_path.write_bytes(fixture_source.read_bytes())
+        cmake_path.write_text(
+            cmake_text.replace(CMAKE_ANCHOR, CMAKE_INSERTION, 1),
+            encoding="utf-8",
+            newline="",
+        )
+    except OSError:
+        if test_path.exists():
+            test_path.unlink()
+        if fixture_path.exists():
+            fixture_path.unlink()
+        raise
+
+    print(
+        f"Installed the VU0 issue-order and trace tests into PCSX2 {revision}."
     )
-    print(f"Installed {TEST_RELATIVE_PATH} into PCSX2 {revision}.")
 
 
 def uninstall(source_root: Path) -> None:
@@ -70,20 +88,24 @@ def uninstall(source_root: Path) -> None:
 
     cmake_path = source_root / CMAKE_RELATIVE_PATH
     test_path = source_root / TEST_RELATIVE_PATH
+    fixture_path = source_root / FIXTURE_RELATIVE_PATH
     cmake_text = cmake_path.read_text(encoding="utf-8")
 
     if CMAKE_MARKER in cmake_text:
-        cmake_text = cmake_text.replace(
-            "\tStubHost.cpp\n\tvu0_issue_order_test.cpp\n)",
-            "\tStubHost.cpp\n)",
-            1,
-        )
+        if CMAKE_INSERTION not in cmake_text:
+            raise RuntimeError(
+                "CMake marker exists but expected source-list text does not; "
+                "refusing to edit an unknown CMake layout"
+            )
+        cmake_text = cmake_text.replace(CMAKE_INSERTION, CMAKE_ANCHOR, 1)
         cmake_path.write_text(cmake_text, encoding="utf-8", newline="")
 
     if test_path.exists():
         test_path.unlink()
+    if fixture_path.exists():
+        fixture_path.unlink()
 
-    print("Removed the PCSX2 VU0 issue-order test adapter.")
+    print("Removed the PCSX2 VU0 issue-order and trace tests.")
 
 
 def main() -> int:
@@ -97,7 +119,7 @@ def main() -> int:
     parser.add_argument(
         "--remove",
         action="store_true",
-        help="Remove the adapter from the PCSX2 checkout",
+        help="Remove the tests from the PCSX2 checkout",
     )
     args = parser.parse_args()
 
@@ -107,11 +129,12 @@ def main() -> int:
         return 2
 
     adapter_source = Path(__file__).with_name("pcsx2_issue_order_test.cpp")
+    fixture_source = Path(__file__).with_name("vu0_trace_fixture.h")
     try:
         if args.remove:
             uninstall(source_root)
         else:
-            install(source_root, adapter_source)
+            install(source_root, adapter_source, fixture_source)
     except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
