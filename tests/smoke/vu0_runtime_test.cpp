@@ -1161,6 +1161,64 @@ int main()
               "VU0 JALR in a branch delay pair defers its target and links from the first target");
     }
     {
+        struct s_branch_condition_case
+        {
+            uint32_t m_primary;
+            uint16_t m_source;
+            const char* m_name;
+        };
+
+        const s_branch_condition_case cases[] =
+        {
+            { 0x28u, 0u, "IBEQ" },
+            { 0x29u, 1u, "IBNE" },
+            { 0x2cu, 0xffffu, "IBLTZ" },
+            { 0x2du, 1u, "IBGTZ" },
+            { 0x2eu, 0u, "IBLEZ" },
+            { 0x2fu, 0u, "IBGEZ" },
+        };
+
+        bool all_taken = true;
+        for (const s_branch_condition_case& branch_case : cases)
+        {
+            ee::s_ee_vu0_state state{};
+            ee::s_ee_vu0_ialu_engine ialu_engine{};
+            state.m_vpu_status = 1u;
+            state.m_vi[1] = branch_case.m_source;
+            install_vu0_pair(&state, 0,
+                make_vu0_branch(branch_case.m_primary, 0, 1, 1),
+                make_vu0_upper_nop());
+
+            const uint32_t result = ee::ee_vu0_execute_ialu_callback(
+                &ialu_engine, &cpu, &state, 1,
+                ee::EE_VU0_EXECUTE_EXACT_CYCLES, 0x00102014u
+            );
+            all_taken = all_taken &&
+                result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+                state.m_branch == 1 && state.m_branch_pc == 16;
+        }
+        check(all_taken,
+              "VU0 signed and equality branch conditions take at their true boundaries");
+    }
+    {
+        ee::s_ee_vu0_state state{};
+        ee::s_ee_vu0_ialu_engine ialu_engine{};
+        state.m_vpu_status = 1u;
+        install_vu0_pair(&state, 0, make_vu0_branch(0x20, 0, 0, 0x7ffu),
+                         make_vu0_upper_nop());
+        install_vu0_pair(&state, 1, make_vu0_iaddiu(8, 0, 8),
+                         make_vu0_upper_nop());
+
+        const uint32_t result = ee::ee_vu0_execute_ialu_callback(
+            &ialu_engine, &cpu, &state, 2,
+            ee::EE_VU0_EXECUTE_EXACT_CYCLES, 0x00102018u
+        );
+        check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              state.m_micro_pc == 0 && state.m_tpc == 0 &&
+              static_cast<uint16_t>(state.m_vi[8]) == 8,
+              "VU0 negative relative branch offset sign-extends and wraps the 4 KB program");
+    }
+    {
         ee::s_ee_vu0_state state{};
         ee::s_ee_vu0_ialu_engine ialu_engine{};
         state.m_vpu_status = 1u;
