@@ -78,6 +78,10 @@ class VU0State(ctypes.Structure):
         ("ialu_read_pos", ctypes.c_uint32),
         ("ialu_write_pos", ctypes.c_uint32),
         ("ialu_count", ctypes.c_uint32),
+        ("branch", ctypes.c_uint32),
+        ("branch_pc", ctypes.c_uint32),
+        ("delay_branch_pc", ctypes.c_uint32),
+        ("take_delay_branch", ctypes.c_uint32),
     ]
 
 
@@ -87,7 +91,11 @@ assert VU0State.ialu.offset == 8432
 assert VU0State.ialu_read_pos.offset == 8496
 assert VU0State.ialu_write_pos.offset == 8500
 assert VU0State.ialu_count.offset == 8504
-assert ctypes.sizeof(VU0State) == 8512
+assert VU0State.branch.offset == 8512
+assert VU0State.branch_pc.offset == 8516
+assert VU0State.delay_branch_pc.offset == 8520
+assert VU0State.take_delay_branch.offset == 8524
+assert ctypes.sizeof(VU0State) == 8528
 
 
 class Runtime(ctypes.Structure):
