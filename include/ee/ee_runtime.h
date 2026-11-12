@@ -113,6 +113,10 @@ uint32_t ee_vu0_ctc2(s_ee_cpu_state* cpu, s_ee_runtime* rt,
                       uint32_t gpr_index, uint32_t vi_index,
                       uint32_t mode, uint32_t pc);
 
+// BC2 reads VPU_STAT bit 8 directly, as the interpreter branch handlers do.
+// Returns 0/1 for false/true, or 2 when VU0 state is unavailable.
+uint32_t ee_vu0_get_branch_condition(const s_ee_runtime* rt);
+
 // Exception entry / return and interrupt helpers (ee_exceptions.cpp).
 uint32_t ee_raise_exception(s_ee_cpu_state* cpu, s_ee_runtime* rt,
                             uint32_t excode, uint32_t pc,
