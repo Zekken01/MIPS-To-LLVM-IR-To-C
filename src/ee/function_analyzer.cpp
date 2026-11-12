@@ -753,6 +753,18 @@ void function_analyzer::split_into_blocks(
                 break;
             }
 
+            // A branch/jump target may already have been scheduled and
+            // materialised as its own basic block. Do not absorb that target
+            // into a later linear scan: terminate here and preserve the CFG
+            // edge so predecessor data-flow and block emission stay sound.
+            if (pc != bb.start_pc && visited.count(pc) != 0)
+            {
+                bb.end_pc = pc;
+                bb.fallthrough_pc = pc;
+                bb.successors.insert(pc);
+                break;
+            }
+
             const s_ee_instruction& ins = iit->second;
             bb.insn_indices.push_back(pc); // store pc as index key for now
 
