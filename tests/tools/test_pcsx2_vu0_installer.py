@@ -90,7 +90,7 @@ class PCSX2VU0InstallerTests(unittest.TestCase):
         )
 
         self.installer.install(
-            self.root, self.adapter_source, self.fixture_source
+            self.root, self.adapter_source, self.fixture_source, self.sha256_source
         )
         self.assertEqual(
             self.cmake_path.read_text(encoding="utf-8"), installed_cmake
@@ -116,7 +116,7 @@ class PCSX2VU0InstallerTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "revision mismatch"):
             self.installer.install(
-                self.root, self.adapter_source, self.fixture_source
+                self.root, self.adapter_source, self.fixture_source, self.sha256_source
             )
 
         self.assertEqual(
@@ -131,7 +131,7 @@ class PCSX2VU0InstallerTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "expected CMake anchor"):
             self.installer.install(
-                self.root, self.adapter_source, self.fixture_source
+                self.root, self.adapter_source, self.fixture_source, self.sha256_source
             )
 
         self.assertFalse(
@@ -140,7 +140,7 @@ class PCSX2VU0InstallerTests(unittest.TestCase):
 
     def test_uninstall_refuses_unknown_cmake_mutation(self):
         self.installer.install(
-            self.root, self.adapter_source, self.fixture_source
+            self.root, self.adapter_source, self.fixture_source, self.sha256_source
         )
         self.cmake_path.write_text(
             "add_pcsx2_test(core_test)\n"
