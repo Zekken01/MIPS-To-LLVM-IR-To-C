@@ -375,3 +375,15 @@ Further changes should be committed to this branch in small, testable increments
 - Updated the 384-pair mixed oracle's injected three-cycle IBEQ dependency to verify current-value sampling after the stall. The oracle still guarantees that all 17 supported lower operation classes execute before its randomized control-flow tail.
 - GitHub Actions [run #43229844156](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43229844156): clean build, artifact upload, and **15/15 CTest passed**.
 - Remaining semantic gap: the reference models are still test-side PCSX2-derived models, not a live PCSX2 interpreter differential. The next validation step is a reproducible harness that runs matching fixtures through PCSX2's interpreter and compares per-pair state/cycle traces.
+
+
+## 2026-11-12 — Per-pair VU0 trace production and PCSX2 adapter
+
+- Added a shared 37-pair VU0 microprogram fixture. Its executed path covers all seven lower scalar integer operations, B/BAL/JR/JALR, all six conditional branches, a JALR source/destination overlap, one M-marked pair, and an E-marked pair with its delay pair.
+- Added the in-tree ee_vu0_trace_candidate executable. It executes one bounded VU0 runtime pair per exact-cycle callback and emits the JSONL schema for all 32 VI registers, cycle count, byte micro-PC, branch/delay state, VI backup, E/M status, and VPU running status.
+- Extended the trace format and comparator to record and compare the executed pair PC in addition to the lower/upper instruction words and architectural state.
+- Extended the pinned PCSX2 adapter at 82cac38b2af19d593dedfd9ddaa63448e7ec493c. Its opt-in VU0IssueOrder.EmitDeterministicPerPairTrace test calls vu0Exec(&VU0) once per pair and writes the same JSONL records when VU0_TRACE_OUTPUT is set. The existing three issue-order boundary probes remain in place.
+- Updated the PCSX2 integration installer to copy both the adapter and shared fixture. Added tools/vu0_diff/run_differential.py to configure/build both projects, produce both traces, and compare them.
+- Added CTest coverage for candidate trace length, executed pair PCs, all 17 lower opcode classes, M/E boundaries, final VI state, and comparator acceptance. The first CI attempts found and corrected a Python unittest argument-parsing error and an incorrect test expectation for the encoded ISUB operand order.
+- GitHub Actions [run #458](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43240924661): clean build, artifact upload, and **17/17 CTest passed**.
+- This verifies the candidate trace producer and comparator path. The pinned PCSX2 adapter has been authored and integrated by the installer, but the PCSX2 test binary has not yet been built and a real cross-engine trace comparison has **not** yet been run. Do not claim live differential equivalence until that comparison succeeds.
