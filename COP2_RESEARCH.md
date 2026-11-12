@@ -101,9 +101,9 @@ PCSX2's VU register set contains substantially more than the 32 vector registers
 - Current instruction/micro-PC state, branch-delay state, E-bit state and pending pipeline state.
 - FMAC, FDIV and EFU pipeline bookkeeping and flags.
 
-The project retains `s_ee_cpu_state::m_vu0[32]` as the VF bank and adds a separate aligned `s_ee_vu0_state` sidecar. The sidecar provides VI[32], ACC, Q/P, visible control/flag values, micro-PC, EE/VU cycle counters and E/M/running state without shifting the established CPU-state offsets.
+The project retains `s_ee_cpu_state::m_vu0[32]` as the VF bank and adds a separate aligned `s_ee_vu0_state` sidecar. The sidecar provides VI[32], ACC, Q/P, visible control/flag values, micro-PC, EE/VU cycle counters, E/M/running state, and separate 4 KB VU data and micro-program memories without shifting the established CPU-state offsets.
 
-The sidecar is not a full `VURegs` equivalent. It does not contain micro-memory, a complete pipeline scoreboard, branch-delay bookkeeping, FMAC/FDIV/EFU internal state, or a VU1 execution engine. Those remain host-engine responsibilities. A helper-only mock can validate ABI and transfer rules, but cannot establish correct behaviour while a real VU microprogram is executing.
+The sidecar is not a full `VURegs` equivalent. It does not contain a complete pipeline scoreboard, branch-delay bookkeeping, FMAC/FDIV/EFU internal state, or a VU1 execution engine. Those remain host-engine responsibilities. A helper-only mock can validate ABI, fetch and transfer rules, but cannot establish correct behaviour while a real VU microprogram is executing.
 
 ## Implementation path
 
@@ -120,18 +120,20 @@ QMFC2/QMTC2/CFC2/CTC2 and BC2 are enabled only through the fail-closed runtime b
 
 ## Runtime state and synchronization interface
 
-The first runtime foundation is now represented in source, while COP2 transfer execution remains disabled:
+The runtime sidecar and COP2 integration are now represented in source:
 
 - The existing `s_ee_cpu_state::m_vu0[32]` remains the VF vector-register bank, preserving its existing LLVM/native offsets.
-- New `s_ee_vu0_state` is a 16-byte-aligned sidecar for VI[32], ACC, Q, P, MAC/clip/status/control registers, micro-PC, EE/VU cycle counters, and running/E/M state.
+- The 16-byte-aligned `s_ee_vu0_state` contains VI[32], ACC, Q/P, MAC/clip/status/control registers, TPC/micro-PC, EE/VU cycle counters, E/M/running state, and separate 4 KB data and micro-program memories.
+- `m_tpc` is the visible VI[TPC] value in 8-byte instruction slots; `m_micro_pc` is the byte offset used by the active fetch loop.
+- `ee_vu0_fetch_micro_instruction` fetches an aligned pair of little-endian 32-bit lower/upper words, decodes upper I/E/M/D/T flags, advances the byte PC by eight, and wraps at the 4 KB program boundary. Invalid/misaligned fetches leave both the PC and output untouched.
 - `s_ee_runtime` can point to that sidecar and carry a host VU0 synchronization callback. The callback is separate from `m_user`, which remains the EE memory context.
 - `ee_vu0_sync` validates its arguments and fails closed with UNAVAILABLE when either state or callback is missing. A missing scheduler is not silently treated as a completed synchronization.
 - The transfer policy selector maps non-delay-slot transfers to catch-up-to-EE-cycle; delay-slot reads to finish-to-E; and delay-slot writes to wait-to-E-or-M.
 - VI0 is exposed as a hardwired zero register by the new read/write helpers.
 
-This was the initial state/scheduler contract. It was subsequently extended with the bounded `ee_vu0_scheduler_sync_callback` adapter described below. The adapter still delegates actual micro-instruction execution to the host; it is not a VU0 interpreter. Transfer forms are now integrated into the LLVM path and remain guarded by missing/failed scheduler callbacks.
+This remains a fetch and scheduling foundation, not a VU0 interpreter. The host engine must still decode and execute upper/lower operations, resolve dual-issue dependencies, maintain delayed writes and FMAC/FDIV/EFU pipelines, process branches and end flags, and update architectural state. Transfer forms are integrated into the LLVM path and remain guarded by missing/failed scheduler callbacks.
 
-The `vu0_runtime_test` suite checks sidecar layout, VI0 behavior, transfer helpers, synchronization modes, callback state identity, error propagation, and fail-closed behaviour. Its mock-engine cases validate orchestration, not instruction semantics.
+The `vu0_runtime_test` suite checks sidecar layout, VI0 behavior, micro fetch and wrap, flag decoding, transfer helpers, synchronization modes, callback state identity, error propagation, and fail-closed behaviour. Its mock-engine cases validate orchestration, not instruction semantics.
 
 
 ## Initial synchronized transfer helpers
