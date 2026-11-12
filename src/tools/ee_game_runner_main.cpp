@@ -10,6 +10,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <vector>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -23,6 +24,7 @@ namespace
 constexpr uint32_t k_ee_ram_size = 32u * 1024u * 1024u;
 constexpr uint32_t k_default_stack = 0x01fff000u;
 constexpr uint32_t k_default_dispatch_budget = 10000u;
+constexpr uint32_t k_report_history_limit = 64u;
 
 using t_game_run = uint32_t (*)(
     ee::s_ee_cpu_state*,
@@ -140,6 +142,80 @@ const char* exit_name(uint32_t reason)
     }
 }
 
+struct s_dispatch_sample
+{
+    uint64_t m_index = 0;
+    uint32_t m_from = 0;
+    uint32_t m_to = 0;
+    uint32_t m_reason = 0;
+    uint32_t m_status = 0;
+};
+
+bool write_report(
+    const char* path,
+    const ee::elf_loader& image,
+    const ee::s_ee_cpu_state& cpu,
+    uint32_t entry,
+    uint64_t dispatched,
+    uint32_t reason,
+    uint32_t status,
+    const std::vector<s_dispatch_sample>& history
+)
+{
+    FILE* output = std::fopen(path, "wb");
+    if (output == nullptr)
+    {
+        std::fprintf(stderr, "failed to create runner report: %s\\n", path);
+        return false;
+    }
+    const uint32_t cause = cpu.m_cop0[13];
+    const uint32_t epc = cpu.m_cop0[14];
+    uint32_t instruction = 0;
+    const bool has_instruction = image.read32_at(epc, &instruction);
+    std::fprintf(output,
+        "{\\n  \\"schema\\": \\"ee-game-run-report-v1\\","
+        "\\n  \\"entry_pc\\": %u, \\"final_pc\\": %u,"
+        "\\n  \\"dispatches\\": %llu, \\"exit_reason\\": %u,"
+        "\\n  \\"exit_name\\": \\"%s\\", \\"dispatch_status\\": %u,"
+        "\\n  \\"cop0_cause\\": %u, \\"cop0_epc\\": %u,"
+        "\\n  \\"cop0_status\\": %u, \\"bad_vaddr\\": %u,"
+        "\\n  \\"epc_instruction\\": ",
+        entry, cpu.m_pc, static_cast<unsigned long long>(dispatched),
+        reason, exit_name(reason), status, cause, epc,
+        cpu.m_cop0[12], cpu.m_cop0[8]);
+    if (has_instruction)
+    {
+        std::fprintf(output, "%u", instruction);
+    }
+    else
+    {
+        std::fputs("null", output);
+    }
+    std::fputs(",\\n  \\"gpr_lo\\": [", output);
+    for (uint32_t i = 0; i < 32; ++i)
+    {
+        std::fprintf(output, "%s%llu", i ? ", " : "",
+            static_cast<unsigned long long>(cpu.m_gpr[i].m_lo));
+    }
+    std::fputs("],\\n  \\"history\\": [", output);
+    for (size_t i = 0; i < history.size(); ++i)
+    {
+        const auto& item = history[i];
+        std::fprintf(output,
+            "%s\\n    {\\"dispatch\\": %llu, \\"from_pc\\": %u,"
+            " \\"to_pc\\": %u, \\"reason\\": %u, \\"status\\": %u}",
+            i ? "," : "", static_cast<unsigned long long>(item.m_index),
+            item.m_from, item.m_to, item.m_reason, item.m_status);
+    }
+    std::fputs(history.empty() ? "]\\n}\\n" : "\\n  ]\\n}\\n", output);
+    const bool ok = std::ferror(output) == 0 && std::fclose(output) == 0;
+    if (!ok)
+    {
+        std::fprintf(stderr, "failed to write complete runner report: %s\\n", path);
+    }
+    return ok;
+}
+
 bool load_segments(
     const ee::elf_loader& image,
     ee::ee_memory* memory
@@ -195,6 +271,7 @@ int main(int argc, char** argv)
     const char* library_path = nullptr;
     bool trace = false;
     bool hle_startup = false;
+    const char* report_path = nullptr;
     uint32_t budget = k_default_dispatch_budget;
     uint32_t stack = k_default_stack;
     uint32_t entry_override = 0;
@@ -211,6 +288,16 @@ int main(int argc, char** argv)
         if (argument == "--trace")
         {
             trace = true;
+            continue;
+        }
+        if (argument.compare(0, 9, "--report=") == 0)
+        {
+            if (argument.size() == 9)
+            {
+                std::fprintf(stderr, "empty report path\\n");
+                return 2;
+            }
+            report_path = argv[i] + 9;
             continue;
         }
         if (argument == "--hle-startup")
@@ -358,6 +445,11 @@ int main(int argc, char** argv)
 
     uint32_t remaining = budget;
     uint64_t dispatched = 0;
+    std::vector<s_dispatch_sample> history;
+    if (report_path != nullptr)
+    {
+        history.reserve(k_report_history_limit);
+    }
     uint32_t status = 0;
     uint32_t reason = cpu.m_exit_reason;
     while (remaining != 0)
@@ -365,7 +457,7 @@ int main(int argc, char** argv)
         const uint32_t from_pc = cpu.m_pc;
         uint32_t count = 0;
         uint32_t out_pc = from_pc;
-        const uint32_t slice = trace ? 1u : remaining;
+        const uint32_t slice = (trace || report_path != nullptr) ? 1u : remaining;
         reason = native_run(&cpu, &runtime, slice, &count, &out_pc, &status);
 
         if (count > slice)
@@ -376,6 +468,14 @@ int main(int argc, char** argv)
 
         dispatched += count;
         remaining -= count;
+        if (report_path != nullptr && count != 0)
+        {
+            if (history.size() == k_report_history_limit)
+            {
+                history.erase(history.begin());
+            }
+            history.push_back({dispatched, from_pc, out_pc, reason, status});
+        }
 
         if (trace)
         {
@@ -655,6 +755,12 @@ int main(int argc, char** argv)
                 static_cast<unsigned long long>(cpu.m_gpr[7].m_lo)
             );
         }
+    }
+    if (report_path != nullptr &&
+        !write_report(report_path, image, cpu, entry, dispatched,
+                      reason, status, history))
+    {
+        return 1;
     }
     if (status == 1u && remaining == 0)
     {
