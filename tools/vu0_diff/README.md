@@ -115,8 +115,13 @@ SHA-256 digest and all 32 VF register lane patterns after each pair.
 The earlier pinned 45-pair comparison passed in differential run #9
 (47 cycles); the expanded 49-pair LQ/SQ comparison passed in
 [run 43316781870](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43316781870)
-(51 cycles). Memory-mapped VU1 register accesses, other VU memory
+(51 cycles). The subsequent
+[masked VF dependency run 43318464992](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43318464992)
+also passed all 49 pairs with a dependent SQ reading a VF lane loaded by
+the preceding LQ, verifying lane-selective four-cycle lower-memory FMAC
+interlocking. Memory-mapped VU1 register accesses, other VU memory
 operations, upper vector instructions, dual-issue dependencies, VF
-forwarding, general VF stalls, and full FMAC/FDIV/EFU pipelines remain
-out of scope. Only ordinary LQ/SQ's four-cycle FMAC completion deadline
-at E termination is currently modeled.
+forwarding across upper-vector operations, general VF stalls, and full
+FMAC/FDIV/EFU pipelines remain out of scope. Ordinary LQ/SQ's
+four-cycle FMAC completion deadline and masked LQ-to-SQ lane dependencies
+are currently modeled.
