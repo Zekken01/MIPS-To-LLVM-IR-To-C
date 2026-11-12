@@ -49,8 +49,20 @@ cmake --build pcsx2-vu0-reference/build-vu0-diff --target core_test --parallel 2
 
 ## Produce and compare traces
 
-Build this repository first. The candidate trace producer is built as
-ee_vu0_trace_candidate.
+The one-command driver installs the PCSX2 adapter, configures and builds both
+projects, emits both traces, and compares them:
+
+~~~sh
+python3 tools/vu0_diff/run_differential.py --pcsx2-root /path/to/pcsx2-vu0-reference
+~~~
+
+Use --keep-traces to retain both JSONL files after a successful comparison.
+The driver does not install system packages; first satisfy PCSX2's normal
+build dependencies. The project and PCSX2 build directories can be overridden
+with --project-build-dir and --pcsx2-build-dir.
+
+For manual operation, build this repository first. The candidate trace
+producer is built as ee_vu0_trace_candidate.
 
 On Linux/macOS:
 
