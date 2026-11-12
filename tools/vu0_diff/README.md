@@ -59,7 +59,9 @@ python3 tools/vu0_diff/run_differential.py --pcsx2-root /path/to/pcsx2-vu0-refer
 Use --keep-traces to retain both JSONL files after a successful comparison.
 The driver does not install system packages; first satisfy PCSX2's normal
 build dependencies. The project and PCSX2 build directories can be overridden
-with --project-build-dir and --pcsx2-build-dir.
+with --project-build-dir and --pcsx2-build-dir. Pass --pcsx2-prefix-path
+when the PCSX2 dependencies were installed outside its source tree; otherwise
+the driver automatically uses <pcsx2-root>/deps when that directory exists.
 
 For manual operation, build this repository first. The candidate trace
 producer is built as ee_vu0_trace_candidate.
