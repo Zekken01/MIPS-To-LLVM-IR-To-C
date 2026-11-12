@@ -154,7 +154,9 @@ class VU0CandidateTraceTests(unittest.TestCase):
             # PCSX2 does not stall an ISW on ILW's IALU destination.
             self.assertEqual(steps[40]["state"]["cycle"], 41)
             self.assertEqual(steps[41]["state"]["cycle"], 42)
-            self.assertEqual(final["cycle"], 51)
+            # Four additional memory pairs allow ILW's pipe to retire
+            # before E, avoiding the two final drain cycles.
+            self.assertEqual(final["cycle"], 49)
             self.assertNotEqual(
                 steps[38]["state"]["data_sha256"],
                 steps[39]["state"]["data_sha256"],
