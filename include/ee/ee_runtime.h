@@ -251,6 +251,25 @@ uint32_t ee_vu0_fetch_micro_instruction(
     s_ee_vu0_micro_instruction* out
 );
 
+// IALU reservation queue. A schedule call records the destination mask and
+// latency at the current VU cycle. Read-stall advances m_cycle to the latest
+// completion among pending entries that overlap read_mask. Retire removes
+// completed entries from the FIFO; flush-all advances to and retires all.
+uint32_t ee_vu0_ialu_schedule_write(
+    s_ee_vu0_state* vu0,
+    uint32_t register_mask,
+    uint32_t latency
+);
+uint32_t ee_vu0_ialu_retire_matured(
+    s_ee_vu0_state* vu0,
+    uint32_t* retired_count
+);
+uint32_t ee_vu0_ialu_wait_for_reads(
+    s_ee_vu0_state* vu0,
+    uint32_t read_mask
+);
+uint32_t ee_vu0_ialu_flush_all(s_ee_vu0_state* vu0);
+
 // Synchronized VU0 transfers. The indices are decoded 5-bit fields: gpr_index
 // is rt and vu_index is fs/rd. Destinations obey hardwired GPR0/VF0 semantics.
 uint32_t ee_vu0_qmfc2(s_ee_cpu_state* cpu, s_ee_runtime* rt,
