@@ -11,13 +11,14 @@ TOOL_ARGS = sys.argv[1:]
 sys.argv = [sys.argv[0]]
 
 EXPECTED_PROGRAM_SHA256 = (
-    "984f9d7d89e4716062437b7b38a87d44188dbce40aef0ce220eb4e96b9461f23"
+    "a614bfe81e239efe97983c377d0486b33387963743a4e51928771463bd4a0672"
 )
 EXPECTED_PAIR_PCS = [
     0, 8, 16, 24, 32, 40, 48, 56, 64,
     80, 88, 104, 112, 120, 128, 136,
     168, 176, 192, 200, 208, 216, 224, 232, 240, 248,
     256, 264, 280, 288,
+    296, 304, 312, 320, 328, 336, 344, 352, 360, 368, 376,
 ]
 
 
@@ -116,14 +117,18 @@ class VU0CandidateTraceTests(unittest.TestCase):
             self.assertEqual(final["vi"][5], 1)
             self.assertEqual(final["vi"][6], 5)
             self.assertEqual(final["vi"][7], 4)
-            self.assertEqual(final["vi"][8], 36)
-            self.assertEqual(final["vi"][10], 12)
+            self.assertEqual(final["vi"][8], 47)
+            self.assertEqual(final["vi"][9], 0x7fef)
+            self.assertEqual(final["vi"][10], 0xbfed)
+            self.assertEqual(final["vi"][11], 0xc001)
+            self.assertEqual(final["vi"][12], 0x4001)
             self.assertEqual(final["vi"][13], 16)
+            self.assertEqual(final["vi"][14], 0xffef)
             self.assertEqual(final["vi"][15], 18)
-            self.assertEqual(final["vi"][26], 296)
+            self.assertEqual(final["vi"][26], 384)
             self.assertEqual(final["vi"][29], 0)
-            self.assertEqual(final["micro_pc"], 296)
-            self.assertEqual(final["tpc"], 37)
+            self.assertEqual(final["micro_pc"], 384)
+            self.assertEqual(final["tpc"], 48)
             self.assertEqual(final["e_bit"], 0)
             self.assertFalse(final["running"])
 
