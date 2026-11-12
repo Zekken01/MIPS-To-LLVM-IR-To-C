@@ -1,6 +1,8 @@
 #include "function_analyzer.h"
 #include "ee_opcode.h"
 #include <algorithm>
+#include <array>
+#include <deque>
 #include <set>
 
 namespace ee {
@@ -52,6 +54,503 @@ std::set<uint32_t> collect_successors(const s_ee_instruction& ins)
 
 namespace
 {
+struct s_gpr_constant_state
+{
+    bool m_reachable = false;
+    std::array<uint64_t, 32> m_value{};
+    std::array<bool, 32> m_known{};
+};
+
+void set_gpr_constant(s_gpr_constant_state& state, uint32_t reg, uint64_t value)
+{
+    if (reg == 0 || reg >= 32)
+    {
+        return;
+    }
+
+    state.m_value[reg] = value;
+    state.m_known[reg] = true;
+}
+
+void clear_gpr_constant(s_gpr_constant_state& state, uint32_t reg)
+{
+    if (reg == 0 || reg >= 32)
+    {
+        return;
+    }
+
+    state.m_known[reg] = false;
+}
+
+void clear_all_gpr_constants(s_gpr_constant_state& state)
+{
+    state.m_known.fill(false);
+    state.m_known[0] = true;
+    state.m_value[0] = 0;
+}
+
+bool read_gpr_constant(
+    const s_gpr_constant_state& state,
+    uint32_t reg,
+    uint64_t* value
+)
+{
+    if (!value || reg >= 32)
+    {
+        return false;
+    }
+
+    if (reg == 0)
+    {
+        *value = 0;
+        return true;
+    }
+
+    if (!state.m_known[reg])
+    {
+        return false;
+    }
+
+    *value = state.m_value[reg];
+    return true;
+}
+
+uint64_t sign_extend_u32(uint32_t value)
+{
+    return static_cast<uint64_t>(static_cast<int64_t>(
+        static_cast<int32_t>(value)
+    ));
+}
+
+bool merge_gpr_state(
+    s_gpr_constant_state& destination,
+    const s_gpr_constant_state& source
+)
+{
+    if (!source.m_reachable)
+    {
+        return false;
+    }
+
+    if (!destination.m_reachable)
+    {
+        destination = source;
+        return true;
+    }
+
+    bool changed = false;
+    for (uint32_t reg = 1; reg < 32; ++reg)
+    {
+        if (destination.m_known[reg] &&
+            (!source.m_known[reg] ||
+             destination.m_value[reg] != source.m_value[reg]))
+        {
+            destination.m_known[reg] = false;
+            changed = true;
+        }
+    }
+
+    return changed;
+}
+
+bool is_special_no_gpr_write(uint8_t funct)
+{
+    switch (funct)
+    {
+    case e_ee_opcode::FUNCT_JR:
+    case e_ee_opcode::FUNCT_SYSCALL:
+    case e_ee_opcode::FUNCT_BREAK:
+    case e_ee_opcode::FUNCT_SYNC:
+    case e_ee_opcode::FUNCT_MTHI:
+    case e_ee_opcode::FUNCT_MTLO:
+    case e_ee_opcode::FUNCT_MULT:
+    case e_ee_opcode::FUNCT_MULTU:
+    case e_ee_opcode::FUNCT_DIV:
+    case e_ee_opcode::FUNCT_DIVU:
+    case e_ee_opcode::FUNCT_TGE:
+    case e_ee_opcode::FUNCT_TGEU:
+    case e_ee_opcode::FUNCT_TLT:
+    case e_ee_opcode::FUNCT_TLTU:
+    case e_ee_opcode::FUNCT_TEQ:
+    case e_ee_opcode::FUNCT_TNE:
+        return true;
+    default:
+        return false;
+    }
+}
+
+void invalidate_unmodelled_destination(
+    const s_ee_instruction& ins,
+    s_gpr_constant_state& state
+)
+{
+    switch (ins.opcode)
+    {
+    case e_ee_opcode::OP_SPECIAL:
+        if (!is_special_no_gpr_write(ins.funct))
+        {
+            clear_gpr_constant(state, ins.rd);
+        }
+        return;
+
+    case e_ee_opcode::OP_REGIMM:
+        if (ins.rt == e_ee_opcode::REGIMM_BLTZAL ||
+            ins.rt == e_ee_opcode::REGIMM_BGEZAL ||
+            ins.rt == e_ee_opcode::REGIMM_BLTZALL ||
+            ins.rt == e_ee_opcode::REGIMM_BGEZALL)
+        {
+            clear_gpr_constant(state, 31);
+        }
+        return;
+
+    case e_ee_opcode::OP_JAL:
+        set_gpr_constant(state, 31, sign_extend_u32(ins.pc + 8u));
+        return;
+
+    case e_ee_opcode::OP_ADDI:
+    case e_ee_opcode::OP_SLTI:
+    case e_ee_opcode::OP_SLTIU:
+    case e_ee_opcode::OP_ANDI:
+    case e_ee_opcode::OP_XORI:
+    case e_ee_opcode::OP_LUI:
+    case e_ee_opcode::OP_DADDI:
+    case e_ee_opcode::OP_DADDIU:
+    case e_ee_opcode::OP_LDL:
+    case e_ee_opcode::OP_LDR:
+    case e_ee_opcode::OP_LQ:
+    case e_ee_opcode::OP_LB:
+    case e_ee_opcode::OP_LH:
+    case e_ee_opcode::OP_LWL:
+    case e_ee_opcode::OP_LW:
+    case e_ee_opcode::OP_LBU:
+    case e_ee_opcode::OP_LHU:
+    case e_ee_opcode::OP_LWR:
+    case e_ee_opcode::OP_LWU:
+    case e_ee_opcode::OP_LD:
+        clear_gpr_constant(state, ins.rt);
+        return;
+
+    case e_ee_opcode::OP_COP0:
+        if (ins.rs == e_ee_opcode::COP0_MFC0)
+        {
+            clear_gpr_constant(state, ins.rt);
+        }
+        return;
+
+    case e_ee_opcode::OP_COP1:
+        if (ins.rs == e_ee_opcode::COP1_MFC1 ||
+            ins.rs == e_ee_opcode::COP1_CFC1)
+        {
+            clear_gpr_constant(state, ins.rt);
+        }
+        return;
+
+    case e_ee_opcode::OP_COP2:
+        if (ins.rs == e_ee_opcode::COP2_QMFC2 ||
+            ins.rs == e_ee_opcode::COP2_CFC2)
+        {
+            clear_gpr_constant(state, ins.rt);
+        }
+        return;
+
+    case e_ee_opcode::OP_MMI:
+        // MMI subfamilies use different destination-field conventions.
+        // Killing both candidates is conservative and avoids false targets.
+        clear_gpr_constant(state, ins.rd);
+        clear_gpr_constant(state, ins.rt);
+        return;
+
+    default:
+        break;
+    }
+
+    if (ins.valid != e_ee_valid::VALID)
+    {
+        // Unknown/invalid semantics may modify any GPR.
+        clear_all_gpr_constants(state);
+    }
+}
+
+void transfer_gpr_constants(
+    const s_ee_instruction& ins,
+    s_gpr_constant_state& state
+)
+{
+    uint64_t source_s = 0;
+    uint64_t source_t = 0;
+    bool has_s = read_gpr_constant(state, ins.rs, &source_s);
+    bool has_t = read_gpr_constant(state, ins.rt, &source_t);
+    const uint32_t imm32 = static_cast<uint32_t>(
+        static_cast<int32_t>(ins.immediate)
+    );
+
+    switch (ins.opcode)
+    {
+    case e_ee_opcode::OP_LUI:
+        set_gpr_constant(
+            state, ins.rt,
+            sign_extend_u32(static_cast<uint32_t>(ins.uimmediate) << 16)
+        );
+        return;
+
+    case e_ee_opcode::OP_ORI:
+        if (has_s)
+        {
+            set_gpr_constant(state, ins.rt, source_s | ins.uimmediate);
+        }
+        else
+        {
+            clear_gpr_constant(state, ins.rt);
+        }
+        return;
+
+    case e_ee_opcode::OP_ANDI:
+        if (has_s)
+        {
+            set_gpr_constant(state, ins.rt, source_s & ins.uimmediate);
+        }
+        else
+        {
+            clear_gpr_constant(state, ins.rt);
+        }
+        return;
+
+    case e_ee_opcode::OP_XORI:
+        if (has_s)
+        {
+            set_gpr_constant(state, ins.rt, source_s ^ ins.uimmediate);
+        }
+        else
+        {
+            clear_gpr_constant(state, ins.rt);
+        }
+        return;
+
+    case e_ee_opcode::OP_ADDIU:
+        if (has_s)
+        {
+            const uint32_t result =
+                static_cast<uint32_t>(source_s) + imm32;
+            set_gpr_constant(state, ins.rt, sign_extend_u32(result));
+        }
+        else
+        {
+            clear_gpr_constant(state, ins.rt);
+        }
+        return;
+
+    case e_ee_opcode::OP_DADDIU:
+        if (has_s)
+        {
+            set_gpr_constant(
+                state, ins.rt,
+                source_s + static_cast<uint64_t>(
+                    static_cast<int64_t>(ins.immediate)
+                )
+            );
+        }
+        else
+        {
+            clear_gpr_constant(state, ins.rt);
+        }
+        return;
+
+    case e_ee_opcode::OP_SPECIAL:
+        break;
+
+    default:
+        invalidate_unmodelled_destination(ins, state);
+        return;
+    }
+
+    using op = e_ee_opcode;
+    switch (ins.funct)
+    {
+    case op::FUNCT_ADDU:
+        if (has_s && has_t)
+            set_gpr_constant(state, ins.rd,
+                sign_extend_u32(static_cast<uint32_t>(source_s + source_t)));
+        else clear_gpr_constant(state, ins.rd);
+        return;
+
+    case op::FUNCT_DADDU:
+        if (has_s && has_t)
+            set_gpr_constant(state, ins.rd, source_s + source_t);
+        else clear_gpr_constant(state, ins.rd);
+        return;
+
+    case op::FUNCT_SUBU:
+        if (has_s && has_t)
+            set_gpr_constant(state, ins.rd,
+                sign_extend_u32(static_cast<uint32_t>(source_s - source_t)));
+        else clear_gpr_constant(state, ins.rd);
+        return;
+
+    case op::FUNCT_DSUBU:
+        if (has_s && has_t)
+            set_gpr_constant(state, ins.rd, source_s - source_t);
+        else clear_gpr_constant(state, ins.rd);
+        return;
+
+    case op::FUNCT_AND:
+        if (has_s && has_t)
+            set_gpr_constant(state, ins.rd, source_s & source_t);
+        else clear_gpr_constant(state, ins.rd);
+        return;
+
+    case op::FUNCT_OR:
+        if (has_s && has_t)
+            set_gpr_constant(state, ins.rd, source_s | source_t);
+        else clear_gpr_constant(state, ins.rd);
+        return;
+
+    case op::FUNCT_XOR:
+        if (has_s && has_t)
+            set_gpr_constant(state, ins.rd, source_s ^ source_t);
+        else clear_gpr_constant(state, ins.rd);
+        return;
+
+    case op::FUNCT_NOR:
+        if (has_s && has_t)
+            set_gpr_constant(state, ins.rd, ~(source_s | source_t));
+        else clear_gpr_constant(state, ins.rd);
+        return;
+
+    case op::FUNCT_SLL:
+        if (has_t)
+            set_gpr_constant(state, ins.rd, sign_extend_u32(
+                static_cast<uint32_t>(source_t) << ins.sa));
+        else clear_gpr_constant(state, ins.rd);
+        return;
+
+    case op::FUNCT_SRL:
+        if (has_t)
+            set_gpr_constant(state, ins.rd, sign_extend_u32(
+                static_cast<uint32_t>(source_t) >> ins.sa));
+        else clear_gpr_constant(state, ins.rd);
+        return;
+
+    case op::FUNCT_SRA:
+        if (has_t)
+            set_gpr_constant(state, ins.rd, sign_extend_u32(
+                static_cast<uint32_t>(
+                    static_cast<int32_t>(source_t) >> ins.sa)));
+        else clear_gpr_constant(state, ins.rd);
+        return;
+
+    case op::FUNCT_DSLL:
+    case op::FUNCT_DSLL32:
+        if (has_t)
+            set_gpr_constant(state, ins.rd,
+                source_t << (ins.sa + (ins.funct == op::FUNCT_DSLL32 ? 32u : 0u)));
+        else clear_gpr_constant(state, ins.rd);
+        return;
+
+    case op::FUNCT_DSRL:
+    case op::FUNCT_DSRL32:
+        if (has_t)
+            set_gpr_constant(state, ins.rd,
+                source_t >> (ins.sa + (ins.funct == op::FUNCT_DSRL32 ? 32u : 0u)));
+        else clear_gpr_constant(state, ins.rd);
+        return;
+
+    case op::FUNCT_DSRA:
+    case op::FUNCT_DSRA32:
+        if (has_t)
+            set_gpr_constant(state, ins.rd, static_cast<uint64_t>(
+                static_cast<int64_t>(source_t) >>
+                (ins.sa + (ins.funct == op::FUNCT_DSRA32 ? 32u : 0u))));
+        else clear_gpr_constant(state, ins.rd);
+        return;
+
+    case op::FUNCT_DSLLV:
+        if (has_s && has_t)
+            set_gpr_constant(state, ins.rd, source_t << (source_s & 0x3fu));
+        else clear_gpr_constant(state, ins.rd);
+        return;
+
+    case op::FUNCT_DSRLV:
+        if (has_s && has_t)
+            set_gpr_constant(state, ins.rd, source_t >> (source_s & 0x3fu));
+        else clear_gpr_constant(state, ins.rd);
+        return;
+
+    case op::FUNCT_DSRAV:
+        if (has_s && has_t)
+            set_gpr_constant(state, ins.rd, static_cast<uint64_t>(
+                static_cast<int64_t>(source_t) >> (source_s & 0x3fu)));
+        else clear_gpr_constant(state, ins.rd);
+        return;
+
+    case op::FUNCT_JALR:
+        set_gpr_constant(state, ins.rd, sign_extend_u32(ins.pc + 8u));
+        return;
+
+    default:
+        invalidate_unmodelled_destination(ins, state);
+        return;
+    }
+}
+
+void transfer_block_constants(
+    const s_ee_basic_block& block,
+    const std::map<uint32_t, s_ee_instruction>& insns,
+    s_gpr_constant_state& state
+)
+{
+    for (size_t pc_index : block.insn_indices)
+    {
+        auto it = insns.find(static_cast<uint32_t>(pc_index));
+        if (it == insns.end())
+        {
+            clear_all_gpr_constants(state);
+            continue;
+        }
+
+        transfer_gpr_constants(it->second, state);
+    }
+
+    state.m_known[0] = true;
+    state.m_value[0] = 0;
+}
+
+std::set<uint32_t> collect_jalr_targets_in_block(
+    const s_ee_basic_block& block,
+    const std::map<uint32_t, s_ee_instruction>& insns,
+    s_gpr_constant_state state
+)
+{
+    std::set<uint32_t> targets;
+    for (size_t pc_index : block.insn_indices)
+    {
+        auto it = insns.find(static_cast<uint32_t>(pc_index));
+        if (it == insns.end())
+        {
+            clear_all_gpr_constants(state);
+            continue;
+        }
+
+        const s_ee_instruction& ins = it->second;
+        if (ins.valid == e_ee_valid::VALID &&
+            ins.opcode == e_ee_opcode::OP_SPECIAL &&
+            ins.funct == e_ee_opcode::FUNCT_JALR)
+        {
+            uint64_t target_value = 0;
+            if (read_gpr_constant(state, ins.rs, &target_value))
+            {
+                const uint32_t target = static_cast<uint32_t>(target_value);
+                if (target != 0 && (target & 3u) == 0)
+                {
+                    targets.insert(target);
+                }
+            }
+        }
+
+        transfer_gpr_constants(ins, state);
+    }
+    return targets;
+}
+
 bool is_control_transfer(const s_ee_instruction& ins)
 {
     return ins.flow != e_ee_flow::FLOW_NONE;
