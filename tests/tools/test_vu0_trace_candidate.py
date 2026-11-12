@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import hashlib
 import json
 import subprocess
 import sys
@@ -91,6 +92,10 @@ class VU0CandidateTraceTests(unittest.TestCase):
             self.assertEqual(header["program_sha256"], EXPECTED_PROGRAM_SHA256)
             self.assertEqual(len(header["initial_state"]["vi"]), 32)
             self.assertEqual(header["initial_state"]["vi"][29], 1)
+            self.assertEqual(
+                header["initial_state"]["data_sha256"],
+                hashlib.sha256(bytes(4096)).hexdigest(),
+            )
             self.assertEqual(len(steps), len(EXPECTED_PAIR_PCS))
             self.assertEqual([item["pc"] for item in steps], EXPECTED_PAIR_PCS)
             self.assertEqual(
