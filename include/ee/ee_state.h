@@ -68,6 +68,13 @@ struct alignas(16) s_ee_vu0_state
     uint32_t m_branch_pc;
     uint32_t m_delay_branch_pc;
     uint32_t m_take_delay_branch;
+
+    // PCSX2's VIBackup window preserves the pre-write low halfword for two
+    // cycles so a following branch can observe the value from before an IALU
+    // write while the dependency pipeline is settling.
+    uint32_t m_vi_backup_cycles;
+    uint32_t m_vi_backup_register;
+    uint32_t m_vi_backup_old_value;
 };
 
 // Architectural EE CPU state. GPRs are 128 bits wide in the lifter (i128);
