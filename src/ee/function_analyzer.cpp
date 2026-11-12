@@ -638,6 +638,7 @@ std::set<uint32_t> collect_static_jalr_targets(
 
         std::map<uint32_t, s_gpr_constant_state> incoming;
         std::map<uint32_t, s_gpr_constant_state> outgoing;
+        std::map<uint32_t, s_gpr_constant_state> outgoing_fallthrough;
         std::deque<uint32_t> worklist;
         std::set<uint32_t> queued;
 
@@ -689,15 +690,23 @@ std::set<uint32_t> collect_static_jalr_targets(
             }
 
             const auto old_out = outgoing.find(block_pc);
-            if (old_out != outgoing.end() &&
-                states_equal(old_out->second, out_state))
+            const bool out_changed =
+                old_out == outgoing.end() ||
+                !states_equal(old_out->second, out_state);
+            const auto old_fallthrough = outgoing_fallthrough.find(block_pc);
+            const bool fallthrough_changed =
+                annul_delay_on_fallthrough &&
+                (old_fallthrough == outgoing_fallthrough.end() ||
+                 !states_equal(old_fallthrough->second, out_fallthrough));
+            if (!out_changed && !fallthrough_changed)
             {
-                // The taken-edge state is unchanged. The annulled fallthrough
-                // state is a deterministic projection of the same input, so
-                // no successor needs to be revisited either.
                 continue;
             }
             outgoing[block_pc] = out_state;
+            if (annul_delay_on_fallthrough)
+            {
+                outgoing_fallthrough[block_pc] = out_fallthrough;
+            }
 
             for (uint32_t successor : block.successors)
             {
