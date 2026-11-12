@@ -76,6 +76,24 @@ class VU0TraceComparatorTests(unittest.TestCase):
         self.assertIn("VI7", result.stdout)
         self.assertIn("0x00000000 != 0x00001234", result.stdout)
 
+    def test_reports_instruction_pc_mismatch(self):
+        def change(_header, _state):
+            pass
+        reference = make_trace("pcsx2")
+        candidate = make_trace("candidate")
+        candidate[1]["pc"] = 8
+        result = self.run_compare(reference, candidate)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("instruction pc", result.stdout)
+
+    def test_rejects_missing_instruction_pc(self):
+        reference = make_trace("pcsx2")
+        candidate = make_trace("candidate")
+        del candidate[1]["pc"]
+        result = self.run_compare(reference, candidate)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("invalid pc", result.stderr)
+
     def test_reports_branch_and_cycle_mismatches(self):
         def change(_header, state):
             state["branch"] = 1
