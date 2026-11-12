@@ -492,7 +492,7 @@ e_ee_vu0_micro_opcode decode_upper_micro_opcode(uint32_t word)
     case 0x20: return op::ADD_Q;
     case 0x21: return op::MADD_Q;
     case 0x22: return op::ADD_I;
-    case 0x23: return op::MADDI;
+    case 0x23: return op::MADD_I;
     case 0x24: return op::SUB_Q;
     case 0x25: return op::MSUB_Q;
     case 0x26: return op::SUB_I;
