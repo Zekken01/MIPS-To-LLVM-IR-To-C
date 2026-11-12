@@ -174,3 +174,18 @@ Further changes should be committed to this branch in small, testable increments
 - CFC2 now reads the dedicated tracked MAC/clip/status/TPC/FBRST/VPU_STAT values where those indices map to PCSX2's visible special-register state.
 - Side-effectful FBRST/CMSAR1 writes fail closed when the host action callback is missing or fails; relevant register state is not committed on failure.
 - Expanded `vu0_runtime_test` for all of those cases. COP2 decoder and LLVM emission remain disabled pending JIT integration.
+
+
+## 2026-11-12 — Bounded VU0 scheduler adapter and COP2 integration status
+
+- Added a host scheduler interface with an execution-slice callback, a VU1 catch-up callback, and an EE event-scheduling callback. The host micro-engine remains responsible for executing VU instructions and updating VF/VI/ACC/Q/P, micro-PC, cycle counters, and E/M status.
+- Implemented `ee_vu0_scheduler_sync_callback` as the reusable orchestration layer:
+  - Catch-up-only uses the exact positive EE/VU0 cycle difference, does not run when VU0 is already ahead, and does not account EE cycles or invoke VU1/event callbacks.
+  - Finish-to-E ignores M-bit termination; wait-to-E-or-M requests both stop conditions and includes the already-ahead M-bit fast path.
+  - Normal interlocked completion accounts the elapsed VU0 cycles on EE, catches VU1 up, and schedules a four-cycle EE event if VU0 remains active.
+  - Missing callbacks, host failures, invalid results, non-progressing engines and execution-call budget exhaustion fail closed.
+- Added mock-engine regression coverage for exact catch-up budget, VU0-ahead behaviour, finish/wait termination, M-bit fast path, VU1 catch-up, event scheduling, callback failures and execution limits.
+- Updated `COP2_RESEARCH.md` and `RESUME.md` to reflect the later COP2 transfer/BC2 LLVM integration and to distinguish the scheduler adapter from a real VU0 micro-engine.
+- GitHub Actions [run 43180405182](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43180405182): clean configure/build and **14/14 CTest passed**, including `vu0_runtime` and `vu0_transfer_ir_runtime` plus the existing suites.
+- Documentation follow-up Actions [run 43180563505](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43180563505) also completed successfully.
+- Remaining: supply a real host VU0 micro-engine and differential-test real running microprograms against PCSX2. VU0 SPECIAL1/SPECIAL2 macros remain UNSUPPORTED.
