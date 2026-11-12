@@ -362,6 +362,15 @@ int main(int argc, char** argv)
                         out_pc, exit_name(reason), reason, status);
         }
 
+        // A translated return to PC zero is an exit from the guest code
+        // region. Do not invoke another one-dispatch slice with PC zero:
+        // the dispatcher reserves zero as an initial-entry sentinel.
+        if (count != 0u && cpu.m_pc == 0u)
+        {
+            status = 0u;
+            break;
+        }
+
         if (status != 1u || count == 0u)
         {
             break;
