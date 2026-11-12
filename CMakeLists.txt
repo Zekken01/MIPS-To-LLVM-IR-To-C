@@ -37,6 +37,7 @@ add_library(ee_core STATIC
     src/lift/native_codegen.cpp
     src/runtime/ee_memory.cpp
     src/runtime/ee_exceptions.cpp
+    src/runtime/ee_vu0.cpp
 )
 
 add_executable(ee_smoke_test
@@ -71,6 +72,10 @@ target_link_libraries(ee_multi_test PRIVATE ee_core)
 # Host-side PC-based dispatcher regression tests.
 add_executable(ee_dispatcher_test tests/smoke/dispatcher_test.cpp)
 target_link_libraries(ee_dispatcher_test PRIVATE ee_core)
+
+# VU0 transfer scheduler contract and architectural state regression tests.
+add_executable(ee_vu0_runtime_test tests/smoke/vu0_runtime_test.cpp)
+target_link_libraries(ee_vu0_runtime_test PRIVATE ee_core)
 
 add_executable(ee_min_test
     tests/smoke/min_test.cpp
@@ -134,6 +139,7 @@ endif()
 enable_testing()
 add_test(NAME decoder COMMAND ee_decoder_test)
 add_test(NAME dispatcher COMMAND ee_dispatcher_test)
+add_test(NAME vu0_runtime COMMAND ee_vu0_runtime_test)
 add_test(NAME multi_function COMMAND ee_multi_test)
 add_test(NAME smoke COMMAND ee_smoke_test)
 add_test(NAME mmi_ops COMMAND ee_mmi_ops_test)

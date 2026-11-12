@@ -113,3 +113,19 @@ A direct QMFC2/QMTC2 implementation would therefore be observably wrong when a V
 ## Current guardrail
 
 No COP2 transfer or macro opcode is promoted to `VALID` solely because its bit fields are understood. The current `UNSUPPORTED` classification is intentional until the runtime and state representation can preserve the PCSX2-observed synchronization and side effects.
+
+
+## Runtime state and synchronization interface
+
+The first runtime foundation is now represented in source, while COP2 transfer execution remains disabled:
+
+- The existing `s_ee_cpu_state::m_vu0[32]` remains the VF vector-register bank, preserving its existing LLVM/native offsets.
+- New `s_ee_vu0_state` is a 16-byte-aligned sidecar for VI[32], ACC, Q, P, MAC/clip/status/control registers, micro-PC, EE/VU cycle counters, and running/E/M state.
+- `s_ee_runtime` can point to that sidecar and carry a host VU0 synchronization callback. The callback is separate from `m_user`, which remains the EE memory context.
+- `ee_vu0_sync` validates its arguments and fails closed with UNAVAILABLE when either state or callback is missing. A missing scheduler is not silently treated as a completed synchronization.
+- The transfer policy selector maps non-delay-slot transfers to catch-up-to-EE-cycle; delay-slot reads to finish-to-E; and delay-slot writes to wait-to-E-or-M.
+- VI0 is exposed as a hardwired zero register by the new read/write helpers.
+
+This is deliberately only an integration contract. It does not implement a VU0 execution engine or cycle scheduler, and the host callback must provide those. The current transfer opcodes remain UNSUPPORTED until a real scheduler is connected and differential transfer tests exercise both ordinary and delay-slot paths. FBRST/CMSAR1 side effects and the CFC2 special R-register mask still require explicit per-register handling.
+
+The new `vu0_runtime_test` checks sidecar layout, VI0 behavior, all three synchronization modes, callback state identity, error propagation, and fail-closed behaviour for absent state/callback.

@@ -11,6 +11,36 @@ struct alignas(16) s_ee_u128
     uint64_t m_hi;
 };
 
+// VU0 state not already represented by the EE CPU's m_vu0[32] VF register
+// file. The VU scheduler is host-owned; this structure carries the architectural
+// VI/ACC/Q/P and visible execution state that the scheduler must preserve.
+struct alignas(16) s_ee_vu0_state
+{
+    uint32_t m_vi[32];             // VI integer/control register bank
+
+    s_ee_u128 m_acc;               // VU0 vector accumulator
+    s_ee_u128 m_q;                 // divide/EFU result pipeline register
+    s_ee_u128 m_p;                 // EFU result pipeline register
+
+    uint32_t m_mac_flags;
+    uint32_t m_clip_flags;
+    uint32_t m_status;
+    uint32_t m_fbrst;
+    uint32_t m_cmsar1;
+    uint32_t m_tpc;
+    uint32_t m_micro_pc;
+
+    // Cycle accounting is maintained by the host scheduler. m_running and
+    // the E/M bits are exposed so synchronization helpers can implement the
+    // PCSX2-observed catch-up, finish-to-E, and wait-to-E-or-M policies.
+    uint64_t m_cycle;
+    uint64_t m_ee_cycle;
+
+    uint32_t m_running;
+    uint32_t m_e_bit;
+    uint32_t m_m_bit;
+};
+
 // Architectural EE CPU state. GPRs are 128 bits wide in the lifter (i128);
 // the runtime stores them as two 64-bit halves. Scalar instructions may write
 // only the low word, low doubleword, or the full quadword depending on the op.

@@ -142,3 +142,14 @@ Further changes should be committed to this branch in small, testable increments
 - Next: build the VU0 runtime state and synchronization interface, then test the transfer helpers independently before allowing the lifter to emit them.
 
 - CI caught a mnemonic-table index error in the first patch (the compiler build passed; the decoder test reported two failures). Corrected the selector-to-name mapping in commit `f8762ed`; that commit's Actions result is pending.
+
+
+## 2026-11-12 — VU0 runtime state and scheduler boundary
+
+- Added a separately aligned `s_ee_vu0_state` sidecar for the VU0 VI bank, ACC/Q/P, visible flags/control registers, micro-PC, EE/VU cycle counters and E/M/running state. Kept the existing VF vector bank in `s_ee_cpu_state::m_vu0[32]` to avoid shifting its established LLVM/native ABI offsets.
+- Extended `s_ee_runtime` with an optional sidecar pointer and a dedicated VU0 scheduler callback/context; the existing `m_user` memory context remains first and unchanged.
+- Added `ee_vu0_sync`, a fail-closed callback boundary. Missing VU0 state or scheduler returns UNAVAILABLE rather than pretending synchronization succeeded.
+- Added the transfer synchronization policy selector: ordinary transfers catch up to the EE cycle; delay-slot reads finish to E; delay-slot writes wait to E or M.
+- Added VI read/write helpers with VI0 hardwired to zero.
+- Added `vu0_runtime_test` coverage for layout, VI0, all synchronization modes, callback state/PC propagation, callback failures, and missing-runtime fail-closed paths.
+- This does not yet provide an actual VU0 scheduler. COP2 transfer decodes remain UNSUPPORTED until a host scheduler is connected and tested against PCSX2 timing semantics.

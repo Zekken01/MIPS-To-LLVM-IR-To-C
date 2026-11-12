@@ -30,11 +30,11 @@ COP1 JIT coverage now includes the supported R5900 instruction-table forms:
 
 ## Latest COP2 research
 
-See [`COP2_RESEARCH.md`](COP2_RESEARCH.md). VU0/COP2 remains deliberately unsupported in the lifter. PCSX2's QMFC2/QMTC2/CFC2/CTC2 paths require VU0 synchronization, and CFC2/CTC2 also need VI/control-register state and side effects. The current EE state only carries `m_vu0[32]`; it lacks VI/control registers, ACC, Q/P, VU cycle/micro-PC/status, branch and pipeline state. Implementing these as plain copies would be incorrect.
+See [`COP2_RESEARCH.md`](COP2_RESEARCH.md). VU0/COP2 remains deliberately unsupported in the lifter. PCSX2's QMFC2/QMTC2/CFC2/CTC2 paths require VU0 synchronization, and CFC2/CTC2 also need VI/control-register state and side effects. The CPU state carries the VF bank in `m_vu0[32]`; the runtime now has a `s_ee_vu0_state` sidecar for VI/ACC/Q/P, visible control/flag state, micro-PC, cycle counters and E/M state. A host VU0 scheduler and deeper pipeline bookkeeping are still required. Implementing these as plain copies would be incorrect.
 
 ## Remaining priorities
 
-1. **VU0/COP2 runtime foundation:** model the VU0 state and EE/VU0 synchronization helpers described in `COP2_RESEARCH.md`; then test transfer/control-register instructions before any macro instruction lowering.
+1. **VU0/COP2 runtime integration:** connect a real EE/VU0 cycle scheduler to the new `s_ee_vu0_state` and `ee_vu0_sync` callback boundary; then JIT-test QMFC2/QMTC2/CFC2/CTC2 including delay-slot synchronization and control-register side effects. Transfer opcodes remain unsupported for now.
 2. **Runtime completeness:** EE memory/TLB/MMIO, scratchpad/ROM aliases, alignment exceptions, DMA, interrupts, plus BIOS/IOP/GS host services.
 3. **Semantic validation:** differential instruction and function testing against PCSX2's interpreter. LLVM verification and native linking do not establish R5900 equivalence.
 4. **Production backend:** replace the current external llvmlite object-emission path with an integrated LLVM backend or supported `llc`/LLVM library path; keep the current script as a validation/reference path until then.
