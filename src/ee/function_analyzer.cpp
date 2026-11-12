@@ -774,6 +774,27 @@ void function_analyzer::split_into_blocks(
         return pc != entry_pc && stop_entries.count(pc) != 0;
     };
 
+    // Collect every statically decoded in-image branch/jump destination before
+    // walking the CFG. A target may be discovered after a linear scan has
+    // already crossed it; using only the visited set would then leave
+    // overlapping blocks and lose predecessor states at that target.
+    std::set<uint32_t> block_starts = stop_entries;
+    block_starts.insert(entry_pc);
+    for (const auto& [instruction_pc, instruction] : insns)
+    {
+        (void)instruction_pc;
+        if (instruction.flow == e_ee_flow::FLOW_BRANCH ||
+            instruction.flow == e_ee_flow::FLOW_BRANCH_LIKELY)
+        {
+            block_starts.insert(static_cast<uint32_t>(instruction.branch_target));
+        }
+        else if (instruction.flow == e_ee_flow::FLOW_JUMP &&
+                 instruction.opcode == e_ee_opcode::OP_J)
+        {
+            block_starts.insert(instruction.jump_target);
+        }
+    }
+
     std::set<uint32_t> visited;
     std::vector<uint32_t> worklist;
     worklist.push_back(entry_pc);
@@ -854,15 +875,16 @@ void function_analyzer::split_into_blocks(
                 break;
             }
 
-            // A branch/jump target may already have been scheduled and
-            // materialised as its own basic block. Do not absorb that target
-            // into a later linear scan: terminate here and preserve the CFG
-            // edge so predecessor data-flow and block emission stay sound.
-            if (pc != bb.start_pc && visited.count(pc) != 0)
+            // Do not absorb a known branch/jump target into this linear
+            // scan, even when its block has not yet been visited. It may be
+            // discovered later in worklist order; all such leaders were
+            // collected from the decoded image before block construction.
+            if (pc != bb.start_pc && block_starts.count(pc) != 0)
             {
                 bb.end_pc = pc;
                 bb.fallthrough_pc = pc;
                 bb.successors.insert(pc);
+                worklist.push_back(pc);
                 break;
             }
 
