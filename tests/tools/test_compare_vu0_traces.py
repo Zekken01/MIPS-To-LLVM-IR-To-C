@@ -16,7 +16,10 @@ def make_trace(engine, mutate=None):
         "engine": engine,
         "revision": "pinned-test-revision",
         "program_sha256": "a" * 64,
-        "initial_state": {"vi": [0] * 32, "tpc": 0, "cycle": 0},
+        "initial_state": {
+            "vi": [0] * 32, "tpc": 0, "cycle": 0,
+            "data_sha256": "0" * 64,
+        },
     }
     state = {
         "vi": [0] * 32,
@@ -34,6 +37,7 @@ def make_trace(engine, mutate=None):
         "m_bit": 0,
         "vpu_status": 1,
         "running": True,
+        "data_sha256": "0" * 64,
     }
     if mutate:
         mutate(header, state)
@@ -104,6 +108,16 @@ class VU0TraceComparatorTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("branch", result.stdout)
         self.assertIn("cycle", result.stdout)
+
+    def test_reports_data_memory_mismatch(self):
+        def change(_header, state):
+            state["data_sha256"] = "1" * 64
+
+        result = self.run_compare(
+            make_trace("pcsx2"), make_trace("candidate", change)
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("data_sha256", result.stdout)
 
     def test_rejects_different_programs(self):
         def change(header, _state):
