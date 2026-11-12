@@ -355,7 +355,7 @@ e_ee_vu0_micro_opcode decode_lower_micro_opcode(uint32_t word)
     case 0x2e: return op::IBLEZ;
     case 0x2f: return op::IBGEZ;
 
-    case 0x60:
+    case 0x3c:
         return decode_lower_secondary(word);
 
     default:
