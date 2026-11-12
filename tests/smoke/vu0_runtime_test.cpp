@@ -2516,8 +2516,8 @@ int main()
               state.m_data_memory[35] == 0x12u,
               "LQI loads before increment and SQI stores before increment");
         check(state.m_vi_backup_register == 1 &&
-              state.m_vi_backup_old_value == 1,
-              "indexed-memory VI backup preserves the original base");
+              state.m_vi_backup_old_value == 2,
+              "indexed-memory VI backup refreshes after a dependent FMAC stall");
     }
     {
         ee::s_ee_vu0_state state{};
@@ -2554,17 +2554,17 @@ int main()
         ee::s_ee_cpu_state vector_cpu{};
         ee::s_ee_vu0_ialu_engine ialu_engine{};
         state.m_vpu_status = 1u;
-        state.m_vi[1] = 0x4001u;
+        state.m_vi[1] = 0x0401u;
         install_vu0_pair(
             &state, 0, make_vu0_indexed_memory(0x3eu, 0xfu, 3, 1),
             make_vu0_upper_nop()
-        ); // LQD would decrement to VU1-mapped quadword 0x4000.
+        ); // LQD would decrement to VU1-mapped quadword 0x0400.
         const uint32_t result = ee::ee_vu0_execute_ialu_callback(
             &ialu_engine, &vector_cpu, &state, 1,
             ee::EE_VU0_EXECUTE_EXACT_CYCLES, 0x0010200cu
         );
         check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::UNAVAILABLE) &&
-              state.m_vi[1] == 0x4001u && state.m_cycle == 0 &&
+              state.m_vi[1] == 0x0401u && state.m_cycle == 0 &&
               state.m_micro_pc == 0 && state.m_vi_backup_cycles == 0,
               "VU1-mapped indexed-memory address fails before VI update");
     }
