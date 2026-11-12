@@ -65,6 +65,22 @@ def make_semaphore_elf(path):
     path.write_bytes(image)
 
 
+def make_set_syscall_elf(path):
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    for offset, value in (
+        (0x108, 0x24040083), # a0 = 0x83
+        (0x10c, 0x3c050010), # lui a1,0x0010
+        (0x110, 0x34a50030), # handler = 0x00100030
+        (0x114, 0x24030074), # v1 = SetSyscall
+        (0x118, 0x0000000c), # syscall
+        (0x11c, 0x03e00008), # jr ra
+        (0x120, 0x00000000), # delay slot
+    ):
+        struct.pack_into("<I", image, offset, value)
+    path.write_bytes(image)
+
+
 def make_call_elf(path):
     make_elf(path)
     image = bytearray(path.read_bytes())
@@ -203,6 +219,31 @@ def main():
             check=False,
         )
         assert "HLE CreateSema: id=1 init=1 max=2" in result.stdout, (
+            result.stdout + result.stderr
+        )
+        assert "EE stopped: dispatched=2" in result.stdout, (
+            result.stdout + result.stderr
+        )
+
+    with tempfile.TemporaryDirectory(prefix="ee-native-syscall-hook-") as tmp:
+        root = Path(tmp)
+        elf = root / "set-syscall-mips.elf"
+        make_set_syscall_elf(elf)
+        result = subprocess.run(
+            [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf),
+                "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--max-dispatches=8",
+                "--hle-startup",
+                "--trace",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert "HLE SetSyscall: number=0x83 handler=0x00100030" in result.stdout, (
             result.stdout + result.stderr
         )
         assert "EE stopped: dispatched=2" in result.stdout, (
