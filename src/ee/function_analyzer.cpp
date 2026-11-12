@@ -495,11 +495,14 @@ void transfer_gpr_constants(
 void transfer_block_constants(
     const s_ee_basic_block& block,
     const std::map<uint32_t, s_ee_instruction>& insns,
-    s_gpr_constant_state& state
+    s_gpr_constant_state& state,
+    size_t instruction_count = static_cast<size_t>(-1)
 )
 {
-    for (size_t pc_index : block.insn_indices)
+    const size_t count = std::min(instruction_count, block.insn_indices.size());
+    for (size_t i = 0; i < count; ++i)
     {
+        const size_t pc_index = block.insn_indices[i];
         auto it = insns.find(static_cast<uint32_t>(pc_index));
         if (it == insns.end())
         {
@@ -664,27 +667,68 @@ std::set<uint32_t> collect_static_jalr_targets(
                 continue;
             }
 
+            const s_ee_basic_block& block = *block_it->second;
             s_gpr_constant_state out_state = in_it->second;
-            transfer_block_constants(*block_it->second, insns, out_state);
+            transfer_block_constants(block, insns, out_state);
             out_state.m_reachable = true;
+
+            const bool annul_delay_on_fallthrough =
+                block.branch_likely && block.has_delay_slot &&
+                block.insn_indices.size() > 1;
+            s_gpr_constant_state out_fallthrough = out_state;
+            if (annul_delay_on_fallthrough)
+            {
+                out_fallthrough = in_it->second;
+                // The final listed instruction is the delay slot. It executes
+                // only on the taken path for a branch-likely instruction.
+                transfer_block_constants(
+                    block, insns, out_fallthrough,
+                    block.insn_indices.size() - 1u
+                );
+                out_fallthrough.m_reachable = true;
+            }
 
             const auto old_out = outgoing.find(block_pc);
             if (old_out != outgoing.end() &&
                 states_equal(old_out->second, out_state))
             {
+                // The taken-edge state is unchanged. The annulled fallthrough
+                // state is a deterministic projection of the same input, so
+                // no successor needs to be revisited either.
                 continue;
             }
             outgoing[block_pc] = out_state;
 
-            for (uint32_t successor : block_it->second->successors)
+            for (uint32_t successor : block.successors)
             {
                 if (blocks.find(successor) == blocks.end())
                 {
                     continue;
                 }
 
-                if (merge_gpr_state(incoming[successor], out_state) &&
-                    queued.insert(successor).second)
+                bool successor_changed = false;
+                const bool is_fallthrough =
+                    annul_delay_on_fallthrough &&
+                    successor == block.fallthrough_pc;
+                const bool is_taken_target =
+                    annul_delay_on_fallthrough &&
+                    successor == block.target_pc;
+
+                if (is_fallthrough)
+                {
+                    successor_changed |= merge_gpr_state(
+                        incoming[successor], out_fallthrough
+                    );
+                }
+
+                if (!is_fallthrough || is_taken_target)
+                {
+                    successor_changed |= merge_gpr_state(
+                        incoming[successor], out_state
+                    );
+                }
+
+                if (successor_changed && queued.insert(successor).second)
                 {
                     worklist.push_back(successor);
                 }
