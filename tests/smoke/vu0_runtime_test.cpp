@@ -76,6 +76,106 @@ uint32_t mock_vu0_control(
     return control->m_result;
 }
 
+struct s_mock_vu0_engine
+{
+    uint32_t m_run_calls = 0;
+    uint32_t m_vu1_calls = 0;
+    uint32_t m_event_calls = 0;
+    uint64_t m_last_budget = 0;
+    uint32_t m_last_flags = 0;
+    uint32_t m_last_pc = 0;
+    uint32_t m_last_event_delta = 0;
+    uint32_t m_clear_e_after_call = 0;
+    uint32_t m_set_m_after_call = 0;
+    uint64_t m_cycles_per_call = 10;
+    uint32_t m_execute_result =
+        static_cast<uint32_t>(ee::e_ee_vu0_sync_result::COMPLETE);
+    uint32_t m_vu1_result =
+        static_cast<uint32_t>(ee::e_ee_vu0_sync_result::COMPLETE);
+};
+
+uint32_t mock_vu0_execute(
+    void* user,
+    ee::s_ee_cpu_state*,
+    ee::s_ee_vu0_state* vu0,
+    uint64_t max_cycles,
+    uint32_t flags,
+    uint32_t pc
+)
+{
+    auto* engine = static_cast<s_mock_vu0_engine*>(user);
+    if (!engine || !vu0)
+    {
+        return static_cast<uint32_t>(ee::e_ee_vu0_sync_result::FAILED);
+    }
+
+    ++engine->m_run_calls;
+    engine->m_last_budget = max_cycles;
+    engine->m_last_flags = flags;
+    engine->m_last_pc = pc;
+    if (engine->m_execute_result !=
+        static_cast<uint32_t>(ee::e_ee_vu0_sync_result::COMPLETE))
+    {
+        return engine->m_execute_result;
+    }
+
+    const bool exact = (flags & ee::EE_VU0_EXECUTE_EXACT_CYCLES) != 0;
+    vu0->m_cycle += exact ? max_cycles : engine->m_cycles_per_call;
+    if (engine->m_set_m_after_call != 0 &&
+        engine->m_run_calls >= engine->m_set_m_after_call)
+    {
+        vu0->m_m_bit = 1;
+    }
+    if (engine->m_clear_e_after_call != 0 &&
+        engine->m_run_calls >= engine->m_clear_e_after_call)
+    {
+        vu0->m_vpu_status &= ~1u;
+    }
+    return static_cast<uint32_t>(ee::e_ee_vu0_sync_result::COMPLETE);
+}
+
+uint32_t mock_vu1_catch_up(
+    void* user,
+    ee::s_ee_cpu_state*,
+    ee::s_ee_vu0_state*,
+    uint32_t
+)
+{
+    auto* engine = static_cast<s_mock_vu0_engine*>(user);
+    if (!engine)
+    {
+        return static_cast<uint32_t>(ee::e_ee_vu0_sync_result::FAILED);
+    }
+    ++engine->m_vu1_calls;
+    return engine->m_vu1_result;
+}
+
+void mock_vu0_schedule_event(
+    void* user,
+    ee::s_ee_cpu_state*,
+    ee::s_ee_vu0_state*,
+    uint32_t delta_cycles,
+    uint32_t pc
+)
+{
+    auto* engine = static_cast<s_mock_vu0_engine*>(user);
+    if (!engine) return;
+    ++engine->m_event_calls;
+    engine->m_last_event_delta = delta_cycles;
+    engine->m_last_pc = pc;
+}
+
+ee::s_ee_vu0_scheduler make_mock_vu0_scheduler(s_mock_vu0_engine* engine)
+{
+    ee::s_ee_vu0_scheduler scheduler{};
+    scheduler.m_user = engine;
+    scheduler.m_execute = mock_vu0_execute;
+    scheduler.m_vu1_catch_up = mock_vu1_catch_up;
+    scheduler.m_schedule_event = mock_vu0_schedule_event;
+    scheduler.m_max_run_calls = 16;
+    return scheduler;
+}
+
 int g_pass = 0;
 int g_fail = 0;
 
@@ -466,6 +566,181 @@ int main()
     check(cpu.m_gpr[12].m_lo == 0xaaaaaaaaaaaaaaaaULL &&
           cpu.m_gpr[12].m_hi == 0xbbbbbbbbbbbbbbbbULL,
           "failed QMFC2 leaves destination unchanged");
+
+    // The concrete scheduler adapter applies the PCSX2 synchronization
+    // policy around a host-provided VU execution callback.
+    {
+        s_mock_vu0_engine engine{};
+        ee::s_ee_vu0_scheduler scheduler = make_mock_vu0_scheduler(&engine);
+        ee::s_ee_vu0_state state{};
+        state.m_vpu_status = 1u;
+        state.m_cycle = 30;
+        state.m_ee_cycle = 100;
+
+        const uint32_t result = ee::ee_vu0_scheduler_sync_callback(
+            &scheduler, &cpu, &state,
+            static_cast<uint32_t>(e_ee_vu0_sync_mode::CATCH_UP_TO_EE_CYCLE),
+            0x00101000u
+        );
+        check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE),
+              "catch-up scheduler completes");
+        check(engine.m_run_calls == 1 && engine.m_last_budget == 70,
+              "catch-up executes exactly the EE/VU0 cycle difference");
+        check((engine.m_last_flags & EE_VU0_EXECUTE_EXACT_CYCLES) != 0 &&
+              (engine.m_last_flags & EE_VU0_EXECUTE_STOP_AT_E) != 0 &&
+              (engine.m_last_flags & EE_VU0_EXECUTE_STOP_AT_M) == 0,
+              "catch-up requests exact cycles and ignores M-bit");
+        check(state.m_cycle == 100 && state.m_ee_cycle == 100,
+              "catch-up advances VU0 to EE without changing EE time");
+        check(engine.m_vu1_calls == 0 && engine.m_event_calls == 0,
+              "catch-up does not run the interlocked epilogue");
+    }
+    {
+        s_mock_vu0_engine engine{};
+        ee::s_ee_vu0_scheduler scheduler = make_mock_vu0_scheduler(&engine);
+        ee::s_ee_vu0_state state{};
+        state.m_vpu_status = 1u;
+        state.m_cycle = 101;
+        state.m_ee_cycle = 100;
+
+        const uint32_t result = ee::ee_vu0_scheduler_sync_callback(
+            &scheduler, &cpu, &state,
+            static_cast<uint32_t>(e_ee_vu0_sync_mode::CATCH_UP_TO_EE_CYCLE),
+            0x00101004u
+        );
+        check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              engine.m_run_calls == 0,
+              "catch-up does not run VU0 that is already ahead");
+    }
+    {
+        s_mock_vu0_engine engine{};
+        engine.m_clear_e_after_call = 2;
+        engine.m_set_m_after_call = 1;
+        ee::s_ee_vu0_scheduler scheduler = make_mock_vu0_scheduler(&engine);
+        ee::s_ee_vu0_state state{};
+        state.m_vpu_status = 1u;
+        state.m_cycle = 20;
+        state.m_ee_cycle = 40;
+
+        const uint32_t result = ee::ee_vu0_scheduler_sync_callback(
+            &scheduler, &cpu, &state,
+            static_cast<uint32_t>(e_ee_vu0_sync_mode::FINISH_TO_E),
+            0x00101008u
+        );
+        check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              engine.m_run_calls == 2,
+              "finish-to-E continues through an M-bit and stops at E");
+        check((engine.m_last_flags & EE_VU0_EXECUTE_STOP_AT_M) == 0,
+              "finish-to-E does not request M-bit termination");
+        check(state.m_cycle == 40 && state.m_ee_cycle == 40,
+              "finish-to-E accounts VU0 elapsed cycles on EE");
+        check(engine.m_vu1_calls == 1 && engine.m_event_calls == 0,
+              "finish-to-E catches VU1 up without scheduling a stopped VU0");
+    }
+    {
+        s_mock_vu0_engine engine{};
+        engine.m_set_m_after_call = 1;
+        ee::s_ee_vu0_scheduler scheduler = make_mock_vu0_scheduler(&engine);
+        ee::s_ee_vu0_state state{};
+        state.m_vpu_status = 1u;
+        state.m_cycle = 20;
+        state.m_ee_cycle = 100;
+
+        const uint32_t result = ee::ee_vu0_scheduler_sync_callback(
+            &scheduler, &cpu, &state,
+            static_cast<uint32_t>(e_ee_vu0_sync_mode::WAIT_TO_E_OR_M),
+            0x0010100cu
+        );
+        check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              engine.m_run_calls == 1,
+              "wait-to-E-or-M stops on the first M-bit");
+        check((engine.m_last_flags & EE_VU0_EXECUTE_STOP_AT_M) != 0,
+              "wait-to-E-or-M requests M-bit termination");
+        check(state.m_ee_cycle == state.m_cycle && state.m_cycle == 30,
+              "wait-to-E-or-M catches EE time up to the VU0 cycle");
+        check(engine.m_vu1_calls == 1 && engine.m_event_calls == 1 &&
+              engine.m_last_event_delta == 4,
+              "wait-to-E-or-M catches VU1 up and schedules a running VU0");
+        check(engine.m_last_pc == 0x0010100cu,
+              "VU1 catch-up and event scheduling retain the guest PC");
+    }
+    {
+        s_mock_vu0_engine engine{};
+        ee::s_ee_vu0_scheduler scheduler = make_mock_vu0_scheduler(&engine);
+        ee::s_ee_vu0_state state{};
+        state.m_vpu_status = 1u;
+        state.m_m_bit = 1;
+        state.m_cycle = 40;
+        state.m_ee_cycle = 30;
+
+        const uint32_t result = ee::ee_vu0_scheduler_sync_callback(
+            &scheduler, &cpu, &state,
+            static_cast<uint32_t>(e_ee_vu0_sync_mode::WAIT_TO_E_OR_M),
+            0x00101010u
+        );
+        check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              engine.m_run_calls == 0,
+              "wait-to-E-or-M takes the early M-bit catch-up path");
+        check(state.m_ee_cycle == 40 && engine.m_vu1_calls == 0 &&
+              engine.m_event_calls == 0,
+              "early M-bit path skips the normal VU1/event epilogue");
+    }
+    {
+        s_mock_vu0_engine engine{};
+        engine.m_execute_result =
+            static_cast<uint32_t>(e_ee_vu0_sync_result::FAILED);
+        ee::s_ee_vu0_scheduler scheduler = make_mock_vu0_scheduler(&engine);
+        ee::s_ee_vu0_state state{};
+        state.m_vpu_status = 1u;
+        state.m_cycle = 20;
+        state.m_ee_cycle = 40;
+
+        const uint32_t result = ee::ee_vu0_scheduler_sync_callback(
+            &scheduler, &cpu, &state,
+            static_cast<uint32_t>(e_ee_vu0_sync_mode::FINISH_TO_E),
+            0x00101014u
+        );
+        check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::FAILED) &&
+              engine.m_vu1_calls == 0 && engine.m_event_calls == 0,
+              "VU0 engine failure stops before VU1/event callbacks");
+    }
+    {
+        s_mock_vu0_engine engine{};
+        ee::s_ee_vu0_scheduler scheduler = make_mock_vu0_scheduler(&engine);
+        scheduler.m_vu1_catch_up = nullptr;
+        ee::s_ee_vu0_state state{};
+        state.m_vpu_status = 1u;
+        state.m_cycle = 20;
+        state.m_ee_cycle = 40;
+
+        const uint32_t result = ee::ee_vu0_scheduler_sync_callback(
+            &scheduler, &cpu, &state,
+            static_cast<uint32_t>(e_ee_vu0_sync_mode::FINISH_TO_E),
+            0x00101018u
+        );
+        check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::UNAVAILABLE) &&
+              engine.m_run_calls == 0,
+              "finish-to-E fails closed before execution without VU1 catch-up");
+    }
+    {
+        s_mock_vu0_engine engine{};
+        engine.m_cycles_per_call = 1;
+        ee::s_ee_vu0_scheduler scheduler = make_mock_vu0_scheduler(&engine);
+        scheduler.m_max_run_calls = 2;
+        ee::s_ee_vu0_state state{};
+        state.m_vpu_status = 1u;
+        state.m_cycle = 20;
+        state.m_ee_cycle = 40;
+
+        const uint32_t result = ee::ee_vu0_scheduler_sync_callback(
+            &scheduler, &cpu, &state,
+            static_cast<uint32_t>(e_ee_vu0_sync_mode::FINISH_TO_E),
+            0x0010101cu
+        );
+        check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::FAILED) &&
+              engine.m_run_calls == 2,
+              "finish-to-E enforces the configured execution-call budget");
+    }
 
     std::printf("vu0_runtime_test: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
