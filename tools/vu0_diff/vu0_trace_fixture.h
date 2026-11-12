@@ -11,8 +11,8 @@ constexpr uint32_t k_micro_memory_size = 0x1000u;
 constexpr uint32_t k_upper_nop = 0x000002ffu;
 constexpr uint32_t k_idle_lower = 0x10000000u; // IADDIU VI0, VI0, 0
 constexpr uint32_t k_lower1_marker = 0x80000000u;
-constexpr uint32_t k_step_limit = 64u;
-constexpr uint32_t k_expected_step_count = 30u;
+constexpr uint32_t k_step_limit = 80u;
+constexpr uint32_t k_expected_step_count = 41u;
 
 struct s_pair
 {
@@ -64,11 +64,12 @@ constexpr uint32_t make_branch(
            (immediate & 0x07ffu);
 }
 
-// One deterministic 37-pair fixture. It executes all seven supported lower
-// scalar integer operations, B/BAL/JR/JALR, all six conditional branches,
+// One deterministic 48-pair fixture. It exercises the supported scalar
+// integer operations, B/BAL/JR/JALR, all six conditional branches, integer
+// boundary cases (high immediates, signed immediates, wraparound and VI0),
 // an M-marked pair, and an E-marked pair with its delay pair. Unreachable
 // slots are filled with a harmless IADDIU VI0, VI0, 0.
-constexpr std::array<s_pair, 37> k_program =
+constexpr std::array<s_pair, 48> k_program =
 {{
     { make_iaddiu(1, 0, 5), k_upper_nop },                         //  0
     { make_iaddi(2, 1, -1), k_upper_nop },                         //  1
@@ -105,11 +106,22 @@ constexpr std::array<s_pair, 37> k_program =
     { make_branch(0x2f, 0, 1, 2), k_upper_nop },                   // 32 IBGEZ true -> 35
     { make_iaddiu(8, 0, 33), k_upper_nop },                        // 33 delay
     { k_idle_lower, k_upper_nop },                             // 34 skipped
-    { make_iaddiu(3, 0, 0x333), k_upper_nop | 0x40000000u },       // 35 E
-    { make_iaddiu(8, 0, 36), k_upper_nop }                         // 36 E delay
+    { make_iaddiu(3, 0, 0x333), k_upper_nop },                      // 35
+    { make_iaddiu(8, 0, 36), k_upper_nop },                         // 36
+    { make_iaddiu(9, 0, 0x7fff), k_upper_nop },                     // 37 15-bit max
+    { make_iaddi(9, 9, -16), k_upper_nop },                         // 38 signed 5-bit minimum
+    { make_iaddiu(11, 0, 0x4000), k_upper_nop },                    // 39
+    { make_isubiu(11, 11, 0x7fff), k_upper_nop },                   // 40 16-bit underflow
+    { make_ialu_3r(0x34, 9, 11, 12), k_upper_nop },                // 41 IAND
+    { make_ialu_3r(0x35, 9, 11, 14), k_upper_nop },                // 42 IOR
+    { make_ialu_3r(0x31, 11, 9, 10), k_upper_nop },                // 43 ISUB overflow
+    { make_iaddi(10, 10, -1), k_upper_nop },                        // 44 chained write
+    { make_ialu_3r(0x30, 9, 11, 0), k_upper_nop },                 // 45 VI0 ignored
+    { make_iaddiu(0, 0, 0), k_upper_nop | 0x40000000u },           // 46 E
+    { make_iaddiu(8, 0, 47), k_upper_nop }                         // 47 E delay
 }};
 
-static_assert(k_program.size() == 37);
+static_assert(k_program.size() == 48);
 
 inline void install_program(uint8_t* micro_memory, uint32_t memory_size)
 {
