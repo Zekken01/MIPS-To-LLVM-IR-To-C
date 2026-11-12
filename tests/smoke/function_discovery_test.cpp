@@ -56,6 +56,17 @@ uint32_t encode_beq(uint32_t rs, uint32_t rt, int16_t immediate)
     return encode_i(0x04, rs, rt, static_cast<uint16_t>(immediate));
 }
 
+uint32_t encode_beql(uint32_t rs, uint32_t rt, int16_t immediate)
+{
+    return encode_i(0x14, rs, rt, static_cast<uint16_t>(immediate));
+}
+
+uint32_t encode_jr(uint32_t rs)
+{
+    return (rs << 21) |
+           static_cast<uint32_t>(ee::e_ee_opcode::FUNCT_JR);
+}
+
 uint32_t encode_jalr(uint32_t rs, uint32_t rd = 31)
 {
     return (rs << 21) | (rd << 11) |
@@ -173,6 +184,26 @@ int main()
         const auto targets = recover(insns, 0x1500);
         check(targets == std::set<uint32_t>{0x00102000u},
               "retain JALR target when all CFG paths agree");
+    }
+
+    // Branch-likely delay-slot writes are visible only on the taken edge.
+    // The not-taken edge annuls the delay slot and reaches the same JALR with
+    // the pre-branch constant, so the merged target must remain unknown.
+    {
+        std::map<uint32_t, ee::s_ee_instruction> insns;
+        add(insns, 0x1600, encode_lui(25, 0x0010));
+        add(insns, 0x1604, encode_ori(25, 25, 0x3000)); // A = 0x00103000
+        add(insns, 0x1608, encode_beql(1, 2, 5));      // taken target 0x1620
+        add(insns, 0x160c, encode_ori(0, 25, 0x4000)); // delay slot writes B
+        add(insns, 0x1610, encode_beq(0, 0, 3));       // branch target 0x1620
+        add(insns, 0x1614, 0);                        // ordinary branch delay slot
+        add(insns, 0x1618, encode_jr(31));             // alternate return path
+        add(insns, 0x161c, 0);
+        add(insns, 0x1620, encode_jalr(25));
+        add(insns, 0x1624, 0);
+        const auto targets = recover(insns, 0x1600);
+        check(targets.empty(),
+              "branch-likely annulment keeps disagreeing JALR paths unresolved");
     }
 
     std::printf("function_discovery_test: %d passed, %d failed\n", g_pass, g_fail);
