@@ -1452,7 +1452,8 @@ int main()
                     branch_taken = true;
                     branch_target =
                         (static_cast<uint32_t>(
-                            static_cast<uint16_t>(reference_vi[is])
+                            is == 0 ? 0u :
+                                static_cast<uint16_t>(reference_vi[is])
                         ) << 3) & 0x0fffu;
                     executed_operation_mask |= 1u << 9;
                     break;
@@ -1460,7 +1461,8 @@ int main()
                     branch_taken = true;
                     branch_target =
                         (static_cast<uint32_t>(
-                            static_cast<uint16_t>(reference_vi[is])
+                            is == 0 ? 0u :
+                                static_cast<uint16_t>(reference_vi[is])
                         ) << 3) & 0x0fffu;
                     link_write = it != 0;
                     executed_operation_mask |= 1u << 10;
