@@ -60,6 +60,7 @@ subset:
   "state": {
     "vi": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    "vf": [[0, 0, 0, 1065353216]],
     "cycle": 1,
     "micro_pc": 8,
     "tpc": 1,
@@ -79,14 +80,14 @@ subset:
 }
 ```
 
-The shared fixture now provides a deterministic 52-pair program, 45 of whose pairs execute. The
+The shared fixture provides a deterministic 56-pair program, 49 of whose pairs execute. The
 candidate producer executes one runtime pair per exact-cycle callback and
 writes a trace. The pinned PCSX2 adapter executes one interpreter pair through
 vu0Exec(&VU0) and writes the same format when VU0_TRACE_OUTPUT is set. The
 trace records the executed pair PC as well as both instruction words.
 
 The comparator checks program identity and initial state, then compares every
-pair PC, instruction word, listed architectural field and VU0 data-memory
+pair PC, instruction word, VI/VF register lane, listed architectural field and VU0 data-memory
 SHA-256 exactly after each pair.
 Engine name and source revision are informational and intentionally need not
 match. A mismatch reports the first differing VI register or state field.
@@ -114,7 +115,7 @@ trace:
   `vu0Exec(&VU0)` call when `VU0_TRACE_OUTPUT` is set.
 - The JSONL comparator and regression tests, including executed-PC comparison.
 
-CTest validates the candidate trace path and its expected 45 executed pairs.
+CTest validates the candidate trace path and its expected 49 executed pairs.
 To run the real cross-engine comparison, use either
 `tools/vu0_diff/run_differential.py` with a PCSX2 checkout and its dependencies,
 or trigger the manual GitHub Actions workflow named **VU0 PCSX2 differential**.
@@ -127,5 +128,8 @@ ordinary-memory fixture passed the direct PCSX2 comparison in differential
 run #9: all 45 pairs, including ILW/ISW and the complete per-pair 4 KB data
 memory SHA-256, matched exactly. The trace consumed 47 cycles, including
 the branch-only IALU interlock policy observed in the pinned interpreter.
+The new 49-pair fixture additionally exercises masked VF LQ/SQ operations and
+preservation of unselected vector lanes. Until a new pinned PCSX2 comparison
+passes, the LQ/SQ cases are validated only by candidate-side regression tests.
 Memory-mapped VU1 register accesses and other unsupported VU0 operations
 remain out of scope.
