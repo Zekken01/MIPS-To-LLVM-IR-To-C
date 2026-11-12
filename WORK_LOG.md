@@ -131,3 +131,12 @@ Further changes should be committed to this branch in small, testable increments
 - The first BC1 JIT test attempt failed only because the Python test called the generated two-argument guest ABI with one argument. Passed the runtime pointer and reran.
 - GitHub Actions run [43125195580](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43125195580), commit `ce5f3522`: clean configure/build and **12/12 CTest passed**, including all COP1 JIT tests.
 - Added `COP2_RESEARCH.md` using PCSX2's VU0 interpreter and state structures as references. Documented QMFC2/QMTC2/CFC2/CTC2 synchronization and side effects, BC2/macro decode groups, and the current project state gap. No COP2 opcode was promoted to VALID; VU0 transfers require a scheduler/state model rather than a direct register-copy lowering.
+
+
+## 2026-11-12 — COP2 transfer encoding validation
+
+- Started the VU0 transfer target without prematurely enabling execution. QMFC2, CFC2, QMTC2 and CTC2 remain `UNSUPPORTED` because their EE/VU0 synchronization and register side effects are not implemented.
+- Tightened COP2 decoding: all four transfer encodings require the low eleven `sa`/`funct` bits to be zero. Reserved-bit violations now classify as `INVALID`, rather than being conflated with valid-but-unimplemented transfers.
+- Added positive and negative decoder cases for all four transfer forms.
+- GitHub Actions runs [43170109202](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43170109202) and [43170132717](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43170132717) were queued/in progress at the time of this note; verify their final results before treating this change as tested.
+- Next: build the VU0 runtime state and synchronization interface, then test the transfer helpers independently before allowing the lifter to emit them.
