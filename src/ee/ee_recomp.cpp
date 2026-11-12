@@ -241,6 +241,7 @@ bool ee_recomp(const char* elf_path,
         }
     }
 
+    const std::vector<uint32_t> discovered_entries = entries;
     function_analyzer analyzer;
     llvm::llvm_context ctx("ee_game");
 
@@ -475,7 +476,7 @@ bool ee_recomp(const char* elf_path,
         os << "  \"linear_unsupported\": " << result->linear_unsupported << ",\n";
         os << "  \"discovered_entries\": [";
         size_t entry_index = 0;
-        for (uint32_t entry : entries)
+        for (uint32_t entry : discovered_entries)
         {
             if (entry_index++ != 0) os << ", ";
             os << "\"" << u32hex(entry) << "\"";
