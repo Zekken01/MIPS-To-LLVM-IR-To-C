@@ -46,7 +46,8 @@ A trace is UTF-8 JSON Lines. The first line is a header:
 
 Each subsequent line records one completed pair. `lower` and `upper` are the
 raw 32-bit instruction words. `state.vi` contains all 32 architectural VI
-register values (including the special-register slots). The remaining fields
+register values (including the special-register slots). `state.vf` contains
+all 32 VF registers as raw unsigned X/Y/Z/W lane bit patterns. The remaining fields
 are the state needed to validate the currently implemented scalar/branch
 subset:
 
@@ -140,7 +141,7 @@ malformed/incompatible traces.
 The repository now contains all pieces needed to produce both sides of the
 trace:
 
-- A shared deterministic 52-pair microprogram fixture, including ILW/ISW.
+- A shared deterministic 56-pair microprogram fixture, including ILW/ISW and masked LQ/SQ.
 - The in-tree candidate trace executable, built as `ee_vu0_trace_candidate`.
 - A pinned PCSX2 GoogleTest adapter that captures one pair after each
   `vu0Exec(&VU0)` call when `VU0_TRACE_OUTPUT` is set.
@@ -159,8 +160,12 @@ ordinary-memory fixture passed the direct PCSX2 comparison in differential
 run #9: all 45 pairs, including ILW/ISW and the complete per-pair 4 KB data
 memory SHA-256, matched exactly. The trace consumed 47 cycles, including
 the branch-only IALU interlock policy observed in the pinned interpreter.
-The new 49-pair fixture additionally exercises masked VF LQ/SQ operations and
-preservation of unselected vector lanes. Until a new pinned PCSX2 comparison
-passes, the LQ/SQ cases are validated only by candidate-side regression tests.
+The 49-pair fixture additionally exercises masked VF LQ/SQ operations and
+preservation of unselected vector lanes. The direct pinned PCSX2 comparison
+passed in [the 49-pair differential run](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43316781870):
+all 49 executed pairs, VF/VI state, 4 KB data-memory digests, and E-bit
+termination timing matched exactly (51 cycles). The runtime models the
+four-cycle FMAC completion deadline for ordinary LQ/SQ at E termination;
+general VF operand interlocks remain outside this verified slice.
 Memory-mapped VU1 register accesses and other unsupported VU0 operations
 remain out of scope.
