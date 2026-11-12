@@ -335,3 +335,13 @@ Further changes should be committed to this branch in small, testable increments
 - The previously corrected lower issue ordering is now checked in both the focused forced-stall regression and the mixed reference trace. The scalar and mixed oracles together cover deterministic data dependencies plus branch/delay/E/M state transitions.
 - GitHub Actions [run #43225840963](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43225840963): clean build and **15/15 CTest passed**.
 - This remains a test-side PCSX2-derived model. It is not a live differential run of the PCSX2 interpreter; the next validation step is to run comparable traces through a PCSX2 interpreter build and compare serialized architectural states.
+
+
+## 2026-11-12 — VU0 mixed branch oracle and boundary regressions
+
+- Added a deterministic 384-pair mixed lower-IALU/branch program with a test-side raw-word reference model. The oracle independently decodes the lower instruction families, models VI low-halfword updates, branch conditions/targets/link writes, branch-in-delay deferral, VI-backup age, E/M timing and PC/TPC state, and compares runtime state after every executed pair.
+- Extended directed conditional-branch coverage with false-boundary cases for IBEQ, IBNE, IBLTZ, IBGTZ, IBLEZ and IBGEZ, complementing the existing taken-boundary cases.
+- Added an E-marked B regression proving the engine executes the branch delay pair, applies the branch target, and then terminates without executing beyond the target.
+- Tightened the forced IALU branch-read interlock case to a one-cycle exact budget. The pair is already issued when the dependency is discovered, so the runtime completes the stall and pair atomically, consuming three cycles rather than returning in a partially issued state.
+- GitHub Actions [run #43226060509](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43226060509): clean configure/build and **15/15 CTest passed**, including vu0_runtime.
+- The independent models are PCSX2-derived and exercise this runtime; they do not execute PCSX2 itself. A live PCSX2/interpreter differential harness remains the next VU0 validation step.
