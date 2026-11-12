@@ -12,13 +12,26 @@ constexpr uint32_t k_upper_nop = 0x000002ffu;
 constexpr uint32_t k_idle_lower = 0x10000000u; // IADDIU VI0, VI0, 0
 constexpr uint32_t k_lower1_marker = 0x80000000u;
 constexpr uint32_t k_step_limit = 80u;
-constexpr uint32_t k_expected_step_count = 41u;
+constexpr uint32_t k_expected_step_count = 45u;
 
 struct s_pair
 {
     uint32_t m_lower;
     uint32_t m_upper;
 };
+
+constexpr uint32_t make_memory(
+    uint32_t primary,
+    uint32_t xyzw,
+    uint32_t it,
+    uint32_t is,
+    int32_t immediate
+)
+{
+    return (primary << 25) | ((xyzw & 0xfu) << 21) |
+           ((it & 0xfu) << 16) | ((is & 0xfu) << 11) |
+           (static_cast<uint32_t>(immediate) & 0x7ffu);
+}
 
 constexpr uint32_t make_iaddiu(uint32_t it, uint32_t is, uint32_t immediate)
 {
@@ -64,12 +77,11 @@ constexpr uint32_t make_branch(
            (immediate & 0x07ffu);
 }
 
-// One deterministic 48-pair fixture. It exercises the supported scalar
-// integer operations, B/BAL/JR/JALR, all six conditional branches, integer
-// boundary cases (high immediates, signed immediates, wraparound and VI0),
-// an M-marked pair, and an E-marked pair with its delay pair. Unreachable
-// slots are filled with a harmless IADDIU VI0, VI0, 0.
-constexpr std::array<s_pair, 48> k_program =
+// One deterministic 52-pair fixture. It exercises scalar integer ALU,
+// branches, arithmetic boundaries and ordinary VU0 ILW/ISW memory operations.
+// Selected stores load back through a different lane, with a four-cycle
+// register dependency. E and its delay pair terminate the trace.
+constexpr std::array<s_pair, 52> k_program =
 {{
     { make_iaddiu(1, 0, 5), k_upper_nop },                         //  0
     { make_iaddi(2, 1, -1), k_upper_nop },                         //  1
@@ -117,11 +129,15 @@ constexpr std::array<s_pair, 48> k_program =
     { make_ialu_3r(0x31, 11, 9, 10), k_upper_nop },                // 43 ISUB overflow
     { make_iaddi(10, 10, -1), k_upper_nop },                        // 44 chained write
     { make_ialu_3r(0x30, 9, 11, 0), k_upper_nop },                 // 45 VI0 ignored
-    { make_iaddiu(0, 0, 0), k_upper_nop | 0x40000000u },           // 46 E
-    { make_iaddiu(8, 0, 47), k_upper_nop }                         // 47 E delay
+    { make_memory(0x05, 0x9, 9, 0, 1), k_upper_nop },              // 46 ISW X/W
+    { make_memory(0x04, 0x1, 2, 0, 1), k_upper_nop },              // 47 ILW W
+    { make_memory(0x05, 0x6, 2, 0, 2), k_upper_nop },              // 48 ISW Y/Z, waits on ILW
+    { make_memory(0x04, 0x2, 14, 0, 2), k_upper_nop },             // 49 ILW Z
+    { make_iaddiu(0, 0, 0), k_upper_nop | 0x40000000u },           // 50 E
+    { make_iaddiu(8, 0, 51), k_upper_nop }                         // 51 E delay
 }};
 
-static_assert(k_program.size() == 48);
+static_assert(k_program.size() == 52);
 
 inline void install_program(uint8_t* micro_memory, uint32_t memory_size)
 {
