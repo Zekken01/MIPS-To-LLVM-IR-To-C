@@ -63,6 +63,8 @@ class VU0State(ctypes.Structure):
         ("running", ctypes.c_uint32),
         ("e_bit", ctypes.c_uint32),
         ("m_bit", ctypes.c_uint32),
+        ("data_memory", ctypes.c_uint8 * 0x1000),
+        ("micro_memory", ctypes.c_uint8 * 0x1000),
     ]
 
 
