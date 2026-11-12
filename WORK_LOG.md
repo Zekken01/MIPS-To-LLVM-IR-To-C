@@ -354,3 +354,13 @@ Further changes should be committed to this branch in small, testable increments
 - The oracle now asserts the full 17-bit operation coverage mask in addition to checking architectural state after every pair. This removes the earlier weakness where unreachable encodings existed in the program image but might not have been executed by its random branch path.
 - GitHub Actions [run #43227105337](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43227105337): clean build and **15/15 CTest passed**.
 - Remaining VU0 validation: forced multi-cycle branch interlocks and finer execution-budget boundaries in the mixed trace, followed by a live PCSX2 interpreter trace comparison.
+
+
+## 2026-11-12 — Forced branch interlock inside mixed VU0 oracle
+
+- Extended the 384-pair mixed reference trace with a controlled dependency at its first IBEQ. After the directed prefix, VI1 is set to the post-write value while VIBackup holds the previous value for one remaining cycle; VI2 is set equal to that old value.
+- Injected a three-cycle pending IALU reservation for VI1. The branch must snapshot operands before the stall, take the branch using the backup value, wait atomically from cycle 15 through cycle 18 despite a one-cycle exact execution budget, retire the reservation, and only then age the backup to zero.
+- Extended the reference model to account for per-pair elapsed cycles (not merely one instruction per cycle) and backup ageing by the same interval. It continues comparing PC/TPC, branch delay state, VI contents, backup state, E/M and queue state after each callback.
+- The directed 21-pair prefix still guarantees all 17 lower opcode classes are executed before the randomized tail.
+- GitHub Actions [run #43227644333](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43227644333): clean build and **15/15 CTest passed**.
+- Remaining: extend forced dependency coverage to more than one source register and exercise multiple exact budget boundaries; then compare trace dumps against a live PCSX2 interpreter build.
