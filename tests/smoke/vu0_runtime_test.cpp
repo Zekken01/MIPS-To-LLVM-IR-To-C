@@ -314,6 +314,7 @@ static_assert(offsetof(ee::s_ee_vu0_state, m_take_delay_branch) == 8520);
 static_assert(offsetof(ee::s_ee_vu0_state, m_vi_backup_cycles) == 8524);
 static_assert(offsetof(ee::s_ee_vu0_state, m_vi_backup_register) == 8528);
 static_assert(offsetof(ee::s_ee_vu0_state, m_vi_backup_old_value) == 8532);
+static_assert(offsetof(ee::s_ee_vu0_state, m_vf_memory_ready_cycle) == 8536);
 static_assert(sizeof(ee::s_ee_vu0_state) == 8544);
 
 int main()
