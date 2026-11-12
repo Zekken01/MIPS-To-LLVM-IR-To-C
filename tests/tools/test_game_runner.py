@@ -44,6 +44,27 @@ def make_elf(path, startup=False):
     path.write_bytes(image)
 
 
+def make_semaphore_elf(path):
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    if len(image) < 0x1a0:
+        image.extend(bytes(0x1a0 - len(image)))
+    # PT_LOAD includes the guest ee_sema_t at virtual address 0x00100080.
+    struct.pack_into("<I", image, 52 + 16, 0xa0)
+    struct.pack_into("<I", image, 52 + 20, 0xa0)
+    for offset, value in (
+        (0x108, 0x3c040010), # lui a0,0x0010
+        (0x10c, 0x34840080), # ori a0,a0,0x0080
+        (0x110, 0x24030040), # v1 = CreateSema
+        (0x114, 0x0000000c), # syscall
+        (0x118, 0x03e00008), # jr ra
+        (0x11c, 0x00000000), # nop
+    ):
+        struct.pack_into("<I", image, offset, value)
+    struct.pack_into("<IIIIII", image, 0x180, 0, 2, 1, 0, 0, 0)
+    path.write_bytes(image)
+
+
 def make_call_elf(path):
     make_elf(path)
     image = bytearray(path.read_bytes())
@@ -162,6 +183,31 @@ def main():
             (root / "out" / "ir" / "ee_functions.json").read_text(encoding="utf-8")
         )
         assert metadata["function_count"] == 2, metadata
+
+    with tempfile.TemporaryDirectory(prefix="ee-native-semaphore-") as tmp:
+        root = Path(tmp)
+        elf = root / "semaphore-mips.elf"
+        make_semaphore_elf(elf)
+        result = subprocess.run(
+            [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf),
+                "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--max-dispatches=8",
+                "--hle-startup",
+                "--trace",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert "HLE CreateSema: id=1 init=1 max=2" in result.stdout, (
+            result.stdout + result.stderr
+        )
+        assert "EE stopped: dispatched=2" in result.stdout, (
+            result.stdout + result.stderr
+        )
 
     print("game_runner end-to-end ELF/native smoke: PASS")
     return 0
