@@ -12,6 +12,14 @@ namespace ee {
 // Return statically discoverable instruction PCs after one decoded instruction.
 std::set<uint32_t> collect_successors(const s_ee_instruction& ins);
 
+// Recover JALR targets whose source register is provably constant on every
+// path through the caller CFG. Values that disagree at a merge are discarded.
+std::set<uint32_t> collect_static_jalr_targets(
+    const std::map<uint32_t, s_ee_instruction>& insns,
+    const std::vector<uint32_t>& entry_points,
+    const std::vector<uint32_t>& all_entries = {}
+);
+
 class function_analyzer
 {
 public:
