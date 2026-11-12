@@ -108,8 +108,9 @@ architectural difference and returns nonzero when traces differ.
 
 ## Limits
 
-This fixture executes 49 pairs from a 56-pair program and covers the lower
-scalar integer/branch subset plus ordinary VU0 ILW/ISW and masked LQ/SQ memory operations,
+This fixture executes 53 pairs from a 60-pair program and covers the lower
+scalar integer/branch subset plus VU0 ILW/ISW, masked LQ/SQ, and
+indexed LQI/SQI/LQD/SQD memory operations,
 with upper NOP. The comparator checks all 4 KB of VU0 data memory using a
 SHA-256 digest and all 32 VF register lane patterns after each pair.
 The earlier pinned 45-pair comparison passed in differential run #9
@@ -119,7 +120,11 @@ The earlier pinned 45-pair comparison passed in differential run #9
 [masked VF dependency run 43318464992](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43318464992)
 also passed all 49 pairs with a dependent SQ reading a VF lane loaded by
 the preceding LQ, verifying lane-selective four-cycle lower-memory FMAC
-interlocking. Memory-mapped VU1 register accesses, other VU memory
+interlocking. The subsequent
+[indexed-memory run 43320848379](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43320848379)
+passed all 53 pairs, 61 cycles, and every VF/VI state and memory digest,
+including LQI/SQI/LQD/SQD pre/post-index address updates and a dependent
+indexed VF store. Memory-mapped VU1 register accesses, other VU memory
 operations, upper vector instructions, dual-issue dependencies, VF
 forwarding across upper-vector operations, general VF stalls, and full
 FMAC/FDIV/EFU pipelines remain out of scope. Ordinary LQ/SQ's
