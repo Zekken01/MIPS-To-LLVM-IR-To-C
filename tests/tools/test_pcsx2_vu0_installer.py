@@ -57,8 +57,10 @@ class PCSX2VU0InstallerTests(unittest.TestCase):
         )
         self.adapter_source = Path(self.temp.name) / "adapter.cpp"
         self.fixture_source = Path(self.temp.name) / "fixture.h"
+        self.sha256_source = Path(self.temp.name) / "sha256.h"
         self.adapter_source.write_text("// adapter fixture\n", encoding="utf-8")
         self.fixture_source.write_text("// fixture header\n", encoding="utf-8")
+        self.sha256_source.write_text("// sha256 fixture\n", encoding="utf-8")
         self.installer = load_installer()
         self.installer.PCSX2_REVISION = self.revision
 
@@ -69,7 +71,7 @@ class PCSX2VU0InstallerTests(unittest.TestCase):
         original_cmake = self.cmake_path.read_text(encoding="utf-8")
 
         self.installer.install(
-            self.root, self.adapter_source, self.fixture_source
+            self.root, self.adapter_source, self.fixture_source, self.sha256_source
         )
         installed_cmake = self.cmake_path.read_text(encoding="utf-8")
 
@@ -81,6 +83,10 @@ class PCSX2VU0InstallerTests(unittest.TestCase):
         self.assertEqual(
             (self.core_dir / self.installer.FIXTURE_RELATIVE_PATH).read_bytes(),
             self.fixture_source.read_bytes(),
+        )
+        self.assertEqual(
+            (self.core_dir / self.installer.SHA256_RELATIVE_PATH).read_bytes(),
+            self.sha256_source.read_bytes(),
         )
 
         self.installer.install(
@@ -99,6 +105,9 @@ class PCSX2VU0InstallerTests(unittest.TestCase):
         )
         self.assertFalse(
             (self.core_dir / self.installer.FIXTURE_RELATIVE_PATH).exists()
+        )
+        self.assertFalse(
+            (self.core_dir / self.installer.SHA256_RELATIVE_PATH).exists()
         )
 
     def test_wrong_revision_is_rejected_without_mutation(self):
@@ -147,6 +156,9 @@ class PCSX2VU0InstallerTests(unittest.TestCase):
         )
         self.assertTrue(
             (self.core_dir / self.installer.FIXTURE_RELATIVE_PATH).exists()
+        )
+        self.assertTrue(
+            (self.core_dir / self.installer.SHA256_RELATIVE_PATH).exists()
         )
 
 
