@@ -306,3 +306,13 @@ Further changes should be committed to this branch in small, testable increments
 - GitHub Actions initially caught the now-obsolete backup-cycle assertion; after updating that expectation and adding the forced-stall case, [run #43222672470](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43222672470) passed **15/15 CTest**.
 - Reference points: PCSX2 [VU0microInterp.cpp](https://github.com/PCSX2/pcsx2/blob/master/pcsx2/VU0microInterp.cpp) lower dispatch / _vuTestLowerStalls / backup aging order, and [VUops.cpp](https://github.com/PCSX2/pcsx2/blob/master/pcsx2/VUops.cpp) VI backup and branch operand semantics.
 - Remaining: a broader automated differential harness is still needed for branch-delay, cycle-budget, nested-branch and E/M interactions.
+
+
+## 2026-11-12 — Correct scalar VU0 IALU latency from PCSX2 metadata
+
+- Rechecked the implemented lower scalar integer operation set against PCSX2's lower-op metadata. IADD/ISUB/IAND/IOR/IADDI/IADDIU/ISUBIU have zero IALU-pipeline latency; the two-cycle VI-backup visibility window is separate from that pipeline.
+- Corrected `ee_vu0_execute_ialu_callback` so these immediate VI writes do not create one-cycle destination reservations. The generic four-entry IALU queue remains intact for future operations with nonzero latency, including the planned ILW/ILWR path.
+- Updated M-bit, E termination and FINISH_TO_E expectations: no pending scalar ALU reservation remains at M, and E no longer adds an artificial queue-flush cycle. EE cycle accounting now reflects only cycles actually consumed by the current scalar microprogram.
+- The first CI run exposed four stale assumptions in the tests (M queue occupancy and E/FINISH_TO_E flush cycles). Corrected those expectations rather than reverting the semantic fix.
+- GitHub Actions [run #43222225891](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43222225891): clean build and **15/15 CTest passed**.
+- This does not enable any additional VU0 instruction family. The reservation queue is retained for later nonzero-latency lower operations; memory/vector and full dual-issue execution remain unsupported.
