@@ -595,6 +595,121 @@ std::vector<s_ee_function> function_analyzer::analyze(
     return functions;
 }
 
+std::set<uint32_t> collect_static_jalr_targets(
+    const std::map<uint32_t, s_ee_instruction>& insns,
+    const std::vector<uint32_t>& entry_points,
+    const std::vector<uint32_t>& all_entries
+)
+{
+    std::set<uint32_t> targets;
+    function_analyzer analyzer;
+
+    auto states_equal = [](const s_gpr_constant_state& a,
+                           const s_gpr_constant_state& b) -> bool
+    {
+        return a.m_reachable == b.m_reachable &&
+               a.m_known == b.m_known &&
+               a.m_value == b.m_value;
+    };
+
+    for (uint32_t entry : entry_points)
+    {
+        const std::vector<s_ee_function> functions =
+            analyzer.analyze(insns, {entry}, all_entries);
+        if (functions.empty() || functions[0].blocks.empty())
+        {
+            continue;
+        }
+
+        const s_ee_function& fn = functions[0];
+        std::map<uint32_t, const s_ee_basic_block*> blocks;
+        for (const auto& block : fn.blocks)
+        {
+            blocks[block.start_pc] = &block;
+        }
+
+        if (blocks.find(entry) == blocks.end())
+        {
+            continue;
+        }
+
+        std::map<uint32_t, s_gpr_constant_state> incoming;
+        std::map<uint32_t, s_gpr_constant_state> outgoing;
+        std::deque<uint32_t> worklist;
+        std::set<uint32_t> queued;
+
+        s_gpr_constant_state entry_state{};
+        entry_state.m_reachable = true;
+        entry_state.m_known[0] = true;
+        entry_state.m_value[0] = 0;
+        incoming[entry] = entry_state;
+        worklist.push_back(entry);
+        queued.insert(entry);
+
+        // Forward data-flow over the function CFG. The lattice only moves
+        // from a known constant to unknown at a join, so this converges even
+        // in the presence of loops and recursive-looking local control flow.
+        while (!worklist.empty())
+        {
+            const uint32_t block_pc = worklist.front();
+            worklist.pop_front();
+            queued.erase(block_pc);
+
+            const auto block_it = blocks.find(block_pc);
+            const auto in_it = incoming.find(block_pc);
+            if (block_it == blocks.end() ||
+                in_it == incoming.end() ||
+                !in_it->second.m_reachable)
+            {
+                continue;
+            }
+
+            s_gpr_constant_state out_state = in_it->second;
+            transfer_block_constants(*block_it->second, insns, out_state);
+            out_state.m_reachable = true;
+
+            const auto old_out = outgoing.find(block_pc);
+            if (old_out != outgoing.end() &&
+                states_equal(old_out->second, out_state))
+            {
+                continue;
+            }
+            outgoing[block_pc] = out_state;
+
+            for (uint32_t successor : block_it->second->successors)
+            {
+                if (blocks.find(successor) == blocks.end())
+                {
+                    continue;
+                }
+
+                if (merge_gpr_state(incoming[successor], out_state) &&
+                    queued.insert(successor).second)
+                {
+                    worklist.push_back(successor);
+                }
+            }
+        }
+
+        // Collect only after the data-flow fixpoint. This avoids reporting a
+        // target seen on one path before a later predecessor disproves it.
+        for (const auto& block : fn.blocks)
+        {
+            const auto in_it = incoming.find(block.start_pc);
+            if (in_it == incoming.end() || !in_it->second.m_reachable)
+            {
+                continue;
+            }
+
+            const std::set<uint32_t> block_targets =
+                collect_jalr_targets_in_block(block, insns, in_it->second);
+            targets.insert(block_targets.begin(), block_targets.end());
+        }
+    }
+
+    return targets;
+}
+
 void function_analyzer::split_into_blocks(
     const std::map<uint32_t, s_ee_instruction>& insns,
     uint32_t entry_pc,
