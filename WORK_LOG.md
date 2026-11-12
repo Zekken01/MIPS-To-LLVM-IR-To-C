@@ -345,3 +345,12 @@ Further changes should be committed to this branch in small, testable increments
 - Tightened the forced IALU branch-read interlock case to a one-cycle exact budget. The pair is already issued when the dependency is discovered, so the runtime completes the stall and pair atomically, consuming three cycles rather than returning in a partially issued state.
 - GitHub Actions [run #43226060509](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43226060509): clean configure/build and **15/15 CTest passed**, including vu0_runtime.
 - The independent models are PCSX2-derived and exercise this runtime; they do not execute PCSX2 itself. A live PCSX2/interpreter differential harness remains the next VU0 validation step.
+
+
+## 2026-11-12 — Guarantee mixed-oracle execution coverage
+
+- Strengthened the 384-pair mixed VU0 reference trace with a deterministic 21-pair prefix before the randomized tail. The prefix executes all seven scalar integer operations, B/BAL/JR/JALR, and each of the six conditional branch predicates.
+- The transfer prefix is laid out so B and BAL land immediately after their respective delay pairs; JR and JALR read known instruction-slot targets whose delay pairs are executed; all conditional branches use deliberately false predicates and fall through. VI1/VI2/VI4/VI13/VI15 are seeded to stable values while other state remains deterministic from the xorshift seed.
+- The oracle now asserts the full 17-bit operation coverage mask in addition to checking architectural state after every pair. This removes the earlier weakness where unreachable encodings existed in the program image but might not have been executed by its random branch path.
+- GitHub Actions [run #43227105337](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43227105337): clean build and **15/15 CTest passed**.
+- Remaining VU0 validation: forced multi-cycle branch interlocks and finer execution-budget boundaries in the mixed trace, followed by a live PCSX2 interpreter trace comparison.
