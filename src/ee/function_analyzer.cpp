@@ -90,6 +90,17 @@ void clear_all_gpr_constants(s_gpr_constant_state& state)
     state.m_value[0] = 0;
 }
 
+void clear_call_clobbered_gprs(s_gpr_constant_state& state)
+{
+    // R5900/O32 caller-saved temporaries and argument/result registers.
+    // A call may change these before control returns to the caller.
+    for (uint32_t reg = 1; reg <= 15; ++reg)
+        clear_gpr_constant(state, reg);
+    for (uint32_t reg = 24; reg <= 27; ++reg)
+        clear_gpr_constant(state, reg);
+    clear_gpr_constant(state, 31);
+}
+
 bool read_gpr_constant(
     const s_gpr_constant_state& state,
     uint32_t reg,
@@ -200,11 +211,12 @@ void invalidate_unmodelled_destination(
             ins.rt == static_cast<uint8_t>(e_ee_opcode::REGIMM_BLTZALL) ||
             ins.rt == static_cast<uint8_t>(e_ee_opcode::REGIMM_BGEZALL))
         {
-            clear_gpr_constant(state, 31);
+            clear_call_clobbered_gprs(state);
         }
         return;
 
     case e_ee_opcode::OP_JAL:
+        clear_call_clobbered_gprs(state);
         set_gpr_constant(state, 31, sign_extend_u32(ins.pc + 8u));
         return;
 
@@ -505,7 +517,15 @@ void transfer_gpr_constants(
         return;
 
     case static_cast<uint8_t>(op::FUNCT_JALR):
-        set_gpr_constant(state, ins.rd, sign_extend_u32(ins.pc + 8u));
+        clear_call_clobbered_gprs(state);
+        if (ins.rd == 31)
+        {
+            set_gpr_constant(state, 31, sign_extend_u32(ins.pc + 8u));
+        }
+        else
+        {
+            clear_gpr_constant(state, ins.rd);
+        }
         return;
 
     default:
