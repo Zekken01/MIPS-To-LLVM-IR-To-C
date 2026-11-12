@@ -1,8 +1,8 @@
 # VU0 interpreter differential trace format
 
-The supported VU0 lower integer/branch subset currently has PCSX2-derived
-reference models, but those models are not an execution of PCSX2. This document
-defines the interchange format for the next validation stage.
+The VU0 lower integer/branch and ordinary-memory subset has a direct,
+pinned-PCSX2 interpreter differential path. This document defines the
+JSONL interchange format and the limits of that validation.
 
 ## Pinned reference
 
@@ -38,7 +38,8 @@ A trace is UTF-8 JSON Lines. The first line is a header:
     "vi": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     "tpc": 0,
-    "cycle": 0
+    "cycle": 0,
+    "data_sha256": "sha256-of-the-4096-byte-vu0-data-memory"
   }
 }
 ```
@@ -72,19 +73,21 @@ subset:
     "e_bit": 0,
     "m_bit": false,
     "vpu_status": 1,
-    "running": true
+    "running": true,
+    "data_sha256": "sha256-of-the-4096-byte-vu0-data-memory"
   }
 }
 ```
 
-The shared fixture now provides a deterministic 37-pair program. The
+The shared fixture now provides a deterministic 52-pair program, 45 of whose pairs execute. The
 candidate producer executes one runtime pair per exact-cycle callback and
 writes a trace. The pinned PCSX2 adapter executes one interpreter pair through
 vu0Exec(&VU0) and writes the same format when VU0_TRACE_OUTPUT is set. The
 trace records the executed pair PC as well as both instruction words.
 
 The comparator checks program identity and initial state, then compares every
-pair PC, instruction word and listed architectural field exactly after each pair.
+pair PC, instruction word, listed architectural field and VU0 data-memory
+SHA-256 exactly after each pair.
 Engine name and source revision are informational and intentionally need not
 match. A mismatch reports the first differing VI register or state field.
 
@@ -105,18 +108,21 @@ malformed/incompatible traces.
 The repository now contains all pieces needed to produce both sides of the
 trace:
 
-- A shared deterministic 37-pair microprogram fixture.
+- A shared deterministic 52-pair microprogram fixture, including ILW/ISW.
 - The in-tree candidate trace executable, built as `ee_vu0_trace_candidate`.
 - A pinned PCSX2 GoogleTest adapter that captures one pair after each
   `vu0Exec(&VU0)` call when `VU0_TRACE_OUTPUT` is set.
 - The JSONL comparator and regression tests, including executed-PC comparison.
 
-CTest validates the candidate trace path and its expected 30 executed pairs.
+CTest validates the candidate trace path and its expected 45 executed pairs.
 To run the real cross-engine comparison, use either
 `tools/vu0_diff/run_differential.py` with a PCSX2 checkout and its dependencies,
 or trigger the manual GitHub Actions workflow named **VU0 PCSX2 differential**.
 That workflow checks out the pinned PCSX2 revision, builds its core test target,
 runs the paired trace capture, compares both JSONL files, and uploads the traces.
 
-The PCSX2 trace has not yet been produced and compared in this environment.
-Do not claim live differential validation until that comparison succeeds.
+The earlier 41-pair integer/branch fixture was compared directly against
+PCSX2 in differential run #7, with an exact match. The expanded 45-pair
+ordinary-memory fixture must be separately validated; CTest alone does not
+establish agreement with PCSX2. Memory-mapped VU1 register accesses and
+other unsupported VU0 operations remain out of scope.
