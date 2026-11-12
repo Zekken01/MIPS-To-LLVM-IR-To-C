@@ -29,8 +29,8 @@ an E-marked pair plus its delay pair.
 ## Install into a PCSX2 checkout
 
 Use a clean checkout at the pinned revision. The installer refuses another
-revision and changes only the PCSX2 core test CMake source list plus two new
-test files.
+revision and changes only the PCSX2 core test CMake source list plus the adapter, shared
+fixture, and SHA-256 helper source files.
 
 ~~~sh
 git clone https://github.com/PCSX2/pcsx2.git pcsx2-vu0-reference
