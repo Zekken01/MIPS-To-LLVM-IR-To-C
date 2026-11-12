@@ -9,6 +9,8 @@
 
 namespace ee {
 
+class elf_loader;
+
 // Return statically discoverable instruction PCs after one decoded instruction.
 std::set<uint32_t> collect_successors(const s_ee_instruction& ins);
 
@@ -38,7 +40,8 @@ std::set<uint32_t> collect_static_jalr_targets(
     const std::vector<uint32_t>& entry_points,
     const std::vector<uint32_t>& all_entries = {},
     const std::set<uint32_t>* block_starts = nullptr,
-    std::vector<s_static_jalr_site>* site_audit = nullptr
+    std::vector<s_static_jalr_site>* site_audit = nullptr,
+    const elf_loader* memory_image = nullptr
 );
 
 class function_analyzer
