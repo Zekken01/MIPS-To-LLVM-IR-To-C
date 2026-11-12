@@ -86,6 +86,18 @@ std::set<uint32_t> recover(
 {
     return ee::collect_static_jalr_targets(insns, {entry}, {entry});
 }
+
+std::vector<ee::s_static_jalr_site> audit_jalr_sites(
+    const std::map<uint32_t, ee::s_ee_instruction>& insns,
+    uint32_t entry
+)
+{
+    std::vector<ee::s_static_jalr_site> sites;
+    ee::collect_static_jalr_targets(
+        insns, {entry}, {entry}, nullptr, &sites
+    );
+    return sites;
+}
 } // namespace
 
 int main()
@@ -204,6 +216,77 @@ int main()
         const auto targets = recover(insns, 0x1600);
         check(targets.empty(),
               "branch-likely annulment keeps disagreeing JALR paths unresolved");
+    }
+
+    // The audit captures the source register and target value at the
+    // JALR instruction itself, before the link write and delay slot.
+    {
+        std::map<uint32_t, ee::s_ee_instruction> insns;
+        add(insns, 0x1700, encode_lui(25, 0x0012));
+        add(insns, 0x1704, encode_ori(25, 25, 0x3454));
+        add(insns, 0x1708, encode_jalr(25));
+        add(insns, 0x170c, encode_ori(0, 25, 0x4000));
+        const auto sites = audit_jalr_sites(insns, 0x1700);
+        check(sites.size() == 1 &&
+              sites[0].m_caller_entry == 0x1700 &&
+              sites[0].m_pc == 0x1708 &&
+              sites[0].m_source_register == 25 &&
+              sites[0].m_source_known &&
+              sites[0].m_source_value == 0x00123454u &&
+              sites[0].m_target == 0x00123454u &&
+              sites[0].m_target_aligned,
+              "audit known JALR value before the delay slot");
+    }
+
+    // Unknown loads must be reported as unresolved sites, not silently
+    // omitted from the coverage report.
+    {
+        std::map<uint32_t, ee::s_ee_instruction> insns;
+        add(insns, 0x1800, encode_lui(25, 0x0010));
+        add(insns, 0x1804, encode_lw(8, 25, 0));
+        add(insns, 0x1808, encode_jalr(25));
+        add(insns, 0x180c, 0);
+        const auto sites = audit_jalr_sites(insns, 0x1800);
+        check(sites.size() == 1 &&
+              !sites[0].m_source_known &&
+              !sites[0].m_target_aligned,
+              "audit JALR with a load-derived unknown target");
+    }
+
+    // A known but non-aligned value is distinct from a dynamic source.
+    {
+        std::map<uint32_t, ee::s_ee_instruction> insns;
+        add(insns, 0x1900, encode_ori(0, 25, 2));
+        add(insns, 0x1904, encode_jalr(25));
+        add(insns, 0x1908, 0);
+        const auto sites = audit_jalr_sites(insns, 0x1900);
+        check(sites.size() == 1 &&
+              sites[0].m_source_known &&
+              sites[0].m_source_value == 2 &&
+              sites[0].m_target == 2 &&
+              !sites[0].m_target_aligned,
+              "audit known but misaligned JALR target");
+    }
+
+    // CFG merges only produce a static site value when all incoming paths
+    // agree, preserving the existing conservative recovery contract.
+    {
+        std::map<uint32_t, ee::s_ee_instruction> insns;
+        add(insns, 0x1a00, encode_beq(1, 2, 5));
+        add(insns, 0x1a04, 0);
+        add(insns, 0x1a08, encode_lui(25, 0x0010));
+        add(insns, 0x1a0c, encode_ori(25, 25, 0x1000));
+        add(insns, 0x1a10, encode_beq(0, 0, 3));
+        add(insns, 0x1a14, 0);
+        add(insns, 0x1a18, encode_lui(25, 0x0010));
+        add(insns, 0x1a1c, encode_ori(25, 25, 0x2000));
+        add(insns, 0x1a20, encode_jalr(25));
+        add(insns, 0x1a24, 0);
+        const auto sites = audit_jalr_sites(insns, 0x1a00);
+        check(sites.size() == 1 &&
+              !sites[0].m_source_known &&
+              !sites[0].m_target_aligned,
+              "audit conflicting predecessor values as unresolved");
     }
 
     std::printf("function_discovery_test: %d passed, %d failed\n", g_pass, g_fail);
