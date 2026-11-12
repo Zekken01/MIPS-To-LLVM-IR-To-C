@@ -147,3 +147,18 @@ These are runtime-callable helpers with unit tests. The LLVM lifter has not yet 
 - VF0 is not an all-zero quadword. It is the immutable vector `(0.0f, 0.0f, 0.0f, 1.0f)`; QMFC2 must return `m_hi = 0x3f80000000000000` and a zero low half even if a backing VF0 slot contains stale data.
 - QMTC2's VF0 destination is discarded.
 - CFC2's R path writes only GPR `UL[0]` with the 23-bit masked value. Unlike ordinary VI reads, it does not update `UL[1]`; that pre-existing upper word must be preserved. Ordinary reads sign-extend bit 31 into `UL[1]`.
+
+
+## CTC2 control-register handling
+
+The first CTC2 runtime helper now implements the interpreter's explicit register cases:
+
+- VI0 writes are ignored; ordinary writable registers update VI.
+- MAC_FLAG, TPC and VPU_STAT are read-only.
+- R stores `(value & 0x007fffff) | 0x3f800000`.
+- CLIP_FLAG updates both the VI slot and the separately tracked clip flag.
+- FBRST stores `value & 0x0c0c`; when any reset/break action bits are present, a host control callback must handle them.
+- CMSAR1 is routed through the host control callback, which is responsible for finishing/starting the VU1 micro subroutine using the low 16-bit address.
+- Missing/failed host control callbacks fail closed before the helper commits the relevant register state.
+
+The helper does not emulate VU1 or execute FBRST hardware actions itself. These remain responsibilities of the host callback. All COP2 transfer/control opcodes still remain UNSUPPORTED in the decoder and LLVM emitter until generated-code integration is completed.

@@ -45,6 +45,37 @@ uint32_t mock_vu0_sync(
     return scheduler->m_result;
 }
 
+struct s_mock_control
+{
+    uint32_t m_calls = 0;
+    uint32_t m_last_register = 0xffffffffu;
+    uint32_t m_last_value = 0;
+    uint32_t m_last_pc = 0;
+    uint32_t m_result = static_cast<uint32_t>(ee::e_ee_vu0_sync_result::COMPLETE);
+};
+
+uint32_t mock_vu0_control(
+    void* user,
+    ee::s_ee_cpu_state*,
+    ee::s_ee_vu0_state*,
+    uint32_t register_index,
+    uint32_t value,
+    uint32_t pc
+)
+{
+    auto* control = static_cast<s_mock_control*>(user);
+    if (!control)
+    {
+        return static_cast<uint32_t>(ee::e_ee_vu0_sync_result::FAILED);
+    }
+
+    ++control->m_calls;
+    control->m_last_register = register_index;
+    control->m_last_value = value;
+    control->m_last_pc = pc;
+    return control->m_result;
+}
+
 int g_pass = 0;
 int g_fail = 0;
 
@@ -131,6 +162,9 @@ int main()
     runtime.m_vu0_state = &vu0;
     runtime.m_vu0_user = &scheduler;
     runtime.m_vu0_sync = mock_vu0_sync;
+    s_mock_control control{};
+    runtime.m_vu0_control_user = &control;
+    runtime.m_vu0_control = mock_vu0_control;
 
     const uint32_t modes[] = {
         static_cast<uint32_t>(e_ee_vu0_sync_mode::CATCH_UP_TO_EE_CYCLE),
@@ -298,6 +332,129 @@ int main()
     check(cpu.m_gpr[0].m_lo == zero_gpr_sentinel.m_lo &&
           cpu.m_gpr[0].m_hi == zero_gpr_sentinel.m_hi,
           "CFC2 never changes GPR0");
+
+    // CFC2 reads the dedicated flag/control fields, not stale VI array slots.
+    vu0.m_mac_flags = 0x12345678u;
+    vu0.m_clip_flags = 0x87654321u;
+    vu0.m_status_flags = 0x0badc0deu;
+    vu0.m_vpu_status = 0x00000005u;
+    vu0.m_tpc = 0x00001234u;
+    check(ee::ee_vu0_read_vi(&vu0, 17) == 0x12345678u,
+          "CFC2 MAC flag reads tracked MAC flags");
+    check(ee::ee_vu0_read_vi(&vu0, 18) == 0x87654321u,
+          "CFC2 clip flag reads tracked clip flags");
+    check(ee::ee_vu0_read_vi(&vu0, 16) == 0x0badc0deu,
+          "CFC2 status flag reads tracked status flags");
+    check(ee::ee_vu0_read_vi(&vu0, 29) == 0x00000005u,
+          "CFC2 VPU status reads tracked VPU status");
+    check(ee::ee_vu0_read_vi(&vu0, 26) == 0x00001234u,
+          "CFC2 TPC reads tracked micro-PC");
+
+    // Ordinary CTC2 writes VI, while the dedicated special cases are
+    // implemented explicitly and the three read-only registers ignore writes.
+    cpu.m_gpr[8].m_lo = 0x89abcdefu;
+    check(
+        ee::ee_vu0_ctc2(&cpu, &runtime, 8, 7, write_mode, 0x00100048u) ==
+            static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE),
+        "CTC2 ordinary VI write succeeds"
+    );
+    check(ee::ee_vu0_read_vi(&vu0, 7) == 0x89abcdefu,
+          "CTC2 writes the selected VI register");
+    vu0.m_mac_flags = 0x12345678u;
+    cpu.m_gpr[8].m_lo = 0xffffffffu;
+    check(
+        ee::ee_vu0_ctc2(&cpu, &runtime, 8, 17, write_mode, 0x0010004cu) ==
+            static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE),
+        "CTC2 MAC_FLAG read-only write is ignored"
+    );
+    check(vu0.m_mac_flags == 0x12345678u,
+          "CTC2 cannot modify MAC_FLAG");
+    vu0.m_tpc = 0x1234u;
+    check(
+        ee::ee_vu0_ctc2(&cpu, &runtime, 8, 26, write_mode, 0x00100050u) ==
+            static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE),
+        "CTC2 TPC read-only write is ignored"
+    );
+    check(vu0.m_tpc == 0x1234u, "CTC2 cannot modify TPC");
+    vu0.m_vpu_status = 5u;
+    check(
+        ee::ee_vu0_ctc2(&cpu, &runtime, 8, 29, write_mode, 0x00100054u) ==
+            static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE),
+        "CTC2 VPU_STAT read-only write is ignored"
+    );
+    check(vu0.m_vpu_status == 5u, "CTC2 cannot modify VPU_STAT");
+
+    cpu.m_gpr[8].m_lo = 0xabcdef01u;
+    check(
+        ee::ee_vu0_ctc2(&cpu, &runtime, 8, 20, write_mode, 0x00100058u) ==
+            static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE),
+        "CTC2 R write succeeds"
+    );
+    check(ee::ee_vu0_read_vi(&vu0, 20) == ((0xabcdef01u & 0x007fffffu) | 0x3f800000u),
+          "CTC2 R preserves the implicit 1.0 exponent");
+
+    cpu.m_gpr[8].m_lo = 0x12345678u;
+    check(
+        ee::ee_vu0_ctc2(&cpu, &runtime, 8, 18, write_mode, 0x0010005cu) ==
+            static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE),
+        "CTC2 CLIP_FLAG write succeeds"
+    );
+    check(vu0.m_clip_flags == 0x12345678u &&
+          ee::ee_vu0_read_vi(&vu0, 18) == 0x12345678u,
+          "CTC2 CLIP_FLAG updates VI and the clip flag");
+
+    cpu.m_gpr[8].m_lo = 0x00000c0fu;
+    const uint32_t control_calls_before_fbrst = control.m_calls;
+    check(
+        ee::ee_vu0_ctc2(&cpu, &runtime, 8, 28, write_mode, 0x00100060u) ==
+            static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE),
+        "CTC2 FBRST host action succeeds"
+    );
+    check(control.m_calls == control_calls_before_fbrst + 1 &&
+          control.m_last_register == 28 && control.m_last_value == 0x00000c0fu,
+          "CTC2 FBRST forwards reset/break bits to the host");
+    check(ee::ee_vu0_read_vi(&vu0, 28) == 0x00000c0cu,
+          "CTC2 FBRST stores only the documented mask");
+
+    cpu.m_gpr[8].m_lo = 0x12345678u;
+    const uint32_t control_calls_before_cmsar = control.m_calls;
+    check(
+        ee::ee_vu0_ctc2(&cpu, &runtime, 8, 31, write_mode, 0x00100064u) ==
+            static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE),
+        "CTC2 CMSAR1 host action succeeds"
+    );
+    check(control.m_calls == control_calls_before_cmsar + 1 &&
+          control.m_last_register == 31 && control.m_last_value == 0x5678u,
+          "CTC2 CMSAR1 forwards its low 16-bit micro entry address");
+
+    // Side-effectful writes fail closed without a host action callback.
+    ee::s_ee_runtime no_control = runtime;
+    no_control.m_vu0_control = nullptr;
+    const uint32_t old_fbrst = vu0.m_fbrst;
+    cpu.m_gpr[8].m_lo = 0x00000001u;
+    check(
+        ee::ee_vu0_ctc2(&cpu, &no_control, 8, 28, write_mode, 0x00100068u) ==
+            static_cast<uint32_t>(e_ee_vu0_sync_result::UNAVAILABLE),
+        "CTC2 FBRST fails closed without host action callback"
+    );
+    check(vu0.m_fbrst == old_fbrst,
+          "failed FBRST action leaves register state unchanged");
+    check(
+        ee::ee_vu0_ctc2(&cpu, &no_control, 8, 31, write_mode, 0x0010006cu) ==
+            static_cast<uint32_t>(e_ee_vu0_sync_result::UNAVAILABLE),
+        "CTC2 CMSAR1 fails closed without host action callback"
+    );
+
+    control.m_result = static_cast<uint32_t>(e_ee_vu0_sync_result::FAILED);
+    const uint32_t old_cmsar1 = vu0.m_cmsar1;
+    check(
+        ee::ee_vu0_ctc2(&cpu, &runtime, 8, 31, write_mode, 0x00100070u) ==
+            static_cast<uint32_t>(e_ee_vu0_sync_result::FAILED),
+        "CTC2 propagates host action failure"
+    );
+    check(vu0.m_cmsar1 == old_cmsar1,
+          "failed CMSAR1 action leaves state unchanged");
+    control.m_result = static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE);
 
     cpu.m_gpr[12] = {0xaaaaaaaaaaaaaaaaULL, 0xbbbbbbbbbbbbbbbbULL};
     scheduler.m_result = static_cast<uint32_t>(e_ee_vu0_sync_result::FAILED);

@@ -37,6 +37,18 @@ using t_ee_vu0_sync_callback = uint32_t (*)(
     uint32_t pc
 );
 
+// Host callback for CTC2 operations with external effects (FBRST and CMSAR1).
+// It must perform the requested action or return UNAVAILABLE/FAILED without
+// committing a partial action.
+using t_ee_vu0_control_callback = uint32_t (*)(
+    void* user,
+    s_ee_cpu_state* cpu,
+    s_ee_vu0_state* vu0,
+    uint32_t register_index,
+    uint32_t value,
+    uint32_t pc
+);
+
 struct s_ee_runtime
 {
     // Opaque EE memory/runtime context; retained as the first ABI member.
@@ -47,6 +59,10 @@ struct s_ee_runtime
     s_ee_vu0_state* m_vu0_state;
     void* m_vu0_user;
     t_ee_vu0_sync_callback m_vu0_sync;
+
+    // Optional host-side VU0/VU1 control actions for CTC2 special registers.
+    void* m_vu0_control_user;
+    t_ee_vu0_control_callback m_vu0_control;
 };
 
 // Outside a branch delay slot, all four transfer forms only catch VU0 up to
@@ -91,6 +107,9 @@ uint32_t ee_vu0_qmtc2(s_ee_cpu_state* cpu, s_ee_runtime* rt,
                       uint32_t gpr_index, uint32_t vf_index,
                       uint32_t mode, uint32_t pc);
 uint32_t ee_vu0_cfc2(s_ee_cpu_state* cpu, s_ee_runtime* rt,
+                      uint32_t gpr_index, uint32_t vi_index,
+                      uint32_t mode, uint32_t pc);
+uint32_t ee_vu0_ctc2(s_ee_cpu_state* cpu, s_ee_runtime* rt,
                       uint32_t gpr_index, uint32_t vi_index,
                       uint32_t mode, uint32_t pc);
 

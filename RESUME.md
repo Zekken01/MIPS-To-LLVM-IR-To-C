@@ -34,7 +34,7 @@ See [`COP2_RESEARCH.md`](COP2_RESEARCH.md). VU0/COP2 remains deliberately unsupp
 
 ## Remaining priorities
 
-1. **VU0/COP2 runtime integration:** connect a real EE/VU0 cycle scheduler to the new `s_ee_vu0_state` and `ee_vu0_sync` callback boundary; then JIT-test QMFC2/QMTC2/CFC2/CTC2 including delay-slot synchronization and control-register side effects. Transfer opcodes remain unsupported for now.
+1. **VU0/COP2 runtime integration:** connect the runtime transfer helpers to generated LLVM IR, implement the remaining BC2 condition state, then differential-test delay-slot synchronization and control-register side effects against PCSX2. COP2 opcodes remain unsupported until that integration is complete.
 2. **Runtime completeness:** EE memory/TLB/MMIO, scratchpad/ROM aliases, alignment exceptions, DMA, interrupts, plus BIOS/IOP/GS host services.
 3. **Semantic validation:** differential instruction and function testing against PCSX2's interpreter. LLVM verification and native linking do not establish R5900 equivalence.
 4. **Production backend:** replace the current external llvmlite object-emission path with an integrated LLVM backend or supported `llc`/LLVM library path; keep the current script as a validation/reference path until then.

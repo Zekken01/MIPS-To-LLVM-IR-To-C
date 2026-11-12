@@ -165,3 +165,12 @@ Further changes should be committed to this branch in small, testable increments
 - The LLVM emitter and decoder are intentionally unchanged: these transfer helpers are not yet wired to generated guest code, and the corresponding instructions remain UNSUPPORTED. CTC2 is deferred pending explicit side-effect mapping.
 
 - Follow-up semantic review against PCSX2 corrected two edge cases in the transfer helpers: QMFC2 reads VF0 as the constant (0,0,0,1.0f), and CFC2's R-register path replaces only GPR UL[0] while preserving UL[1].
+
+
+## 2026-11-12 — CTC2 special-register runtime semantics
+
+- Added a dedicated host control-action callback for CTC2 FBRST and CMSAR1. It is separate from the VU0 cycle-sync callback.
+- Implemented VI0 write suppression, ordinary VI writes, read-only MAC_FLAG/TPC/VPU_STAT, the R-register exponent rule, CLIP_FLAG mirroring, FBRST masking and CMSAR1 low-16-bit dispatch.
+- CFC2 now reads the dedicated tracked MAC/clip/status/TPC/FBRST/VPU_STAT values where those indices map to PCSX2's visible special-register state.
+- Side-effectful FBRST/CMSAR1 writes fail closed when the host action callback is missing or fails; relevant register state is not committed on failure.
+- Expanded `vu0_runtime_test` for all of those cases. COP2 decoder and LLVM emission remain disabled pending JIT integration.
