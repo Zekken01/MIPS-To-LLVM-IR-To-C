@@ -1,4 +1,5 @@
 #include "function_analyzer.h"
+#include "elf_loader.h"
 #include "ee_opcode.h"
 #include <algorithm>
 #include <array>
@@ -273,7 +274,8 @@ void invalidate_unmodelled_destination(
 
 void transfer_gpr_constants(
     const s_ee_instruction& ins,
-    s_gpr_constant_state& state
+    s_gpr_constant_state& state,
+    const elf_loader* memory_image
 )
 {
     uint64_t source_s = 0;
@@ -286,6 +288,26 @@ void transfer_gpr_constants(
 
     switch (ins.opcode)
     {
+    case e_ee_opcode::OP_LW:
+    case e_ee_opcode::OP_LWU:
+    {
+        uint32_t loaded_value = 0;
+        const uint32_t address = static_cast<uint32_t>(source_s) + imm32;
+        if (memory_image && has_s && (address & 3u) == 0 &&
+            memory_image->read32_const_at(address, &loaded_value))
+        {
+            const uint64_t value = ins.opcode == e_ee_opcode::OP_LW
+                ? sign_extend_u32(loaded_value)
+                : static_cast<uint64_t>(loaded_value);
+            set_gpr_constant(state, ins.rt, value);
+        }
+        else
+        {
+            clear_gpr_constant(state, ins.rt);
+        }
+        return;
+    }
+
     case e_ee_opcode::OP_LUI:
         set_gpr_constant(
             state, ins.rt,
@@ -496,6 +518,7 @@ void transfer_block_constants(
     const s_ee_basic_block& block,
     const std::map<uint32_t, s_ee_instruction>& insns,
     s_gpr_constant_state& state,
+    const elf_loader* memory_image = nullptr,
     size_t instruction_count = static_cast<size_t>(-1)
 )
 {
@@ -510,7 +533,7 @@ void transfer_block_constants(
             continue;
         }
 
-        transfer_gpr_constants(it->second, state);
+        transfer_gpr_constants(it->second, state, memory_image);
     }
 
     state.m_known[0] = true;
@@ -522,7 +545,8 @@ std::set<uint32_t> collect_jalr_targets_in_block(
     const std::map<uint32_t, s_ee_instruction>& insns,
     s_gpr_constant_state state,
     uint32_t caller_entry,
-    std::vector<s_static_jalr_site>* site_audit
+    std::vector<s_static_jalr_site>* site_audit,
+    const elf_loader* memory_image
 )
 {
     std::set<uint32_t> targets;
@@ -566,7 +590,7 @@ std::set<uint32_t> collect_jalr_targets_in_block(
             }
         }
 
-        transfer_gpr_constants(ins, state);
+        transfer_gpr_constants(ins, state, memory_image);
     }
     return targets;
 }
@@ -648,7 +672,8 @@ std::set<uint32_t> collect_static_jalr_targets(
     const std::vector<uint32_t>& entry_points,
     const std::vector<uint32_t>& all_entries,
     const std::set<uint32_t>* block_starts,
-    std::vector<s_static_jalr_site>* site_audit
+    std::vector<s_static_jalr_site>* site_audit,
+    const elf_loader* memory_image
 )
 {
     std::set<uint32_t> targets;
@@ -722,7 +747,7 @@ std::set<uint32_t> collect_static_jalr_targets(
 
             const s_ee_basic_block& block = *block_it->second;
             s_gpr_constant_state out_state = in_it->second;
-            transfer_block_constants(block, insns, out_state);
+            transfer_block_constants(block, insns, out_state, memory_image);
             out_state.m_reachable = true;
 
             const bool annul_delay_on_fallthrough =
@@ -735,7 +760,7 @@ std::set<uint32_t> collect_static_jalr_targets(
                 // The final listed instruction is the delay slot. It executes
                 // only on the taken path for a branch-likely instruction.
                 transfer_block_constants(
-                    block, insns, out_fallthrough,
+                    block, insns, out_fallthrough, memory_image,
                     block.insn_indices.size() - 1u
                 );
                 out_fallthrough.m_reachable = true;
@@ -808,7 +833,8 @@ std::set<uint32_t> collect_static_jalr_targets(
 
             const std::set<uint32_t> block_targets =
                 collect_jalr_targets_in_block(
-                    block, insns, in_it->second, entry, site_audit
+                    block, insns, in_it->second, entry, site_audit,
+                    memory_image
                 );
             targets.insert(block_targets.begin(), block_targets.end());
         }
