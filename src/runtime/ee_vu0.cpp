@@ -847,6 +847,107 @@ bool vu0_is_supported_lower_ialu(const s_ee_vu0_micro_instruction& instruction)
     }
 }
 
+bool vu0_is_supported_lower_memory(const s_ee_vu0_micro_instruction& instruction)
+{
+    using op = e_ee_vu0_micro_opcode;
+    return instruction.m_lower_fields.m_operation == op::ILW ||
+           instruction.m_lower_fields.m_operation == op::ISW;
+}
+
+int32_t vu0_signed_memory_immediate(uint32_t word)
+{
+    const uint32_t value = word & 0x7ffu;
+    return (value & 0x400u) != 0
+        ? static_cast<int32_t>(value) - 0x800
+        : static_cast<int32_t>(value);
+}
+
+uint32_t vu0_memory_byte_address(
+    const s_ee_vu0_state* vu0,
+    const s_ee_vu0_micro_instruction& instruction
+)
+{
+    // PCSX2 computes the quadword address through a 16-bit intermediate.
+    const int32_t base = static_cast<int16_t>(
+        vu0_read_ialu_vi(vu0, instruction.m_lower_fields.m_is)
+    );
+    const int32_t offset = vu0_signed_memory_immediate(instruction.m_lower);
+    return (static_cast<uint32_t>((base + offset) * 16) & 0xffffu);
+}
+
+uint32_t vu0_lower_memory_read_mask(
+    const s_ee_vu0_micro_instruction& instruction
+)
+{
+    const auto& fields = instruction.m_lower_fields;
+    uint32_t mask = fields.m_is != 0 ? 1u << fields.m_is : 0u;
+    if (fields.m_operation == e_ee_vu0_micro_opcode::ISW && fields.m_it != 0)
+    {
+        mask |= 1u << fields.m_it;
+    }
+    return mask;
+}
+
+bool vu0_execute_lower_memory(
+    s_ee_vu0_state* vu0,
+    const s_ee_vu0_micro_instruction& instruction,
+    uint32_t address,
+    uint32_t* write_mask
+)
+{
+    const auto& fields = instruction.m_lower_fields;
+    *write_mask = 0;
+    const uint32_t xyzw = fields.m_xyzw;
+    const uint32_t base = address & (EE_VU0_DATA_MEMORY_SIZE - 1u);
+    if (fields.m_operation == e_ee_vu0_micro_opcode::ILW)
+    {
+        // For multiple selected components, PCSX2 overwrites VI in X,Y,Z,W
+        // order, leaving the last selected component as the final value.
+        if (fields.m_it == 0)
+        {
+            return true;
+        }
+        uint16_t loaded = static_cast<uint16_t>(vu0->m_vi[fields.m_it]);
+        for (uint32_t component = 0; component < 4; ++component)
+        {
+            if ((xyzw & (8u >> component)) == 0)
+            {
+                continue;
+            }
+            const uint32_t offset = base + component * 4u;
+            loaded = static_cast<uint16_t>(
+                vu0->m_data_memory[offset] |
+                (static_cast<uint16_t>(vu0->m_data_memory[offset + 1u]) << 8)
+            );
+        }
+        if (xyzw != 0)
+        {
+            vu0_write_ialu_vi(vu0, fields.m_it, loaded);
+            *write_mask = 1u << fields.m_it;
+        }
+        return true;
+    }
+
+    if (fields.m_operation == e_ee_vu0_micro_opcode::ISW)
+    {
+        const uint16_t value = vu0_read_ialu_vi(vu0, fields.m_it);
+        for (uint32_t component = 0; component < 4; ++component)
+        {
+            if ((xyzw & (8u >> component)) == 0)
+            {
+                continue;
+            }
+            const uint32_t offset = base + component * 4u;
+            vu0->m_data_memory[offset] = static_cast<uint8_t>(value);
+            vu0->m_data_memory[offset + 1u] = static_cast<uint8_t>(value >> 8);
+            vu0->m_data_memory[offset + 2u] = 0;
+            vu0->m_data_memory[offset + 3u] = 0;
+        }
+        return true;
+    }
+    return false;
+}
+
 bool vu0_is_supported_lower_branch(const s_ee_vu0_micro_instruction& instruction)
 {
     using op = e_ee_vu0_micro_opcode;
@@ -1250,14 +1351,19 @@ uint32_t ee_vu0_execute_ialu_callback(
 
         const bool lower_ialu = vu0_is_supported_lower_ialu(instruction);
         const bool lower_branch = vu0_is_supported_lower_branch(instruction);
+        const bool lower_memory = vu0_is_supported_lower_memory(instruction);
+        const uint32_t memory_address = lower_memory
+            ? vu0_memory_byte_address(vu0, instruction) : 0;
 
-        // This execution slice accepts lower IALU or branch operations paired
-        // with upper NOP. I/D/T flags and all other lower/upper families remain
-        // explicitly unsupported.
+        // Only ordinary 4 KB VU0 data memory is supported. PCSX2 maps
+        // addresses with bit 14 set into VU1 registers; those must be handled
+        // by the host rather than aliased into the ordinary VU0 data array.
+        // I/D/T flags and non-NOP upper operations remain unsupported.
         if ((instruction.m_flags &
              (EE_VU0_MICRO_FLAG_I | EE_VU0_MICRO_FLAG_D | EE_VU0_MICRO_FLAG_T)) != 0 ||
             instruction.m_upper_fields.m_operation != e_ee_vu0_micro_opcode::NOP ||
-            (!lower_ialu && !lower_branch))
+            (!lower_ialu && !lower_branch && !lower_memory) ||
+            (lower_memory && (memory_address & 0x4000u) != 0))
         {
             vu0->m_micro_pc = pair_pc;
             return static_cast<uint32_t>(e_ee_vu0_sync_result::UNAVAILABLE);
@@ -1270,10 +1376,13 @@ uint32_t ee_vu0_execute_ialu_callback(
         // post-stall state rather than values sampled before the interlock.
         const uint64_t cycles_before_pair = vu0->m_cycle;
         ++vu0->m_cycle;
-        if (lower_branch)
+        if (lower_branch || lower_memory)
         {
+            const uint32_t read_mask = lower_branch
+                ? vu0_lower_branch_read_mask(instruction)
+                : vu0_lower_memory_read_mask(instruction);
             const uint32_t wait_result = ee_vu0_ialu_wait_for_reads(
-                vu0, vu0_lower_branch_read_mask(instruction)
+                vu0, read_mask
             );
             if (wait_result != static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE))
             {
@@ -1310,6 +1419,27 @@ uint32_t ee_vu0_execute_ialu_callback(
             // IALU-pipeline latency in PCSX2's lower-op metadata.
             const uint32_t schedule_result =
                 ee_vu0_ialu_schedule_write(vu0, write_mask, 0);
+            if (schedule_result != static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE))
+            {
+                return schedule_result;
+            }
+        }
+        else if (lower_memory)
+        {
+            uint32_t write_mask = 0;
+            if (!vu0_execute_lower_memory(
+                    vu0, instruction, memory_address, &write_mask
+                ))
+            {
+                vu0->m_micro_pc = pair_pc;
+                return static_cast<uint32_t>(e_ee_vu0_sync_result::UNAVAILABLE);
+            }
+
+            // PCSX2 declares a four-cycle IALU reservation for ILW, whereas
+            // ISW does not write a VI register.
+            const uint32_t schedule_result = ee_vu0_ialu_schedule_write(
+                vu0, write_mask, 4
+            );
             if (schedule_result != static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE))
             {
                 return schedule_result;
