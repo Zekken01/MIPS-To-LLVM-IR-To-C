@@ -44,6 +44,14 @@ class EEState(ctypes.Structure):
     ]
 
 
+class IALUPipeEntry(ctypes.Structure):
+    _fields_ = [
+        ("register_mask", ctypes.c_uint32),
+        ("latency", ctypes.c_uint32),
+        ("start_cycle", ctypes.c_uint64),
+    ]
+
+
 class VU0State(ctypes.Structure):
     _fields_ = [
         ("vi", ctypes.c_uint32 * 32),
@@ -66,12 +74,20 @@ class VU0State(ctypes.Structure):
         ("_padding_before_memories", ctypes.c_uint32),
         ("data_memory", ctypes.c_uint8 * 0x1000),
         ("micro_memory", ctypes.c_uint8 * 0x1000),
+        ("ialu", IALUPipeEntry * 4),
+        ("ialu_read_pos", ctypes.c_uint32),
+        ("ialu_write_pos", ctypes.c_uint32),
+        ("ialu_count", ctypes.c_uint32),
     ]
 
 
 assert VU0State.data_memory.offset == 240
 assert VU0State.micro_memory.offset == 4336
-assert ctypes.sizeof(VU0State) == 8432
+assert VU0State.ialu.offset == 8432
+assert VU0State.ialu_read_pos.offset == 8496
+assert VU0State.ialu_write_pos.offset == 8500
+assert VU0State.ialu_count.offset == 8504
+assert ctypes.sizeof(VU0State) == 8512
 
 
 class Runtime(ctypes.Structure):
