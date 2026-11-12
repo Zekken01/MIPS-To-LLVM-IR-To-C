@@ -165,7 +165,7 @@ bool write_report(
     FILE* output = std::fopen(path, "wb");
     if (output == nullptr)
     {
-        std::fprintf(stderr, "failed to create runner report: %s\\n", path);
+        std::fprintf(stderr, "failed to create runner report: %s\n", path);
         return false;
     }
     const uint32_t cause = cpu.m_cop0[13];
@@ -173,13 +173,13 @@ bool write_report(
     uint32_t instruction = 0;
     const bool has_instruction = image.read32_at(epc, &instruction);
     std::fprintf(output,
-        "{\\n  \\"schema\\": \\"ee-game-run-report-v1\\","
-        "\\n  \\"entry_pc\\": %u, \\"final_pc\\": %u,"
-        "\\n  \\"dispatches\\": %llu, \\"exit_reason\\": %u,"
-        "\\n  \\"exit_name\\": \\"%s\\", \\"dispatch_status\\": %u,"
-        "\\n  \\"cop0_cause\\": %u, \\"cop0_epc\\": %u,"
-        "\\n  \\"cop0_status\\": %u, \\"bad_vaddr\\": %u,"
-        "\\n  \\"epc_instruction\\": ",
+        "{\n  \"schema\": \"ee-game-run-report-v1\","
+        "\n  \"entry_pc\": %u, \"final_pc\": %u,"
+        "\n  \"dispatches\": %llu, \"exit_reason\": %u,"
+        "\n  \"exit_name\": \"%s\", \"dispatch_status\": %u,"
+        "\n  \"cop0_cause\": %u, \"cop0_epc\": %u,"
+        "\n  \"cop0_status\": %u, \"bad_vaddr\": %u,"
+        "\n  \"epc_instruction\": ",
         entry, cpu.m_pc, static_cast<unsigned long long>(dispatched),
         reason, exit_name(reason), status, cause, epc,
         cpu.m_cop0[12], cpu.m_cop0[8]);
@@ -191,27 +191,29 @@ bool write_report(
     {
         std::fputs("null", output);
     }
-    std::fputs(",\\n  \\"gpr_lo\\": [", output);
+    std::fputs(",\n  \"gpr_lo\": [", output);
     for (uint32_t i = 0; i < 32; ++i)
     {
         std::fprintf(output, "%s%llu", i ? ", " : "",
             static_cast<unsigned long long>(cpu.m_gpr[i].m_lo));
     }
-    std::fputs("],\\n  \\"history\\": [", output);
+    std::fputs("],\n  \"history\": [", output);
     for (size_t i = 0; i < history.size(); ++i)
     {
         const auto& item = history[i];
         std::fprintf(output,
-            "%s\\n    {\\"dispatch\\": %llu, \\"from_pc\\": %u,"
-            " \\"to_pc\\": %u, \\"reason\\": %u, \\"status\\": %u}",
+            "%s\n    {\"dispatch\": %llu, \"from_pc\": %u,"
+            " \"to_pc\": %u, \"reason\": %u, \"status\": %u}",
             i ? "," : "", static_cast<unsigned long long>(item.m_index),
             item.m_from, item.m_to, item.m_reason, item.m_status);
     }
-    std::fputs(history.empty() ? "]\\n}\\n" : "\\n  ]\\n}\\n", output);
-    const bool ok = std::ferror(output) == 0 && std::fclose(output) == 0;
+    std::fputs(history.empty() ? "]\n}\n" : "\n  ]\n}\n", output);
+    const bool no_write_error = std::ferror(output) == 0;
+    const bool closed = std::fclose(output) == 0;
+    const bool ok = no_write_error && closed;
     if (!ok)
     {
-        std::fprintf(stderr, "failed to write complete runner report: %s\\n", path);
+        std::fprintf(stderr, "failed to write complete runner report: %s\n", path);
     }
     return ok;
 }
@@ -294,7 +296,7 @@ int main(int argc, char** argv)
         {
             if (argument.size() == 9)
             {
-                std::fprintf(stderr, "empty report path\\n");
+                std::fprintf(stderr, "empty report path\n");
                 return 2;
             }
             report_path = argv[i] + 9;
