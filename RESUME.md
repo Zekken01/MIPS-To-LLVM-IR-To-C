@@ -4,7 +4,7 @@
 
 This branch is a reconstructed baseline from the preserved 2026-11-11 09:57 MMI/HI1/LO1 follow-up, with subsequent decoder, lifting, control-flow, dispatcher, and validation work. Do not merge it into `main` until source provenance and the latest changes have been reviewed.
 
-Latest fully verified CI: [run #191](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43117522952), **12/12 CTest passed**, including native object emission, linking, and dispatcher execution.
+Latest fully verified CI: [run #234](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43125195580), **12/12 CTest passed**, including native object emission/linking, dispatcher execution, instruction-level LLVM JIT tests, and the COP1 transfer/control-flow regressions.
 
 Latest USA `SLUS_214.42` validation:
 - **7,849 functions discovered and emitted**.
@@ -18,19 +18,26 @@ Latest USA `SLUS_214.42` validation:
 
 The full-image native-link report is in `FULL_GAME_NATIVE_LINK_VALIDATION.md`. This is a linked translated-code library, not a complete runnable PS2 title: the full title was not executed, and BIOS/IOP, GS, DMA, TLB/MMIO, interrupts, and other console services remain incomplete. The in-tree `object_emitter::emit_object()` is still a stub; llvmlite generated the persisted per-function objects.
 
-Control-flow regressions cover JAL/JALR/JR target and link ordering, delay-slot effects, ordinary and likely branch semantics, branch-and-link, caller/callee continuations, recursive JAL, dynamic cross-function JALR, PC-zero entry, exception resume PCs, and host dispatcher budget/unknown-target handling. COP1 comparison JIT coverage exercises C.F/C.EQ/C.LT/C.LE, EE operand normalisation, NaNs, signed zero, and FCC0-only FCSR updates. Scalar compare JIT coverage checks signedness, sign-extended immediates, source/destination aliasing, `$zero`, and upper GPR halves.
+Control-flow regressions cover JAL/JALR/JR target and link ordering, delay-slot effects, ordinary and likely branch semantics, branch-and-link, caller/callee continuations, recursive JAL, dynamic cross-function JALR, PC-zero entry, exception resume PCs, and host dispatcher budget/unknown-target handling.
 
-## Latest follow-up
+COP1 JIT coverage now includes the supported R5900 instruction-table forms:
+- MFC1/MTC1 and CFC1/CTC1, including cross-block GPR liveness for CTC1.
+- C.F.S/C.EQ.S/C.LT.S/C.LE.S, signed zero, denormal and NaN normalisation, and FCC0/FCSR preservation.
+- ADD.S/SUB.S/MUL.S/DIV.S, SQRT.S/RSQRT.S, MAX.S/MIN.S, ABS.S/NEG.S.
+- ADDA.S/SUBA.S/MULA.S, MADD.S/MSUB.S, MADDA.S/MSUBA.S, and CVT.W.S/CVT.S.W.
+- FCSR cause/sticky semantics, denormal handling, signed infinities/NaNs, saturation and accumulator-path distinctions.
+- BC1 condition sampling before an ordinary delay slot and BC1FL delay-slot annulment.
 
-- Added O0 LLVM JIT regression coverage for the existing exact `CVT.S.W` (`fmt=W`) lowering, including signed extrema and the 16,777,217 rounding boundary. CI is pending for this change.
+## Latest COP2 research
+
+See [`COP2_RESEARCH.md`](COP2_RESEARCH.md). VU0/COP2 remains deliberately unsupported in the lifter. PCSX2's QMFC2/QMTC2/CFC2/CTC2 paths require VU0 synchronization, and CFC2/CTC2 also need VI/control-register state and side effects. The current EE state only carries `m_vu0[32]`; it lacks VI/control registers, ACC, Q/P, VU cycle/micro-PC/status, branch and pipeline state. Implementing these as plain copies would be incorrect.
 
 ## Remaining priorities
 
-1. **COP1 completion:** verify remaining implemented operations against PCSX2, then address exact FCSR exception/sticky flag semantics where supported by the R5900 tables. Do not add standard MIPS rounding conversions that are not present in the R5900 COP1 table. Keep uncertain forms unsupported.
-2. **VU0/COP2:** implement macro/transfer semantics only with exact pipeline, flag, and 128-bit state behaviour.
-3. **Runtime completeness:** EE memory/TLB/MMIO, scratchpad/ROM aliases, alignment exceptions, DMA, interrupts, plus BIOS/IOP/GS host services.
-4. **Semantic validation:** differential instruction and function testing against PCSX2's interpreter. LLVM verification and native linking do not establish R5900 equivalence.
-5. **Production backend:** replace the current external llvmlite object-emission path with an integrated LLVM backend or supported `llc`/LLVM library path; keep the current script as a validation/reference path until then.
+1. **VU0/COP2 runtime foundation:** model the VU0 state and EE/VU0 synchronization helpers described in `COP2_RESEARCH.md`; then test transfer/control-register instructions before any macro instruction lowering.
+2. **Runtime completeness:** EE memory/TLB/MMIO, scratchpad/ROM aliases, alignment exceptions, DMA, interrupts, plus BIOS/IOP/GS host services.
+3. **Semantic validation:** differential instruction and function testing against PCSX2's interpreter. LLVM verification and native linking do not establish R5900 equivalence.
+4. **Production backend:** replace the current external llvmlite object-emission path with an integrated LLVM backend or supported `llc`/LLVM library path; keep the current script as a validation/reference path until then.
 
 The exact later temporary worktree associated with the historical 2/4 CTest report was never exported. This branch remains a reconstructed source baseline, not recovery of that inaccessible working directory.
 
