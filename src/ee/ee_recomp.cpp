@@ -213,7 +213,7 @@ bool ee_recomp(const char* elf_path,
         const std::set<uint32_t> indirect_targets =
             collect_static_jalr_targets(
                 global_insns, entries, entries, &block_starts,
-                &jalr_site_audit
+                &jalr_site_audit, &loader
             );
         for (uint32_t target : indirect_targets)
         {
