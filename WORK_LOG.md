@@ -220,3 +220,17 @@ Further changes should be committed to this branch in small, testable increments
 - A first attempt misread the lower secondary-table selector as primary `0x60`; table recounting against PCSX2 `VUops.cpp` showed the correct primary is `0x3c`. Corrected implementation and test encodings. Tests also corrected sample-word expectations (`0x11223344` lower = IADDIU; `0xf8001234` upper = unassigned primary `0x34`). Added a separate upper ADDi (`0x22`) vector.
 - GitHub Actions [run 43185095496](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43185095496): clean configure/build and **14/14 CTest passed**, covering the corrected lower IADD/T3 LQI paths, upper ADDx/ADDi/FD-NOP and unassigned table slots.
 - Remaining: implement issue/retirement scheduling with delayed VI/VF writes, branch-delay state and the IALU/FMAC/FDIV/EFU pipeline interlocks before executing any nontrivial VU instruction pair.
+
+
+## 2026-11-12 — First executable VU0 lower-IALU micro-op slice
+
+- Added `ee_vu0_execute_ialu_callback` behind the existing scheduler execution callback ABI. The first slice accepts only lower IADD, ISUB, IAND, IOR, IADDI, IADDIU and ISUBIU paired with upper NOP. Valid but unsupported pairs return UNAVAILABLE and restore the micro-PC to the pair start.
+- VI operations read/write the low 16-bit halfword; writes preserve the neighbouring upper halfword and VI0 remains hardwired. Immediate widths/sign rules and destination fields are exercised by runtime tests.
+- Integrated the existing four-entry IALU reservation queue: execution retires matured entries before issuing an operation, schedules one-cycle destination reservations, and flushes pending IALU reservations when E terminates the microprogram.
+- E flag uses the two-pair delay observed in PCSX2. M flag ends each engine execution slice independently of the scheduler's wait policy. FINISH_TO_E resumes with another slice after M; WAIT_TO_E_OR_M returns at M. The scheduler integration test executes an M-marked pair, resumes, then completes an E-marked pair plus its delay instruction.
+- PCSX2 `_vuFlushAll` waits for outstanding IALU reservations at E. The test therefore expects one additional cycle for the final pending destination to retire; the EE cycle counter receives the same consumed-cycle increment.
+- Added tests for all seven operations, VI0 and upper-half preservation, M slice boundaries, FINISH_TO_E resumption after M, E delay/flush, and rejection of decoded but unsupported LQ/upper-vector pairs.
+- Actions initially caught a mistaken positive operand in the unsupported-lower test and then a one-cycle-too-low E-flush expectation. Both were corrected from the observed semantics; no execution code was weakened to make the tests pass.
+- GitHub Actions [run 43189469757](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43189469757): clean configure/build and **14/14 CTest passed**.
+- This is a deliberately narrow micro-engine foundation, not full VU0 support. Branches, data memory, I/D/T modes, upper vector ops, full dual-issue ordering, VF/flag forwarding and FMAC/FDIV/EFU pipelines remain unsupported.
+- Next: implement lower integer branches with explicit branch-delay state and IALU read interlocks; keep vector/memory paths unsupported until separately validated.
