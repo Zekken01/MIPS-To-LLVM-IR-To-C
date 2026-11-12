@@ -573,7 +573,8 @@ static std::set<uint8_t> block_read_before_write(const std::vector<ee::s_ee_inst
 
 void module_builder::emit_insn(const ee::s_ee_instruction& ins,
                                bool is_last_in_block,
-                               uint32_t fallthrough_pc)
+                               uint32_t fallthrough_pc,
+                               bool in_delay_slot)
 {
     using ee::e_ee_opcode;
     m_out += "  ; ";
@@ -2230,7 +2231,7 @@ void module_builder::emit_block(const std::vector<ee::s_ee_instruction>& block,
             // and without a supported predicate we cannot safely decide whether
             // to execute it. In that case, fail closed at the branch itself.
             if (!ctrl.branch_likely && delay_idx >= 0) {
-                emit_insn(block[delay_idx], false, 0);
+                emit_insn(block[delay_idx], false, 0, true);
                 store_dirty_regs(live_out);
             }
             emit_insn(ctrl, true, ft);
@@ -2281,7 +2282,7 @@ void module_builder::emit_block(const std::vector<ee::s_ee_instruction>& block,
             // --- taken path: execute delay slot, then go to the branch target ---
             m_out += taken_buf;
             m_out += ":\n";
-            emit_insn(block[delay_idx], false, 0);
+            emit_insn(block[delay_idx], false, 0, true);
             store_dirty_regs(live_out);
             m_out += "  br label %" + block_label(target ? target : 0) + "\n";
 
@@ -2321,7 +2322,7 @@ void module_builder::emit_block(const std::vector<ee::s_ee_instruction>& block,
                     set_gpr_lo64(31, link);
                 }
 
-                emit_insn(block[delay_idx], false, 0);
+                emit_insn(block[delay_idx], false, 0, true);
                 store_dirty_regs(live_out);
                 m_out += "  br i1 " + cmp + ", label %" + block_label(target) +
                          ", label %" + block_label(ft) + "\n";
@@ -2335,7 +2336,7 @@ void module_builder::emit_block(const std::vector<ee::s_ee_instruction>& block,
                 m_out += "  " + link + " = add i64 " + link_pc + ", 0\n";
                 set_gpr_lo64(31, link);
 
-                emit_insn(block[delay_idx], false, 0);
+                emit_insn(block[delay_idx], false, 0, true);
                 store_dirty_regs(live_out);
 
                 // A callee is emitted as a separate translated function. Return
@@ -2364,7 +2365,7 @@ void module_builder::emit_block(const std::vector<ee::s_ee_instruction>& block,
                     set_gpr_lo64(ctrl.rd, link);
                 }
 
-                emit_insn(block[delay_idx], false, 0);
+                emit_insn(block[delay_idx], false, 0, true);
                 store_dirty_regs(live_out);
 
                 const std::string target32 = newtemp();
@@ -2380,7 +2381,7 @@ void module_builder::emit_block(const std::vector<ee::s_ee_instruction>& block,
             else
             {
                 // Other transfers retain their existing emitter path.
-                emit_insn(block[delay_idx], false, 0);
+                emit_insn(block[delay_idx], false, 0, true);
                 store_dirty_regs(live_out);
                 emit_insn(ctrl, true, ft);
             }
