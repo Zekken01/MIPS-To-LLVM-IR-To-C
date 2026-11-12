@@ -80,7 +80,8 @@ constexpr uint32_t make_branch(
 // One deterministic 56-pair fixture. It exercises scalar integer ALU,
 // branches, arithmetic boundaries and ordinary VU0 ILW/ISW memory operations.
 // Selected stores load back through a different lane, with a four-cycle
-// register dependency. E and its delay pair terminate the trace.
+// register dependency. Four masked VF LQ/SQ pairs follow the integer
+// memory checks; E and its delay pair terminate the trace.
 constexpr std::array<s_pair, 56> k_program =
 {{
     { make_iaddiu(1, 0, 5), k_upper_nop },                         //  0
