@@ -511,7 +511,7 @@ int main(int argc, char** argv)
                     if ((parameter_address & 3u) != 0 ||
                         !memory->contains(parameter_address, 24u))
                     {
-                        std::fprintf(stderr, "CreateSema HLE refused unbacked parameter block\\n");
+                        std::fprintf(stderr, "CreateSema HLE refused unbacked parameter block\n");
                         break;
                     }
                     const uint32_t max_count =
@@ -526,7 +526,7 @@ int main(int argc, char** argv)
                         init_count > max_count)
                     {
                         std::fprintf(stderr,
-                            "CreateSema HLE refused invalid count init=%u max=%u\\n",
+                            "CreateSema HLE refused invalid count init=%u max=%u\n",
                             init_count, max_count
                         );
                         break;
@@ -542,7 +542,7 @@ int main(int argc, char** argv)
                     }
                     if (id == 0u)
                     {
-                        std::fprintf(stderr, "CreateSema HLE exhausted semaphore slots\\n");
+                        std::fprintf(stderr, "CreateSema HLE exhausted semaphore slots\n");
                         break;
                     }
                     s_kernel_semaphore& semaphore = semaphores[id - 1u];
@@ -556,7 +556,7 @@ int main(int argc, char** argv)
                     {
                         std::printf(
                             "HLE CreateSema: id=%u init=%u max=%u attr=0x%08x "
-                            "option=0x%08x parameters=0x%08x\\n",
+                            "option=0x%08x parameters=0x%08x\n",
                             id, init_count, max_count, attr, option,
                             parameter_address
                         );
