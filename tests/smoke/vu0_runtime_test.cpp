@@ -1299,8 +1299,8 @@ int main()
               state.m_m_bit == 1 && state.m_cycle == 1 &&
               state.m_micro_pc == 8 && (state.m_vpu_status & 1u) != 0,
               "VU0 engine slice returns at M even without a wait-at-M request");
-        check(state.m_ialu_count == 1,
-              "M-bit stop preserves the outstanding IALU destination reservation");
+        check(state.m_ialu_count == 0,
+              "zero-latency integer ALU leaves no IALU reservation at M");
     }
     {
         // M ends one interpreter Execute() slice, not a FINISH_TO_E wait.
@@ -1334,10 +1334,10 @@ int main()
         );
         check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE),
               "finish-to-E resumes after M and completes at E");
-        check(state.m_cycle == 5,
-              "finish-to-E flushes the final IALU reservation after the E delay pair");
-        check(state.m_ee_cycle == 25,
-              "finish-to-E accounts the final IALU flush cycle on the EE");
+        check(state.m_cycle == 4,
+              "finish-to-E does not add a flush cycle for zero-latency integer ALU");
+        check(state.m_ee_cycle == 24,
+              "finish-to-E accounts only the four executed VU0 pairs on the EE");
         check(state.m_micro_pc == 32,
               "finish-to-E preserves the E delay pair's next micro-PC");
         check(static_cast<uint16_t>(state.m_vi[1]) == 1 &&
@@ -1366,11 +1366,11 @@ int main()
             ee::EE_VU0_EXECUTE_STOP_AT_E, 0x00102008u
         );
         check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
-              state.m_cycle == 3 && state.m_micro_pc == 16 && state.m_tpc == 2,
-              "E flag terminates after its two-instruction delay and flushes IALU");
+              state.m_cycle == 2 && state.m_micro_pc == 16 && state.m_tpc == 2,
+              "E flag terminates after its two-pair delay without a spurious ALU flush cycle");
         check((state.m_vpu_status & 1u) == 0 && state.m_running == 0 &&
               state.m_e_bit == 0 && state.m_ialu_count == 0,
-              "E termination clears VU0 running state and retires pending IALU writes");
+              "E termination clears VU0 running state with no pending zero-latency ALU writes");
         check(static_cast<uint16_t>(state.m_vi[1]) == 1 &&
               static_cast<uint16_t>(state.m_vi[2]) == 2 &&
               static_cast<uint16_t>(state.m_vi[3]) == 0,
@@ -1407,9 +1407,9 @@ int main()
               "unsupported upper operation leaves the pair unconsumed");
     }
 
-    // Integer ALU reservations model the VU's four-deep destination
-    // interlock queue. Scheduling records a future availability cycle;
-    // reads stall only when their VI masks overlap a pending destination.
+    // The generic four-entry IALU interlock queue is used by lower
+    // operations with nonzero latency (for example ILW/ILWR). The scalar
+    // IADD-family operations have zero pipeline latency and bypass it.
     {
         ee::s_ee_vu0_state state{};
         state.m_cycle = 10;
