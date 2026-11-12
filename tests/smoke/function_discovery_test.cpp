@@ -337,6 +337,25 @@ int main()
               "keep BSS-derived JALR target unknown");
     }
 
+    // A constant in a caller-saved register cannot survive a call. The
+    // first JALR samples its known target; the second must not reuse $t9.
+    {
+        std::map<uint32_t, ee::s_ee_instruction> insns;
+        add(insns, 0x1b00, encode_lui(25, 0x0010));
+        add(insns, 0x1b04, encode_ori(25, 25, 0x2000));
+        add(insns, 0x1b08, encode_jalr(25));
+        add(insns, 0x1b0c, 0);
+        add(insns, 0x1b10, encode_jalr(25));
+        add(insns, 0x1b14, 0);
+        const auto targets = recover(insns, 0x1b00);
+        const auto sites = audit_jalr_sites(insns, 0x1b00);
+        check(targets == std::set<uint32_t>{0x00102000u} &&
+              sites.size() == 2 &&
+              sites[0].m_source_known &&
+              !sites[1].m_source_known,
+              "invalidate caller-saved constants across JALR calls");
+    }
+
     // Two CFG paths reaching JALR with different constants must merge to
     // unknown; seeing either individual path is not enough to report a target.
     {
