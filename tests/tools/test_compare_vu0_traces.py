@@ -119,6 +119,20 @@ class VU0TraceComparatorTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("data_sha256", result.stdout)
 
+    def test_rejects_invalid_sha256_fields(self):
+        for location in ("program", "initial", "step"):
+            with self.subTest(location=location):
+                trace = make_trace("pcsx2")
+                if location == "program":
+                    trace[0]["program_sha256"] = "z" * 64
+                elif location == "initial":
+                    trace[0]["initial_state"]["data_sha256"] = "z" * 64
+                else:
+                    trace[1]["state"]["data_sha256"] = "z" * 64
+                result = self.run_compare(trace, make_trace("candidate"))
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("sha256", result.stderr)
+
     def test_rejects_different_programs(self):
         def change(header, _state):
             header["program_sha256"] = "b" * 64
