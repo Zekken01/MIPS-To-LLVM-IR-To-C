@@ -62,10 +62,6 @@ workflow**. It checks out the pinned PCSX2 source, builds its dependencies and
 core test, compares the traces, and uploads both JSONL files even on failure.
 
 
-~~~sh
-python3 tools/vu0_diff/run_differential.py --pcsx2-root /path/to/pcsx2-vu0-reference
-~~~
-
 Use --keep-traces to retain both JSONL files after a successful comparison.
 The driver does not install system packages; first satisfy PCSX2's normal
 build dependencies. The project and PCSX2 build directories can be overridden
