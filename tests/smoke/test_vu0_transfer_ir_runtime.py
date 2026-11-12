@@ -91,10 +91,10 @@ assert VU0State.ialu.offset == 8432
 assert VU0State.ialu_read_pos.offset == 8496
 assert VU0State.ialu_write_pos.offset == 8500
 assert VU0State.ialu_count.offset == 8504
-assert VU0State.branch.offset == 8512
-assert VU0State.branch_pc.offset == 8516
-assert VU0State.delay_branch_pc.offset == 8520
-assert VU0State.take_delay_branch.offset == 8524
+assert VU0State.branch.offset == 8508
+assert VU0State.branch_pc.offset == 8512
+assert VU0State.delay_branch_pc.offset == 8516
+assert VU0State.take_delay_branch.offset == 8520
 assert ctypes.sizeof(VU0State) == 8528
 
 
