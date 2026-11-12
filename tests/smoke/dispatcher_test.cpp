@@ -77,6 +77,12 @@ uint32_t external_return_entry(ee::s_ee_cpu_state* cpu, ee::s_ee_runtime*)
     return static_cast<uint32_t>(ee::e_ee_exit_reason::EE_EXIT_RETURN);
 }
 
+uint32_t null_return_entry(ee::s_ee_cpu_state* cpu, ee::s_ee_runtime*)
+{
+    cpu->m_pc = 0u;
+    return static_cast<uint32_t>(ee::e_ee_exit_reason::EE_EXIT_RETURN);
+}
+
 uint32_t zero_initial_pc_entry(ee::s_ee_cpu_state* cpu, ee::s_ee_runtime*)
 {
     // Generated entry switches treat PC zero as the function's initial entry.
@@ -205,6 +211,28 @@ int main()
               result.dispatch_count == 1u &&
               result.guest_pc == 0xF0000000u,
               "propagate return to external guest address");
+    }
+
+    // After an actual translated function returns to null, PC zero must
+    // not be resolved as the start-of-run entry sentinel.
+    {
+        ee::s_recompiled_elf compiled{};
+        compiled.entry_point = 0x00400000u;
+        compiled.functions.push_back(
+            make_function("entry", 0x00400000u, {0x00400000u}));
+        const ee::t_ee_translated_entry entries[] = {null_return_entry};
+        const ee::s_ee_dispatch_table table{&compiled, entries, 1u};
+
+        ee::s_ee_cpu_state cpu{};
+        cpu.m_pc = 0x00400000u;
+        const ee::s_ee_dispatch_result result =
+            ee::ee_dispatch_run(&cpu, nullptr, table, 8u);
+
+        check(is_exited(result, static_cast<uint32_t>(
+                  e_ee_exit_reason::EE_EXIT_RETURN)) &&
+              result.dispatch_count == 1u &&
+              result.guest_pc == 0u,
+              "null return PC exits rather than restarting ELF entry");
     }
 
     // PC zero is a supported generated-function entry sentinel and must
