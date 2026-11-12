@@ -109,6 +109,12 @@ class VU0CandidateTraceTests(unittest.TestCase):
             self.assertEqual(steps[7]["state"]["branch"], 1)
             self.assertEqual(steps[7]["state"]["branch_pc"], 80)
 
+            # The extra pairs must execute, not just appear in the fixture.
+            self.assertEqual(steps[30]["state"]["vi"][9], 0x7fff)
+            self.assertEqual(steps[31]["state"]["vi"][9], 0x7fef)
+            self.assertEqual(steps[33]["state"]["vi"][11], 0xc001)
+            self.assertEqual(steps[38]["state"]["vi"][0], 0)
+
             final = steps[-1]["state"]
             self.assertEqual(final["vi"][1], 5)
             self.assertEqual(final["vi"][2], 4)
