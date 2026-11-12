@@ -85,6 +85,7 @@ class VU0State(ctypes.Structure):
         ("vi_backup_cycles", ctypes.c_uint32),
         ("vi_backup_register", ctypes.c_uint32),
         ("vi_backup_old_value", ctypes.c_uint32),
+        ("_padding_after_backup", ctypes.c_uint32 * 2),
     ]
 
 
