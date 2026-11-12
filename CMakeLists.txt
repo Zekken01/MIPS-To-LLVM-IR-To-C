@@ -211,6 +211,13 @@ if(EE_HAVE_LLVM_JIT_TEST)
                 ${CMAKE_SOURCE_DIR}/tools/verify_ir.py
                 ${CMAKE_SOURCE_DIR}/tools/link_native_objects.py
                 ${CMAKE_SOURCE_DIR})
+    add_test(NAME game_runner_end_to_end
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/tools/test_game_runner.py
+                ${CMAKE_SOURCE_DIR}
+                ${CMAKE_BINARY_DIR}
+                $<TARGET_FILE:ee_game_runner>)
+
     add_test(NAME control_flow_ir_runtime
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/smoke/test_control_flow_ir_runtime.py
