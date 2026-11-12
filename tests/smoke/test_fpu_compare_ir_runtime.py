@@ -439,7 +439,7 @@ def run_bc1_delay_cases(fixture, temp_dir, target):
     state.gpr[9][0] = 0xDEADBEEF
     state.gpr[10][0] = 0xCAFEBABE
 
-    result = guest_fn(ctypes.pointer(state))
+    result = guest_fn(ctypes.pointer(state), None)
     require(result == 0,
             f"BC1T delay-slot: expected return exit (0), got {result}")
     require(state.fcsr == 0,
@@ -461,7 +461,7 @@ def run_bc1_delay_cases(fixture, temp_dir, target):
     state.gpr[9][0] = 0xDEADBEEF
     state.gpr[10][0] = 0xCAFEBABE
 
-    result = guest_fn(ctypes.pointer(state))
+    result = guest_fn(ctypes.pointer(state), None)
     require(result == 3,
             f"BC1FL annulment: expected dispatcher exit (3), got {result}")
     require(state.fcsr == 0x00800000,
