@@ -82,6 +82,35 @@ def make_set_syscall_elf(path):
     path.write_bytes(image)
 
 
+def make_registered_callback_elf(path):
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    image.extend(bytes(0x180 - len(image)))
+    # Provide 0x80 file-backed bytes beginning at the PT_LOAD's 0x100 offset.
+    struct.pack_into("<I", image, 52 + 16, 0x80)
+    struct.pack_into("<I", image, 52 + 20, 0x80)
+    # SetSyscall(0x83, 0x00100050), invoke it with a0=7, then preserve
+    # the guest callback's return value in t0.
+    for offset, value in (
+        (0x108, 0x24040083),  # addiu a0, zero, 0x83
+        (0x10c, 0x3c050010),  # lui a1, 0x10
+        (0x110, 0x34a50050),  # ori a1, a1, 0x50
+        (0x114, 0x24030074),  # addiu v1, zero, SetSyscall
+        (0x118, 0x0000000c),  # syscall
+        (0x11c, 0x24040007),  # addiu a0, zero, 7
+        (0x120, 0x24030083),  # addiu v1, zero, 0x83
+        (0x124, 0x0000000c),  # syscall -> installed callback
+        (0x128, 0x00404021),  # addu t0, v0, zero
+        (0x12c, 0x00000008),  # jr zero
+        (0x130, 0x00000000),  # nop delay slot
+        (0x150, 0x24820005),  # addiu v0, a0, 5
+        (0x154, 0x03e00008),  # jr ra -> synthetic callback sentinel
+        (0x158, 0x00000000),  # nop delay slot
+    ):
+        struct.pack_into("<I", image, offset, value)
+    path.write_bytes(image)
+
+
 def make_call_elf(path):
     make_elf(path)
     image = bytearray(path.read_bytes())
@@ -259,6 +288,40 @@ def main():
         assert "EE stopped: dispatched=2" in result.stdout, (
             result.stdout + result.stderr
         )
+
+    with tempfile.TemporaryDirectory(prefix="ee-native-registered-callback-") as tmp:
+        root = Path(tmp)
+        elf = root / "guest-callback-mips.elf"
+        make_registered_callback_elf(elf)
+        result = subprocess.run(
+            [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf),
+                "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--max-dispatches=16",
+                "--auto-expand=1",
+                "--hle-startup",
+                "--trace",
+                "--report", str(root / "callback.json"),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert "auto-expand: compiling reachable PC 0x00100050" in result.stdout, (
+            result.stdout + result.stderr
+        )
+        assert "HLE guest syscall: number=0x83 handler=0x00100050" in result.stdout, (
+            result.stdout + result.stderr
+        )
+        assert "HLE guest syscall returned: resume=0x00100028 v0=0x0000000c" in result.stdout, (
+            result.stdout + result.stderr
+        )
+        report = json.loads((root / "callback.json").read_text(encoding="utf-8"))
+        assert report["gpr_lo"][8] == 12, report
+        assert report["gpr_lo"][31] == 0, report
+        assert report["dispatches"] >= 4, report
 
     print("game_runner end-to-end ELF/native smoke: PASS")
     return 0
