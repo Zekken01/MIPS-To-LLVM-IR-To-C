@@ -294,3 +294,15 @@ Further changes should be committed to this branch in small, testable increments
 - No additional arithmetic-only constant-propagation rule is justified by this audit. Memory-loaded function pointers remain unresolved until memory initialization, aliasing and possible writes are modelled; do not guess targets.
 - Added regression tests for known, unknown and misaligned JALR site states plus conflicting CFG predecessors. GitHub Actions [run #43219107693](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43219107693): clean build and **15/15 CTest passed**.
 - Full backend measurements: `FULL_GAME_NATIVE_LINK_VALIDATION.md`. Indirect-call analysis: `JALR_COVERAGE_AUDIT.md`.
+
+
+## 2026-11-12 — VU0 branch issue ordering and VI-backup timing
+
+- Rechecked _vu0Exec in PCSX2: the lower opcode handler samples branch inputs before _vuTestLowerStalls; only after the stall does the interpreter age VIBackupCycles by the total elapsed cycles since the current pair began.
+- The previous host callback waited for IALU reads and aged VI backup before evaluating the branch. This could change a branch result when its source had a pending IALU reservation and the backup window expired during the stall.
+- Split branch execution into a preparation/action phase and an apply phase. The action snapshots predicates, relative/VI targets and BAL/JALR link values from pre-stall state; the IALU read interlock then runs; on success the action commits; VI backup ages after the full elapsed issue/stall interval. Invalid interlock state cannot partially write a link or branch target.
+- Moved IALU VI-backup ageing after the lower IALU op as well, so a new write ages from two cycles to one on its issue pair, matching PCSX2. A branch issued during its last visible backup cycle reads the old halfword, then the window expires.
+- Updated the existing timing expectation and added a forced-stall regression: IBEQ samples the backed-up VI value before a matching three-cycle IALU reservation stalls the pair; after the stall the queue is retired and the backup expires, without retroactively changing the branch decision.
+- GitHub Actions initially caught the now-obsolete backup-cycle assertion; after updating that expectation and adding the forced-stall case, [run #43222672470](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43222672470) passed **15/15 CTest**.
+- Reference points: PCSX2 [VU0microInterp.cpp](https://github.com/PCSX2/pcsx2/blob/master/pcsx2/VU0microInterp.cpp) lower dispatch / _vuTestLowerStalls / backup aging order, and [VUops.cpp](https://github.com/PCSX2/pcsx2/blob/master/pcsx2/VUops.cpp) VI backup and branch operand semantics.
+- Remaining: a broader automated differential harness is still needed for branch-delay, cycle-budget, nested-branch and E/M interactions.
