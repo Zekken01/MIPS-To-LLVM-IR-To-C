@@ -175,6 +175,8 @@ def main(argv=None):
     parser.add_argument("--entry", type=lambda value: int(value, 0))
     parser.add_argument("--stack", type=lambda value: int(value, 0))
     parser.add_argument("--trace", action="store_true")
+    parser.add_argument("--report", type=Path,
+                        help="Save structured EE stop state and last 64 native dispatches as JSON")
     parser.add_argument("--hle-startup", action="store_true",
                         help="Experimental SetupThread and SetupHeap HLE")
     parser.add_argument("--no-recompile", action="store_true",
@@ -257,6 +259,10 @@ def main(argv=None):
             command.append(f"--stack=0x{args.stack:08x}")
         if args.trace:
             command.append("--trace")
+        if args.report is not None:
+            report_path = args.report.resolve()
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            command.append(f"--report={report_path}")
         if args.hle_startup:
             command.append("--hle-startup")
 
