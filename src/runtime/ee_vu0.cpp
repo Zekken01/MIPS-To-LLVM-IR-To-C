@@ -48,6 +48,171 @@ extern "C" uint32_t ee_vu0_sync(
     return result;
 }
 
+namespace
+{
+uint32_t validate_vu0_callback_result(uint32_t result)
+{
+    return result <= static_cast<uint32_t>(e_ee_vu0_sync_result::FAILED)
+        ? result
+        : static_cast<uint32_t>(e_ee_vu0_sync_result::FAILED);
+}
+
+bool vu0_is_running(const s_ee_vu0_state* vu0)
+{
+    return (vu0->m_vpu_status & 1u) != 0;
+}
+} // namespace
+
+uint32_t ee_vu0_scheduler_sync_callback(
+    void* user,
+    s_ee_cpu_state* cpu,
+    s_ee_vu0_state* vu0,
+    uint32_t mode,
+    uint32_t pc
+)
+{
+    if (!user || !cpu || !vu0 ||
+        mode > static_cast<uint32_t>(e_ee_vu0_sync_mode::WAIT_TO_E_OR_M))
+    {
+        return static_cast<uint32_t>(e_ee_vu0_sync_result::INVALID_ARGUMENT);
+    }
+
+    auto* scheduler = static_cast<s_ee_vu0_scheduler*>(user);
+    if (!scheduler->m_execute)
+    {
+        return static_cast<uint32_t>(e_ee_vu0_sync_result::UNAVAILABLE);
+    }
+
+    const auto sync_mode = static_cast<e_ee_vu0_sync_mode>(mode);
+    const uint32_t stop_at_e = EE_VU0_EXECUTE_STOP_AT_E;
+    const uint32_t exact_cycles = EE_VU0_EXECUTE_EXACT_CYCLES;
+    const uint32_t max_run_calls = scheduler->m_max_run_calls != 0
+        ? scheduler->m_max_run_calls : 65536u;
+
+    if (!vu0_is_running(vu0))
+    {
+        vu0->m_running = 0;
+        return static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE);
+    }
+
+    if (sync_mode == e_ee_vu0_sync_mode::CATCH_UP_TO_EE_CYCLE)
+    {
+        // vu0Sync() is catch-up-only: VU0 ahead of the EE means no work.
+        if (vu0->m_ee_cycle <= vu0->m_cycle)
+        {
+            return static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE);
+        }
+
+        const uint64_t cycle_budget = vu0->m_ee_cycle - vu0->m_cycle;
+        const uint32_t result = validate_vu0_callback_result(
+            scheduler->m_execute(
+                scheduler->m_user, cpu, vu0, cycle_budget,
+                stop_at_e | exact_cycles, pc
+            )
+        );
+        if (result != static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE))
+        {
+            return result;
+        }
+
+        vu0->m_running = vu0_is_running(vu0) ? 1u : 0u;
+        if (vu0_is_running(vu0) && cycle_budget != 0 &&
+            vu0->m_cycle == 0)
+        {
+            return static_cast<uint32_t>(e_ee_vu0_sync_result::FAILED);
+        }
+        return static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE);
+    }
+
+    // _vu0FinishMicro() and _vu0WaitMicro() both account the VU0 elapsed
+    // cycles on the EE and then catch VU1 up. Require those host services
+    // before executing anything so an absent service cannot cause a partial
+    // synchronization followed by an apparent success.
+    if (!scheduler->m_vu1_catch_up || !scheduler->m_schedule_event)
+    {
+        return static_cast<uint32_t>(e_ee_vu0_sync_result::UNAVAILABLE);
+    }
+
+    const bool wait_for_m = sync_mode == e_ee_vu0_sync_mode::WAIT_TO_E_OR_M;
+    if (wait_for_m && vu0->m_m_bit != 0 &&
+        vu0->m_ee_cycle <= vu0->m_cycle)
+    {
+        // PCSX2's M-bit fast path catches the EE up to VU0 and returns before
+        // the normal VU1 catch-up/event-scheduling epilogue.
+        vu0->m_ee_cycle = vu0->m_cycle;
+        vu0->m_running = vu0_is_running(vu0) ? 1u : 0u;
+        return static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE);
+    }
+
+    const uint32_t execute_flags = stop_at_e |
+        (wait_for_m ? EE_VU0_EXECUTE_STOP_AT_M : 0u);
+
+    bool terminated = false;
+    uint32_t run_calls = 0;
+    while (run_calls < max_run_calls && vu0_is_running(vu0))
+    {
+        const uint64_t previous_cycle = vu0->m_cycle;
+        const uint32_t result = validate_vu0_callback_result(
+            scheduler->m_execute(
+                scheduler->m_user, cpu, vu0, 0x7fffffffu,
+                execute_flags, pc
+            )
+        );
+        if (result != static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE))
+        {
+            return result;
+        }
+
+        ++run_calls;
+        vu0->m_running = vu0_is_running(vu0) ? 1u : 0u;
+        if (!vu0_is_running(vu0))
+        {
+            terminated = true;
+            break;
+        }
+
+        if (wait_for_m &&
+            (vu0->m_m_bit != 0 || vu0->m_ee_cycle <= vu0->m_cycle))
+        {
+            terminated = true;
+            break;
+        }
+
+        // A host engine that reports success without advancing or stopping
+        // would otherwise make a malformed VU program spin forever here.
+        if (vu0->m_cycle <= previous_cycle)
+        {
+            return static_cast<uint32_t>(e_ee_vu0_sync_result::FAILED);
+        }
+    }
+
+    if (!terminated)
+    {
+        return static_cast<uint32_t>(e_ee_vu0_sync_result::FAILED);
+    }
+
+    // PCSX2's addCycles epilogue advances EE time by (VU0.cycle - old EE
+    // cycle), making the new EE cycle equal to the VU0 cycle.
+    vu0->m_ee_cycle = vu0->m_cycle;
+
+    const uint32_t vu1_result = validate_vu0_callback_result(
+        scheduler->m_vu1_catch_up(scheduler->m_user, cpu, vu0, pc)
+    );
+    if (vu1_result != static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE))
+    {
+        return vu1_result;
+    }
+
+    if (vu0_is_running(vu0))
+    {
+        scheduler->m_schedule_event(
+            scheduler->m_user, cpu, vu0, 4u, pc
+        );
+    }
+
+    return static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE);
+}
+
 extern "C" uint32_t ee_vu0_read_vi(
     const s_ee_vu0_state* vu0,
     uint32_t index
