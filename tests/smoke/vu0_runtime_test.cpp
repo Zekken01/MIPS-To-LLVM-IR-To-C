@@ -2153,6 +2153,49 @@ int main()
               "VU0 VI backup expires after the stalled branch issue");
     }
     {
+        // Both operands of IBEQ have independent pending reservations with
+        // different completion cycles. The predicate is sampled before the
+        // stall from VIBackup/VI, while execution waits for the later of the
+        // two matching reservations. A two-cycle slice budget must still
+        // finish the issued pair atomically when the dependency takes longer.
+        ee::s_ee_vu0_state state{};
+        ee::s_ee_vu0_ialu_engine ialu_engine{};
+        state.m_vpu_status = 1u;
+        state.m_cycle = 20;
+        state.m_vi[1] = 0;
+        state.m_vi[2] = 1;
+        state.m_vi_backup_cycles = 1;
+        state.m_vi_backup_register = 1;
+        state.m_vi_backup_old_value = 1;
+        install_vu0_pair(&state, 0, make_vu0_branch(0x28, 1, 2, 2),
+                         make_vu0_upper_nop());
+
+        const uint32_t scheduled_first = ee::ee_vu0_ialu_schedule_write(
+            &state, 1u << 1, 3
+        );
+        const uint32_t scheduled_second = ee::ee_vu0_ialu_schedule_write(
+            &state, 1u << 2, 5
+        );
+        const uint32_t result = ee::ee_vu0_execute_ialu_callback(
+            &ialu_engine, &cpu, &state, 2,
+            ee::EE_VU0_EXECUTE_EXACT_CYCLES, 0x0010200au
+        );
+
+        check(scheduled_first == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              scheduled_second == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              state.m_cycle == 25 && state.m_micro_pc == 8 && state.m_tpc == 1 &&
+              state.m_branch == 1 && state.m_branch_pc == 24 &&
+              state.m_ialu_count == 0,
+              "VU0 branch waits for the latest matching source reservation beyond a two-cycle budget");
+        check(state.m_vi_backup_cycles == 0 &&
+              state.m_vi_backup_register == 1 &&
+              static_cast<uint16_t>(state.m_vi_backup_old_value) == 1 &&
+              static_cast<uint16_t>(state.m_vi[1]) == 0 &&
+              static_cast<uint16_t>(state.m_vi[2]) == 1,
+              "VU0 branch samples both operands before the five-cycle stall and expires backup afterward");
+    }
+    {
         ee::s_ee_vu0_state state{};
         ee::s_ee_vu0_ialu_engine ialu_engine{};
         state.m_vpu_status = 1u;
