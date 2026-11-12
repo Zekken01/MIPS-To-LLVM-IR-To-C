@@ -40,6 +40,11 @@ struct alignas(16) s_ee_vu0_state
     uint32_t m_running;
     uint32_t m_e_bit;
     uint32_t m_m_bit;
+
+    // VU0 has distinct 4 KB data and micro-program memories. The micro-engine
+    // fetches paired 32-bit lower/upper words from m_micro_memory.
+    alignas(16) uint8_t m_data_memory[0x1000];
+    alignas(16) uint8_t m_micro_memory[0x1000];
 };
 
 // Architectural EE CPU state. GPRs are 128 bits wide in the lifter (i128);
