@@ -66,7 +66,8 @@ int main(int argc, char** argv)
     else if (std::strcmp(mode, "mfc1") == 0 ||
              std::strcmp(mode, "mtc1") == 0 ||
              std::strcmp(mode, "cfc1") == 0 ||
-             std::strcmp(mode, "ctc1") == 0) funct = 0;
+             std::strcmp(mode, "ctc1") == 0 ||
+             std::strcmp(mode, "ctc1_after_branch") == 0) funct = 0;
     else
     {
         std::fprintf(stderr, "unknown COP1 comparison mode: %s\n", mode);
@@ -105,24 +106,56 @@ int main(int argc, char** argv)
                (static_cast<uint32_t>(destination_or_cc) << 6) | funct;
     else
         word = make_cop1_s(2, 1, destination_or_cc, funct);
-    const ee::s_ee_instruction ins = ee::decode(entry_pc, word);
-    if (ins.valid != ee::e_ee_valid::VALID ||
-        ins.opcode != ee::e_ee_opcode::OP_COP1)
-    {
-        std::fprintf(stderr, "COP1 comparison was not decoded as VALID: %s\n",
-                     ins.mnemonic);
-        return 3;
-    }
-
     std::map<uint32_t, ee::s_ee_instruction> insn_map;
-    insn_map.emplace(entry_pc, ins);
+    if (std::strcmp(mode, "ctc1_after_branch") == 0)
+    {
+        // ADDIU writes $t0 in the first block. CTC1 in the successor block
+        // consumes it, exercising read-before-write propagation across CFG
+        // edges rather than merely reading an initial architectural value.
+        const uint32_t words[] = {
+            (0x09u << 26) | (8u << 16) | 0x2345u, // addiu $t0,$zero,0x2345
+            (0x04u << 26) | 1u,                   // beq $zero,$zero, next block
+            0u,                                    // delay-slot nop
+            make_cop1_transfer(6, 8, 31)           // ctc1 $t0,FCR31
+        };
+        for (size_t i = 0; i < sizeof(words) / sizeof(words[0]); ++i)
+        {
+            const uint32_t pc = entry_pc + static_cast<uint32_t>(i * 4);
+            const ee::s_ee_instruction decoded = ee::decode(pc, words[i]);
+            if (decoded.valid != ee::e_ee_valid::VALID)
+            {
+                std::fprintf(stderr, "COP1 transfer CFG instruction at 0x%08x is not VALID: %s\n",
+                             pc, decoded.mnemonic);
+                return 3;
+            }
+            insn_map.emplace(pc, decoded);
+        }
+    }
+    else
+    {
+        const ee::s_ee_instruction ins = ee::decode(entry_pc, word);
+        if (ins.valid != ee::e_ee_valid::VALID ||
+            ins.opcode != ee::e_ee_opcode::OP_COP1)
+        {
+            std::fprintf(stderr, "COP1 transfer instruction was not decoded as VALID: %s\n",
+                         ins.mnemonic);
+            return 3;
+        }
+        insn_map.emplace(entry_pc, ins);
+    }
 
     ee::function_analyzer analyzer;
     const auto functions = analyzer.analyze(insn_map, {entry_pc});
-    if (functions.size() != 1 || functions[0].blocks.size() != 1 ||
-        functions[0].blocks[0].insn_indices.size() != 1)
+    if (functions.size() != 1 || functions[0].blocks.empty())
     {
-        std::fprintf(stderr, "COP1 comparison fixture CFG analysis failed\n");
+        std::fprintf(stderr, "COP1 fixture CFG analysis failed\n");
+        return 4;
+    }
+    if (std::strcmp(mode, "ctc1_after_branch") != 0 &&
+        (functions[0].blocks.size() != 1 ||
+         functions[0].blocks[0].insn_indices.size() != 1))
+    {
+        std::fprintf(stderr, "single-instruction COP1 fixture CFG analysis failed\n");
         return 4;
     }
 
