@@ -354,6 +354,7 @@ int main(int argc, char** argv)
         uint32_t m_option = 0;
     };
     s_kernel_semaphore semaphores[64]{};
+    uint32_t installed_syscall_handlers[256]{};
 
     uint32_t remaining = budget;
     uint64_t dispatched = 0;
@@ -401,7 +402,8 @@ int main(int argc, char** argv)
         {
             const uint32_t service =
                 static_cast<uint32_t>(cpu.m_gpr[3].m_lo);
-            if (service == 0x3cu || service == 0x3du || service == 0x40u)
+            if (service == 0x3cu || service == 0x3du ||
+                service == 0x40u || service == 0x74u)
             {
                 const uint32_t epc = cpu.m_cop0[14];
                 uint32_t opcode = 0;
@@ -500,7 +502,7 @@ int main(int argc, char** argv)
                     }
                 }
 
-                else
+                else if (service == 0x40u)
                 {
                     // PS2SDK ee_sema_t is six consecutive 32-bit fields:
                     // count, max_count, init_count, wait_threads, attr,
@@ -559,6 +561,37 @@ int main(int argc, char** argv)
                             "option=0x%08x parameters=0x%08x\n",
                             id, init_count, max_count, attr, option,
                             parameter_address
+                        );
+                    }
+                }
+
+                else
+                {
+                    // SetSyscall(number, handler) installs an EE kernel
+                    // callback. Store it for future dispatch, but do not
+                    // silently emulate an invocation of that callback.
+                    const uint32_t syscall_number =
+                        static_cast<uint32_t>(cpu.m_gpr[4].m_lo);
+                    const uint32_t handler_pc =
+                        static_cast<uint32_t>(cpu.m_gpr[5].m_lo);
+                    if (syscall_number >= 256u ||
+                        (handler_pc & 3u) != 0u ||
+                        !image.is_executable_address(handler_pc))
+                    {
+                        std::fprintf(stderr,
+                            "SetSyscall HLE refused invalid handler "
+                            "number=0x%08x pc=0x%08x\n",
+                            syscall_number, handler_pc
+                        );
+                        break;
+                    }
+                    installed_syscall_handlers[syscall_number] = handler_pc;
+                    if (trace)
+                    {
+                        std::printf(
+                            "HLE SetSyscall: number=0x%02x "
+                            "handler=0x%08x\n",
+                            syscall_number, handler_pc
                         );
                     }
                 }
