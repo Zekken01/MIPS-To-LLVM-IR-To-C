@@ -1475,7 +1475,14 @@ uint32_t ee_vu0_execute_ialu_callback(
             }
 
             // PCSX2 declares a four-cycle IALU reservation for ILW.
-            // LQ/SQ access the VF bank rather than the VI IALU pipeline.
+            // LQ/SQ use the separate four-cycle FMAC pipeline. Even SQ
+            // contributes an issue, so pending memory work may extend E.
+            const auto memory_op = instruction.m_lower_fields.m_operation;
+            if (memory_op == e_ee_vu0_micro_opcode::LQ ||
+                memory_op == e_ee_vu0_micro_opcode::SQ)
+            {
+                vu0->m_vf_memory_ready_cycle = vu0->m_cycle + 4u;
+            }
             const uint32_t schedule_result = ee_vu0_ialu_schedule_write(
                 vu0, write_mask, 4
             );
@@ -1520,6 +1527,13 @@ uint32_t ee_vu0_execute_ialu_callback(
             {
                 vu0->m_vi_backup_cycles = 0;
                 vu0->m_vpu_status &= ~1u;
+                // The pinned PCSX2 interpreter flushes lower FMAC memory
+                // reservations even after the E delay pair has executed.
+                if (vu0->m_vf_memory_ready_cycle > vu0->m_cycle)
+                {
+                    vu0->m_cycle = vu0->m_vf_memory_ready_cycle;
+                }
+                vu0->m_vf_memory_ready_cycle = 0;
                 const uint32_t flush_result = ee_vu0_ialu_flush_all(vu0);
                 if (flush_result != static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE))
                 {
