@@ -65,13 +65,14 @@ def parse_address(value):
     return number
 
 
-def run(command, capture=False):
+def run(command, capture=False, timeout_seconds=None):
     print("+ " + subprocess.list2cmdline([str(item) for item in command]), flush=True)
     result = subprocess.run(
         [str(item) for item in command],
         text=True,
         capture_output=capture,
         check=not capture,
+        timeout=timeout_seconds,
     )
     if capture:
         if result.stdout:
@@ -167,6 +168,10 @@ def main(argv=None):
         help="relink/replay with up to N newly reached executable function PCs",
     )
     parser.add_argument("--max-dispatches", type=int, default=10000)
+    parser.add_argument(
+        "--timeout-seconds", type=int, default=10,
+        help="hard wall-time limit for each guest replay (default: 10)",
+    )
     parser.add_argument("--entry", type=lambda value: int(value, 0))
     parser.add_argument("--stack", type=lambda value: int(value, 0))
     parser.add_argument("--trace", action="store_true")
@@ -178,6 +183,8 @@ def main(argv=None):
 
     if args.max_dispatches <= 0 or args.max_dispatches > 0xFFFFFFFF:
         parser.error("--max-dispatches must fit a positive uint32")
+    if args.timeout_seconds < 1 or args.timeout_seconds > 3600:
+        parser.error("--timeout-seconds must be in [1, 3600]")
     if args.auto_expand < 0 or args.auto_expand > 128:
         parser.error("--auto-expand must be between 0 and 128")
     if args.no_recompile and (args.auto_expand or args.extra_functions):
@@ -259,7 +266,30 @@ def main(argv=None):
                 f"\n== Executing translated EE code (replay {replay}) ==",
                 flush=True,
             )
-            result = run(command, capture=True)
+            try:
+                result = run(
+                    command, capture=True,
+                    timeout_seconds=args.timeout_seconds,
+                )
+            except subprocess.TimeoutExpired as error:
+                if error.stdout:
+                    print(
+                        error.stdout.decode(errors="replace")
+                        if isinstance(error.stdout, bytes) else error.stdout,
+                        end="",
+                    )
+                if error.stderr:
+                    print(
+                        error.stderr.decode(errors="replace")
+                        if isinstance(error.stderr, bytes) else error.stderr,
+                        end="", file=sys.stderr,
+                    )
+                print(
+                    "run_game: guest execution exceeded its replay timeout; "
+                    "a translated function may contain an unbounded loop",
+                    file=sys.stderr,
+                )
+                return 124
             if replay == args.auto_expand or result.returncode not in (3, 4):
                 return result.returncode
 
