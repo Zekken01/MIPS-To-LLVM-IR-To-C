@@ -850,10 +850,20 @@ bool vu0_is_supported_lower_ialu(const s_ee_vu0_micro_instruction& instruction)
 bool vu0_is_supported_lower_memory(const s_ee_vu0_micro_instruction& instruction)
 {
     using op = e_ee_vu0_micro_opcode;
-    return instruction.m_lower_fields.m_operation == op::ILW ||
-           instruction.m_lower_fields.m_operation == op::ISW ||
-           instruction.m_lower_fields.m_operation == op::LQ ||
-           instruction.m_lower_fields.m_operation == op::SQ;
+    switch (instruction.m_lower_fields.m_operation)
+    {
+    case op::ILW:
+    case op::ISW:
+    case op::LQ:
+    case op::SQ:
+    case op::LQI:
+    case op::SQI:
+    case op::LQD:
+    case op::SQD:
+        return true;
+    default:
+        return false;
+    }
 }
 
 int32_t vu0_signed_memory_immediate(uint32_t word)
@@ -870,15 +880,19 @@ uint32_t vu0_memory_byte_address(
 )
 {
     // PCSX2 computes the quadword address through a 16-bit intermediate.
-    const int32_t base = static_cast<int16_t>(
-        vu0_read_ialu_vi(
-            vu0, instruction.m_lower_fields.m_operation ==
-                e_ee_vu0_micro_opcode::SQ
-                ? instruction.m_lower_fields.m_it
-                : instruction.m_lower_fields.m_is
-        )
-    );
-    const int32_t offset = vu0_signed_memory_immediate(instruction.m_lower);
+    using op = e_ee_vu0_micro_opcode;
+    const op operation = instruction.m_lower_fields.m_operation;
+    const bool indexed = operation == op::LQI || operation == op::SQI ||
+                         operation == op::LQD || operation == op::SQD;
+    const bool store = operation == op::SQ || operation == op::SQI ||
+                       operation == op::SQD;
+    const uint32_t base_index = store
+        ? instruction.m_lower_fields.m_it
+        : instruction.m_lower_fields.m_is;
+    const int32_t base = static_cast<int16_t>(vu0_read_ialu_vi(vu0, base_index));
+    const int32_t offset = indexed
+        ? (operation == op::LQD || operation == op::SQD ? -1 : 0)
+        : vu0_signed_memory_immediate(instruction.m_lower);
     return (static_cast<uint32_t>((base + offset) * 16) & 0xffffu);
 }
 
@@ -894,18 +908,41 @@ bool vu0_execute_lower_memory(
     *write_mask = 0;
     const uint32_t xyzw = fields.m_xyzw;
     const uint32_t base = address & (EE_VU0_DATA_MEMORY_SIZE - 1u);
-    if (fields.m_operation == e_ee_vu0_micro_opcode::LQ ||
-        fields.m_operation == e_ee_vu0_micro_opcode::SQ)
+    using op = e_ee_vu0_micro_opcode;
+    const op operation = fields.m_operation;
+    const bool indexed_load = operation == op::LQI || operation == op::LQD;
+    const bool indexed_store = operation == op::SQI || operation == op::SQD;
+    const bool predecrement = operation == op::LQD || operation == op::SQD;
+    const bool postincrement = operation == op::LQI || operation == op::SQI;
+    if (operation == op::LQ || operation == op::SQ ||
+        indexed_load || indexed_store)
     {
         // VF registers live in the shared EE COP2 bank. Read and write
         // individual 32-bit lanes without assuming host endianness.
-        const bool load = fields.m_operation == e_ee_vu0_micro_opcode::LQ;
+        const bool load = operation == op::LQ || indexed_load;
         const uint32_t register_index = load ? fields.m_ft : fields.m_fs;
-        if (load && register_index == 0)
+        const uint32_t base_index = load ? fields.m_is : fields.m_it;
+        if (predecrement || postincrement)
         {
-            return true; // VF0 is constant.
+            // _vuBackupVI is issued for indexed loads/stores even if the
+            // destination is VF0 or no vector lanes are selected.
+            if (base_index != 0)
+            {
+                vu0_backup_ialu_vi(vu0, base_index);
+                if (predecrement)
+                {
+                    vu0_write_ialu_vi(
+                        vu0, base_index,
+                        static_cast<uint16_t>(
+                            vu0_read_ialu_vi(vu0, base_index) - 1u
+                        )
+                    );
+                }
+            }
         }
-        s_ee_u128& vector = cpu->m_vu0[register_index];
+        if (!load || register_index != 0)
+        {
+            s_ee_u128& vector = cpu->m_vu0[register_index];
         for (uint32_t component = 0; component < 4; ++component)
         {
             if ((xyzw & (8u >> component)) == 0)
@@ -934,6 +971,14 @@ bool vu0_execute_lower_memory(
                         static_cast<uint8_t>(value >> (byte * 8u));
                 }
             }
+        }
+        }
+        if (postincrement && base_index != 0)
+        {
+            vu0_write_ialu_vi(
+                vu0, base_index,
+                static_cast<uint16_t>(vu0_read_ialu_vi(vu0, base_index) + 1u)
+            );
         }
         return true;
     }
@@ -1419,8 +1464,12 @@ uint32_t ee_vu0_execute_ialu_callback(
         // SQ reads its FS vector, and stalls only when an earlier LQ
         // destination matches both the register and an enabled lane.
         if (lower_memory &&
-            instruction.m_lower_fields.m_operation ==
-                e_ee_vu0_micro_opcode::SQ)
+            (instruction.m_lower_fields.m_operation ==
+                 e_ee_vu0_micro_opcode::SQ ||
+             instruction.m_lower_fields.m_operation ==
+                 e_ee_vu0_micro_opcode::SQI ||
+             instruction.m_lower_fields.m_operation ==
+                 e_ee_vu0_micro_opcode::SQD))
         {
             const uint32_t source = instruction.m_lower_fields.m_fs;
             const uint32_t lanes = instruction.m_lower_fields.m_xyzw;
@@ -1501,7 +1550,11 @@ uint32_t ee_vu0_execute_ialu_callback(
             // contributes an issue, so pending memory work may extend E.
             const auto memory_op = instruction.m_lower_fields.m_operation;
             if (memory_op == e_ee_vu0_micro_opcode::LQ ||
-                memory_op == e_ee_vu0_micro_opcode::SQ)
+                memory_op == e_ee_vu0_micro_opcode::SQ ||
+                memory_op == e_ee_vu0_micro_opcode::LQI ||
+                memory_op == e_ee_vu0_micro_opcode::SQI ||
+                memory_op == e_ee_vu0_micro_opcode::LQD ||
+                memory_op == e_ee_vu0_micro_opcode::SQD)
             {
                 const uint64_t ready = vu0->m_cycle + 4u;
                 vu0->m_vf_memory_ready_cycle = ready;
@@ -1511,7 +1564,9 @@ uint32_t ee_vu0_execute_ialu_callback(
                 ++vu0->m_vf_memory_issue_index;
                 issue.m_ready_cycle = ready;
                 issue.m_register =
-                    memory_op == e_ee_vu0_micro_opcode::LQ
+                    (memory_op == e_ee_vu0_micro_opcode::LQ ||
+                     memory_op == e_ee_vu0_micro_opcode::LQI ||
+                     memory_op == e_ee_vu0_micro_opcode::LQD)
                         ? instruction.m_lower_fields.m_ft : 0u;
                 issue.m_lane_mask =
                     issue.m_register != 0
