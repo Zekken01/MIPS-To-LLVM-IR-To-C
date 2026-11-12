@@ -145,10 +145,15 @@ bool elf_loader::parse_header(const uint8_t* data, size_t size)
 bool elf_loader::parse_program_headers(const uint8_t* data, size_t size)
 {
     // Re-derive header fields locally (parse_header already validated them).
+    constexpr uint32_t PT_DYNAMIC = 2;
+    constexpr uint32_t PT_INTERP = 3;
     const Elf32_Ehdr* hdr = reinterpret_cast<const Elf32_Ehdr*>(data);
+    m_has_dynamic_segment = false;
     for (Elf32_Half i = 0; i < hdr->e_phnum; ++i) {
         const Elf32_Phdr* ph = reinterpret_cast<const Elf32_Phdr*>(
             data + hdr->e_phoff + i * hdr->e_phentsize);
+        if (ph->p_type == PT_DYNAMIC || ph->p_type == PT_INTERP)
+            m_has_dynamic_segment = true;
         if (ph->p_type != PT_LOAD) continue;
         if (ph->p_offset + ph->p_filesz > size) continue;
 
@@ -305,7 +310,8 @@ bool elf_loader::read32_at(uint32_t addr, uint32_t* out) const
 
 bool elf_loader::read32_const_at(uint32_t addr, uint32_t* out) const
 {
-    if (!out || m_type != ET_EXEC || !m_relocations_complete)
+    if (!out || m_type != ET_EXEC || !m_relocations_complete ||
+        m_has_dynamic_segment)
     {
         return false;
     }
