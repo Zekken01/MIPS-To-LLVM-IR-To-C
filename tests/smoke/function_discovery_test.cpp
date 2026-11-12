@@ -73,11 +73,12 @@ void write_le32(std::vector<uint8_t>& bytes, size_t offset, uint32_t value)
     bytes[offset + 3] = static_cast<uint8_t>(value >> 24);
 }
 
-std::vector<uint8_t> make_static_data_elf()
+std::vector<uint8_t> make_static_data_elf(bool relocate_readonly_word = false)
 {
     // Minimal ET_EXEC with one executable segment, one read-only data segment,
-    // and one writable data segment. Each data segment stores the same target.
-    std::vector<uint8_t> bytes(0x214, 0);
+    // one writable data segment, and a valid section table. Each data segment
+    // stores the same target; the optional SHT_REL relocates the read-only word.
+    std::vector<uint8_t> bytes(0x270, 0);
     bytes[0] = 0x7f;
     bytes[1] = 'E';
     bytes[2] = 'L';
@@ -91,9 +92,13 @@ std::vector<uint8_t> make_static_data_elf()
     write_le32(bytes, 20, 1);
     write_le32(bytes, 24, 0x1000);
     write_le32(bytes, 28, 52); // program header table
+    write_le32(bytes, 32, 0x220); // section header table
     write_le16(bytes, 40, 52);
     write_le16(bytes, 42, 32);
     write_le16(bytes, 44, 3);
+    write_le16(bytes, 46, 40);
+    write_le16(bytes, 48, relocate_readonly_word ? 2 : 1);
+    write_le16(bytes, 50, 0);
 
     auto write_segment = [&](size_t header, uint32_t offset,
                              uint32_t address, uint32_t filesz,
@@ -115,6 +120,18 @@ std::vector<uint8_t> make_static_data_elf()
 
     write_le32(bytes, 0x200, 0x00001020);
     write_le32(bytes, 0x210, 0x00001020);
+
+    if (relocate_readonly_word)
+    {
+        // Second section header is SHT_REL for the read-only pointer word.
+        const size_t section = 0x248;
+        write_le32(bytes, section + 4, 9);      // SHT_REL
+        write_le32(bytes, section + 16, 0x260); // relocation entries
+        write_le32(bytes, section + 20, 8);     // one Elf32_Rel
+        write_le32(bytes, section + 36, 8);     // Elf32_Rel size
+        write_le32(bytes, 0x260, 0x2000);       // relocated word address
+        write_le32(bytes, 0x264, 0x00000102);   // relocation info
+    }
     return bytes;
 }
 
@@ -275,6 +292,27 @@ int main()
         add(insns, 0x110c, 0);
         check(recover(insns, 0x1100, &image).empty(),
               "keep writable-global JALR target dynamic");
+    }
+
+    // A read-only word with an ELF relocation is not immutable at runtime.
+    {
+        const std::vector<uint8_t> elf_bytes = make_static_data_elf(true);
+        ee::elf_loader image;
+        std::string error;
+        const bool loaded = image.load_buffer(
+            elf_bytes.data(), elf_bytes.size(), &error
+        );
+        uint32_t word = 0;
+        check(loaded && !image.read32_const_at(0x2000, &word),
+              "reject relocated pointer words in read-only ELF segments");
+
+        std::map<uint32_t, ee::s_ee_instruction> insns;
+        add(insns, 0x1180, encode_ori(0, 8, 0x2000));
+        add(insns, 0x1184, encode_lw(8, 25, 0));
+        add(insns, 0x1188, encode_jalr(25));
+        add(insns, 0x118c, 0);
+        check(recover(insns, 0x1180, &image).empty(),
+              "keep relocation-derived JALR target dynamic");
     }
 
     // The memory tail of a PT_LOAD segment is BSS, not file-backed data.
