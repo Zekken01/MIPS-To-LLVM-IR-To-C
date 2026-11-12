@@ -91,6 +91,8 @@ class VU0CandidateTraceTests(unittest.TestCase):
             self.assertEqual(header["kind"], "header")
             self.assertEqual(header["program_sha256"], EXPECTED_PROGRAM_SHA256)
             self.assertEqual(len(header["initial_state"]["vi"]), 32)
+            self.assertEqual(len(header["initial_state"]["vf"]), 32)
+            self.assertEqual(header["initial_state"]["vf"][0], [0, 0, 0, 0x3f800000])
             self.assertEqual(header["initial_state"]["vi"][29], 1)
             self.assertEqual(
                 header["initial_state"]["data_sha256"],
