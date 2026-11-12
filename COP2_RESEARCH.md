@@ -2,9 +2,9 @@
 
 ## Decision
 
-The decoder and LLVM lifter support the COP2 transfer/control forms QMFC2, QMTC2, CFC2, CTC2 and the four BC2 branches through runtime helpers. The runtime also has a deliberately narrow in-tree VU0 execution slice for lower IALU operations (IADD, ISUB, IAND, IOR, IADDI, IADDIU and ISUBIU) paired with upper NOP. The scheduler remains host-integrated: the host supplies VU1 catch-up and EE event services, while unsupported VU0 pairs fail closed.
+The decoder and LLVM lifter support the COP2 transfer/control forms QMFC2, QMTC2, CFC2, CTC2 and the four BC2 branches through runtime helpers. The in-tree runtime also has a deliberately narrow VU0 micro-instruction slice: lower IADD, ISUB, IAND, IOR, IADDI, IADDIU and ISUBIU, plus B, BAL, JR, JALR, IBEQ, IBNE, IBLTZ, IBGTZ, IBLEZ and IBGEZ, each paired with upper NOP. It models the lower integer destination reservations, branch delay/nested-branch state, conditional-branch VI backup window and source interlocks. The scheduler remains host-integrated: the host supplies VU1 catch-up and EE event services, while unsupported VU0 pairs fail closed.
 
-This is not a general VU0 micro-engine. Branches, VU data-memory operations, I/D/T modes, upper vector operations, full dual-issue ordering and FMAC/FDIV/EFU pipelines remain unsupported.
+This is not a general VU0 micro-engine. VU data-memory operations, I/D/T modes, upper vector operations, full dual-issue ordering and FMAC/FDIV/EFU pipelines remain unsupported. The implemented branch subset is limited to lower integer control flow paired with upper NOP; it does not establish complete VU0 branch/pipeline equivalence.
 
 VU0 macro instructions remain unsupported. Do not promote SPECIAL1/SPECIAL2 forms until the complete micro-engine and the required FMAC/FDIV/EFU pipeline semantics are available.
 
@@ -105,21 +105,22 @@ PCSX2's VU register set contains substantially more than the 32 vector registers
 
 The project retains `s_ee_cpu_state::m_vu0[32]` as the VF bank and adds a separate aligned `s_ee_vu0_state` sidecar. The sidecar provides VI[32], ACC, Q/P, visible control/flag values, micro-PC, EE/VU cycle counters, E/M/running state, and separate 4 KB VU data and micro-program memories without shifting the established CPU-state offsets.
 
-The sidecar is not a full `VURegs` equivalent. It does not contain a complete pipeline scoreboard, branch-delay bookkeeping, FMAC/FDIV/EFU internal state, or a VU1 execution engine. Those remain host-engine responsibilities. A helper-only mock can validate ABI, fetch and transfer rules, but cannot establish correct behaviour while a real VU microprogram is executing.
+The sidecar is not a full `VURegs` equivalent. It now includes the restricted lower-branch pipeline state (including deferred nested branches), an IALU destination-reservation queue and VI-backup state for conditional branch reads. It still does not contain a complete dual-issue pipeline scoreboard, VF write/forwarding state, upper-pipeline dependencies, FMAC/FDIV/EFU internal state, or a VU1 execution engine. Those remain unimplemented. A helper-only mock can validate ABI, fetch and transfer rules, but cannot establish correct behaviour while a real VU microprogram is executing.
 
 ## Implementation path
 
-1. **Lower integer control flow:** implement B/BAL/JR/JALR and conditional integer branches with the branch-delay state and IALU read interlocks. Keep other lower ops unsupported.
-2. **VU0 memory operations:** add LQ/SQ/ILW/ISW with the distinct VU0 data-memory mapping and address wrap rules.
+1. **Lower integer execution:** the implemented subset covers IADD/ISUB/IAND/IOR/IADDI/IADDIU/ISUBIU and B/BAL/JR/JALR/IBEQ/IBNE/IBLTZ/IBGTZ/IBLEZ/IBGEZ, paired with upper NOP. Keep every other lower operation unsupported until independently specified and tested.
+2. **VU0 memory operations:** add LQ/SQ/ILW/ISW with the distinct VU0 data-memory mapping, address wrap rules and interlocks.
 3. **Upper/lower issue:** add upper vector execution with explicit dual-issue register hazards, delayed VF writes and flag forwarding.
 4. **Pipeline completion:** model FMAC/FDIV/EFU scheduling and result/flag forwarding before adding macro instruction coverage.
-5. **Scheduler validation:** exercise real VU0 microprograms while EE transfers occur in ordinary code and delay slots; differential-test against PCSX2.
-6. **Control actions:** implement FBRST reset/force-break and CMSAR1 VU1 startup in the host control callback. The current runtime only routes these actions; it does not emulate them.
-7. **VU0 macro instructions:** enable incrementally only after the engine models dual-issue scheduling, flags, ACC/Q/P forwarding and branch timing.
+5. **Semantic differential testing:** compare the existing lower integer/branch subset against PCSX2 over randomized and directed fixtures, especially nested branch timing, VI backup, stalls, cycle budgets and E/M interaction.
+6. **Scheduler validation:** exercise real VU0 microprograms while EE transfers occur in ordinary code and delay slots; differential-test against PCSX2.
+7. **Control actions:** implement FBRST reset/force-break and CMSAR1 VU1 startup in the host control callback. The current runtime only routes these actions; it does not emulate them.
+8. **VU0 macro instructions:** enable incrementally only after the engine models dual-issue scheduling, flags, ACC/Q/P forwarding and branch timing.
 
 ## Current guardrail
 
-QMFC2/QMTC2/CFC2/CTC2 and BC2 are enabled only through the fail-closed runtime boundary and only when the required host callbacks/state exist. This is integration support, not a claim that the host contains a VU0 engine. All VU0 macro instructions remain unsupported.
+QMFC2/QMTC2/CFC2/CTC2 and BC2 are enabled only through the fail-closed runtime boundary and only when the required host callbacks/state exist. The in-tree micro-engine executes only the explicitly listed lower integer/branch subset paired with upper NOP. Its direct runtime regression tests passed as part of [Actions run #43214060713](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43214060713) (15/15 CTest). These tests are not yet a full differential execution harness against PCSX2. This is integration and a limited execution slice, not a general VU0 engine. All VU0 macro instructions remain unsupported.
 
 
 ## Runtime state and synchronization interface
