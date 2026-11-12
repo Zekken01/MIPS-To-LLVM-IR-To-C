@@ -1200,6 +1200,484 @@ int main()
               "256-pair scalar IALU sequence matches the independent VI/backup oracle");
     }
 
+    // A second test-side model follows PCSX2's lower-op, branch-delay,
+    // VI-backup and E/M ordering over a deterministic mixed control-flow
+    // program. It decodes raw words independently of the runtime decoder.
+    {
+        constexpr uint32_t program_slots = 512u;
+        constexpr uint32_t pair_count = 384u;
+        uint32_t random_state = 0x91e10da5u;
+        auto next_random = [&random_state]() -> uint32_t
+        {
+            random_state ^= random_state << 13;
+            random_state ^= random_state >> 17;
+            random_state ^= random_state << 5;
+            return random_state;
+        };
+
+        ee::s_ee_vu0_state actual{};
+        ee::s_ee_vu0_ialu_engine ialu_engine{};
+        uint32_t reference_vi[16]{};
+        uint32_t program_lower[program_slots]{};
+        uint32_t program_upper[program_slots]{};
+        uint32_t reference_pc = 0;
+        uint32_t reference_branch = 0;
+        uint32_t reference_branch_pc = 0;
+        uint32_t reference_delay_branch_pc = 0;
+        uint32_t reference_take_delay_branch = 0;
+        uint32_t reference_backup_cycles = 0;
+        uint32_t reference_backup_register = 0;
+        uint16_t reference_backup_old_value = 0;
+        uint32_t reference_e_bit = 0;
+        uint32_t reference_vpu_status = 1;
+        uint32_t reference_m_bit = 0;
+        uint64_t reference_cycle = 0;
+        uint32_t executed_operation_mask = 0;
+        actual.m_vpu_status = 1u;
+
+        for (uint32_t reg = 0; reg < 16; ++reg)
+        {
+            actual.m_vi[reg] = next_random();
+            reference_vi[reg] = actual.m_vi[reg];
+        }
+
+        for (uint32_t slot = 0; slot < program_slots; ++slot)
+        {
+            const uint32_t operation = slot % 17u;
+            const uint32_t it = next_random() & 0x0fu;
+            const uint32_t is = next_random() & 0x0fu;
+            const uint32_t id = next_random() & 0x0fu;
+            const uint32_t immediate = next_random() & 0x07ffu;
+            uint32_t lower = 0;
+
+            switch (operation)
+            {
+            case 0: lower = make_vu0_ialu_3r(0x30u, it, is, id); break;
+            case 1: lower = make_vu0_ialu_3r(0x31u, it, is, id); break;
+            case 2: lower = make_vu0_ialu_3r(0x34u, it, is, id); break;
+            case 3: lower = make_vu0_ialu_3r(0x35u, it, is, id); break;
+            case 4:
+                lower = make_vu0_iaddi(
+                    it, is, static_cast<int32_t>(immediate & 0x1fu)
+                );
+                break;
+            case 5: lower = make_vu0_iaddiu(it, is, immediate); break;
+            case 6: lower = make_vu0_isubiu(it, is, immediate); break;
+            case 7: lower = make_vu0_branch(0x20u, it, is, immediate); break;
+            case 8: lower = make_vu0_branch(0x21u, it, is, immediate); break;
+            case 9: lower = make_vu0_branch(0x24u, it, is, immediate); break;
+            case 10: lower = make_vu0_branch(0x25u, it, is, immediate); break;
+            case 11: lower = make_vu0_branch(0x28u, it, is, immediate); break;
+            case 12: lower = make_vu0_branch(0x29u, it, is, immediate); break;
+            case 13: lower = make_vu0_branch(0x2cu, it, is, immediate); break;
+            case 14: lower = make_vu0_branch(0x2du, it, is, immediate); break;
+            case 15: lower = make_vu0_branch(0x2eu, it, is, immediate); break;
+            case 16: lower = make_vu0_branch(0x2fu, it, is, immediate); break;
+            default: break;
+            }
+
+            uint32_t flags = (next_random() % 23u) == 0
+                ? 0x20000000u : 0u; // M
+            if (slot == program_slots - 1u)
+            {
+                flags |= 0x40000000u; // E, reachable by a sampled jump.
+            }
+
+            program_lower[slot] = lower;
+            program_upper[slot] = make_vu0_upper_nop(flags);
+            install_vu0_pair(&actual, slot, lower, program_upper[slot]);
+        }
+
+        bool reference_matches = true;
+        for (uint32_t step = 0; step < pair_count; ++step)
+        {
+            if ((reference_vpu_status & 1u) == 0)
+            {
+                break;
+            }
+
+            reference_m_bit = 0;
+            const uint32_t slot = (reference_pc >> 3) & 0x1ffu;
+            const uint32_t lower = program_lower[slot];
+            const uint32_t upper = program_upper[slot];
+            reference_pc = (reference_pc + 8u) & 0x0fffu;
+            ++reference_cycle;
+
+            const uint32_t primary = lower >> 25;
+            const uint32_t it = (lower >> 16) & 0x0fu;
+            const uint32_t is = (lower >> 11) & 0x0fu;
+            const uint32_t id = (lower >> 6) & 0x0fu;
+            const int16_t source_s = is == 0
+                ? 0 : static_cast<int16_t>(reference_vi[is]);
+            const int16_t source_t = it == 0
+                ? 0 : static_cast<int16_t>(reference_vi[it]);
+
+            bool write_vi = false;
+            uint32_t destination = 0;
+            uint16_t result_value = 0;
+            bool branch_taken = false;
+            bool relative_branch = false;
+            bool link_write = false;
+            uint32_t branch_target = 0;
+            uint32_t link_register = 0;
+            uint16_t link_value = 0;
+
+            switch (primary)
+            {
+            case 0x3cu:
+            {
+                const uint32_t secondary = lower & 0x3fu;
+                switch (secondary)
+                {
+                case 0x30u:
+                    write_vi = true;
+                    destination = id;
+                    result_value = static_cast<uint16_t>(
+                        static_cast<int16_t>(source_s) +
+                        static_cast<int16_t>(source_t)
+                    );
+                    executed_operation_mask |= 1u << 0;
+                    break;
+                case 0x31u:
+                    write_vi = true;
+                    destination = id;
+                    result_value = static_cast<uint16_t>(
+                        static_cast<int16_t>(source_s) -
+                        static_cast<int16_t>(source_t)
+                    );
+                    executed_operation_mask |= 1u << 1;
+                    break;
+                case 0x34u:
+                    write_vi = true;
+                    destination = id;
+                    result_value = static_cast<uint16_t>(
+                        static_cast<uint16_t>(reference_vi[is]) &
+                        static_cast<uint16_t>(reference_vi[it])
+                    );
+                    executed_operation_mask |= 1u << 2;
+                    break;
+                case 0x35u:
+                    write_vi = true;
+                    destination = id;
+                    result_value = static_cast<uint16_t>(
+                        static_cast<uint16_t>(reference_vi[is]) |
+                        static_cast<uint16_t>(reference_vi[it])
+                    );
+                    executed_operation_mask |= 1u << 3;
+                    break;
+                case 0x32u:
+                {
+                    int32_t immediate_value =
+                        static_cast<int32_t>((lower >> 6) & 0x1fu);
+                    if ((immediate_value & 0x10) != 0)
+                    {
+                        immediate_value -= 0x20;
+                    }
+                    write_vi = true;
+                    destination = it;
+                    result_value = static_cast<uint16_t>(
+                        static_cast<int16_t>(source_s) + immediate_value
+                    );
+                    executed_operation_mask |= 1u << 4;
+                    break;
+                }
+                default:
+                    reference_matches = false;
+                    break;
+                }
+                break;
+            }
+
+            case 0x08u:
+            case 0x09u:
+            {
+                const uint32_t immediate_value =
+                    ((lower >> 10) & 0x7800u) | (lower & 0x07ffu);
+                write_vi = true;
+                destination = it;
+                const int32_t arithmetic = primary == 0x08u
+                    ? static_cast<int32_t>(static_cast<int16_t>(source_s)) +
+                        static_cast<int32_t>(immediate_value)
+                    : static_cast<int32_t>(static_cast<int16_t>(source_s)) -
+                        static_cast<int32_t>(immediate_value);
+                result_value = static_cast<uint16_t>(arithmetic);
+                executed_operation_mask |= primary == 0x08u
+                    ? (1u << 5) : (1u << 6);
+                break;
+            }
+
+            case 0x20u: // B
+            case 0x21u: // BAL
+            case 0x24u: // JR
+            case 0x25u: // JALR
+            case 0x28u: // IBEQ
+            case 0x29u: // IBNE
+            case 0x2cu: // IBLTZ
+            case 0x2du: // IBGTZ
+            case 0x2eu: // IBLEZ
+            case 0x2fu: // IBGEZ
+            {
+                const uint16_t branch_s = is == 0 ? 0u :
+                    (reference_backup_cycles != 0 &&
+                     reference_backup_register == is
+                        ? reference_backup_old_value
+                        : static_cast<uint16_t>(reference_vi[is]));
+                const uint16_t branch_t = it == 0 ? 0u :
+                    (reference_backup_cycles != 0 &&
+                     reference_backup_register == it
+                        ? reference_backup_old_value
+                        : static_cast<uint16_t>(reference_vi[it]));
+                const int16_t signed_s = static_cast<int16_t>(branch_s);
+                const int16_t signed_t = static_cast<int16_t>(branch_t);
+                const uint32_t encoded_immediate = lower & 0x07ffu;
+                const int32_t signed_immediate =
+                    (encoded_immediate & 0x0400u) != 0
+                        ? static_cast<int32_t>(encoded_immediate) - 0x0800
+                        : static_cast<int32_t>(encoded_immediate);
+
+                switch (primary)
+                {
+                case 0x20u:
+                    branch_taken = true;
+                    relative_branch = true;
+                    executed_operation_mask |= 1u << 7;
+                    break;
+                case 0x21u:
+                    branch_taken = true;
+                    relative_branch = true;
+                    link_write = it != 0;
+                    executed_operation_mask |= 1u << 8;
+                    break;
+                case 0x24u:
+                    branch_taken = true;
+                    branch_target =
+                        (static_cast<uint32_t>(
+                            static_cast<uint16_t>(reference_vi[is])
+                        ) << 3) & 0x0fffu;
+                    executed_operation_mask |= 1u << 9;
+                    break;
+                case 0x25u:
+                    branch_taken = true;
+                    branch_target =
+                        (static_cast<uint32_t>(
+                            static_cast<uint16_t>(reference_vi[is])
+                        ) << 3) & 0x0fffu;
+                    link_write = it != 0;
+                    executed_operation_mask |= 1u << 10;
+                    break;
+                case 0x28u:
+                    branch_taken = branch_t == branch_s;
+                    relative_branch = true;
+                    executed_operation_mask |= 1u << 11;
+                    break;
+                case 0x29u:
+                    branch_taken = branch_t != branch_s;
+                    relative_branch = true;
+                    executed_operation_mask |= 1u << 12;
+                    break;
+                case 0x2cu:
+                    branch_taken = signed_s < 0;
+                    relative_branch = true;
+                    executed_operation_mask |= 1u << 13;
+                    break;
+                case 0x2du:
+                    branch_taken = signed_s > 0;
+                    relative_branch = true;
+                    executed_operation_mask |= 1u << 14;
+                    break;
+                case 0x2eu:
+                    branch_taken = signed_s <= 0;
+                    relative_branch = true;
+                    executed_operation_mask |= 1u << 15;
+                    break;
+                case 0x2fu:
+                    branch_taken = signed_s >= 0;
+                    relative_branch = true;
+                    executed_operation_mask |= 1u << 16;
+                    break;
+                default:
+                    break;
+                }
+
+                if (link_write)
+                {
+                    const uint32_t link_pc = reference_branch == 1
+                        ? reference_branch_pc + 8u
+                        : reference_pc + 8u;
+                    link_register = it;
+                    link_value = static_cast<uint16_t>((link_pc >> 3) & 0xffffu);
+                }
+                if (branch_taken && relative_branch)
+                {
+                    branch_target = static_cast<uint32_t>(
+                        static_cast<int64_t>(reference_pc) +
+                        static_cast<int64_t>(signed_immediate) * 8
+                    ) & 0x0fffu;
+                }
+                break;
+            }
+
+            default:
+                reference_matches = false;
+                break;
+            }
+
+            if (!reference_matches)
+            {
+                break;
+            }
+
+            // IALU writes capture the old low halfword before commit. Link
+            // writes do not enter the VI-backup mechanism in PCSX2.
+            if (write_vi && destination != 0)
+            {
+                if (reference_backup_cycles == 0 ||
+                    reference_backup_register != destination)
+                {
+                    reference_backup_old_value =
+                        static_cast<uint16_t>(reference_vi[destination]);
+                }
+                reference_backup_register = destination;
+                reference_backup_cycles = 2;
+                reference_vi[destination] =
+                    (reference_vi[destination] & 0xffff0000u) | result_value;
+            }
+
+            if (link_register != 0)
+            {
+                reference_vi[link_register] =
+                    (reference_vi[link_register] & 0xffff0000u) | link_value;
+            }
+
+            if (branch_taken)
+            {
+                if (reference_branch == 1)
+                {
+                    reference_delay_branch_pc = branch_target;
+                    reference_take_delay_branch = 1;
+                }
+                else
+                {
+                    reference_branch = 2;
+                    reference_branch_pc = branch_target;
+                }
+            }
+
+            // PCSX2 ages backup after lower issue and lower-pipe stalls.
+            if (reference_backup_cycles != 0)
+            {
+                --reference_backup_cycles;
+            }
+
+            // Branch retirement follows the pair's lower operation.
+            if (reference_branch != 0)
+            {
+                if (reference_branch > 1)
+                {
+                    --reference_branch;
+                }
+                else
+                {
+                    reference_pc = reference_branch_pc & 0x0fffu;
+                    if (reference_take_delay_branch != 0)
+                    {
+                        reference_branch = 1;
+                        reference_branch_pc =
+                            reference_delay_branch_pc & 0x0fffu;
+                        reference_take_delay_branch = 0;
+                    }
+                    else
+                    {
+                        reference_branch = 0;
+                    }
+                }
+            }
+
+            if ((upper & 0x40000000u) != 0)
+            {
+                reference_e_bit = 2;
+            }
+            if ((upper & 0x20000000u) != 0)
+            {
+                reference_m_bit = 1;
+            }
+
+            if (reference_e_bit != 0)
+            {
+                --reference_e_bit;
+                if (reference_e_bit == 0)
+                {
+                    reference_backup_cycles = 0;
+                    reference_vpu_status &= ~1u;
+                }
+            }
+
+            if ((reference_vpu_status & 1u) == 0 &&
+                reference_branch != 0)
+            {
+                reference_pc = reference_branch_pc & 0x0fffu;
+                reference_branch = 0;
+                reference_take_delay_branch = 0;
+            }
+
+            const uint32_t execute_result = ee::ee_vu0_execute_ialu_callback(
+                &ialu_engine, &cpu, &actual, 1,
+                ee::EE_VU0_EXECUTE_EXACT_CYCLES, 0x00102000u
+            );
+
+            bool pair_matches =
+                execute_result == static_cast<uint32_t>(
+                    ee::e_ee_vu0_sync_result::COMPLETE) &&
+                actual.m_cycle == reference_cycle &&
+                actual.m_micro_pc == reference_pc &&
+                actual.m_tpc == ((reference_pc >> 3) & 0x1ffu) &&
+                actual.m_branch == reference_branch &&
+                actual.m_branch_pc == reference_branch_pc &&
+                actual.m_delay_branch_pc == reference_delay_branch_pc &&
+                actual.m_take_delay_branch == reference_take_delay_branch &&
+                actual.m_vi_backup_cycles == reference_backup_cycles &&
+                actual.m_vi_backup_register == reference_backup_register &&
+                static_cast<uint16_t>(actual.m_vi_backup_old_value) ==
+                    reference_backup_old_value &&
+                actual.m_e_bit == reference_e_bit &&
+                actual.m_vpu_status == reference_vpu_status &&
+                actual.m_m_bit == reference_m_bit &&
+                actual.m_running == (reference_vpu_status & 1u) &&
+                actual.m_ialu_count == 0;
+
+            for (uint32_t reg = 0; reg < 16 && pair_matches; ++reg)
+            {
+                pair_matches = actual.m_vi[reg] == reference_vi[reg];
+            }
+
+            if (!pair_matches)
+            {
+                reference_matches = false;
+                std::printf(
+                    "VU0 control-flow oracle mismatch at pair %u "
+                    "(slot=%u pc=0x%x actual_pc=0x%x cycle=%llu/%llu "
+                    "branch=%u/%u backup=%u/%u e=%u/%u status=%u/%u)\n",
+                    step, slot, reference_pc, actual.m_micro_pc,
+                    static_cast<unsigned long long>(actual.m_cycle),
+                    static_cast<unsigned long long>(reference_cycle),
+                    actual.m_branch, reference_branch,
+                    actual.m_vi_backup_cycles, reference_backup_cycles,
+                    actual.m_e_bit, reference_e_bit,
+                    actual.m_vpu_status, reference_vpu_status
+                );
+                break;
+            }
+
+            if ((reference_vpu_status & 1u) == 0)
+            {
+                break;
+            }
+        }
+
+        check(reference_matches,
+              "384-pair mixed VU0 branch/IALU program matches the PCSX2-derived control-flow oracle");
+    }
+
     // Execute the conservative lower-IALU/upper-NOP subset through the
     // same callback shape used by the VU scheduler.
     {
