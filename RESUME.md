@@ -36,7 +36,7 @@ See [`COP2_RESEARCH.md`](COP2_RESEARCH.md) for the PCSX2 reference and semantic 
 - The aligned `s_ee_vu0_state` sidecar carries VI[32], ACC, Q/P, visible control/flag values, micro-PC, cycle counters and E/M/running state. The established `s_ee_cpu_state::m_vu0[32]` remains the VF bank, so the previous CPU/LLVM ABI offsets are preserved.
 - Runtime transfer helpers apply synchronization before reads/writes; cover VF0, GPR0, CFC2 R and CTC2 special-register cases; and fail closed when the required scheduler/control callback is missing or fails.
 - BC2 reads VPU_STAT bit 8 and has ordinary/likely branch JIT coverage, including delay-slot execution and annulment.
-- `ee_vu0_scheduler_sync_callback` now provides bounded catch-up, finish-to-E, and wait-to-E-or-M orchestration, including VU1 catch-up and EE event callbacks. It does **not** execute VU micro-instructions. A real host VU0 engine remains to be supplied.
+- `ee_vu0_scheduler_sync_callback` now provides bounded catch-up, finish-to-E, and wait-to-E-or-M orchestration, including VU1 catch-up and EE event callbacks. Interlocked waits add only the VU0 cycles consumed to the original EE cycle counter; they do not collapse EE time to the VU0 counter unless taking PCSX2's separate early M-bit/already-ahead path. It does **not** execute VU micro-instructions. A real host VU0 engine remains to be supplied.
 - VU0 SPECIAL1/SPECIAL2 macro instructions remain UNSUPPORTED. Do not enable them until the engine models dual-issue scheduling and FMAC/FDIV/EFU pipelines, flags, ACC/Q/P forwarding and branch timing.
 
 The scheduler/runtime test suite plus all existing tests passed **14/14** in [Actions run #43181208334](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43181208334).
