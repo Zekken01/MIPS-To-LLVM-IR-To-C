@@ -176,6 +176,14 @@ ee::s_ee_vu0_scheduler make_mock_vu0_scheduler(s_mock_vu0_engine* engine)
     return scheduler;
 }
 
+void write_le32(uint8_t* destination, uint32_t value)
+{
+    destination[0] = static_cast<uint8_t>(value);
+    destination[1] = static_cast<uint8_t>(value >> 8);
+    destination[2] = static_cast<uint8_t>(value >> 16);
+    destination[3] = static_cast<uint8_t>(value >> 24);
+}
+
 int g_pass = 0;
 int g_fail = 0;
 
@@ -203,7 +211,9 @@ static_assert(offsetof(ee::s_ee_vu0_state, m_p) == 160);
 static_assert(offsetof(ee::s_ee_vu0_state, m_cycle) == 208);
 static_assert(offsetof(ee::s_ee_vu0_state, m_ee_cycle) == 216);
 static_assert(offsetof(ee::s_ee_vu0_state, m_running) == 224);
-static_assert(sizeof(ee::s_ee_vu0_state) == 240);
+static_assert(offsetof(ee::s_ee_vu0_state, m_data_memory) == 240);
+static_assert(offsetof(ee::s_ee_vu0_state, m_micro_memory) == 4336);
+static_assert(sizeof(ee::s_ee_vu0_state) == 8432);
 
 int main()
 {
@@ -214,6 +224,77 @@ int main()
     ee::s_ee_cpu_state cpu{};
     ee::s_ee_vu0_state vu0{};
     s_mock_scheduler scheduler{};
+
+    // VU0 microcode is a 4 KB byte-addressed store of paired
+    // lower/upper 32-bit words. The upper word carries I/E/M/D/T flags.
+    {
+        ee::s_ee_vu0_state micro_state{};
+        ee::s_ee_vu0_micro_instruction instruction{};
+
+        write_le32(&micro_state.m_micro_memory[0x20], 0x11223344u);
+        write_le32(&micro_state.m_micro_memory[0x24], 0xf8001234u);
+        micro_state.m_micro_pc = 0x20u;
+
+        check(
+            ee::ee_vu0_fetch_micro_instruction(&micro_state, &instruction) ==
+                static_cast<uint32_t>(ee::e_ee_vu0_sync_result::COMPLETE),
+            "VU0 micro fetch succeeds for aligned byte PC"
+        );
+        check(instruction.m_pc == 0x20u &&
+              instruction.m_lower == 0x11223344u &&
+              instruction.m_upper == 0xf8001234u,
+              "VU0 micro fetch preserves lower/upper word order");
+        check(instruction.m_flags ==
+              (ee::EE_VU0_MICRO_FLAG_I | ee::EE_VU0_MICRO_FLAG_E |
+               ee::EE_VU0_MICRO_FLAG_M | ee::EE_VU0_MICRO_FLAG_D |
+               ee::EE_VU0_MICRO_FLAG_T),
+              "VU0 micro fetch decodes I/E/M/D/T flag bits");
+        check(micro_state.m_micro_pc == 0x28u,
+              "VU0 micro fetch advances PC by one 8-byte instruction");
+
+        write_le32(&micro_state.m_micro_memory[0xff8], 0xaabbccddu);
+        write_le32(&micro_state.m_micro_memory[0xffc], 0x40000000u);
+        micro_state.m_micro_pc = 0xff8u;
+        check(
+            ee::ee_vu0_fetch_micro_instruction(&micro_state, &instruction) ==
+                static_cast<uint32_t>(ee::e_ee_vu0_sync_result::COMPLETE),
+            "VU0 micro fetch succeeds at final instruction slot"
+        );
+        check(instruction.m_pc == 0xff8u &&
+              instruction.m_lower == 0xaabbccddu &&
+              instruction.m_upper == 0x40000000u &&
+              instruction.m_flags == ee::EE_VU0_MICRO_FLAG_E,
+              "VU0 micro fetch decodes the final program-memory pair");
+        check(micro_state.m_micro_pc == 0,
+              "VU0 micro PC wraps at the 4 KB program boundary");
+
+        micro_state.m_micro_pc = 0x21u;
+        const ee::s_ee_vu0_micro_instruction sentinel{
+            0xdeadbeefu, 0x12345678u, 0x87654321u, 0x55u
+        };
+        instruction = sentinel;
+        check(
+            ee::ee_vu0_fetch_micro_instruction(&micro_state, &instruction) ==
+                static_cast<uint32_t>(ee::e_ee_vu0_sync_result::INVALID_ARGUMENT),
+            "VU0 micro fetch rejects an unaligned PC"
+        );
+        check(micro_state.m_micro_pc == 0x21u &&
+              instruction.m_pc == sentinel.m_pc &&
+              instruction.m_lower == sentinel.m_lower &&
+              instruction.m_upper == sentinel.m_upper &&
+              instruction.m_flags == sentinel.m_flags,
+              "invalid VU0 micro fetch leaves PC and output unchanged");
+        check(
+            ee::ee_vu0_fetch_micro_instruction(nullptr, &instruction) ==
+                static_cast<uint32_t>(ee::e_ee_vu0_sync_result::INVALID_ARGUMENT),
+            "VU0 micro fetch rejects missing state"
+        );
+        check(
+            ee::ee_vu0_fetch_micro_instruction(&micro_state, nullptr) ==
+                static_cast<uint32_t>(ee::e_ee_vu0_sync_result::INVALID_ARGUMENT),
+            "VU0 micro fetch rejects missing output"
+        );
+    }
 
     check(
         ee::ee_vu0_transfer_sync_mode(
