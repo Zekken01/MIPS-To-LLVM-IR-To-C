@@ -457,6 +457,13 @@ int main(int argc, char** argv)
     s_kernel_semaphore semaphores[64]{};
     uint32_t installed_syscall_handlers[256]{};
 
+    // A registered guest callback must return through this host-only
+    // sentinel. Any other stop is propagated without claiming success.
+    constexpr uint32_t k_callback_return_pc = 0xfffffff0u;
+    bool callback_active = false;
+    uint32_t callback_resume_pc = 0u;
+    ee::s_ee_u128 callback_saved_ra{};
+
     uint32_t remaining = budget;
     uint64_t dispatched = 0;
     std::vector<s_dispatch_sample> history;
@@ -498,6 +505,29 @@ int main(int argc, char** argv)
                         out_pc, exit_name(reason), reason, status);
         }
 
+        if (callback_active &&
+            count != 0u &&
+            cpu.m_pc == k_callback_return_pc &&
+            status == 0u &&
+            (reason == static_cast<uint32_t>(ee::e_ee_exit_reason::EE_EXIT_RETURN) ||
+             reason == static_cast<uint32_t>(ee::e_ee_exit_reason::EE_EXIT_DISPATCH)))
+        {
+            // The guest callback supplies V0 and memory side effects. The
+            // host restores only the interrupted call's return address.
+            cpu.m_gpr[31] = callback_saved_ra;
+            cpu.m_cop0[12] &= ~2u;
+            cpu.m_pc = callback_resume_pc;
+            cpu.m_exit_reason =
+                static_cast<uint32_t>(ee::e_ee_exit_reason::EE_EXIT_DISPATCH);
+            callback_active = false;
+            if (trace)
+            {
+                std::printf("HLE guest syscall returned: resume=0x%08x v0=0x%08x\n",
+                            cpu.m_pc, static_cast<uint32_t>(cpu.m_gpr[2].m_lo));
+            }
+            continue;
+        }
+
         // A translated return to PC zero is an exit from the guest code
         // region. Do not invoke another one-dispatch slice with PC zero:
         // the dispatcher reserves zero as an initial-entry sentinel.
@@ -516,6 +546,41 @@ int main(int argc, char** argv)
         {
             const uint32_t service =
                 static_cast<uint32_t>(cpu.m_gpr[3].m_lo);
+            if (!callback_active && service < 256u &&
+                installed_syscall_handlers[service] != 0u)
+            {
+                const uint32_t epc = cpu.m_cop0[14];
+                const uint32_t handler = installed_syscall_handlers[service];
+                uint32_t opcode = 0;
+                if (!image.read32_at(epc, &opcode) ||
+                    (opcode & 0xfc00003fu) != 0x0000000cu ||
+                    (cpu.m_cop0[13] & 0x80000000u) != 0u ||
+                    epc > 0xfffffffbu ||
+                    !image.is_executable_address(handler))
+                {
+                    std::fprintf(stderr,
+                        "registered syscall HLE refused invalid context "
+                        "number=0x%02x epc=0x%08x handler=0x%08x\n",
+                        service, epc, handler);
+                    break;
+                }
+                callback_saved_ra = cpu.m_gpr[31];
+                callback_resume_pc = epc + 4u;
+                callback_active = true;
+                cpu.m_gpr[31].m_lo = static_cast<uint64_t>(-16ll);
+                cpu.m_gpr[31].m_hi = 0u;
+                cpu.m_pc = handler;
+                cpu.m_exit_reason =
+                    static_cast<uint32_t>(ee::e_ee_exit_reason::EE_EXIT_DISPATCH);
+                if (trace)
+                {
+                    std::printf(
+                        "HLE guest syscall: number=0x%02x handler=0x%08x "
+                        "resume=0x%08x\n",
+                        service, handler, callback_resume_pc);
+                }
+                continue;
+            }
             if (service == 0x3cu || service == 0x3du ||
                 service == 0x40u || service == 0x74u)
             {
@@ -723,6 +788,13 @@ int main(int argc, char** argv)
         {
             break;
         }
+    }
+
+    if (callback_active)
+    {
+        std::fprintf(stderr,
+            "registered syscall handler did not return: pc=0x%08x resume=0x%08x\n",
+            cpu.m_pc, callback_resume_pc);
     }
 
     std::printf(
