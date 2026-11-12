@@ -283,10 +283,10 @@ static_assert(offsetof(ee::s_ee_vu0_state, m_ialu) == 8432);
 static_assert(offsetof(ee::s_ee_vu0_state, m_ialu_read_pos) == 8496);
 static_assert(offsetof(ee::s_ee_vu0_state, m_ialu_write_pos) == 8500);
 static_assert(offsetof(ee::s_ee_vu0_state, m_ialu_count) == 8504);
-static_assert(offsetof(ee::s_ee_vu0_state, m_branch) == 8512);
-static_assert(offsetof(ee::s_ee_vu0_state, m_branch_pc) == 8516);
-static_assert(offsetof(ee::s_ee_vu0_state, m_delay_branch_pc) == 8520);
-static_assert(offsetof(ee::s_ee_vu0_state, m_take_delay_branch) == 8524);
+static_assert(offsetof(ee::s_ee_vu0_state, m_branch) == 8508);
+static_assert(offsetof(ee::s_ee_vu0_state, m_branch_pc) == 8512);
+static_assert(offsetof(ee::s_ee_vu0_state, m_delay_branch_pc) == 8516);
+static_assert(offsetof(ee::s_ee_vu0_state, m_take_delay_branch) == 8520);
 static_assert(sizeof(ee::s_ee_vu0_state) == 8528);
 
 int main()
