@@ -24,7 +24,7 @@ from pathlib import Path
 
 SCHEMA = "mips-to-llvm-vu0-trace-v1"
 STATE_FIELDS = (
-    "vi", "cycle", "micro_pc", "tpc", "branch", "branch_pc",
+    "vi", "vf", "cycle", "micro_pc", "tpc", "branch", "branch_pc",
     "delay_branch_pc", "take_delay_branch", "vi_backup_cycles",
     "vi_backup_register", "vi_backup_old_value", "e_bit", "m_bit",
     "vpu_status", "running", "data_sha256",
@@ -100,6 +100,13 @@ def read_trace(path):
             raise TraceError(
                 f"{path}: step {step} missing state fields: {', '.join(missing)}"
             )
+        if not isinstance(state["vf"], list) or len(state["vf"]) != 32 or any(
+            not isinstance(vector, list) or len(vector) != 4 or any(
+                not isinstance(lane, int) or isinstance(lane, bool) or
+                not 0 <= lane <= 0xffffffff for lane in vector
+            ) for vector in state["vf"]
+        ):
+            raise TraceError(f"{path}: step {step} vf must contain 32 four-lane uint32 vectors")
         if not isinstance(state["vi"], list) or len(state["vi"]) != 32:
             raise TraceError(f"{path}: step {step} vi must contain 32 entries")
         if not valid_sha256(state["data_sha256"]):
@@ -141,6 +148,14 @@ def compare_traces(left_path, right_path):
                         mismatches.append(
                             f"step {index} VI{register}: 0x{va:08x} != 0x{vb:08x}"
                         )
+            elif field == "vf":
+                for register, (va, vb) in enumerate(zip(a, b)):
+                    for lane, (left, right) in enumerate(zip(va, vb)):
+                        if left != right:
+                            mismatches.append(
+                                f"step {index} VF{register}.{('x', 'y', 'z', 'w')[lane]}: "
+                                f"0x{left:08x} != 0x{right:08x}"
+                            )
             else:
                 mismatches.append(
                     f"step {index} {field}: {a!r} != {b!r}"
