@@ -2,9 +2,11 @@
 
 ## Decision
 
-The decoder and LLVM lifter now support the COP2 transfer/control forms QMFC2, QMTC2, CFC2, CTC2 and the four BC2 branches through runtime helpers. They do **not** provide a VU0 micro-engine. A host must supply the VU0 state, execution callback, VU1 catch-up callback and event scheduling hook; absent services fail closed.
+The decoder and LLVM lifter support the COP2 transfer/control forms QMFC2, QMTC2, CFC2, CTC2 and the four BC2 branches through runtime helpers. The runtime also has a deliberately narrow in-tree VU0 execution slice for lower IALU operations (IADD, ISUB, IAND, IOR, IADDI, IADDIU and ISUBIU) paired with upper NOP. The scheduler remains host-integrated: the host supplies VU1 catch-up and EE event services, while unsupported VU0 pairs fail closed.
 
-VU0 macro instructions remain unsupported. Do not promote SPECIAL1/SPECIAL2 forms until a real micro-engine and the required FMAC/FDIV/EFU pipeline semantics are available.
+This is not a general VU0 micro-engine. Branches, VU data-memory operations, I/D/T modes, upper vector operations, full dual-issue ordering and FMAC/FDIV/EFU pipelines remain unsupported.
+
+VU0 macro instructions remain unsupported. Do not promote SPECIAL1/SPECIAL2 forms until the complete micro-engine and the required FMAC/FDIV/EFU pipeline semantics are available.
 
 This note records the PCSX2 interpreter reference, implemented integration boundary and remaining semantic gaps. The runtime helper tests are not proof of a complete VU0 execution engine.
 
@@ -107,11 +109,13 @@ The sidecar is not a full `VURegs` equivalent. It does not contain a complete pi
 
 ## Implementation path
 
-1. **Host VU0 engine:** provide the execution callback that consumes bounded cycle budgets, updates VF/VI/ACC/Q/P, E/M status and micro-PC, and preserves the VU pipeline state.
-2. **Scheduler integration:** install `ee_vu0_scheduler_sync_callback` as the runtime sync callback and supply the VU1 catch-up and EE event callbacks. Differential-test the three scheduling policies against PCSX2.
-3. **Control actions:** implement FBRST reset/force-break and CMSAR1 VU1 startup in the host control callback. The current runtime only routes these actions; it does not emulate them.
-4. **Runtime validation:** test real microprograms that write VI/VF registers while the EE executes transfers in ordinary code and delay slots.
-5. **VU0 macro instructions:** only after the engine has correct dual-issue scheduling, FMAC/FDIV/EFU pipelines, flags, ACC/Q/P forwarding and branch timing.
+1. **Lower integer control flow:** implement B/BAL/JR/JALR and conditional integer branches with the branch-delay state and IALU read interlocks. Keep other lower ops unsupported.
+2. **VU0 memory operations:** add LQ/SQ/ILW/ISW with the distinct VU0 data-memory mapping and address wrap rules.
+3. **Upper/lower issue:** add upper vector execution with explicit dual-issue register hazards, delayed VF writes and flag forwarding.
+4. **Pipeline completion:** model FMAC/FDIV/EFU scheduling and result/flag forwarding before adding macro instruction coverage.
+5. **Scheduler validation:** exercise real VU0 microprograms while EE transfers occur in ordinary code and delay slots; differential-test against PCSX2.
+6. **Control actions:** implement FBRST reset/force-break and CMSAR1 VU1 startup in the host control callback. The current runtime only routes these actions; it does not emulate them.
+7. **VU0 macro instructions:** enable incrementally only after the engine models dual-issue scheduling, flags, ACC/Q/P forwarding and branch timing.
 
 ## Current guardrail
 
@@ -174,9 +178,10 @@ The helper does not emulate VU1 or execute FBRST hardware actions itself. These 
 `ee_vu0_scheduler_sync_callback` now implements the orchestration around a host-provided micro-engine slice callback:
 
 - Catch-up-only calls the engine with the exact positive difference between EE and VU0 cycle counts; when VU0 is already ahead it does no execution. It does not account cycles on the EE, catch VU1 up, or schedule an EE event.
-- Finish-to-E repeatedly runs with STOP_AT_E and ignores M-bit termination.
-- Wait-to-E-or-M runs with STOP_AT_E and STOP_AT_M. The early M-bit/already-ahead path advances EE time to the VU0 cycle and returns without the normal epilogue.
-- Finish/wait account the elapsed VU0 cycles on EE, call the host VU1 catch-up hook, and schedule a four-cycle EE event if VU0 remains active.
+- Each host micro-engine slice returns at an M-flagged pair, matching PCSX2's `Execute()` boundary. Finish-to-E invokes another slice after M and continues until E; wait-to-E-or-M returns when that slice reports M. The early M-bit/already-ahead path advances EE time to the VU0 cycle and returns without the normal epilogue.
+- Finish/wait account the VU0 cycles consumed on EE, call the host VU1 catch-up hook, and schedule a four-cycle EE event if VU0 remains active.
 - Every callback result is validated. Missing VU1/event services are detected before interlocked execution; non-progressing engines and excessive run-call counts fail rather than looping indefinitely.
 
-The adapter deliberately does not execute VU micro-instructions. The host's `m_execute` callback is responsible for instruction semantics, pipeline hazards, micro-PC advancement and updating the sidecar's cycle/E/M state. Tests use a mock engine to validate scheduler orchestration only.
+The scheduler adapter deliberately does not execute VU micro-instructions. The in-tree `ee_vu0_execute_ialu_callback` supplies the first restricted execution slice: lower IADD/ISUB/IAND/IOR/IADDI/IADDIU/ISUBIU paired with upper NOP. It writes the VI low halfword immediately, schedules one-cycle destination reservations, retires matured reservations before each issue, and flushes pending IALU writes at E termination. It rejects unsupported lower/upper pairs without consuming the micro-PC.
+
+The E flag sets a two-pair delay. M returns from one engine slice regardless of the selected wait mode; the outer scheduler resumes for FINISH_TO_E or stops for WAIT_TO_E_OR_M. At E, pending IALU reservations are flushed, including their final latency cycle. Tests cover the seven operations, VI0/halfword semantics, M-slice resumption, E delay/flush and unsupported-pair fail-closed behaviour. This remains a lower-IALU-only subset: no branch, VU memory, I/D/T, upper vector, dual-issue hazard, VF, flag, FMAC, FDIV or EFU execution is implied.
