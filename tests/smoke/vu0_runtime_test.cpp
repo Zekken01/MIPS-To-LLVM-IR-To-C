@@ -2561,6 +2561,42 @@ int main()
               "VU1 mapped register-window stores fail closed without mutation");
     }
 
+    // In PCSX2, VUPIPE_IALU records ILW's four-cycle destination hazard,
+    // but only VUPIPE_BRANCH actually waits for that IALU read hazard.
+    {
+        ee::s_ee_vu0_state state{};
+        ee::s_ee_vu0_ialu_engine engine{};
+        state.m_vpu_status = 1;
+        state.m_data_memory[0] = 0x34;
+        state.m_data_memory[1] = 0x12;
+        install_vu0_pair(
+            &state, 0, make_vu0_memory(0x04u, 8u, 2, 0, 0),
+            make_vu0_upper_nop()
+        );
+        install_vu0_pair(
+            &state, 1, make_vu0_memory(0x05u, 8u, 2, 0, 1),
+            make_vu0_upper_nop()
+        );
+        install_vu0_pair(
+            &state, 2, make_vu0_branch(0x28u, 2, 0, 1),
+            make_vu0_upper_nop()
+        );
+        check(ee::ee_vu0_execute_ialu_callback(
+                  &engine, &cpu, &state, 2,
+                  ee::EE_VU0_EXECUTE_EXACT_CYCLES, 0
+              ) == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              state.m_cycle == 2 && state.m_ialu_count == 1 &&
+              state.m_data_memory[16] == 0x34 &&
+              state.m_data_memory[17] == 0x12,
+              "ISW after ILW reads the loaded VI without an IALU pipe stall");
+        check(ee::ee_vu0_execute_ialu_callback(
+                  &engine, &cpu, &state, 1,
+                  ee::EE_VU0_EXECUTE_EXACT_CYCLES, 0
+              ) == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              state.m_cycle == 5 && state.m_ialu_count == 0,
+              "dependent VU0 integer branch waits for ILW's four-cycle pipe");
+    }
+
     std::printf("vu0_runtime_test: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }
