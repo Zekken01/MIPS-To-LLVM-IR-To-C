@@ -2415,6 +2415,27 @@ int main()
               "SQ stores selected VF lanes in little-endian order");
     }
 
+    {
+        ee::s_ee_vu0_state state{};
+        ee::s_ee_cpu_state vector_cpu{};
+        ee::s_ee_vu0_ialu_engine ialu_engine{};
+        state.m_vpu_status = 1u;
+        install_vu0_pair(&state, 0, make_vu0_memory(0x00, 0xf, 2, 0, 1),
+                         make_vu0_upper_nop()); // LQ reserves FMAC for four cycles.
+        install_vu0_pair(&state, 1, make_vu0_iaddiu(0, 0, 0),
+                         make_vu0_upper_nop(0x40000000u)); // E
+        install_vu0_pair(&state, 2, make_vu0_iaddiu(0, 0, 0),
+                         make_vu0_upper_nop()); // E delay
+        const uint32_t result = ee::ee_vu0_execute_ialu_callback(
+            &ialu_engine, &vector_cpu, &state, 10,
+            ee::EE_VU0_EXECUTE_STOP_AT_E, 0x0010200cu
+        );
+        check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              state.m_cycle == 5 && state.m_micro_pc == 24 &&
+              state.m_vf_memory_ready_cycle == 0,
+              "E termination drains outstanding LQ FMAC issue latency");
+    }
+
     // The generic four-entry IALU interlock queue is used by lower
     // operations with nonzero latency (for example ILW/ILWR). The scalar
     // IADD-family operations have zero pipeline latency and bypass it.
