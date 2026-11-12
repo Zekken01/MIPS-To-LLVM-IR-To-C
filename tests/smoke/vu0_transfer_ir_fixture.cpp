@@ -44,8 +44,35 @@ uint32_t make_jr(uint8_t rs)
     return (static_cast<uint32_t>(rs) << 21) | 0x08u;
 }
 
+uint32_t make_j(uint32_t target)
+{
+    return (0x02u << 26) | ((target >> 2) & 0x03ffffffu);
+}
+
 bool build_words(const std::string& mode, std::vector<uint32_t>& words)
 {
+    if (mode == "bc2_f_delay" || mode == "bc2_t_delay" ||
+        mode == "bc2_fl_annul" || mode == "bc2_tl_delay")
+    {
+        const uint8_t branch_kind = mode == "bc2_f_delay" ? 0
+            : mode == "bc2_t_delay" ? 1
+            : mode == "bc2_fl_annul" ? 2 : 3;
+        const uint32_t branch =
+            (0x12u << 26) | (0x08u << 21) |
+            (static_cast<uint32_t>(branch_kind) << 16) | 4u;
+        words = {
+            branch,
+            make_addiu(0, 8, 0xaaaa), // delay slot: visible only when executed
+            make_addiu(0, 9, 0x1111), // fallthrough
+            make_j(0x00140000u),      // leave the fixture after fallthrough
+            0u,
+            make_addiu(0, 10, 0x2222), // taken target
+            make_jr(31),
+            0u
+        };
+        return true;
+    }
+
     uint8_t cop2_rs = 0;
     if (mode.rfind("qmfc2", 0) == 0)
         cop2_rs = 0x01;
