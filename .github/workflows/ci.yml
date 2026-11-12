@@ -44,6 +44,8 @@ jobs:
           name: ee-recomp-linux
           path: |
             build/ee_recomp
+            build/ee_game_runner
+            tools/run_game.py
             tools/verify_ir.py
             tools/link_native_objects.py
             include/ee/
