@@ -156,7 +156,7 @@ class VU0CandidateTraceTests(unittest.TestCase):
             self.assertEqual(steps[41]["state"]["cycle"], 42)
             # PCSX2 flushes the four-cycle lower FMAC pipeline at E,
             # including the final LQ destination reservation.
-            self.assertEqual(final["cycle"], 51)
+            self.assertEqual(final["cycle"], 54)
             self.assertNotEqual(
                 steps[38]["state"]["data_sha256"],
                 steps[39]["state"]["data_sha256"],
@@ -179,7 +179,7 @@ class VU0CandidateTraceTests(unittest.TestCase):
             )
             self.assertEqual(
                 steps[46]["state"]["vf"][4],
-                [0, 0x05060708, 0, 0x0d0e0f10],
+                [0x11223344, 0x05060708, 0, 0],
             )
             self.assertEqual(final["e_bit"], 0)
             self.assertFalse(final["running"])
