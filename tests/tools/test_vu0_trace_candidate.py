@@ -12,7 +12,7 @@ TOOL_ARGS = sys.argv[1:]
 sys.argv = [sys.argv[0]]
 
 EXPECTED_PROGRAM_SHA256 = (
-    "c44f3f1e0ad5718c1ea94435605d60acd141aad36dd2e6264a3c4f560618c32c"
+    "001784f23b98ed1023bfebe5b63086f439b1e6b38011166c95b5dcda01f7d58b"
 )
 EXPECTED_PAIR_PCS = [
     0, 8, 16, 24, 32, 40, 48, 56, 64,
@@ -20,12 +20,16 @@ EXPECTED_PAIR_PCS = [
     168, 176, 192, 200, 208, 216, 224, 232, 240, 248,
     256, 264, 280, 288,
     296, 304, 312, 320, 328, 336, 344, 352, 360, 368, 376,
-    384, 392, 400, 408,
+    384, 392, 400, 408, 416, 424, 432, 440, 448, 456,
 ]
 
 
 def executed_operation(lower):
     primary = (lower >> 25) & 0x7f
+    if primary == 0x00:
+        return "LQ"
+    if primary == 0x01:
+        return "SQ"
     if primary == 0x04:
         return "ILW"
     if primary == 0x05:
@@ -111,7 +115,7 @@ class VU0CandidateTraceTests(unittest.TestCase):
                 operations,
                 {
                     "IADDIU", "IADDI", "IADD", "ISUB", "IAND", "IOR",
-                    "ISUBIU", "ILW", "ISW", "B", "BAL", "JR", "JALR", "IBEQ", "IBNE",
+                    "ISUBIU", "ILW", "ISW", "LQ", "SQ", "B", "BAL", "JR", "JALR", "IBEQ", "IBNE",
                     "IBLTZ", "IBGTZ", "IBLEZ", "IBGEZ",
                 },
             )
@@ -143,14 +147,14 @@ class VU0CandidateTraceTests(unittest.TestCase):
             self.assertEqual(final["vi"][14], 0x7fef)
             self.assertEqual(final["vi"][15], 18)
             self.assertEqual(final["vi"][2], 0x7fef)
-            self.assertEqual(final["vi"][26], 416)
+            self.assertEqual(final["vi"][26], 448 + 16)
             self.assertEqual(final["vi"][29], 0)
-            self.assertEqual(final["micro_pc"], 416)
-            self.assertEqual(final["tpc"], 52)
+            self.assertEqual(final["micro_pc"], 464)
+            self.assertEqual(final["tpc"], 58)
             # PCSX2 does not stall an ISW on ILW's IALU destination.
             self.assertEqual(steps[40]["state"]["cycle"], 41)
             self.assertEqual(steps[41]["state"]["cycle"], 42)
-            self.assertEqual(final["cycle"], 47)
+            self.assertEqual(final["cycle"], 51)
             self.assertNotEqual(
                 steps[38]["state"]["data_sha256"],
                 steps[39]["state"]["data_sha256"],
@@ -166,6 +170,14 @@ class VU0CandidateTraceTests(unittest.TestCase):
             self.assertEqual(
                 steps[41]["state"]["data_sha256"],
                 steps[42]["state"]["data_sha256"],
+            )
+            self.assertEqual(
+                steps[45]["state"]["vf"][3],
+                [0x11223344, 0x05060708, 0x99aabbcc, 0x0d0e0f10],
+            )
+            self.assertEqual(
+                steps[47]["state"]["vf"][4],
+                [0, 0x05060708, 0, 0x0d0e0f10],
             )
             self.assertEqual(final["e_bit"], 0)
             self.assertFalse(final["running"])
