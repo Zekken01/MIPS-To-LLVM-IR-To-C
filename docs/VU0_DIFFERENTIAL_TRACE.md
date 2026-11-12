@@ -53,6 +53,7 @@ subset:
 {
   "kind": "step",
   "step": 0,
+  "pc": 0,
   "lower": 1006634032,
   "upper": 0,
   "state": {
@@ -69,7 +70,7 @@ subset:
     "vi_backup_register": 0,
     "vi_backup_old_value": 0,
     "e_bit": 0,
-    "m_bit": 0,
+    "m_bit": false,
     "vpu_status": 1,
     "running": true
   }
@@ -99,11 +100,22 @@ python3 tools/compare_vu0_traces.py pcsx2.jsonl candidate.jsonl
 Exit codes: 0 means exact match, 1 means architectural mismatch, and 2 means
 malformed/incompatible traces.
 
-## Important limitation
+## Current implementation and limitation
 
-The JSONL comparator and its regression tests are now part of this repository.
-They do not themselves execute PCSX2 or produce either trace. The next task is
-the PCSX2-side adapter: initialize VU0 with the shared 4 KB microprogram and
-initial VI state, single-step `CpuIntVU0`, and serialize the fields above.
-Do not claim differential validation until a real PCSX2-produced trace has
-been compared successfully.
+The repository now contains all pieces needed to produce both sides of the
+trace:
+
+- A shared deterministic 37-pair microprogram fixture.
+- The in-tree candidate trace executable, built as `ee_vu0_trace_candidate`.
+- A pinned PCSX2 GoogleTest adapter that captures one pair after each
+  `vu0Exec(&VU0)` call when `VU0_TRACE_OUTPUT` is set.
+- The JSONL comparator and regression tests, including executed-PC comparison.
+
+CTest validates the candidate trace path and its expected 30 executed pairs.
+To run the real cross-engine comparison, build a PCSX2 checkout at the pinned
+revision, install the adapter with
+`tools/vu0_diff/integrate_pcsx2_test.py`, and follow the commands in
+`tools/vu0_diff/README.md`.
+
+The PCSX2 trace has not yet been produced and compared in this environment.
+Do not claim live differential validation until that comparison succeeds.
