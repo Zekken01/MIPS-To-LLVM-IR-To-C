@@ -118,3 +118,16 @@ Further changes should be committed to this branch in small, testable increments
 - The test verifies the low 32-bit signed source is used, the destination is written as a zero-extended FPR word, the source is preserved, and FCSR is unchanged.
 - The lowering itself was already present (`sitofp i32 to float`); this change adds execution coverage for the only supported `fmt=W` operation.
 - CI result for this follow-up is pending; do not treat it as verified until the Actions run completes.
+
+
+## 2026-11-12 — Complete supported COP1-S coverage and record COP2 boundary
+
+- Compared the COP1 decoder/lifter coverage against PCSX2's R5900 COP1 table. Kept non-table conversion forms unsupported; the R5900 table does not define the conventional ROUND.W.S/TRUNC.W.S/CEIL.W.S/FLOOR.W.S family.
+- Corrected MAX.S/MIN.S to use the EE's raw signed-bit ordering instead of host floating-point comparisons. Added raw-bit ABS.S/NEG.S handling and exact FCSR cause-bit clearing.
+- Added EE operand normalisation and result handling for ADD.S/SUB.S/MUL.S/DIV.S and SQRT.S/RSQRT.S, including denormal flushing, signed FMAX saturation, divide-by-zero classification, and cause/sticky flag behavior.
+- Added distinct accumulator paths for ADDA.S/SUBA.S/MULA.S, MADD.S/MSUB.S and MADDA.S/MSUBA.S. Runtime tests distinguish the normalized accumulator/product path from the raw accumulator/product path using denormal and overflow cases.
+- Added MFC1/MTC1/CFC1/CTC1 runtime tests. Fixed block read/write liveness so CFC1 marks its destination GPR as written and CTC1 marks its source GPR as read. A cross-block ADDIU-to-CTC1 test confirms the value reaches FCSR.
+- Added BC1T condition-sampling coverage with a CTC1 delay slot, plus BC1FL not-taken delay-slot annulment coverage.
+- The first BC1 JIT test attempt failed only because the Python test called the generated two-argument guest ABI with one argument. Passed the runtime pointer and reran.
+- GitHub Actions run [43125195580](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43125195580), commit `ce5f3522`: clean configure/build and **12/12 CTest passed**, including all COP1 JIT tests.
+- Added `COP2_RESEARCH.md` using PCSX2's VU0 interpreter and state structures as references. Documented QMFC2/QMTC2/CFC2/CTC2 synchronization and side effects, BC2/macro decode groups, and the current project state gap. No COP2 opcode was promoted to VALID; VU0 transfers require a scheduler/state model rather than a direct register-copy lowering.
