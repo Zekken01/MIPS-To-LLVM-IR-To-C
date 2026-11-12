@@ -168,7 +168,7 @@ int main()
     expect("reserved class", R(0x12,9,4,5,0,0), "cop2_reserved", X);
     {
         const auto b = decode(0x100000, R(0x12,8,0,0,0,0x02));
-        const bool ok = b.valid == U && b.flow == e_ee_flow::FLOW_BRANCH &&
+        const bool ok = b.valid == V && b.flow == e_ee_flow::FLOW_BRANCH &&
                         b.has_delay_slot && !b.branch_likely &&
                         b.branch_target == 0x0010000c &&
                         std::strcmp(b.mnemonic, "bc2f") == 0;
@@ -177,11 +177,27 @@ int main()
     }
     {
         const auto b = decode(0x100000, R(0x12,8,2,0,0,0x02));
-        const bool ok = b.valid == U && b.flow == e_ee_flow::FLOW_BRANCH_LIKELY &&
+        const bool ok = b.valid == V && b.flow == e_ee_flow::FLOW_BRANCH_LIKELY &&
                         b.has_delay_slot && b.branch_likely &&
                         std::strcmp(b.mnemonic, "bc2fl") == 0;
         ok ? ++g_pass : ++g_fail;
         if (!ok) std::printf("FAIL bc2fl likely decode\n");
+    }
+    {
+        const auto b = decode(0x100000, R(0x12,8,1,0,0,0x02));
+        const bool ok = b.valid == V && b.flow == e_ee_flow::FLOW_BRANCH &&
+                        b.has_delay_slot && !b.branch_likely &&
+                        std::strcmp(b.mnemonic, "bc2t") == 0;
+        ok ? ++g_pass : ++g_fail;
+        if (!ok) std::printf("FAIL bc2t decode\\n");
+    }
+    {
+        const auto b = decode(0x100000, R(0x12,8,3,0,0,0x02));
+        const bool ok = b.valid == V && b.flow == e_ee_flow::FLOW_BRANCH_LIKELY &&
+                        b.has_delay_slot && b.branch_likely &&
+                        std::strcmp(b.mnemonic, "bc2tl") == 0;
+        ok ? ++g_pass : ++g_fail;
+        if (!ok) std::printf("FAIL bc2tl decode\\n");
     }
     // The BC2 table has 32 entries, but only rt=0..3 are defined. Do not
     // silently alias higher rt values through rt & 3.
