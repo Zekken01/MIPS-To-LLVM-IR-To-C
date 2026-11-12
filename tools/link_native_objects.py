@@ -100,7 +100,12 @@ def build_dispatch_source(metadata, functions):
         "};",
         "} // namespace",
         "",
-        'extern "C" std::uint32_t ee_game_run(',
+        "#if defined(_WIN32)",
+        "#define EE_GAME_EXPORT __declspec(dllexport)",
+        "#else",
+        "#define EE_GAME_EXPORT",
+        "#endif",
+        'extern "C" EE_GAME_EXPORT std::uint32_t ee_game_run(',
         "    ee::s_ee_cpu_state* cpu,",
         "    ee::s_ee_runtime* runtime,",
         "    std::uint32_t max_dispatches,",
@@ -269,7 +274,7 @@ def main():
         # objects and can exceed the operating system's command-line length.
         response_path = args.output.with_suffix(args.output.suffix + ".objects.rsp")
         response_path.write_text(
-            "\n".join('"' + str(path).replace('"', '\\"') + '"' for path in objects)
+            "\n".join('"' + str(path).replace("\\", "/").replace('"', '\\"') + '"' for path in objects)
             + "\n",
             encoding="utf-8",
         )
