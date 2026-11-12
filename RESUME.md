@@ -4,7 +4,7 @@
 
 This branch is a reconstructed baseline from the preserved 2026-11-11 09:57 MMI/HI1/LO1 follow-up, with subsequent decoder, lifting, control-flow, dispatcher, and validation work. Do not merge it into `main` until source provenance and the latest changes have been reviewed.
 
-Latest fully verified CI: [Actions run #43219107693](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43219107693), **15/15 CTest passed**, including the per-site JALR audit regressions, function-discovery/data-flow tests, VU0 integer branch execution, COP1/COP2 JIT tests, native object emission/linking, dispatcher execution, and MMI/HI1/LO1 suites.
+Latest fully verified CI: [Actions run #43222672470](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43222672470), **15/15 CTest passed**, including the VU0 branch-stall/VI-backup timing regression, per-site JALR audit, function-discovery/data-flow tests, COP1/COP2 JIT tests, native object emission/linking, dispatcher execution, and MMI/HI1/LO1 suites.
 
 Latest USA `SLUS_214.42` full-image revalidation:
 - **7,901 function entries discovered**; **418,898 unique instruction PCs** in the function-scoped CFG set.
