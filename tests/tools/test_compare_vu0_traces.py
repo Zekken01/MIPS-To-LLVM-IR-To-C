@@ -39,7 +39,7 @@ def make_trace(engine, mutate=None):
         mutate(header, state)
     return [
         header,
-        {"kind": "step", "step": 0, "lower": 0x3C000C30,
+        {"kind": "step", "step": 0, "pc": 0, "lower": 0x3C000C30,
          "upper": 0, "state": state},
     ]
 
