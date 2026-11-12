@@ -221,6 +221,49 @@ uint32_t ee_vu0_scheduler_sync_callback(
     return static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE);
 }
 
+namespace
+{
+uint32_t read_le32(const uint8_t* bytes)
+{
+    return static_cast<uint32_t>(bytes[0]) |
+           (static_cast<uint32_t>(bytes[1]) << 8) |
+           (static_cast<uint32_t>(bytes[2]) << 16) |
+           (static_cast<uint32_t>(bytes[3]) << 24);
+}
+} // namespace
+
+extern "C" uint32_t ee_vu0_fetch_micro_instruction(
+    s_ee_vu0_state* vu0,
+    s_ee_vu0_micro_instruction* out
+)
+{
+    if (!vu0 || !out)
+    {
+        return static_cast<uint32_t>(e_ee_vu0_sync_result::INVALID_ARGUMENT);
+    }
+
+    const uint32_t pc = vu0->m_micro_pc & EE_VU0_MICRO_MEMORY_MASK;
+    if ((pc & 7u) != 0)
+    {
+        return static_cast<uint32_t>(e_ee_vu0_sync_result::INVALID_ARGUMENT);
+    }
+
+    const uint8_t* const bytes = &vu0->m_micro_memory[pc];
+    const uint32_t lower = read_le32(bytes);
+    const uint32_t upper = read_le32(bytes + 4);
+
+    uint32_t flags = 0;
+    if ((upper & 0x80000000u) != 0) flags |= EE_VU0_MICRO_FLAG_I;
+    if ((upper & 0x40000000u) != 0) flags |= EE_VU0_MICRO_FLAG_E;
+    if ((upper & 0x20000000u) != 0) flags |= EE_VU0_MICRO_FLAG_M;
+    if ((upper & 0x10000000u) != 0) flags |= EE_VU0_MICRO_FLAG_D;
+    if ((upper & 0x08000000u) != 0) flags |= EE_VU0_MICRO_FLAG_T;
+
+    *out = {pc, lower, upper, flags};
+    vu0->m_micro_pc = (pc + 8u) & EE_VU0_MICRO_MEMORY_MASK;
+    return static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE);
+}
+
 extern "C" uint32_t ee_vu0_read_vi(
     const s_ee_vu0_state* vu0,
     uint32_t index
