@@ -178,6 +178,9 @@ bool elf_loader::parse_sections(const uint8_t* data, size_t size)
 {
     constexpr uint32_t SHT_RELA = 4;
     constexpr uint32_t SHT_REL = 9;
+    constexpr uint32_t SHT_RELR = 19;
+    constexpr uint32_t SHT_ANDROID_REL = 0x60000001u;
+    constexpr uint32_t SHT_ANDROID_RELA = 0x60000002u;
 
     m_relocations_complete = false;
     m_relocation_addresses.clear();
@@ -206,6 +209,17 @@ bool elf_loader::parse_sections(const uint8_t* data, size_t size)
             data + hdr->e_shoff + static_cast<size_t>(i) * hdr->e_shentsize,
             sizeof(section)
         );
+
+        if (section.sh_type == SHT_RELR ||
+            section.sh_type == SHT_ANDROID_REL ||
+            section.sh_type == SHT_ANDROID_RELA)
+        {
+            // These packed relocation formats are not decoded here. Refuse
+            // static memory reads for the entire image rather than miss one.
+            m_relocations_complete = false;
+            m_relocation_addresses.clear();
+            return true;
+        }
 
         uint32_t relocation_entry_size = 0;
         if (section.sh_type == SHT_REL)
@@ -316,36 +330,68 @@ bool elf_loader::read32_const_at(uint32_t addr, uint32_t* out) const
         return false;
     }
 
-    const uint64_t word_end = static_cast<uint64_t>(addr) + 4u;
-    const auto relocation = m_relocation_addresses.lower_bound(addr);
-    if (relocation != m_relocation_addresses.end() &&
-        static_cast<uint64_t>(*relocation) < word_end)
+    const uint64_t word_begin = addr;
+    const uint64_t word_end = word_begin + 4u;
+    // MIPS 32-bit relocations normally cover a word. Use a wider 16-byte
+    // look-back window as a conservative guard for compound/paired records.
+    const uint32_t relocation_scan_begin =
+        addr > 15u ? addr - 15u : 0u;
+    for (auto relocation = m_relocation_addresses.lower_bound(relocation_scan_begin);
+         relocation != m_relocation_addresses.end() &&
+             static_cast<uint64_t>(*relocation) < word_end;
+         ++relocation)
+    {
+        const uint64_t relocation_begin = *relocation;
+        const uint64_t relocation_end = relocation_begin + 16u;
+        if (relocation_begin < word_end && relocation_end > word_begin)
+        {
+            return false;
+        }
+    }
+
+    const load_segment* constant_segment = nullptr;
+    uint64_t constant_offset = 0;
+    uint32_t overlapping_segments = 0;
+    for (const auto& seg : m_segments)
+    {
+        const uint64_t segment_begin = seg.vaddr;
+        const uint64_t segment_end = segment_begin + seg.memsz;
+        if (segment_begin >= word_end || segment_end <= word_begin)
+        {
+            continue;
+        }
+
+        ++overlapping_segments;
+        if (!seg.readable || seg.writable ||
+            segment_begin > word_begin || segment_end < word_end)
+        {
+            return false;
+        }
+
+        const uint64_t offset = word_begin - segment_begin;
+        if (offset > seg.filesz || seg.filesz - offset < 4u)
+        {
+            return false;
+        }
+
+        constant_segment = &seg;
+        constant_offset = offset;
+    }
+
+    // Overlapping PT_LOAD mappings can make a read-only segment writable or
+    // otherwise replace its bytes at load time. Only accept a unique mapping.
+    if (overlapping_segments != 1 || constant_segment == nullptr)
     {
         return false;
     }
 
-    for (const auto& seg : m_segments)
-    {
-        if (!seg.readable || seg.writable || addr < seg.vaddr)
-        {
-            continue;
-        }
-
-        const uint64_t offset = static_cast<uint64_t>(addr) - seg.vaddr;
-        if (offset > seg.filesz || seg.filesz - offset < 4u)
-        {
-            continue;
-        }
-
-        const uint8_t* const bytes = seg.data.data() + offset;
-        *out = static_cast<uint32_t>(bytes[0]) |
-               (static_cast<uint32_t>(bytes[1]) << 8) |
-               (static_cast<uint32_t>(bytes[2]) << 16) |
-               (static_cast<uint32_t>(bytes[3]) << 24);
-        return true;
-    }
-
-    return false;
+    const uint8_t* const bytes =
+        constant_segment->data.data() + constant_offset;
+    *out = static_cast<uint32_t>(bytes[0]) |
+           (static_cast<uint32_t>(bytes[1]) << 8) |
+           (static_cast<uint32_t>(bytes[2]) << 16) |
+           (static_cast<uint32_t>(bytes[3]) << 24);
+    return true;
 }
 
 bool elf_loader::is_executable_address(uint32_t addr) const
