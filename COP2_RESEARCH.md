@@ -129,3 +129,15 @@ The first runtime foundation is now represented in source, while COP2 transfer e
 This is deliberately only an integration contract. It does not implement a VU0 execution engine or cycle scheduler, and the host callback must provide those. The current transfer opcodes remain UNSUPPORTED until a real scheduler is connected and differential transfer tests exercise both ordinary and delay-slot paths. FBRST/CMSAR1 side effects and the CFC2 special R-register mask still require explicit per-register handling.
 
 The new `vu0_runtime_test` checks sidecar layout, VI0 behavior, all three synchronization modes, callback state identity, error propagation, and fail-closed behaviour for absent state/callback.
+
+
+## Initial synchronized transfer helpers
+
+The runtime now has first-pass implementations for QMFC2, QMTC2 and CFC2. They all call `ee_vu0_sync` before touching their destination:
+
+- QMFC2 copies both 64-bit halves of VF[fs] into GPR[rt]. GPR0 remains unchanged, but synchronization still occurs.
+- QMTC2 copies both halves of GPR[rt] into VF[fs]. GPR0 is treated as a zero source and VF0 remains unchanged; synchronization still occurs for both cases.
+- CFC2 reads the VI bank after synchronization, sign-extends ordinary 32-bit VI values into the low GPR doubleword, and applies the 23-bit mask for R (VI index 20). It preserves the GPR's upper 64-bit half, consistent with the current scalar write helpers.
+- All three helpers leave architectural destinations untouched when synchronization is unavailable or reports failure.
+
+These are runtime-callable helpers with unit tests. The LLVM lifter has not yet been taught to emit them and the decoder deliberately continues to report these instructions as UNSUPPORTED. CTC2 remains deferred until its read-only, R, FBRST, CMSAR1 and CLIP_FLAG behavior is mapped and tested.

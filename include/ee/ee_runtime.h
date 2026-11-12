@@ -82,6 +82,18 @@ uint32_t ee_vu0_sync(s_ee_cpu_state* cpu, s_ee_runtime* rt,
 uint32_t ee_vu0_read_vi(const s_ee_vu0_state* vu0, uint32_t index);
 void     ee_vu0_write_vi(s_ee_vu0_state* vu0, uint32_t index, uint32_t value);
 
+// Synchronized VU0 transfers. The indices are decoded 5-bit fields: gpr_index
+// is rt and vu_index is fs/rd. Destinations obey hardwired GPR0/VF0 semantics.
+uint32_t ee_vu0_qmfc2(s_ee_cpu_state* cpu, s_ee_runtime* rt,
+                      uint32_t gpr_index, uint32_t vf_index,
+                      uint32_t mode, uint32_t pc);
+uint32_t ee_vu0_qmtc2(s_ee_cpu_state* cpu, s_ee_runtime* rt,
+                      uint32_t gpr_index, uint32_t vf_index,
+                      uint32_t mode, uint32_t pc);
+uint32_t ee_vu0_cfc2(s_ee_cpu_state* cpu, s_ee_runtime* rt,
+                      uint32_t gpr_index, uint32_t vi_index,
+                      uint32_t mode, uint32_t pc);
+
 // Exception entry / return and interrupt helpers (ee_exceptions.cpp).
 uint32_t ee_raise_exception(s_ee_cpu_state* cpu, s_ee_runtime* rt,
                             uint32_t excode, uint32_t pc,

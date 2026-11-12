@@ -153,3 +153,13 @@ Further changes should be committed to this branch in small, testable increments
 - Added VI read/write helpers with VI0 hardwired to zero.
 - Added `vu0_runtime_test` coverage for layout, VI0, all synchronization modes, callback state/PC propagation, callback failures, and missing-runtime fail-closed paths.
 - This does not yet provide an actual VU0 scheduler. COP2 transfer decodes remain UNSUPPORTED until a host scheduler is connected and tested against PCSX2 timing semantics.
+
+
+## 2026-11-12 — First synchronized COP2 transfer helpers
+
+- Added runtime helpers for QMFC2, QMTC2 and CFC2. Each calls the VU0 synchronization callback before performing any architectural transfer; missing or failed synchronization leaves the transfer destination unchanged.
+- QMFC2 copies the full 128-bit VF value to the full 128-bit GPR, respecting hardwired GPR0.
+- QMTC2 copies the full 128-bit GPR value to VF, treats GPR0 as a zero source, and protects VF0 from writes.
+- CFC2 sign-extends ordinary VI values into the low GPR doubleword, masks the R register (VI index 20) to 23 bits, and preserves the GPR upper 64-bit half.
+- Expanded `vu0_runtime_test` to cover full-width copies, zero registers, CFC2 R handling, scheduler failures and destination preservation.
+- The LLVM emitter and decoder are intentionally unchanged: these transfer helpers are not yet wired to generated guest code, and the corresponding instructions remain UNSUPPORTED. CTC2 is deferred pending explicit side-effect mapping.

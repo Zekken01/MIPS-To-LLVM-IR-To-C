@@ -199,6 +199,105 @@ int main()
         "unknown synchronization mode is rejected"
     );
 
+    // QMFC2 copies both halves of VF[fs] after synchronization.
+    cpu.m_vu0[3] = {0x0123456789abcdefULL, 0xfedcba9876543210ULL};
+    cpu.m_gpr[9] = {};
+    const uint32_t read_mode = static_cast<uint32_t>(
+        ee::ee_vu0_transfer_sync_mode(e_ee_vu0_transfer_direction::FROM_VU0, false)
+    );
+    check(
+        ee::ee_vu0_qmfc2(&cpu, &runtime, 9, 3, read_mode, 0x00100020u) ==
+            static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE),
+        "QMFC2 succeeds after scheduler synchronization"
+    );
+    check(cpu.m_gpr[9].m_lo == cpu.m_vu0[3].m_lo &&
+          cpu.m_gpr[9].m_hi == cpu.m_vu0[3].m_hi,
+          "QMFC2 copies both 64-bit halves");
+    const ee::s_ee_u128 zero_gpr_sentinel{0x1111222233334444ULL, 0x5555666677778888ULL};
+    cpu.m_gpr[0] = zero_gpr_sentinel;
+    check(
+        ee::ee_vu0_qmfc2(&cpu, &runtime, 0, 3, read_mode, 0x00100024u) ==
+            static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE),
+        "QMFC2 to GPR0 still performs synchronization"
+    );
+    check(cpu.m_gpr[0].m_lo == zero_gpr_sentinel.m_lo &&
+          cpu.m_gpr[0].m_hi == zero_gpr_sentinel.m_hi,
+          "QMFC2 never changes GPR0");
+
+    // QMTC2 copies all 128 source bits. GPR0 reads as zero and VF0 is
+    // protected from writes; synchronization still happens in both cases.
+    cpu.m_gpr[8] = {0x8877665544332211ULL, 0x0123456789abcdefULL};
+    const uint32_t write_mode = static_cast<uint32_t>(
+        ee::ee_vu0_transfer_sync_mode(e_ee_vu0_transfer_direction::TO_VU0, false)
+    );
+    check(
+        ee::ee_vu0_qmtc2(&cpu, &runtime, 8, 4, write_mode, 0x00100028u) ==
+            static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE),
+        "QMTC2 succeeds after scheduler synchronization"
+    );
+    check(cpu.m_vu0[4].m_lo == cpu.m_gpr[8].m_lo &&
+          cpu.m_vu0[4].m_hi == cpu.m_gpr[8].m_hi,
+          "QMTC2 copies both 64-bit halves");
+    cpu.m_vu0[5] = {0xaaaaaaaa55555555ULL, 0xcccccccc33333333ULL};
+    check(
+        ee::ee_vu0_qmtc2(&cpu, &runtime, 0, 5, write_mode, 0x0010002cu) ==
+            static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE),
+        "QMTC2 from GPR0 succeeds"
+    );
+    check(cpu.m_vu0[5].m_lo == 0 && cpu.m_vu0[5].m_hi == 0,
+          "QMTC2 treats GPR0 as zero");
+    const ee::s_ee_u128 zero_vf_sentinel{0xdeadbeef01234567ULL, 0x89abcdef76543210ULL};
+    cpu.m_vu0[0] = zero_vf_sentinel;
+    check(
+        ee::ee_vu0_qmtc2(&cpu, &runtime, 8, 0, write_mode, 0x00100030u) ==
+            static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE),
+        "QMTC2 to VF0 still performs synchronization"
+    );
+    check(cpu.m_vu0[0].m_lo == zero_vf_sentinel.m_lo &&
+          cpu.m_vu0[0].m_hi == zero_vf_sentinel.m_hi,
+          "QMTC2 never changes VF0");
+
+    // CFC2 sign-extends normal VI words; the R register is masked to 23 bits.
+    vu0.m_vi[6] = 0x81234567u;
+    cpu.m_gpr[10].m_hi = 0x123456789abcdef0ULL;
+    check(
+        ee::ee_vu0_cfc2(&cpu, &runtime, 10, 6, read_mode, 0x00100034u) ==
+            static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE),
+        "CFC2 succeeds after scheduler synchronization"
+    );
+    check(cpu.m_gpr[10].m_lo == 0xffffffff81234567ULL,
+          "CFC2 sign-extends ordinary VI values");
+    check(cpu.m_gpr[10].m_hi == 0x123456789abcdef0ULL,
+          "CFC2 preserves the upper 64-bit GPR half");
+    vu0.m_vi[20] = 0xffabcdefu;
+    check(
+        ee::ee_vu0_cfc2(&cpu, &runtime, 11, 20, read_mode, 0x00100038u) ==
+            static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE),
+        "CFC2 special R read succeeds"
+    );
+    check(cpu.m_gpr[11].m_lo == 0x00000000002bcdefULL,
+          "CFC2 masks the R register to 23 bits");
+    cpu.m_gpr[0] = zero_gpr_sentinel;
+    check(
+        ee::ee_vu0_cfc2(&cpu, &runtime, 0, 6, read_mode, 0x0010003cu) ==
+            static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE),
+        "CFC2 to GPR0 still performs synchronization"
+    );
+    check(cpu.m_gpr[0].m_lo == zero_gpr_sentinel.m_lo &&
+          cpu.m_gpr[0].m_hi == zero_gpr_sentinel.m_hi,
+          "CFC2 never changes GPR0");
+
+    cpu.m_gpr[12] = {0xaaaaaaaaaaaaaaaaULL, 0xbbbbbbbbbbbbbbbbULL};
+    scheduler.m_result = static_cast<uint32_t>(e_ee_vu0_sync_result::FAILED);
+    check(
+        ee::ee_vu0_qmfc2(&cpu, &runtime, 12, 3, read_mode, 0x00100040u) ==
+            static_cast<uint32_t>(e_ee_vu0_sync_result::FAILED),
+        "QMFC2 propagates scheduler failure"
+    );
+    check(cpu.m_gpr[12].m_lo == 0xaaaaaaaaaaaaaaaaULL &&
+          cpu.m_gpr[12].m_hi == 0xbbbbbbbbbbbbbbbbULL,
+          "failed QMFC2 leaves destination unchanged");
+
     std::printf("vu0_runtime_test: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }
