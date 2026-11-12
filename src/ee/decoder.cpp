@@ -879,9 +879,8 @@ s_ee_instruction decode(uint32_t pc, uint32_t word)
         switch (insn.rs)
         {
         // Transfer encodings use rd as the VU register index. The low
-        // eleven bits (sa/funct) are reserved and must be zero. Keep valid
-        // transfers UNSUPPORTED until the VU0 synchronization boundary is
-        // implemented; malformed encodings are INVALID.
+        // eleven bits (sa/funct) are reserved and must be zero. These four
+        // forms now lower through synchronized runtime helpers.
         case 0x01: // QMFC2: GPR rt <- VU0 VF[rd]
         case 0x02: // CFC2: GPR rt <- VU0 VI[rd]
         case 0x05: // QMTC2: VU0 VF[rd] <- GPR rt
@@ -893,7 +892,7 @@ s_ee_instruction decode(uint32_t pc, uint32_t word)
             };
             const uint32_t selector = insn.rs;
             insn.valid = (insn.sa == 0 && insn.funct == 0)
-                ? e_ee_valid::UNSUPPORTED : e_ee_valid::INVALID;
+                ? e_ee_valid::VALID : e_ee_valid::INVALID;
             set_mnemonic(insn, names[selector - 1]);
             break;
         }
