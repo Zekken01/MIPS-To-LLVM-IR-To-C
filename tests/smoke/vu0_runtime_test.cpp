@@ -1343,8 +1343,44 @@ int main()
             const uint32_t slot = (reference_pc >> 3) & 0x1ffu;
             const uint32_t lower = program_lower[slot];
             const uint32_t upper = program_upper[slot];
+            uint64_t pair_elapsed_cycles = 1;
+
+            if (step == 15u)
+            {
+                // Force the first conditional branch to interlock on VI1.
+                // It must sample the one-cycle VI-backup value before the
+                // three-cycle reservation completes, even though this
+                // callback was given an exact one-cycle execution budget.
+                actual.m_vi[1] =
+                    (actual.m_vi[1] & 0xffff0000u) | 0u;
+                actual.m_vi[2] =
+                    (actual.m_vi[2] & 0xffff0000u) | 1u;
+                reference_vi[1] =
+                    (reference_vi[1] & 0xffff0000u) | 0u;
+                reference_vi[2] =
+                    (reference_vi[2] & 0xffff0000u) | 1u;
+                actual.m_vi_backup_cycles = 1;
+                actual.m_vi_backup_register = 1;
+                actual.m_vi_backup_old_value = 1;
+                reference_backup_cycles = 1;
+                reference_backup_register = 1;
+                reference_backup_old_value = 1;
+
+                const uint32_t schedule_result =
+                    ee::ee_vu0_ialu_schedule_write(
+                        &actual, 1u << 1, 3
+                    );
+                if (schedule_result != static_cast<uint32_t>(
+                        ee::e_ee_vu0_sync_result::COMPLETE))
+                {
+                    reference_matches = false;
+                    break;
+                }
+                pair_elapsed_cycles = 3;
+            }
+
             reference_pc = (reference_pc + 8u) & 0x0fffu;
-            ++reference_cycle;
+            reference_cycle += pair_elapsed_cycles;
 
             const uint32_t primary = lower >> 25;
             const uint32_t it = (lower >> 16) & 0x0fu;
@@ -1609,9 +1645,15 @@ int main()
             }
 
             // PCSX2 ages backup after lower issue and lower-pipe stalls.
-            if (reference_backup_cycles != 0)
+            if (pair_elapsed_cycles >= reference_backup_cycles)
             {
-                --reference_backup_cycles;
+                reference_backup_cycles = 0;
+            }
+            else if (reference_backup_cycles != 0)
+            {
+                reference_backup_cycles -= static_cast<uint32_t>(
+                    pair_elapsed_cycles
+                );
             }
 
             // Branch retirement follows the pair's lower operation.
@@ -1741,7 +1783,7 @@ int main()
 
         check(reference_matches &&
               executed_operation_mask == ((1u << 17) - 1u),
-              "384-pair mixed VU0 trace matches the reference oracle and executes all 17 supported opcode classes");
+              "384-pair mixed VU0 trace matches the oracle, executes all 17 op classes and covers a forced three-cycle branch interlock");
     }
 
     // Execute the conservative lower-IALU/upper-NOP subset through the
