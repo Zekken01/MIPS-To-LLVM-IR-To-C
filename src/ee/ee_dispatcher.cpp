@@ -87,6 +87,15 @@ s_ee_dispatch_result ee_dispatch_run(
             return result;
         }
 
+        // PC zero is accepted as a start-of-run sentinel only. A guest JR
+        // to a null return address must not map back to the ELF entry after
+        // translated code has already executed.
+        if (cpu->m_pc == 0u)
+        {
+            result.status = e_ee_dispatch_status::EXITED;
+            return result;
+        }
+
         // RETURN can lead back into a translated caller continuation; DISPATCH
         // can lead to another translated function. Resolve both through the
         // same block-PC ownership table on the next iteration.
