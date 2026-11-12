@@ -12,7 +12,7 @@ TOOL_ARGS = sys.argv[1:]
 sys.argv = [sys.argv[0]]
 
 EXPECTED_PROGRAM_SHA256 = (
-    "0ca2aa3c98fe31276c3c05cec6eba66c3e83a244752be24f0f5f847cfc2bedc5"
+    "8bb00e2dc77cb4096a6e91f05f49245918a19430f51f940d8ec4838873768cad"
 )
 EXPECTED_PAIR_PCS = [
     0, 8, 16, 24, 32, 40, 48, 56, 64,
