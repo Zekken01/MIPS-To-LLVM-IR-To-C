@@ -42,7 +42,7 @@ void write_state(std::ostream& output, const ee::s_ee_cpu_state& cpu,
         output << architectural_vi(vu0, index);
     }
 
-    output << "],\\\"vf\\\":["; 
+    output << "],\"vf\":["; 
     for (uint32_t index = 0; index < 32; ++index)
     {
         if (index != 0)
@@ -53,7 +53,7 @@ void write_state(std::ostream& output, const ee::s_ee_cpu_state& cpu,
                << ',' << static_cast<uint32_t>(value.m_hi)
                << ',' << static_cast<uint32_t>(value.m_hi >> 32) << ']';
     }
-    output << "],\\\"cycle\\\":" << vu0.m_cycle
+    output << "],\"cycle\":" << vu0.m_cycle
            << ",\"micro_pc\":" << vu0.m_micro_pc
            << ",\"tpc\":" << vu0.m_tpc
            << ",\"branch\":" << vu0.m_branch
@@ -106,7 +106,7 @@ void write_step(
            << ",\"lower\":" << lower
            << ",\"upper\":" << upper
            << ",\"state\":{";
-    write_state(output, vu0);
+    write_state(output, cpu, vu0);
     output << "}}\n";
 }
 
