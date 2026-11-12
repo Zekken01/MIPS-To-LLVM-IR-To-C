@@ -1271,8 +1271,11 @@ uint32_t ee_vu0_execute_ialu_callback(
                 return static_cast<uint32_t>(e_ee_vu0_sync_result::UNAVAILABLE);
             }
 
+            // The scalar integer ALU operations in this slice have zero
+            // IALU-pipeline latency in PCSX2's lower-op metadata. Their
+            // two-cycle VI-backup window is tracked separately above.
             const uint32_t schedule_result =
-                ee_vu0_ialu_schedule_write(vu0, write_mask, write_mask != 0 ? 1u : 0u);
+                ee_vu0_ialu_schedule_write(vu0, write_mask, 0);
             if (schedule_result != static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE))
             {
                 return schedule_result;
