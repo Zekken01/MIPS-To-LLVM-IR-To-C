@@ -1101,6 +1101,69 @@ int main()
         ee::s_ee_vu0_state state{};
         ee::s_ee_vu0_ialu_engine ialu_engine{};
         state.m_vpu_status = 1u;
+        state.m_vi[3] = 5u;
+        install_vu0_pair(&state, 0, make_vu0_branch(0x24, 0, 3, 0),
+                         make_vu0_upper_nop());
+        install_vu0_pair(&state, 1, make_vu0_iaddiu(2, 0, 2),
+                         make_vu0_upper_nop());
+
+        const uint32_t result = ee::ee_vu0_execute_ialu_callback(
+            &ialu_engine, &cpu, &state, 2,
+            ee::EE_VU0_EXECUTE_EXACT_CYCLES, 0x00102008u
+        );
+        check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              state.m_micro_pc == 40 && state.m_branch == 0 &&
+              static_cast<uint16_t>(state.m_vi[2]) == 2,
+              "VU0 JR jumps to the VI-supplied micro-program slot after its delay pair");
+    }
+    {
+        ee::s_ee_vu0_state state{};
+        ee::s_ee_vu0_ialu_engine ialu_engine{};
+        state.m_vpu_status = 1u;
+        state.m_vi[3] = 5u;
+        install_vu0_pair(&state, 0, make_vu0_branch(0x25, 3, 3, 0),
+                         make_vu0_upper_nop());
+        install_vu0_pair(&state, 1, make_vu0_iaddiu(2, 0, 2),
+                         make_vu0_upper_nop());
+
+        const uint32_t result = ee::ee_vu0_execute_ialu_callback(
+            &ialu_engine, &cpu, &state, 2,
+            ee::EE_VU0_EXECUTE_EXACT_CYCLES, 0x0010200cu
+        );
+        check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              state.m_micro_pc == 40 && state.m_branch == 0 &&
+              static_cast<uint16_t>(state.m_vi[3]) == 2,
+              "VU0 JALR samples its target before writing an overlapping link register");
+    }
+    {
+        ee::s_ee_vu0_state state{};
+        ee::s_ee_vu0_ialu_engine ialu_engine{};
+        state.m_vpu_status = 1u;
+        state.m_vi[3] = 6u;
+        install_vu0_pair(&state, 0, make_vu0_branch(0x20, 0, 0, 3),
+                         make_vu0_upper_nop());
+        install_vu0_pair(&state, 1, make_vu0_branch(0x25, 5, 3, 0),
+                         make_vu0_upper_nop());
+        install_vu0_pair(&state, 4, make_vu0_iaddiu(6, 0, 6),
+                         make_vu0_upper_nop());
+        install_vu0_pair(&state, 6, make_vu0_iaddiu(7, 0, 7),
+                         make_vu0_upper_nop());
+
+        const uint32_t result = ee::ee_vu0_execute_ialu_callback(
+            &ialu_engine, &cpu, &state, 3,
+            ee::EE_VU0_EXECUTE_EXACT_CYCLES, 0x00102010u
+        );
+        check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              state.m_micro_pc == 48 && state.m_branch == 0 &&
+              static_cast<uint16_t>(state.m_vi[5]) == 5 &&
+              static_cast<uint16_t>(state.m_vi[6]) == 6 &&
+              static_cast<uint16_t>(state.m_vi[7]) == 0,
+              "VU0 JALR in a branch delay pair defers its target and links from the first target");
+    }
+    {
+        ee::s_ee_vu0_state state{};
+        ee::s_ee_vu0_ialu_engine ialu_engine{};
+        state.m_vpu_status = 1u;
         state.m_vi[1] = 1u;
         install_vu0_pair(&state, 0, make_vu0_iaddiu(1, 0, 0),
                          make_vu0_upper_nop());
