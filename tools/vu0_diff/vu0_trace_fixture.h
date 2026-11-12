@@ -12,7 +12,7 @@ constexpr uint32_t k_upper_nop = 0x000002ffu;
 constexpr uint32_t k_idle_lower = 0x10000000u; // IADDIU VI0, VI0, 0
 constexpr uint32_t k_lower1_marker = 0x80000000u;
 constexpr uint32_t k_step_limit = 80u;
-constexpr uint32_t k_expected_step_count = 45u;
+constexpr uint32_t k_expected_step_count = 49u;
 
 struct s_pair
 {
@@ -77,11 +77,11 @@ constexpr uint32_t make_branch(
            (immediate & 0x07ffu);
 }
 
-// One deterministic 52-pair fixture. It exercises scalar integer ALU,
+// One deterministic 56-pair fixture. It exercises scalar integer ALU,
 // branches, arithmetic boundaries and ordinary VU0 ILW/ISW memory operations.
 // Selected stores load back through a different lane, with a four-cycle
 // register dependency. E and its delay pair terminate the trace.
-constexpr std::array<s_pair, 52> k_program =
+constexpr std::array<s_pair, 56> k_program =
 {{
     { make_iaddiu(1, 0, 5), k_upper_nop },                         //  0
     { make_iaddi(2, 1, -1), k_upper_nop },                         //  1
@@ -133,11 +133,15 @@ constexpr std::array<s_pair, 52> k_program =
     { make_memory(0x04, 0x1, 2, 0, 1), k_upper_nop },              // 47 ILW W
     { make_memory(0x05, 0x6, 2, 0, 2), k_upper_nop },              // 48 ISW Y/Z, waits on ILW
     { make_memory(0x04, 0x2, 14, 0, 2), k_upper_nop },             // 49 ILW Z
-    { make_iaddiu(0, 0, 0), k_upper_nop | 0x40000000u },           // 50 E
-    { make_iaddiu(8, 0, 51), k_upper_nop }                         // 51 E delay
+    { make_memory(0x01, 0xf, 0, 2, 3), k_upper_nop },             // 50 SQ VF2 XYZW to quadword 3
+    { make_memory(0x00, 0xa, 3, 0, 3), k_upper_nop },             // 51 LQ VF3 X/Z from quadword 3
+    { make_memory(0x01, 0x5, 0, 3, 4), k_upper_nop },             // 52 SQ VF3 Y/W to quadword 4
+    { make_memory(0x00, 0xf, 4, 0, 4), k_upper_nop },             // 53 LQ VF4 XYZW from quadword 4
+    { make_iaddiu(0, 0, 0), k_upper_nop | 0x40000000u },          // 54 E
+    { make_iaddiu(8, 0, 51), k_upper_nop }                        // 55 E delay
 }};
 
-static_assert(k_program.size() == 52);
+static_assert(k_program.size() == 56);
 
 inline void install_program(uint8_t* micro_memory, uint32_t memory_size)
 {
