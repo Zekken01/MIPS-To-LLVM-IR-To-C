@@ -80,7 +80,10 @@ void write_state(std::ostream& output)
            << ((VU0.flags & VUFLAG_MFLAGSET) != 0 ? "true" : "false")
            << ",\"vpu_status\":" << VU0.VI[REG_VPU_STAT].UL
            << ",\"running\":"
-           << ((VU0.VI[REG_VPU_STAT].UL & 1u) != 0 ? "true" : "false");
+           << ((VU0.VI[REG_VPU_STAT].UL & 1u) != 0 ? "true" : "false")
+           << ",\"data_sha256\":\""
+           << vu0_trace_fixture::sha256_hex(VU0.Mem, VU0_MEMSIZE)
+           << "\"";
 }
 
 void write_header(
