@@ -586,9 +586,9 @@ int main()
               "catch-up scheduler completes");
         check(engine.m_run_calls == 1 && engine.m_last_budget == 70,
               "catch-up executes exactly the EE/VU0 cycle difference");
-        check((engine.m_last_flags & EE_VU0_EXECUTE_EXACT_CYCLES) != 0 &&
-              (engine.m_last_flags & EE_VU0_EXECUTE_STOP_AT_E) != 0 &&
-              (engine.m_last_flags & EE_VU0_EXECUTE_STOP_AT_M) == 0,
+        check((engine.m_last_flags & ee::EE_VU0_EXECUTE_EXACT_CYCLES) != 0 &&
+              (engine.m_last_flags & ee::EE_VU0_EXECUTE_STOP_AT_E) != 0 &&
+              (engine.m_last_flags & ee::EE_VU0_EXECUTE_STOP_AT_M) == 0,
               "catch-up requests exact cycles and ignores M-bit");
         check(state.m_cycle == 100 && state.m_ee_cycle == 100,
               "catch-up advances VU0 to EE without changing EE time");
@@ -630,7 +630,7 @@ int main()
         check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
               engine.m_run_calls == 2,
               "finish-to-E continues through an M-bit and stops at E");
-        check((engine.m_last_flags & EE_VU0_EXECUTE_STOP_AT_M) == 0,
+        check((engine.m_last_flags & ee::EE_VU0_EXECUTE_STOP_AT_M) == 0,
               "finish-to-E does not request M-bit termination");
         check(state.m_cycle == 40 && state.m_ee_cycle == 40,
               "finish-to-E accounts VU0 elapsed cycles on EE");
@@ -654,7 +654,7 @@ int main()
         check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
               engine.m_run_calls == 1,
               "wait-to-E-or-M stops on the first M-bit");
-        check((engine.m_last_flags & EE_VU0_EXECUTE_STOP_AT_M) != 0,
+        check((engine.m_last_flags & ee::EE_VU0_EXECUTE_STOP_AT_M) != 0,
               "wait-to-E-or-M requests M-bit termination");
         check(state.m_ee_cycle == state.m_cycle && state.m_cycle == 30,
               "wait-to-E-or-M catches EE time up to the VU0 cycle");
