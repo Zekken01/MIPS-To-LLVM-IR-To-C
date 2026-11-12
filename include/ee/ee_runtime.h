@@ -39,6 +39,47 @@ enum e_ee_vu0_micro_flags : uint32_t
     EE_VU0_MICRO_FLAG_T = 1u << 4
 };
 
+// Decode identities from the PCSX2 VU0 primary/secondary opcode tables.
+// These values classify encodings only; none imply that execution is implemented.
+enum class e_ee_vu0_micro_opcode : uint16_t
+{
+    UNKNOWN = 0,
+
+    LQ, SQ, ILW, ISW, IADDIU, ISUBIU,
+    FCEQ, FCSET, FCAND, FCOR, FSEQ, FSSET, FSAND, FSOR,
+    FMEQ, FMAND, FMOR, FCGET,
+    B, BAL, JR, JALR, IBEQ, IBNE, IBLTZ, IBGTZ, IBLEZ, IBGEZ,
+    IADD, ISUB, IADDI, IAND, IOR,
+
+    MOVE, LQI, DIV, MTIR, RNEXT, MFP, XTOP, XGKICK,
+    ESADD, EATAN_XY, ESQRT, ESIN,
+    MR32, SQI, SQRT, MFIR, RGET, XITOP,
+    ERSADD, EATAN_XZ, ERSQRT, EATAN,
+    LQD, RSQRT, ILWR, RINIT, ELENG, ESUM, ERCPR, EEXP,
+    SQD, WAITQ, ISWR, RXOR, ERLENG, WAITP,
+
+    ADD_X, ADD_Y, ADD_Z, ADD_W,
+    SUB_X, SUB_Y, SUB_Z, SUB_W,
+    MADD_X, MADD_Y, MADD_Z, MADD_W,
+    MSUB_X, MSUB_Y, MSUB_Z, MSUB_W,
+    MAX_X, MAX_Y, MAX_Z, MAX_W,
+    MINI_X, MINI_Y, MINI_Z, MINI_W,
+    MUL_X, MUL_Y, MUL_Z, MUL_W,
+    MUL_Q, MAX_I, MUL_I, MINI_I,
+    ADD_Q, MADD_Q, ADD_I, MADDI,
+    SUB_Q, MSUB_Q, SUB_I, MSUB_I,
+    ADD, MADD, MUL, MAX, SUB, MSUB, OPMSUB, MINI,
+
+    ADDA_X, SUBA_X, MADDA_X, MSUBA_X, ITOF0, FTOI0, MULA_X, MULA_Q,
+    ADDA_Q, SUBA_Q, ADDA, SUBA,
+    ADDA_Y, SUBA_Y, MADDA_Y, MSUBA_Y, ITOF4, FTOI4, MULA_Y, ABS,
+    MADDA_Q, MSUBA_Q, MADDA, MSUBA,
+    ADDA_Z, SUBA_Z, MADDA_Z, MSUBA_Z, ITOF12, FTOI12, MULA_Z,
+    MULA_I, ADDA_I, SUBA_I, MULA, OPMULA,
+    ADDA_W, SUBA_W, MADDA_W, MSUBA_W, ITOF15, FTOI15, MULA_W,
+    CLIP, MADDA_I, MSUBA_I, NOP
+};
+
 // Bit fields shared by lower and upper VU micro-op encodings. xyzw uses
 // bit 3 for X, bit 2 for Y, bit 1 for Z and bit 0 for W.
 struct s_ee_vu0_micro_op_fields
@@ -51,6 +92,7 @@ struct s_ee_vu0_micro_op_fields
     uint8_t m_is;
     uint8_t m_id;
     uint8_t m_xyzw;
+    e_ee_vu0_micro_opcode m_operation;
 };
 
 // VU micro-instructions are 64-bit pairs: lower word at +0, upper word at +4.
