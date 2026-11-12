@@ -4,17 +4,17 @@
 
 This branch is a reconstructed baseline from the preserved 2026-11-11 09:57 MMI/HI1/LO1 follow-up, with subsequent decoder, lifting, control-flow, dispatcher, and validation work. Do not merge it into `main` until source provenance and the latest changes have been reviewed.
 
-Latest fully verified CI: [Actions run #43215631986](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43215631986), **15/15 CTest passed**, including function-discovery/data-flow regressions, VU0 integer branch execution, COP1/COP2 JIT tests, native object emission/linking, dispatcher execution, and MMI/HI1/LO1 regression suites.
+Latest fully verified CI: [Actions run #43219107693](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43219107693), **15/15 CTest passed**, including the per-site JALR audit regressions, function-discovery/data-flow tests, VU0 integer branch execution, COP1/COP2 JIT tests, native object emission/linking, dispatcher execution, and MMI/HI1/LO1 suites.
 
-Latest USA `SLUS_214.42` discovery revalidation:
-- **7,901 function entries discovered**, an increase of 52 over the preserved 7,849-entry baseline.
-- **418,898 unique instruction PCs** in the function-scoped CFG set.
+Latest USA `SLUS_214.42` full-image revalidation:
+- **7,901 function entries discovered**; **418,898 unique instruction PCs** in the function-scoped CFG set.
 - **418,019 supported / 879 unsupported** instructions (**99.8% decoder/lifter classification**).
-- A bounded `--max-functions=100` run emitted 100 modules; **100/100 parsed and verified** with LLVM 20.1.8.
-- **100/100** host objects emitted at `opt=0`, totalling **601,056 bytes**; all 100 linked into a **580,176-byte x86-64 shared library** after adding `ee_vu0.cpp` to the linker's runtime source list.
-- The latest `--max-functions=100` run completes in **7.5 seconds** on the validation runner. The complete 7,901-module emission/object/link pass has not yet been rerun. The previous 7,849-function full link is historical and predates iterative JALR recovery.
+- LLVM parse/verify: **7,901/7,901 passed**, zero invalid modules.
+- Native host objects at `opt=0`: **7,901/7,901 passed**, **33,823,808 aggregate bytes**.
+- Native link: **7,901/7,901** guest objects linked with dispatcher and runtime helpers; `libee_game.so` is **28,187,040 bytes**.
+- The library loads with `ctypes.CDLL`; `ldd -r` reports no unresolved dynamic symbols; `ee_game_run` and `ee_fn_00100008` are exported.
 
-See `FULL_GAME_NATIVE_LINK_VALIDATION.md` for the historical full-link result and the 2026-11-12 revalidation details. This is a linked translated-code library, not a complete runnable PS2 title: the full title was not executed, and BIOS/IOP, GS, DMA, TLB/MMIO, interrupts, and other console services remain incomplete. The in-tree `object_emitter::emit_object()` is still a stub; llvmlite generated the persisted per-function objects.
+See `FULL_GAME_NATIVE_LINK_VALIDATION.md` for the complete backend measurements and `JALR_COVERAGE_AUDIT.md` for the whole-image indirect-call analysis. The linked result is a translated-code library, not a complete runnable PS2 title: the full title was not executed, and BIOS/IOP, GS, DMA, TLB/MMIO, interrupts, and other console services remain incomplete. The in-tree `object_emitter::emit_object()` is still a stub; llvmlite generated the per-function objects.
 
 ## Function discovery and indirect calls
 
@@ -23,11 +23,11 @@ See `FULL_GAME_NATIVE_LINK_VALIDATION.md` for the historical full-link result an
 - `collect_static_jalr_targets` runs forward constant propagation over each caller CFG. It recognizes common address-building sequences (`LUI`, `ORI`, `ANDI`, `XORI`, `ADDIU`, `DADDIU`, and selected SPECIAL arithmetic/shift operations). A target is accepted only when the target register remains a known, aligned, nonzero constant at the `JALR` itself.
 - CFG joins discard a register constant when reachable predecessors disagree. JALR samples its target before the delay-slot instruction executes. Branch-likely propagation uses separate taken/fallthrough states so an annulled delay slot cannot contaminate the not-taken path.
 - CFG construction pre-collects decoded branch/jump leaders and splits blocks at targets even when a target is found inside a block already scanned. This avoids overlapping blocks and preserves all predecessors for data-flow. The global leader set is indexed once per decoded-image revision and reused by JALR analysis, coverage analysis and per-function IR emission.
-- `ee_functions.json` now persists sorted `discovered_entries`, `static_jalr_targets` and `jalr_only_entries` arrays independently of `--max-functions`/`--only-function` emission filters. The current manifest contains 7,901 discovered entries and 52 JALR-only additions.
+- `ee_functions.json` persists sorted `discovered_entries`, `static_jalr_targets` and `jalr_only_entries` independently of emission filters, plus `jalr_sites` records showing the source state at each reachable JALR. The current USA image has 7,901 entries, 52 statically resolved JALR-only additions, 3,505 distinct JALR PCs and 3,475 unresolved caller/site records.
 - `function_discovery_test` covers constant address construction, `$zero`, delay-slot sampling, register clobbers, equal/different predecessor values, and branch-likely annulment. The fresh USA ELF pass discovers 7,901 entries, 52 more than the preserved pre-JALR baseline; the old entry-address list was not persisted, so this is a count comparison rather than a per-address diff. All 52 newly isolated JALR-only targets were inspected in the ELF: every target is file-backed executable code and has a `JR $ra` within its first 24 words; 50 share a normal stack-frame wrapper shape and two are short leaf routines. This is a strong structural sanity check, not proof of every dynamic call path.
 - Dynamic function pointers loaded from memory, GOT/table lookups, runtime-computed targets, and unsupported register-value transformations remain unresolved. Do not interpret static discovery as proof that every function in a stripped ELF has been found.
 
-The 7,849-function full-image figures in the historical report are the pre-JALR-recovery baseline. The new 7,901-entry discovery count has been measured, but the complete 7,901-module LLVM/object/link pass remains outstanding.
+The 7,849-function full-image figures in the historical report are the pre-JALR-recovery baseline. The complete 7,901-module LLVM/object/link pass is now complete; see `FULL_GAME_NATIVE_LINK_VALIDATION.md`. The remaining unresolved JALR sites are predominantly memory/object/table loads; see `JALR_COVERAGE_AUDIT.md` before changing indirect-call recovery.
 
 Control-flow regressions cover JAL/JALR/JR target and link ordering, delay-slot effects, ordinary and likely branch semantics, branch-and-link, caller/callee continuations, recursive JAL, dynamic cross-function JALR, PC-zero entry, exception resume PCs, and host dispatcher budget/unknown-target handling.
 
@@ -55,17 +55,16 @@ See [`COP2_RESEARCH.md`](COP2_RESEARCH.md) for the PCSX2 reference and semantic 
 - This is **not** a general VU0 interpreter. The direct runtime suite covers B/BAL, JR/JALR, all six conditional integer branches, delay-slot execution, nested JALR, target/link overlap, negative relative offsets, and VI-backup/interlock timing. These tests are not yet a full differential run against PCSX2. VU data-memory operations, I/D/T flags, upper vector operations, general dual-issue dependencies, VF forwarding and FMAC/FDIV/EFU pipelines remain unsupported. Unsupported pairs fail closed without consuming their micro-PC.
 - VU0 SPECIAL1/SPECIAL2 macro instructions remain UNSUPPORTED. Do not enable them until dual-issue scheduling and the FMAC/FDIV/EFU pipelines, flags, ACC/Q/P forwarding and branch timing are implemented.
 
-The VU0 integer/branch slice, COP2 JIT, function-discovery/data-flow regressions linker runtime-source, entry-manifest and emission-index changes passed **15/15** in [Actions run #43215631986](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43215631986).
+The VU0 integer/branch slice, COP2 JIT, function-discovery/data-flow regressions, linker runtime-source, entry-manifest, shared-index and per-site JALR audit changes passed **15/15** in [Actions run #43219107693](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43219107693).
 
 ## Remaining priorities
 
-1. **Complete expanded-image native validation:** emit, LLVM-verify and link all 7,901 newly discovered USA ELF functions. Current revalidation has completed discovery and a 100-function verified/linkable sample; the full 7,901-module pass remains outstanding.
-2. **JALR coverage expansion:** the exact 7,901-entry manifest and the 52 JALR-only additions are now persisted and the 52 targets pass structural code checks. Expand only proven address-construction patterns while preserving the all-predecessors-agree rule; keep GOT loads and runtime-dependent pointers unresolved until their memory/relocation semantics are modelled.
-3. **VU0 semantic differential testing:** compare the implemented lower integer/branch slice against PCSX2 over instruction/edge-case fixtures, especially branch-in-delay behaviour, VI-backup timing, cycle-budget boundaries, and E/M interaction.
-4. **VU0 memory and vector issue:** add LQ/SQ/ILW/ISW and a carefully tested dual-issue model before enabling vector arithmetic or macro instructions.
-5. **Runtime completeness:** EE memory/TLB/MMIO, scratchpad/ROM aliases, alignment exceptions, DMA, interrupts, plus BIOS/IOP/GS host services.
-6. **Semantic validation:** differential instruction and function testing against PCSX2's interpreter. LLVM verification and native linking do not establish R5900 equivalence.
-7. **Production backend:** replace the current external llvmlite object-emission path with an integrated LLVM backend or supported `llc`/LLVM library path; keep the current script as a validation/reference path until then.
+1. **VU0 semantic differential testing:** compare the implemented lower integer/branch slice against PCSX2 over instruction and edge-case fixtures, especially branch-in-delay behaviour, VI-backup timing, cycle-budget boundaries, nested branches, and E/M interaction. The current tests exercise the implementation directly but are not a full interpreter differential run.
+2. **Memory-aware indirect-call recovery:** the USA JALR audit found 3,475 unresolved caller/site records, dominated by function pointers loaded from runtime objects/vtables and global slots. Do not add guessed constant rules. First model a bounded set of read-only/static loads with proof that no runtime write or relocation can affect them; leave object/vtable calls dynamic until their runtime class/object state is known.
+3. **VU0 memory and vector issue:** add LQ/SQ/ILW/ISW and a carefully tested dual-issue model before enabling vector arithmetic or macro instructions.
+4. **Runtime completeness:** EE memory/TLB/MMIO, scratchpad/ROM aliases, alignment exceptions, DMA, interrupts, plus BIOS/IOP/GS host services.
+5. **Semantic validation:** differential instruction and function testing against PCSX2's interpreter. LLVM verification and native linking do not establish R5900 equivalence.
+6. **Production backend:** replace the current external llvmlite object-emission path with an integrated LLVM backend or supported `llc`/LLVM library path; keep the current script as a validation/reference path until then.
 
 The exact later temporary worktree associated with the historical 2/4 CTest report was never exported. This branch remains a reconstructed source baseline, not recovery of that inaccessible working directory.
 
