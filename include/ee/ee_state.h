@@ -75,6 +75,11 @@ struct alignas(16) s_ee_vu0_state
     uint32_t m_vi_backup_cycles;
     uint32_t m_vi_backup_register;
     uint32_t m_vi_backup_old_value;
+
+    // PCSX2 issues lower LQ/SQ through its four-cycle FMAC pipeline,
+    // including stores with no VF destination. Track the latest completion
+    // for E-bit flush accounting in this conservative memory-only slice.
+    uint64_t m_vf_memory_ready_cycle;
 };
 
 // Architectural EE CPU state. GPRs are 128 bits wide in the lifter (i128);
