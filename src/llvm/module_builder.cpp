@@ -72,6 +72,10 @@ void module_builder::declare_memory_helpers()
     m_out += "declare float @llvm.fabs.f32(float)\n";
     m_out += "declare i32 @ee_raise_exception(ptr, ptr, i32, i32, i32, i32)\n";
     m_out += "declare i32 @ee_exception_return(ptr)\n";
+    m_out += "declare i32 @ee_vu0_qmfc2(ptr, ptr, i32, i32, i32, i32)\n";
+    m_out += "declare i32 @ee_vu0_qmtc2(ptr, ptr, i32, i32, i32, i32)\n";
+    m_out += "declare i32 @ee_vu0_cfc2(ptr, ptr, i32, i32, i32, i32)\n";
+    m_out += "declare i32 @ee_vu0_ctc2(ptr, ptr, i32, i32, i32, i32)\n";
     m_out += "\n";
 }
 
