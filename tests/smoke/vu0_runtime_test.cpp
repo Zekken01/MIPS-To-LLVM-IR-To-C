@@ -238,6 +238,17 @@ uint32_t make_vu0_isubiu(uint32_t it, uint32_t is, uint32_t immediate)
            ((immediate & 0x7800u) << 10) | (immediate & 0x07ffu);
 }
 
+uint32_t make_vu0_branch(
+    uint32_t primary,
+    uint32_t it,
+    uint32_t is,
+    uint32_t immediate
+)
+{
+    return (primary << 25) | (it << 16) | (is << 11) |
+           (immediate & 0x07ffu);
+}
+
 void install_vu0_pair(
     ee::s_ee_vu0_state* vu0,
     uint32_t slot,
@@ -1044,6 +1055,113 @@ int main()
         check(state.m_cycle == 8 && state.m_micro_pc == 64 && state.m_tpc == 8 &&
               state.m_ialu_count == 0,
               "IALU slice advances cycles, byte PC, TPC and retires prior reservations");
+    }
+    {
+        ee::s_ee_vu0_state state{};
+        ee::s_ee_vu0_ialu_engine ialu_engine{};
+        state.m_vpu_status = 1u;
+        install_vu0_pair(&state, 0, make_vu0_branch(0x20, 0, 0, 2),
+                         make_vu0_upper_nop());
+        install_vu0_pair(&state, 1, make_vu0_iaddiu(2, 0, 2),
+                         make_vu0_upper_nop());
+        install_vu0_pair(&state, 3, make_vu0_iaddiu(3, 0, 3),
+                         make_vu0_upper_nop());
+
+        const uint32_t result = ee::ee_vu0_execute_ialu_callback(
+            &ialu_engine, &cpu, &state, 2,
+            ee::EE_VU0_EXECUTE_EXACT_CYCLES, 0x00102000u
+        );
+        check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              state.m_cycle == 2 && state.m_micro_pc == 24 && state.m_tpc == 3 &&
+              state.m_branch == 0,
+              "VU0 B applies its target after exactly one delay pair");
+        check(static_cast<uint16_t>(state.m_vi[2]) == 2 &&
+              static_cast<uint16_t>(state.m_vi[3]) == 0,
+              "VU0 B executes the delay pair and skips sequential fallthrough");
+    }
+    {
+        ee::s_ee_vu0_state state{};
+        ee::s_ee_vu0_ialu_engine ialu_engine{};
+        state.m_vpu_status = 1u;
+        install_vu0_pair(&state, 0, make_vu0_branch(0x21, 4, 0, 2),
+                         make_vu0_upper_nop());
+        install_vu0_pair(&state, 1, make_vu0_iaddiu(2, 0, 2),
+                         make_vu0_upper_nop());
+
+        const uint32_t result = ee::ee_vu0_execute_ialu_callback(
+            &ialu_engine, &cpu, &state, 2,
+            ee::EE_VU0_EXECUTE_EXACT_CYCLES, 0x00102004u
+        );
+        check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              static_cast<uint16_t>(state.m_vi[4]) == 2 &&
+              state.m_micro_pc == 24 && state.m_branch == 0,
+              "VU0 BAL writes the instruction-after-delay link slot");
+    }
+    {
+        ee::s_ee_vu0_state state{};
+        ee::s_ee_vu0_ialu_engine ialu_engine{};
+        state.m_vpu_status = 1u;
+        state.m_vi[1] = 1u;
+        install_vu0_pair(&state, 0, make_vu0_iaddiu(1, 0, 0),
+                         make_vu0_upper_nop());
+        install_vu0_pair(&state, 1, make_vu0_branch(0x28, 1, 0, 2),
+                         make_vu0_upper_nop());
+
+        const uint32_t result = ee::ee_vu0_execute_ialu_callback(
+            &ialu_engine, &cpu, &state, 2,
+            ee::EE_VU0_EXECUTE_EXACT_CYCLES, 0x00102008u
+        );
+        check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              state.m_cycle == 2 && state.m_micro_pc == 16 &&
+              state.m_branch == 0 && static_cast<uint16_t>(state.m_vi[1]) == 0,
+              "VU0 conditional branch sees the backed-up VI value in its hazard window");
+        check(state.m_vi_backup_cycles == 1 &&
+              state.m_vi_backup_register == 1 &&
+              static_cast<uint16_t>(state.m_vi_backup_old_value) == 1,
+              "VU0 VI backup retains the pre-write halfword for two-cycle timing");
+    }
+    {
+        ee::s_ee_vu0_state state{};
+        ee::s_ee_vu0_ialu_engine ialu_engine{};
+        state.m_vpu_status = 1u;
+        state.m_vi[1] = 1u;
+        install_vu0_pair(&state, 0, make_vu0_iaddiu(1, 0, 0),
+                         make_vu0_upper_nop());
+        install_vu0_pair(&state, 1, make_vu0_iaddiu(2, 0, 2),
+                         make_vu0_upper_nop());
+        install_vu0_pair(&state, 2, make_vu0_branch(0x28, 1, 0, 1),
+                         make_vu0_upper_nop());
+
+        const uint32_t result = ee::ee_vu0_execute_ialu_callback(
+            &ialu_engine, &cpu, &state, 3,
+            ee::EE_VU0_EXECUTE_EXACT_CYCLES, 0x0010200cu
+        );
+        check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              state.m_branch == 1 && state.m_branch_pc == 32 &&
+              state.m_vi_backup_register == 2,
+              "an intervening VI write replaces the backup register before a later branch");
+    }
+    {
+        ee::s_ee_vu0_state state{};
+        ee::s_ee_vu0_ialu_engine ialu_engine{};
+        state.m_vpu_status = 1u;
+        state.m_vi[1] = 1u;
+        state.m_vi[2] = 1u;
+        install_vu0_pair(&state, 0, make_vu0_iaddiu(1, 0, 0),
+                         make_vu0_upper_nop());
+        install_vu0_pair(&state, 1, make_vu0_iaddiu(1, 0, 5),
+                         make_vu0_upper_nop());
+        install_vu0_pair(&state, 2, make_vu0_branch(0x28, 1, 2, 1),
+                         make_vu0_upper_nop());
+
+        const uint32_t result = ee::ee_vu0_execute_ialu_callback(
+            &ialu_engine, &cpu, &state, 3,
+            ee::EE_VU0_EXECUTE_EXACT_CYCLES, 0x00102010u
+        );
+        check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              state.m_branch == 1 && state.m_branch_pc == 32 &&
+              static_cast<uint16_t>(state.m_vi_backup_old_value) == 1,
+              "consecutive writes to one VI preserve the value from before the write chain");
     }
     {
         ee::s_ee_vu0_state state{};
