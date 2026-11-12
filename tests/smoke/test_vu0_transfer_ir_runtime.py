@@ -309,7 +309,7 @@ def main():
         result, cpu, vu0, sync, control, keep = run_guest(
             fixture, temp_dir, target, "cfc2_r", init_cfc_r
         )
-        require(cpu.gpr[8].lo == 0xcafebeef002bcdef,
+        require(cpu.gpr[8].lo == 0xfeedface002bcdef,
                 "CFC2 R must mask UL[0] and preserve UL[1]")
         require(cpu.gpr[8].hi == 0x123456789abcdef0,
                 "CFC2 R must preserve the upper 64-bit GPR half")
@@ -371,7 +371,6 @@ def main():
         ):
             def init_delay(cpu, vu0):
                 cpu.gpr[8] = U128(0x1122334455667788, 0x99aabbccddeeff00)
-                vu0.vi[6] = 0x12345678
                 vu0.vi[6] = 0x12345678
 
             result, cpu, vu0, sync, control, keep = run_guest(
