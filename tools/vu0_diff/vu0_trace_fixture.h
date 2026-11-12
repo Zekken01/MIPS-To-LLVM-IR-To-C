@@ -137,7 +137,7 @@ constexpr std::array<s_pair, 56> k_program =
     { make_memory(0x04, 0x2, 14, 0, 2), k_upper_nop },             // 49 ILW Z
     { make_memory(0x01, 0xf, 0, 2, 3), k_upper_nop },             // 50 SQ VF2 XYZW to quadword 3
     { make_memory(0x00, 0xa, 3, 0, 3), k_upper_nop },             // 51 LQ VF3 X/Z from quadword 3
-    { make_memory(0x01, 0xc, 0, 3, 4), k_upper_nop },             // 52 SQ VF3 X/Y reads overlapping LQ X
+    { make_memory(0x01, 0xc, 0, 3, 4), k_upper_nop },             // 52 SQ VF3 X/Y, interlocked on prior LQ X
     { make_memory(0x00, 0xf, 4, 0, 4), k_upper_nop },             // 53 LQ VF4 XYZW from quadword 4
     { make_iaddiu(0, 0, 0), k_upper_nop | 0x40000000u },          // 54 E
     { make_iaddiu(8, 0, 51), k_upper_nop }                        // 55 E delay
