@@ -55,7 +55,11 @@ void write_state(std::ostream& output, const ee::s_ee_vu0_state& vu0)
            << ",\"e_bit\":" << vu0.m_e_bit
            << ",\"m_bit\":" << (vu0.m_m_bit != 0 ? "true" : "false")
            << ",\"vpu_status\":" << vu0.m_vpu_status
-           << ",\"running\":" << (vu0.m_running != 0 ? "true" : "false");
+           << ",\"running\":" << (vu0.m_running != 0 ? "true" : "false")
+           << ",\"data_sha256\":\""
+           << vu0_trace_fixture::sha256_hex(
+               vu0.m_data_memory, ee::EE_VU0_DATA_MEMORY_SIZE
+              ) << "\"";
 }
 
 void write_header(
