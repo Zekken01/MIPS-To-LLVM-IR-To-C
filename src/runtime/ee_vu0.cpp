@@ -943,35 +943,35 @@ bool vu0_execute_lower_memory(
         if (!load || register_index != 0)
         {
             s_ee_u128& vector = cpu->m_vu0[register_index];
-        for (uint32_t component = 0; component < 4; ++component)
-        {
-            if ((xyzw & (8u >> component)) == 0)
+            for (uint32_t component = 0; component < 4; ++component)
             {
-                continue;
-            }
-            const uint32_t offset = base + component * 4u;
-            uint64_t& half = component < 2 ? vector.m_lo : vector.m_hi;
-            const uint32_t shift = (component & 1u) * 32u;
-            if (load)
-            {
-                const uint32_t value =
-                    static_cast<uint32_t>(vu0->m_data_memory[offset]) |
-                    (static_cast<uint32_t>(vu0->m_data_memory[offset + 1u]) << 8) |
-                    (static_cast<uint32_t>(vu0->m_data_memory[offset + 2u]) << 16) |
-                    (static_cast<uint32_t>(vu0->m_data_memory[offset + 3u]) << 24);
-                half = (half & ~(uint64_t{0xffffffffu} << shift)) |
-                       (static_cast<uint64_t>(value) << shift);
-            }
-            else
-            {
-                const uint32_t value = static_cast<uint32_t>(half >> shift);
-                for (uint32_t byte = 0; byte < 4; ++byte)
+                if ((xyzw & (8u >> component)) == 0)
                 {
-                    vu0->m_data_memory[offset + byte] =
-                        static_cast<uint8_t>(value >> (byte * 8u));
+                    continue;
+                }
+                const uint32_t offset = base + component * 4u;
+                uint64_t& half = component < 2 ? vector.m_lo : vector.m_hi;
+                const uint32_t shift = (component & 1u) * 32u;
+                if (load)
+                {
+                    const uint32_t value =
+                        static_cast<uint32_t>(vu0->m_data_memory[offset]) |
+                        (static_cast<uint32_t>(vu0->m_data_memory[offset + 1u]) << 8) |
+                        (static_cast<uint32_t>(vu0->m_data_memory[offset + 2u]) << 16) |
+                        (static_cast<uint32_t>(vu0->m_data_memory[offset + 3u]) << 24);
+                    half = (half & ~(uint64_t{0xffffffffu} << shift)) |
+                           (static_cast<uint64_t>(value) << shift);
+                }
+                else
+                {
+                    const uint32_t value = static_cast<uint32_t>(half >> shift);
+                    for (uint32_t byte = 0; byte < 4; ++byte)
+                    {
+                        vu0->m_data_memory[offset + byte] =
+                            static_cast<uint8_t>(value >> (byte * 8u));
+                    }
                 }
             }
-        }
         }
         if (postincrement && base_index != 0)
         {
