@@ -1261,20 +1261,12 @@ uint32_t ee_vu0_execute_ialu_callback(
             return static_cast<uint32_t>(e_ee_vu0_sync_result::UNAVAILABLE);
         }
 
-        // PCSX2 executes the lower operation before applying lower-pipe
-        // stalls. Branch conditions therefore sample VI/VIBackup before an
-        // interlock advances the VU cycle. Keep that decision local until the
-        // stall has completed so an invalid queue cannot partially issue a
-        // branch or write its link register.
+        // PCSX2 resolves lower-op metadata first, then advances the issue
+        // cycle, applies lower-pipe stalls, retires matured pipes, ages the
+        // VI-backup window, and only then executes the lower operation.
+        // Branch predicates, jump targets, and links must observe that
+        // post-stall state rather than values sampled before the interlock.
         const uint64_t cycles_before_pair = vu0->m_cycle;
-        s_vu0_branch_action branch_action{};
-        if (lower_branch &&
-            !vu0_prepare_lower_branch(vu0, instruction, &branch_action))
-        {
-            vu0->m_micro_pc = pair_pc;
-            return static_cast<uint32_t>(e_ee_vu0_sync_result::UNAVAILABLE);
-        }
-
         ++vu0->m_cycle;
         if (lower_branch)
         {
@@ -1297,6 +1289,12 @@ uint32_t ee_vu0_execute_ialu_callback(
             return retire_result;
         }
 
+        // Match _vu0Exec: VIBackupCycles is aged after lower-pipe stalls and
+        // pipe retirement, but before the actual lower-op handler. A stalled
+        // branch whose dependency outlives the backup therefore reads the
+        // current VI value, not the expired backup value.
+        vu0_advance_vi_backup(vu0, vu0->m_cycle - cycles_before_pair);
+
         if (lower_ialu)
         {
             uint32_t write_mask = 0;
@@ -1317,13 +1315,15 @@ uint32_t ee_vu0_execute_ialu_callback(
         }
         else
         {
+            s_vu0_branch_action branch_action{};
+            if (!vu0_prepare_lower_branch(vu0, instruction, &branch_action))
+            {
+                vu0->m_micro_pc = pair_pc;
+                return static_cast<uint32_t>(e_ee_vu0_sync_result::UNAVAILABLE);
+            }
+
             vu0_apply_lower_branch(vu0, branch_action);
         }
-
-        // PCSX2 ages VIBackupCycles after lower execution and all lower stalls.
-        // This preserves the old value for a branch issued at the last visible
-        // backup cycle, while accounting for the full interlock duration.
-        vu0_advance_vi_backup(vu0, vu0->m_cycle - cycles_before_pair);
 
         ++executed;
 
