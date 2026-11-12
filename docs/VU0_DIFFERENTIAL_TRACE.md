@@ -123,6 +123,9 @@ runs the paired trace capture, compares both JSONL files, and uploads the traces
 
 The earlier 41-pair integer/branch fixture was compared directly against
 PCSX2 in differential run #7, with an exact match. The expanded 45-pair
-ordinary-memory fixture must be separately validated; CTest alone does not
-establish agreement with PCSX2. Memory-mapped VU1 register accesses and
-other unsupported VU0 operations remain out of scope.
+ordinary-memory fixture passed the direct PCSX2 comparison in differential
+run #9: all 45 pairs, including ILW/ISW and the complete per-pair 4 KB data
+memory SHA-256, matched exactly. The trace consumed 47 cycles, including
+the branch-only IALU interlock policy observed in the pinned interpreter.
+Memory-mapped VU1 register accesses and other unsupported VU0 operations
+remain out of scope.
