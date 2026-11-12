@@ -216,13 +216,13 @@ uint32_t make_vu0_ialu_3r(
     uint32_t id
 )
 {
-    return (0x3cu << 25) | (it << 16) | (is << 11) |
+    return (0x40u << 25) | (it << 16) | (is << 11) |
            (id << 6) | secondary;
 }
 
 uint32_t make_vu0_iaddi(uint32_t it, uint32_t is, int32_t immediate)
 {
-    return (0x3cu << 25) | (it << 16) | (is << 11) |
+    return (0x40u << 25) | (it << 16) | (is << 11) |
            ((static_cast<uint32_t>(immediate) & 0x1fu) << 6) | 0x32u;
 }
 
@@ -368,9 +368,9 @@ int main()
         check(micro_state.m_micro_pc == 0x28u,
               "VU0 micro fetch advances PC by one 8-byte instruction");
 
-        // Lower primary 0x3c selects the secondary lower-op table;
+        // Lower primary 0x40 selects the lower-op selector table;
         // sub-op 0x3c within that table selects T3_00.
-        const uint32_t lower_iadd = (0x3cu << 25) | 0x30u;
+        const uint32_t lower_iadd = (0x40u << 25) | 0x30u;
         write_le32(&micro_state.m_micro_memory[0], lower_iadd);
         write_le32(&micro_state.m_micro_memory[4], 0);
         micro_state.m_micro_pc = 0;
@@ -383,7 +383,7 @@ int main()
         );
 
         const uint32_t lower_lqi =
-            (0x3cu << 25) | (13u << 6) | 0x3cu;
+            (0x40u << 25) | (13u << 6) | 0x3cu;
         write_le32(&micro_state.m_micro_memory[0], lower_lqi);
         micro_state.m_micro_pc = 0;
         check(
@@ -1419,7 +1419,7 @@ int main()
 
             switch (primary)
             {
-            case 0x3cu:
+            case 0x40u:
             {
                 const uint32_t secondary = lower & 0x3fu;
                 switch (secondary)
