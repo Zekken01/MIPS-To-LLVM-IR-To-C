@@ -10,6 +10,7 @@ namespace vu0_trace_fixture
 constexpr uint32_t k_micro_memory_size = 0x1000u;
 constexpr uint32_t k_upper_nop = 0x000002ffu;
 constexpr uint32_t k_idle_lower = 0x10000000u; // IADDIU VI0, VI0, 0
+constexpr uint32_t k_lower1_marker = 0x80000000u;
 constexpr uint32_t k_step_limit = 64u;
 constexpr uint32_t k_expected_step_count = 30u;
 
@@ -33,7 +34,7 @@ constexpr uint32_t make_isubiu(uint32_t it, uint32_t is, uint32_t immediate)
 
 constexpr uint32_t make_iaddi(uint32_t it, uint32_t is, int32_t immediate)
 {
-    return (0x3cu << 25) | (it << 16) | (is << 11) |
+    return k_lower1_marker | (it << 16) | (is << 11) |
            ((static_cast<uint32_t>(immediate) & 0x1fu) << 6) | 0x32u;
 }
 
@@ -44,9 +45,13 @@ constexpr uint32_t make_ialu_3r(
     uint32_t id
 )
 {
-    return (0x3cu << 25) | (it << 16) | (is << 11) |
+    return k_lower1_marker | (it << 16) | (is << 11) |
            (id << 6) | secondary;
 }
+
+static_assert((make_iaddi(2, 1, -1) & k_lower1_marker) != 0);
+static_assert((make_ialu_3r(0x30, 1, 2, 3) & k_lower1_marker) != 0);
+static_assert((make_iaddiu(1, 0, 5) & k_lower1_marker) == 0);
 
 constexpr uint32_t make_branch(
     uint32_t primary,
