@@ -23,6 +23,7 @@ def make_trace(engine, mutate=None):
     }
     state = {
         "vi": [0] * 32,
+        "vf": [[0, 0, 0, 0] for _ in range(32)],
         "cycle": 1,
         "micro_pc": 8,
         "tpc": 1,
@@ -79,6 +80,23 @@ class VU0TraceComparatorTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("VI7", result.stdout)
         self.assertIn("0x00000000 != 0x00001234", result.stdout)
+
+    def test_reports_individual_vf_lane_mismatch(self):
+        def change(_header, state):
+            state["vf"][7][2] = 0x12345678
+        result = self.run_compare(
+            make_trace("pcsx2"), make_trace("candidate", change)
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("VF7.z", result.stdout)
+        self.assertIn("0x12345678", result.stdout)
+
+    def test_rejects_malformed_vf(self):
+        trace = make_trace("pcsx2")
+        trace[1]["state"]["vf"][5] = [0, 0, -1, 0]
+        result = self.run_compare(trace, make_trace("candidate"))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("vf must contain", result.stderr)
 
     def test_reports_instruction_pc_mismatch(self):
         def change(_header, _state):
