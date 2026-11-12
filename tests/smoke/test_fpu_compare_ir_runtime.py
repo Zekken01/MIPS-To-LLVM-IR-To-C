@@ -427,6 +427,51 @@ def run_cop1_transfer_cases(fixture, temp_dir, target):
             "ADDIU/CTC1 sequence clobbered the upper GPR half")
 
 
+def run_bc1_delay_cases(fixture, temp_dir, target):
+    # BC1T samples FCC0 before an ordinary delay slot that clears FCSR.
+    guest_fn, engine, module, target_machine = compile_jit(
+        fixture, temp_dir, "bc1_t_delay", target
+    )
+    backing, state = aligned_state()
+    _ = (backing, engine, module, target_machine)
+    state.fcsr = 0x00800000
+    state.gpr[8][0] = 0
+    state.gpr[9][0] = 0xDEADBEEF
+    state.gpr[10][0] = 0xCAFEBABE
+
+    result = guest_fn(ctypes.pointer(state))
+    require(result == 0,
+            f"BC1T delay-slot: expected return exit (0), got {result}")
+    require(state.fcsr == 0,
+            f"BC1T delay-slot CTC1 did not execute: FCSR=0x{state.fcsr:08x}")
+    require(state.gpr[10][0] == 0x2222,
+            "BC1T was evaluated after its delay slot instead of before it")
+    require(state.gpr[9][0] == 0xDEADBEEF,
+            "BC1T unexpectedly executed the not-taken path")
+
+    # BC1FL is not taken while FCC0 is true. Its delay slot must be annulled,
+    # even though that slot would clear FCC0 if it were executed.
+    guest_fn, engine, module, target_machine = compile_jit(
+        fixture, temp_dir, "bc1_fl_annul", target
+    )
+    backing, state = aligned_state()
+    _ = (backing, engine, module, target_machine)
+    state.fcsr = 0x00800000
+    state.gpr[8][0] = 0
+    state.gpr[9][0] = 0xDEADBEEF
+    state.gpr[10][0] = 0xCAFEBABE
+
+    result = guest_fn(ctypes.pointer(state))
+    require(result == 3,
+            f"BC1FL annulment: expected dispatcher exit (3), got {result}")
+    require(state.fcsr == 0x00800000,
+            f"BC1FL not-taken path executed its annulled CTC1: FCSR=0x{state.fcsr:08x}")
+    require(state.gpr[9][0] == 0x1111,
+            "BC1FL did not execute the not-taken path")
+    require(state.gpr[10][0] == 0xCAFEBABE,
+            "BC1FL unexpectedly executed the taken path")
+
+
 def f32_value(bits):
     return struct.unpack("<f", struct.pack("<I", bits & 0xFFFFFFFF))[0]
 
@@ -790,6 +835,7 @@ def main():
         run_arithmetic_cases(fixture, temp_dir, target, "mul_s", mul_cases)
         run_arithmetic_cases(fixture, temp_dir, target, "div_s", div_cases)
         run_cop1_transfer_cases(fixture, temp_dir, target)
+        run_bc1_delay_cases(fixture, temp_dir, target)
         run_accumulator_cases(fixture, temp_dir, target, "adda_s", adda_cases)
         run_accumulator_cases(fixture, temp_dir, target, "suba_s", suba_cases)
         run_accumulator_cases(fixture, temp_dir, target, "mula_s", mula_cases)
@@ -810,7 +856,8 @@ def main():
 
     print(
         "fpu_compare_ir_runtime: PASS (C.F/C.EQ/C.LT/C.LE; CVT.W.S/CVT.S.W; "
-        "MFC1/MTC1/CFC1/CTC1 transfer and liveness; "
+        "MFC1/MTC1/CFC1/CTC1 transfer/liveness; BC1 condition timing and "
+        "branch-likely annulment; "
         "ADD.S/SUB.S/MUL.S/DIV.S, SQRT.S/RSQRT.S and accumulator arithmetic; "
         "FCSR cause/sticky semantics; "
         "MAX.S/MIN.S bitwise ordering; ABS.S/NEG.S raw-bit sign operations; "
