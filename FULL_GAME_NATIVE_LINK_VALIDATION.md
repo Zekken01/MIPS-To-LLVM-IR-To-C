@@ -56,7 +56,7 @@ GitHub Actions run [#191](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/action
 
 ## 2026-11-12 revalidation after iterative JALR recovery
 
-The same preserved USA `SLUS_214.42` ELF was reprocessed using the current CI-built `ee_recomp` after adding conservative, CFG-based static JALR target recovery. The analysis first exposed and then removed a pathological repeated scan: the global decoded branch/jump leader set had been rebuilt for every per-function CFG. It is now indexed once per decoded-image revision and shared by the JALR and function-analysis passes.
+The same preserved USA `SLUS_214.42` ELF was reprocessed using the current CI-built `ee_recomp` after adding conservative, CFG-based static JALR target recovery. The analysis first exposed and then removed a pathological repeated scan: the global decoded branch/jump leader set had been rebuilt for every per-function CFG. It is now indexed once per decoded-image revision and shared by JALR analysis, coverage analysis and the per-function IR-emission pass. The `emit_entry` lambda was also updated to consume this index; leaving that call on the fallback path would have retained the original per-function whole-image scan during actual emission.
 
 ### Discovery result
 
@@ -66,7 +66,7 @@ The same preserved USA `SLUS_214.42` ELF was reprocessed using the current CI-bu
 - Unsupported classification: **879**.
 - Decoder/lifter classification: **99.8%**.
 
-The discovery and CFG analysis were performed over the complete image. The CLI run used `--max-functions=100` to cap per-function file emission after discovery; the discovery totals above are therefore whole-image figures, not counts for just the 100 emitted modules. The previous baseline's exact entry-address list was not preserved, so the 52-entry difference is a count comparison, not a verified per-address diff.
+The discovery and CFG analysis were performed over the complete image. The CLI run used `--max-functions=100` to cap per-function file emission after discovery; the discovery totals above are therefore whole-image figures, not counts for just the 100 emitted modules. The previous baseline's exact entry-address list was not preserved, so the 52-entry difference is a count comparison, not a verified per-address diff. The new `ee_functions.json` now persists sorted `discovered_entries`, `static_jalr_targets` and `jalr_only_entries` arrays even when `--max-functions` caps IR emission. For this ELF, the manifest contains 7,901 entries, 52 accepted static JALR targets and 52 JALR-only additions.
 
 ### Bounded LLVM/object/link validation
 
@@ -76,12 +76,21 @@ For the first 100 emitted functions:
 - Host object generation at `opt=0`: **100 / 100 passed**.
 - Aggregate object size: **601,056 bytes**.
 - Native link: **PASS**, after adding `src/runtime/ee_vu0.cpp` to `tools/link_native_objects.py`'s required runtime sources.
-- Shared-library size: **576,080 bytes**.
-- The library loads with `ctypes.CDLL); `ldd -r` reports no unresolved dynamic symbols; exports include `ee_game_run` and `ee_fn_00100008`.
+- Shared-library size: **580,176 bytes**.
+- The library loads with `ctypes.CDLL`; `ldd -r` reports no unresolved dynamic symbols; exports include `ee_game_run` and `ee_fn_00100008`.
 
-The linker runtime-source correction is commit `97be99aff512edc8ec5067a2a554388152c83c60`. Its GitHub Actions run [#43214060713](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43214060713) completed with **15/15 CTest passing**.
+The linker runtime-source correction is commit `97be99aff512edc8ec5067a2a554388152c83c60`. Its GitHub Actions run [#43215631986](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43214060713) completed with **15/15 CTest passing**.
 
 ### Remaining validation limit
+
+### JALR-only target inspection and emission-path performance
+
+- The 52 JALR-only addresses all fall in the file-backed executable load segment.
+- All 52 have a `JR $ra` in their first 24 instruction words. Fifty begin with the same 16-byte stack-frame prologue and return at offset `+0x54`; the remaining two are short leaf routines returning at `+0x0c`.
+- This is a strong structural sanity check that the recovered targets are genuine code entries rather than data, although it does not prove every dynamic caller path.
+- The last shared-index scan was removed from the per-function `emit_entry` path as well. A repeated `--max-functions=100` run completed discovery and emitted 100 modules in **7.5 seconds**; all 100 again parsed, verified and emitted objects successfully.
+- The resulting 100-function shared library was **580,176 bytes**. `ctypes.CDLL` loaded it, `ldd -r` reported no unresolved symbols, and the expected dispatcher/function exports were present.
+- The manifest, shared-index emission path and filter-independent discovered-entry snapshot passed [Actions run #43215631986](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43215631986), **15/15 CTest**.
 
 The complete **7,901-module** LLVM verification, object generation and native-link pass has **not** yet been completed. Only the bounded 100-function sample above has been verified and linked for this revalidation. The older 7,849-function full-link measurements in the preceding sections remain valid historical results for the pre-JALR-recovery source, but must not be presented as validation of the new 7,901-entry output.
 
