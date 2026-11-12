@@ -121,6 +121,7 @@ void usage(const char* program)
         "  --stack=0xADDR       Initial EE stack pointer (default 0x01fff000)\n"
         "  --trace              Print guest PC, reason and dispatch count per step\n"
         "  --hle-startup        Handle selected startup and semaphore kernel calls\n"
+        "  --kseg-ram           Alias KSEG0/KSEG1 addresses into 32 MiB EE RAM\n"
         "  --help               Show this message\n"
         "\n"
         "Runs already-linked translated functions, not a PS2 BIOS/IOP/GS.\n"
@@ -273,6 +274,7 @@ int main(int argc, char** argv)
     const char* library_path = nullptr;
     bool trace = false;
     bool hle_startup = false;
+    bool kseg_ram = false;
     const char* report_path = nullptr;
     uint32_t budget = k_default_dispatch_budget;
     uint32_t stack = k_default_stack;
@@ -300,6 +302,11 @@ int main(int argc, char** argv)
                 return 2;
             }
             report_path = argv[i] + 9;
+            continue;
+        }
+        if (argument == "--kseg-ram")
+        {
+            kseg_ram = true;
             continue;
         }
         if (argument == "--hle-startup")
@@ -395,6 +402,8 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "failed to allocate EE RAM\n");
         return 1;
     }
+
+    memory->set_kseg_ram_aliases(kseg_ram);
 
     std::printf("EE ELF entry 0x%08x; RAM %u MiB; stack 0x%08x\n",
                 entry, k_ee_ram_size >> 20, stack);
