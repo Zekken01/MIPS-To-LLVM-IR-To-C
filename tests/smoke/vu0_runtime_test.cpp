@@ -267,6 +267,75 @@ int main()
               instruction.m_upper_fields.m_id == 8 &&
               instruction.m_upper_fields.m_xyzw == 0,
               "VU0 micro fetch extracts upper primary opcode and operands");
+        check(
+            instruction.m_lower_fields.m_operation ==
+                ee::e_ee_vu0_micro_opcode::UNKNOWN,
+            "VU0 micro fetch marks an unassigned lower opcode as unknown"
+        );
+        check(
+            instruction.m_upper_fields.m_operation ==
+                ee::e_ee_vu0_micro_opcode::MADDA_I,
+            "VU0 upper secondary table classifies its FD/operation slot"
+        );
+
+        // Lower primary 0x60 selects the secondary integer-ALU table;
+        // primary 0x60 with sub-op 0x3c selects T3_00.
+        const uint32_t lower_iadd = (0x60u << 25) | 0x30u;
+        write_le32(&micro_state.m_micro_memory[0], lower_iadd);
+        write_le32(&micro_state.m_micro_memory[4], 0);
+        micro_state.m_micro_pc = 0;
+        check(
+            ee::ee_vu0_fetch_micro_instruction(&micro_state, &instruction) ==
+                static_cast<uint32_t>(ee::e_ee_vu0_sync_result::COMPLETE) &&
+            instruction.m_lower_fields.m_operation ==
+                ee::e_ee_vu0_micro_opcode::IADD,
+            "VU0 lower secondary table classifies IADD"
+        );
+
+        const uint32_t lower_lqi =
+            (0x60u << 25) | (13u << 6) | 0x3cu;
+        write_le32(&micro_state.m_micro_memory[0], lower_lqi);
+        micro_state.m_micro_pc = 0;
+        check(
+            ee::ee_vu0_fetch_micro_instruction(&micro_state, &instruction) ==
+                static_cast<uint32_t>(ee::e_ee_vu0_sync_result::COMPLETE) &&
+            instruction.m_lower_fields.m_operation ==
+                ee::e_ee_vu0_micro_opcode::LQI,
+            "VU0 lower T3_00 table classifies LQI"
+        );
+
+        write_le32(&micro_state.m_micro_memory[0], 0x7fu << 25);
+        micro_state.m_micro_pc = 0;
+        check(
+            ee::ee_vu0_fetch_micro_instruction(&micro_state, &instruction) ==
+                static_cast<uint32_t>(ee::e_ee_vu0_sync_result::COMPLETE) &&
+            instruction.m_lower_fields.m_operation ==
+                ee::e_ee_vu0_micro_opcode::UNKNOWN,
+            "VU0 lower opcode decoder rejects unassigned primary slot"
+        );
+
+        const uint32_t upper_add_x = 0;
+        const uint32_t upper_nop = (11u << 6) | 0x3fu;
+        write_le32(&micro_state.m_micro_memory[0], 0);
+        write_le32(&micro_state.m_micro_memory[4], upper_add_x);
+        micro_state.m_micro_pc = 0;
+        check(
+            ee::ee_vu0_fetch_micro_instruction(&micro_state, &instruction) ==
+                static_cast<uint32_t>(ee::e_ee_vu0_sync_result::COMPLETE) &&
+            instruction.m_upper_fields.m_operation ==
+                ee::e_ee_vu0_micro_opcode::ADD_X,
+            "VU0 upper primary table classifies ADDx"
+        );
+
+        write_le32(&micro_state.m_micro_memory[4], upper_nop);
+        micro_state.m_micro_pc = 0;
+        check(
+            ee::ee_vu0_fetch_micro_instruction(&micro_state, &instruction) ==
+                static_cast<uint32_t>(ee::e_ee_vu0_sync_result::COMPLETE) &&
+            instruction.m_upper_fields.m_operation ==
+                ee::e_ee_vu0_micro_opcode::NOP,
+            "VU0 upper FD secondary table classifies NOP"
+        );
         check(micro_state.m_micro_pc == 0x28u,
               "VU0 micro fetch advances PC by one 8-byte instruction");
 
