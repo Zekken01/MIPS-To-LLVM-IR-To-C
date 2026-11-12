@@ -60,10 +60,27 @@ void write_vi(std::ostream& output)
     output << ']';
 }
 
+void write_vf(std::ostream& output)
+{
+    output << "\\"vf\\":[";
+    for (u32 index = 0; index < 32; ++index)
+    {
+        if (index != 0)
+            output << ',';
+        output << '[' << VU0.VF[index].UL[0]
+               << ',' << VU0.VF[index].UL[1]
+               << ',' << VU0.VF[index].UL[2]
+               << ',' << VU0.VF[index].UL[3] << ']';
+    }
+    output << ']';
+}
+
 void write_state(std::ostream& output)
 {
     const u32 micro_pc = VU0.VI[REG_TPC].UL & VU0_MICRO_PC_MASK;
     write_vi(output);
+    output << ',';
+    write_vf(output);
     output << ",\"cycle\":" << VU0.cycle
            << ",\"micro_pc\":" << micro_pc
            << ",\"tpc\":" << ((micro_pc >> 3) & 0x1ffu)
