@@ -786,6 +786,54 @@ void function_analyzer::split_into_blocks(
         // Never start a block at another function's entry.
         if (is_foreign_entry(cur)) continue;
 
+        // A control-flow target may be discovered after a linear scan has
+        // already absorbed it into an existing block. Split that block now,
+        // so the target has a unique entry and every predecessor is linked to
+        // the same data-flow node.
+        auto containing_block = std::find_if(
+            fn.blocks.begin(), fn.blocks.end(),
+            [&](const s_ee_basic_block& block) {
+                return cur > block.start_pc && cur < block.end_pc;
+            }
+        );
+        if (containing_block != fn.blocks.end())
+        {
+            const auto split_instruction = std::find(
+                containing_block->insn_indices.begin(),
+                containing_block->insn_indices.end(),
+                static_cast<size_t>(cur)
+            );
+            if (split_instruction != containing_block->insn_indices.end())
+            {
+                const size_t split_offset = static_cast<size_t>(
+                    split_instruction - containing_block->insn_indices.begin()
+                );
+                s_ee_basic_block tail = *containing_block;
+                tail.start_pc = cur;
+                tail.insn_indices.erase(
+                    tail.insn_indices.begin(),
+                    tail.insn_indices.begin() + split_offset
+                );
+                tail.predecessors.clear();
+
+                containing_block->insn_indices.erase(
+                    containing_block->insn_indices.begin() + split_offset,
+                    containing_block->insn_indices.end()
+                );
+                containing_block->end_pc = cur;
+                containing_block->fallthrough_pc = cur;
+                containing_block->target_pc = 0;
+                containing_block->has_delay_slot = false;
+                containing_block->branch_likely = false;
+                containing_block->is_terminator = false;
+                containing_block->successors.clear();
+                containing_block->successors.insert(cur);
+
+                fn.blocks.push_back(std::move(tail));
+                continue;
+            }
+        }
+
         auto it = insns.find(cur);
         if (it == insns.end()) continue;
 
