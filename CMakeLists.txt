@@ -174,6 +174,9 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME pcsx2_vu0_installer
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_pcsx2_vu0_installer.py)
+    add_test(NAME vu0_differential_x11_config
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/tools/test_vu0_differential_x11_config.py)
 endif()
 add_test(NAME decoder COMMAND ee_decoder_test)
 add_test(NAME dispatcher COMMAND ee_dispatcher_test)
