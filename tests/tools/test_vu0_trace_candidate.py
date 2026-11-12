@@ -138,10 +138,18 @@ class VU0CandidateTraceTests(unittest.TestCase):
             self.assertEqual(final["micro_pc"], 416)
             self.assertEqual(final["tpc"], 52)
             self.assertNotEqual(
+                steps[38]["state"]["data_sha256"],
+                steps[39]["state"]["data_sha256"],
+            )
+            self.assertEqual(
                 steps[39]["state"]["data_sha256"],
                 steps[40]["state"]["data_sha256"],
             )
             self.assertNotEqual(
+                steps[40]["state"]["data_sha256"],
+                steps[41]["state"]["data_sha256"],
+            )
+            self.assertEqual(
                 steps[41]["state"]["data_sha256"],
                 steps[42]["state"]["data_sha256"],
             )
