@@ -230,6 +230,27 @@ uint32_t read_le32(const uint8_t* bytes)
            (static_cast<uint32_t>(bytes[2]) << 16) |
            (static_cast<uint32_t>(bytes[3]) << 24);
 }
+
+s_ee_vu0_micro_op_fields decode_micro_op_fields(
+    uint32_t word,
+    bool upper
+)
+{
+    const uint8_t ft = static_cast<uint8_t>((word >> 16) & 0x1fu);
+    const uint8_t fs = static_cast<uint8_t>((word >> 11) & 0x1fu);
+    const uint8_t fd = static_cast<uint8_t>((word >> 6) & 0x1fu);
+
+    return {
+        static_cast<uint8_t>(upper ? (word & 0x3fu) : (word >> 25)),
+        ft,
+        fs,
+        fd,
+        static_cast<uint8_t>(ft & 0x0fu),
+        static_cast<uint8_t>(fs & 0x0fu),
+        static_cast<uint8_t>(fd & 0x0fu),
+        static_cast<uint8_t>((word >> 21) & 0x0fu)
+    };
+}
 } // namespace
 
 extern "C" uint32_t ee_vu0_fetch_micro_instruction(
@@ -259,7 +280,14 @@ extern "C" uint32_t ee_vu0_fetch_micro_instruction(
     if ((upper & 0x10000000u) != 0) flags |= EE_VU0_MICRO_FLAG_D;
     if ((upper & 0x08000000u) != 0) flags |= EE_VU0_MICRO_FLAG_T;
 
-    *out = {pc, lower, upper, flags};
+    const s_ee_vu0_micro_op_fields lower_fields =
+        decode_micro_op_fields(lower, false);
+    const s_ee_vu0_micro_op_fields upper_fields =
+        decode_micro_op_fields(upper, true);
+
+    *out = {
+        pc, lower, upper, flags, lower_fields, upper_fields
+    };
     vu0->m_micro_pc = (pc + 8u) & EE_VU0_MICRO_MEMORY_MASK;
     return static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE);
 }
