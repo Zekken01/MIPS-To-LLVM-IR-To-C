@@ -424,8 +424,13 @@ def main():
             require(result == expected_exit and cpu.exit_reason == expected_exit,
                     f"{label}: wrong branch exit for condition={condition}")
             delay_executed = not likely or taken
-            require(cpu.gpr[8].lo == (0xaaaa if delay_executed else 0x7777),
-                    f"{label}: wrong delay-slot execution for condition={condition}")
+            expected_gpr8 = 0xaaaa if delay_executed else 0x7777
+            require(cpu.gpr[8].lo == expected_gpr8,
+                    f"{label}: GPR8=0x{cpu.gpr[8].lo:016x}, "
+                    f"expected 0x{expected_gpr8:016x}; "
+                    f"GPR9=0x{cpu.gpr[9].lo:016x}, "
+                    f"GPR10=0x{cpu.gpr[10].lo:016x}, "
+                    f"pc=0x{cpu.pc:08x}, exit={result}")
             require(cpu.gpr[9].lo == (0x8888 if taken else 0x1111),
                     f"{label}: wrong fallthrough state for condition={condition}")
             require(cpu.gpr[10].lo == (0x2222 if taken else 0x9999),
