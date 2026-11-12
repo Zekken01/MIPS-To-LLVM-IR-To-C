@@ -4,7 +4,7 @@
 
 This branch is a reconstructed baseline from the preserved 2026-11-11 09:57 MMI/HI1/LO1 follow-up, with subsequent decoder, lifting, control-flow, dispatcher, and validation work. Do not merge it into `main` until source provenance and the latest changes have been reviewed.
 
-Latest fully verified CI: [Actions run #43207855948](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43207855948), **15/15 CTest passed**, including the new function-discovery suite, CFG/data-flow regressions, VU0 runtime, COP1/COP2 JIT tests, native object emission/linking, dispatcher execution, and the MMI/HI1/LO1 regression suites.
+Latest fully verified CI: [Actions run #43210588688](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43210588688), **15/15 CTest passed**, including function-discovery/data-flow regressions, VU0 integer branch execution, COP1/COP2 JIT tests, native object emission/linking, dispatcher execution, and MMI/HI1/LO1 regression suites.
 
 Latest USA `SLUS_214.42` validation:
 - **7,849 functions discovered and emitted**.
@@ -51,18 +51,18 @@ See [`COP2_RESEARCH.md`](COP2_RESEARCH.md) for the PCSX2 reference and semantic 
 - Runtime transfer helpers apply synchronization before reads/writes; cover VF0, GPR0, CFC2 R and CTC2 special-register cases; and fail closed when the required scheduler/control callback is missing or fails.
 - BC2 reads VPU_STAT bit 8 and has ordinary/likely branch JIT coverage, including delay-slot execution and annulment.
 - `ee_vu0_scheduler_sync_callback` provides bounded catch-up, finish-to-E, and wait-to-E-or-M orchestration, including VU1 catch-up and EE event callbacks. Interlocked waits add only the VU0 cycles consumed to the original EE cycle counter; they do not collapse EE time to the VU0 counter unless taking PCSX2's separate early M-bit/already-ahead path.
-- `ee_vu0_execute_ialu_callback` executes lower IADD/ISUB/IAND/IOR/IADDI/IADDIU/ISUBIU and lower B/BAL/IBEQ/IBNE/IBLTZ/IBGTZ/IBLEZ/IBGEZ when paired with upper NOP. The IALU path performs 16-bit VI writes, keeps VI0 hardwired, reserves destinations in the four-entry queue, retires ready reservations, processes E's two-pair delay and flushes pending writes at termination. The branch path includes relative-target calculation, branch-delay state, nested-branch deferral and IALU source read stalls.
+- `ee_vu0_execute_ialu_callback` executes lower IADD/ISUB/IAND/IOR/IADDI/IADDIU/ISUBIU and lower B/BAL/JR/JALR/IBEQ/IBNE/IBLTZ/IBGTZ/IBLEZ/IBGEZ when paired with upper NOP. The IALU path performs 16-bit VI writes, keeps VI0 hardwired, reserves destinations in the four-entry queue, and retires ready reservations. The branch path implements signed relative targets, VI-slot JR/JALR targets, two-pair delay handling, nested-branch deferral, BAL/JALR links, source interlocks, and PCSX2's two-cycle VI-backup behaviour for conditional reads.
 - Each engine execution slice returns at an M-flagged pair. The outer scheduler decides whether M ends the wait: WAIT_TO_E_OR_M returns, while FINISH_TO_E invokes another slice and continues toward E. The integration tests cover resuming after M, E delay execution and the final IALU flush cycle.
-- This is **not** a general VU0 interpreter. The lower branch implementation does not yet have a dedicated runtime regression suite, so treat that path as provisional despite the overall CI pass. Lower JR/JALR, VU data-memory operations, I/D/T flags, upper vector operations, dual-issue dependencies, VF forwarding and FMAC/FDIV/EFU pipelines remain unsupported. Unsupported pairs fail closed without consuming their micro-PC.
+- This is **not** a general VU0 interpreter. The direct runtime suite covers B/BAL, JR/JALR, all six conditional integer branches, delay-slot execution, nested JALR, target/link overlap, negative relative offsets, and VI-backup/interlock timing. These tests are not yet a full differential run against PCSX2. VU data-memory operations, I/D/T flags, upper vector operations, general dual-issue dependencies, VF forwarding and FMAC/FDIV/EFU pipelines remain unsupported. Unsupported pairs fail closed without consuming their micro-PC.
 - VU0 SPECIAL1/SPECIAL2 macro instructions remain UNSUPPORTED. Do not enable them until dual-issue scheduling and the FMAC/FDIV/EFU pipelines, flags, ACC/Q/P forwarding and branch timing are implemented.
 
-The VU0 scheduler/micro-op foundation, COP2 JIT, and function-discovery/data-flow regressions passed **15/15** in [Actions run #43207855948](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43207855948).
+The VU0 integer/branch slice, COP2 JIT, and function-discovery/data-flow regressions passed **15/15** in [Actions run #43210588688](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43210588688).
 
 ## Remaining priorities
 
 1. **Full-image discovery revalidation:** rerun `SLUS_214.42` through the iterative JALR discovery path, compare the new entry list against the preserved 7,849 baseline, and repeat LLVM verification/object linking.
 2. **JALR coverage expansion:** add conservative patterns for additional proven address construction while preserving the all-predecessors-agree rule; keep GOT loads and runtime-dependent pointers unresolved until their memory/relocation semantics are modelled.
-3. **VU0 branch validation:** add direct runtime tests for B/BAL and every conditional integer branch, delay-slot execution, nested branches, and IALU read interlocks. Do not promote the lower branch slice to a validated status until those tests and PCSX2 comparison pass.
+3. **VU0 semantic differential testing:** compare the implemented lower integer/branch slice against PCSX2 over instruction/edge-case fixtures, especially branch-in-delay behaviour, VI-backup timing, cycle-budget boundaries, and E/M interaction.
 4. **VU0 memory and vector issue:** add LQ/SQ/ILW/ISW and a carefully tested dual-issue model before enabling vector arithmetic or macro instructions.
 5. **Runtime completeness:** EE memory/TLB/MMIO, scratchpad/ROM aliases, alignment exceptions, DMA, interrupts, plus BIOS/IOP/GS host services.
 6. **Semantic validation:** differential instruction and function testing against PCSX2's interpreter. LLVM verification and native linking do not establish R5900 equivalence.
