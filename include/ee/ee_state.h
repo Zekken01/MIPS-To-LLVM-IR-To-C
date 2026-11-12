@@ -28,8 +28,8 @@ struct alignas(16) s_ee_vu0_state
     uint32_t m_vpu_status;         // VI[VPU_STAT]
     uint32_t m_fbrst;
     uint32_t m_cmsar1;
-    uint32_t m_tpc;
-    uint32_t m_micro_pc;
+    uint32_t m_tpc;                 // VI[TPC], measured in 8-byte instruction slots
+    uint32_t m_micro_pc;            // byte offset used by the active micro fetch loop
 
     // Cycle accounting is maintained by the host scheduler. m_running and
     // the E/M bits are exposed so synchronization helpers can implement the
