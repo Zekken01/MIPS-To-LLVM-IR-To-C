@@ -60,7 +60,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/deps
-          key: ubuntu-22.04-pcsx2-\${{ env.PCSX2_REVISION }}-\${{ hashFiles('pcsx2/.github/workflows/scripts/linux/build-dependencies-qt.sh', 'pcsx2/.github/workflows/scripts/common/*.patch') }}
+          key: ubuntu-22.04-pcsx2-${{ env.PCSX2_REVISION }}-${{ hashFiles('pcsx2/.github/workflows/scripts/linux/build-dependencies-qt.sh', 'pcsx2/.github/workflows/scripts/common/*.patch') }}
 
       - name: Build PCSX2 dependencies
         if: steps.pcsx2-deps.outputs.cache-hit != 'true'
