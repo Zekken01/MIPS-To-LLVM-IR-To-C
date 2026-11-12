@@ -579,19 +579,47 @@ bool is_return(const s_ee_instruction& ins)
 }
 } // namespace
 
+std::set<uint32_t> collect_function_block_starts(
+    const std::map<uint32_t, s_ee_instruction>& insns,
+    const std::vector<uint32_t>& all_entries)
+{
+    std::set<uint32_t> block_starts(all_entries.begin(), all_entries.end());
+    for (const auto& [instruction_pc, instruction] : insns)
+    {
+        (void)instruction_pc;
+        if (instruction.flow == e_ee_flow::FLOW_BRANCH ||
+            instruction.flow == e_ee_flow::FLOW_BRANCH_LIKELY)
+        {
+            block_starts.insert(static_cast<uint32_t>(instruction.branch_target));
+        }
+        else if (instruction.flow == e_ee_flow::FLOW_JUMP &&
+                 instruction.opcode == e_ee_opcode::OP_J)
+        {
+            block_starts.insert(instruction.jump_target);
+        }
+    }
+    return block_starts;
+}
+
 std::vector<s_ee_function> function_analyzer::analyze(
     const std::map<uint32_t, s_ee_instruction>& insns,
     const std::vector<uint32_t>& entry_points,
-    const std::vector<uint32_t>& all_entries)
+    const std::vector<uint32_t>& all_entries,
+    const std::set<uint32_t>* block_starts)
 {
     std::set<uint32_t> stop_entries(all_entries.begin(), all_entries.end());
+    const std::set<uint32_t> local_block_starts = block_starts
+        ? std::set<uint32_t>{}
+        : collect_function_block_starts(insns, all_entries);
+    const std::set<uint32_t>& indexed_block_starts = block_starts
+        ? *block_starts : local_block_starts;
 
     std::vector<s_ee_function> functions;
     for (uint32_t ep : entry_points)
     {
         s_ee_function fn;
         fn.entry_pc = ep;
-        split_into_blocks(insns, ep, fn, stop_entries);
+        split_into_blocks(insns, ep, fn, stop_entries, indexed_block_starts);
         link_cfg(fn);
         functions.push_back(std::move(fn));
     }
@@ -601,10 +629,16 @@ std::vector<s_ee_function> function_analyzer::analyze(
 std::set<uint32_t> collect_static_jalr_targets(
     const std::map<uint32_t, s_ee_instruction>& insns,
     const std::vector<uint32_t>& entry_points,
-    const std::vector<uint32_t>& all_entries
+    const std::vector<uint32_t>& all_entries,
+    const std::set<uint32_t>* block_starts
 )
 {
     std::set<uint32_t> targets;
+    const std::set<uint32_t> local_block_starts = block_starts
+        ? std::set<uint32_t>{}
+        : collect_function_block_starts(insns, all_entries);
+    const std::set<uint32_t>& indexed_block_starts = block_starts
+        ? *block_starts : local_block_starts;
     function_analyzer analyzer;
 
     auto states_equal = [](const s_gpr_constant_state& a,
@@ -618,7 +652,7 @@ std::set<uint32_t> collect_static_jalr_targets(
     for (uint32_t entry : entry_points)
     {
         const std::vector<s_ee_function> functions =
-            analyzer.analyze(insns, {entry}, all_entries);
+            analyzer.analyze(insns, {entry}, all_entries, &indexed_block_starts);
         if (functions.empty() || functions[0].blocks.empty())
         {
             continue;
@@ -767,34 +801,17 @@ void function_analyzer::split_into_blocks(
     const std::map<uint32_t, s_ee_instruction>& insns,
     uint32_t entry_pc,
     s_ee_function& fn,
-    const std::set<uint32_t>& stop_entries)
+    const std::set<uint32_t>& stop_entries,
+    const std::set<uint32_t>& block_starts)
 {
     // Another function's entry: do not absorb its body into this CFG.
     auto is_foreign_entry = [&](uint32_t pc) -> bool {
         return pc != entry_pc && stop_entries.count(pc) != 0;
     };
 
-    // Collect every statically decoded in-image branch/jump destination before
-    // walking the CFG. A target may be discovered after a linear scan has
-    // already crossed it; using only the visited set would then leave
-    // overlapping blocks and lose predecessor states at that target.
-    std::set<uint32_t> block_starts = stop_entries;
-    block_starts.insert(entry_pc);
-    for (const auto& [instruction_pc, instruction] : insns)
-    {
-        (void)instruction_pc;
-        if (instruction.flow == e_ee_flow::FLOW_BRANCH ||
-            instruction.flow == e_ee_flow::FLOW_BRANCH_LIKELY)
-        {
-            block_starts.insert(static_cast<uint32_t>(instruction.branch_target));
-        }
-        else if (instruction.flow == e_ee_flow::FLOW_JUMP &&
-                 instruction.opcode == e_ee_opcode::OP_J)
-        {
-            block_starts.insert(instruction.jump_target);
-        }
-    }
-
+    // All decoded branch/jump leaders are supplied by the shared index built
+    // once for this instruction-map revision. Keeping that work out of this
+    // per-function routine avoids scanning the whole image for every entry.
     std::set<uint32_t> visited;
     std::vector<uint32_t> worklist;
     worklist.push_back(entry_pc);
