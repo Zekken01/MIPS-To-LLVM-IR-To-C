@@ -118,7 +118,7 @@ void usage(const char* program)
         "  --entry=0xADDR       Override ELF entry PC\n"
         "  --stack=0xADDR       Initial EE stack pointer (default 0x01fff000)\n"
         "  --trace              Print guest PC, reason and dispatch count per step\n"
-        "  --hle-startup        Handle the narrow SetupThread (0x3c) kernel call\n"
+        "  --hle-startup        Handle SetupThread/SetupHeap startup calls\n"
         "  --help               Show this message\n"
         "\n"
         "Runs already-linked translated functions, not a PS2 BIOS/IOP/GS.\n"
@@ -341,6 +341,10 @@ int main(int argc, char** argv)
         ee::e_ee_exit_reason::EE_EXIT_DISPATCH
     );
 
+    uint32_t startup_stack_top = stack;
+    uint32_t startup_stack_size = 0;
+    bool startup_thread_set = false;
+
     uint32_t remaining = budget;
     uint64_t dispatched = 0;
     uint32_t status = 0;
@@ -378,75 +382,121 @@ int main(int argc, char** argv)
             break;
         }
 
-        // Experimental EE startup HLE, deliberately limited to SetupThread.
-        // A syscall is a real exception until this explicit host handler
-        // validates the guest ABI and resumes at EPC + 4. Unknown syscalls
-        // remain exceptions and never silently succeed.
+        // Experimental PS2 EE startup HLE. Handle only explicitly
+        // recognized syscalls; unknown services still stop at the exception.
         if (hle_startup &&
             reason == static_cast<uint32_t>(
                 ee::e_ee_exit_reason::EE_EXIT_EXCEPTION) &&
-            ((cpu.m_cop0[13] >> 2) & 0x1fu) == 8u &&
-            static_cast<uint32_t>(cpu.m_gpr[3].m_lo) == 0x3cu)
+            ((cpu.m_cop0[13] >> 2) & 0x1fu) == 8u)
         {
-            const uint32_t epc = cpu.m_cop0[14];
-            uint32_t opcode = 0;
-            const uint32_t stack_arg =
-                static_cast<uint32_t>(cpu.m_gpr[5].m_lo);
-            const uint32_t stack_size =
-                static_cast<uint32_t>(cpu.m_gpr[6].m_lo);
-            uint32_t new_stack = 0;
-            if (!image.read32_at(epc, &opcode) ||
-                (opcode & 0x3fu) != 0x0cu ||
-                (opcode >> 26) != 0u ||
-                (cpu.m_cop0[13] & 0x80000000u) != 0u ||
-                stack_size < 0x100u || stack_size > k_ee_ram_size ||
-                epc > 0xfffffffbu)
+            const uint32_t service =
+                static_cast<uint32_t>(cpu.m_gpr[3].m_lo);
+            if (service == 0x3cu || service == 0x3du)
             {
-                std::fprintf(stderr, "SetupThread HLE refused invalid syscall context\n");
-                break;
-            }
-
-            if (stack_arg == 0xffffffffu)
-            {
-                new_stack = stack;
-            }
-            else
-            {
-                // An explicitly provided base denotes a stack region of
-                // stack_size bytes. Keep the resulting top 16-byte aligned.
-                const uint64_t end =
-                    static_cast<uint64_t>(stack_arg) + stack_size;
-                if (end > k_ee_ram_size)
+                const uint32_t epc = cpu.m_cop0[14];
+                uint32_t opcode = 0;
+                if (!image.read32_at(epc, &opcode) ||
+                    (opcode & 0x3fu) != 0x0cu ||
+                    (opcode >> 26) != 0u ||
+                    (cpu.m_cop0[13] & 0x80000000u) != 0u ||
+                    epc > 0xfffffffbu)
                 {
-                    std::fprintf(stderr, "SetupThread HLE refused invalid stack region\n");
+                    std::fprintf(stderr, "startup HLE refused invalid syscall context\n");
                     break;
                 }
-                new_stack = static_cast<uint32_t>(end) & ~0x0fu;
-            }
 
-            if (!memory->contains(new_stack - 16u, 16u))
-            {
-                std::fprintf(stderr, "SetupThread HLE refused unbacked stack\n");
-                break;
-            }
+                if (service == 0x3cu)
+                {
+                    const uint32_t stack_arg =
+                        static_cast<uint32_t>(cpu.m_gpr[5].m_lo);
+                    const uint32_t requested_size =
+                        static_cast<uint32_t>(cpu.m_gpr[6].m_lo);
+                    uint32_t new_stack = 0;
+                    if (requested_size < 0x100u ||
+                        requested_size > k_ee_ram_size)
+                    {
+                        std::fprintf(stderr, "SetupThread HLE refused stack size\n");
+                        break;
+                    }
+                    if (stack_arg == 0xffffffffu)
+                    {
+                        new_stack = stack;
+                    }
+                    else
+                    {
+                        const uint64_t end =
+                            static_cast<uint64_t>(stack_arg) + requested_size;
+                        if (end > k_ee_ram_size)
+                        {
+                            std::fprintf(stderr, "SetupThread HLE refused stack region\n");
+                            break;
+                        }
+                        new_stack = static_cast<uint32_t>(end) & ~0x0fu;
+                    }
+                    if (new_stack < requested_size ||
+                        !memory->contains(new_stack - requested_size, requested_size))
+                    {
+                        std::fprintf(stderr, "SetupThread HLE refused unbacked stack\n");
+                        break;
+                    }
+                    startup_stack_top = new_stack;
+                    startup_stack_size = requested_size;
+                    startup_thread_set = true;
+                    cpu.m_gpr[2].m_lo = new_stack;
+                    if (trace)
+                    {
+                        std::printf(
+                            "HLE SetupThread: gp=0x%08x stack=0x%08x "
+                            "size=0x%08x args=0x%08x\n",
+                            static_cast<uint32_t>(cpu.m_gpr[4].m_lo),
+                            new_stack, requested_size,
+                            static_cast<uint32_t>(cpu.m_gpr[7].m_lo)
+                        );
+                    }
+                }
+                else
+                {
+                    const uint32_t request_base =
+                        static_cast<uint32_t>(cpu.m_gpr[4].m_lo);
+                    const uint32_t request_size =
+                        static_cast<uint32_t>(cpu.m_gpr[5].m_lo);
+                    const uint64_t aligned_base =
+                        (static_cast<uint64_t>(request_base) + 15u) & ~15ull;
+                    const uint64_t limit = startup_thread_set
+                        ? static_cast<uint64_t>(startup_stack_top - startup_stack_size)
+                        : k_ee_ram_size;
+                    const uint64_t heap_end = request_size == 0xffffffffu
+                        ? limit : aligned_base + request_size;
 
-            cpu.m_gpr[2].m_lo = new_stack;
-            cpu.m_cop0[12] &= ~2u; // Clear COP0.Status.EXL.
-            cpu.m_pc = epc + 4u;
-            cpu.m_exit_reason = static_cast<uint32_t>(
-                ee::e_ee_exit_reason::EE_EXIT_DISPATCH
-            );
-            if (trace)
-            {
-                std::printf(
-                    "HLE SetupThread: gp=0x%08x stack=0x%08x "
-                    "size=0x%08x args=0x%08x resume=0x%08x\n",
-                    static_cast<uint32_t>(cpu.m_gpr[4].m_lo),
-                    new_stack, stack_size,
-                    static_cast<uint32_t>(cpu.m_gpr[7].m_lo), cpu.m_pc
+                    if (!startup_thread_set ||
+                        aligned_base > limit ||
+                        heap_end < aligned_base ||
+                        heap_end > limit)
+                    {
+                        std::fprintf(stderr, "SetupHeap HLE refused overlapping heap/stack\n");
+                        break;
+                    }
+                    // A real kernel records the heap extent in its process
+                    // state. We validate the request here, but do not claim
+                    // malloc/sbrk or a general EE memory manager exists.
+                    if (trace)
+                    {
+                        std::printf(
+                            "HLE SetupHeap: base=0x%08x end=0x%08x "
+                            "size=0x%08x\n",
+                            static_cast<uint32_t>(aligned_base),
+                            static_cast<uint32_t>(heap_end), request_size
+                        );
+                    }
+                }
+
+                cpu.m_cop0[12] &= ~2u; // Clear COP0.Status.EXL.
+                cpu.m_pc = epc + 4u;
+                cpu.m_exit_reason = static_cast<uint32_t>(
+                    ee::e_ee_exit_reason::EE_EXIT_DISPATCH
                 );
+                continue;
             }
-            continue;
         }
 
         if (status != 1u || count == 0u)
