@@ -80,14 +80,16 @@ void write_state(std::ostream& output)
            << ((VU0.VI[REG_VPU_STAT].UL & 1u) != 0 ? "true" : "false");
 }
 
-void write_header(std::ostream& output)
+void write_header(
+    std::ostream& output,
+    const std::string& program_sha256
+)
 {
     output << "{\"schema\":\"mips-to-llvm-vu0-trace-v1\""
            << ",\"kind\":\"header\""
            << ",\"engine\":\"pcsx2-interpreter\""
            << ",\"revision\":\"82cac38b2af19d593dedfd9ddaa63448e7ec493c\""
-           << ",\"program_sha256\":\""
-           << vu0_trace_fixture::k_program_sha256
+           << ",\"program_sha256\":\"" << program_sha256
            << "\",\"initial_state\":{";
     write_state(output);
     output << "}}\n";
@@ -251,7 +253,10 @@ TEST_F(VU0IssueOrder, EmitDeterministicPerPairTrace)
     VU0.VIOldValue = 0;
     VU0.flags &= ~VUFLAG_MFLAGSET;
 
-    write_header(output);
+    const std::string program_sha256 = vu0_trace_fixture::sha256_hex(
+        m_micro.data(), m_micro.size()
+    );
+    write_header(output, program_sha256);
 
     u32 step = 0;
     while ((VU0.VI[REG_VPU_STAT].UL & 1u) != 0 &&
