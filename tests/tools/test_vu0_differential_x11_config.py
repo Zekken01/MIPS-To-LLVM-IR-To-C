@@ -14,7 +14,7 @@ README = ROOT / "tools" / "vu0_diff" / "README.md"
 class VU0DifferentialX11ConfigTests(unittest.TestCase):
     def test_local_driver_keeps_x11_enabled_on_linux(self):
         source = DRIVER.read_text(encoding="utf-8")
-        self.assertNotIn('"'"'-DX11_API=OFF"', source)
+        self.assertNotIn("-DX11_API=OFF", source)
         self.assertIn('if platform.system() == "Linux":', source)
         self.assertIn('pcsx2_cmake_args.append("-DX11_API=ON")', source)
 
