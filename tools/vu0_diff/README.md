@@ -20,7 +20,7 @@ The adapter retains three focused issue-order probes:
 3. A scalar IALU write starts a fresh two-cycle VI-backup window after the
    interpreter's pre-handler aging phase.
 
-It also has an opt-in per-pair trace test. That test executes a shared 56-pair
+It also has an opt-in per-pair trace test. That test executes a shared 60-pair
 program through vu0Exec(&VU0) one pair at a time and writes architectural
 state after each pair. The fixture executes all seven supported scalar lower
 operations, B/BAL/JR/JALR, all six conditional branches, an M-marked pair, and
