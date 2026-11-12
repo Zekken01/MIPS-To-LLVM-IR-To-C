@@ -58,14 +58,17 @@ void write_state(std::ostream& output, const ee::s_ee_vu0_state& vu0)
            << ",\"running\":" << (vu0.m_running != 0 ? "true" : "false");
 }
 
-void write_header(std::ostream& output, const ee::s_ee_vu0_state& vu0)
+void write_header(
+    std::ostream& output,
+    const ee::s_ee_vu0_state& vu0,
+    const std::string& program_sha256
+)
 {
     output << "{\"schema\":\"mips-to-llvm-vu0-trace-v1\""
            << ",\"kind\":\"header\""
            << ",\"engine\":\"mips-to-llvm-runtime\""
            << ",\"revision\":\"main\""
-           << ",\"program_sha256\":\""
-           << vu0_trace_fixture::k_program_sha256 << "\""
+           << ",\"program_sha256\":\"" << program_sha256 << "\""
            << ",\"initial_state\":{";
     write_state(output, vu0);
     output << "}}\n";
@@ -118,7 +121,10 @@ int main(int argc, char** argv)
     vu0.m_vi[29] = vu0.m_vpu_status;
     vu0.m_running = 1;
 
-    write_header(output, vu0);
+    const std::string program_sha256 = vu0_trace_fixture::sha256_hex(
+        vu0.m_micro_memory, ee::EE_VU0_MICRO_MEMORY_SIZE
+    );
+    write_header(output, vu0, program_sha256);
 
     uint32_t step = 0;
     while ((vu0.m_vpu_status & 1u) != 0 &&
