@@ -163,3 +163,5 @@ Further changes should be committed to this branch in small, testable increments
 - CFC2 sign-extends ordinary VI values into the low GPR doubleword, masks the R register (VI index 20) to 23 bits, and preserves the GPR upper 64-bit half.
 - Expanded `vu0_runtime_test` to cover full-width copies, zero registers, CFC2 R handling, scheduler failures and destination preservation.
 - The LLVM emitter and decoder are intentionally unchanged: these transfer helpers are not yet wired to generated guest code, and the corresponding instructions remain UNSUPPORTED. CTC2 is deferred pending explicit side-effect mapping.
+
+- Follow-up semantic review against PCSX2 corrected two edge cases in the transfer helpers: QMFC2 reads VF0 as the constant (0,0,0,1.0f), and CFC2's R-register path replaces only GPR UL[0] while preserving UL[1].

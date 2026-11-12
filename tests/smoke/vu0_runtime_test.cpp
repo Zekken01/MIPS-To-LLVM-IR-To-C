@@ -258,8 +258,17 @@ int main()
     check(cpu.m_vu0[0].m_lo == zero_vf_sentinel.m_lo &&
           cpu.m_vu0[0].m_hi == zero_vf_sentinel.m_hi,
           "QMTC2 never changes VF0");
+    cpu.m_gpr[13] = {};
+    check(
+        ee::ee_vu0_qmfc2(&cpu, &runtime, 13, 0, read_mode, 0x00100032u) ==
+            static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE),
+        "QMFC2 from VF0 succeeds"
+    );
+    check(cpu.m_gpr[13].m_lo == 0 &&
+          cpu.m_gpr[13].m_hi == 0x3f80000000000000ULL,
+          "QMFC2 reads VF0 as (0, 0, 0, 1.0f)");
 
-    // CFC2 sign-extends normal VI words; the R register is masked to 23 bits.
+    // CFC2 sign-extends ordinary VI words; R only replaces UL[0].
     vu0.m_vi[6] = 0x81234567u;
     cpu.m_gpr[10].m_hi = 0x123456789abcdef0ULL;
     check(
@@ -272,13 +281,14 @@ int main()
     check(cpu.m_gpr[10].m_hi == 0x123456789abcdef0ULL,
           "CFC2 preserves the upper 64-bit GPR half");
     vu0.m_vi[20] = 0xffabcdefu;
+    cpu.m_gpr[11].m_lo = 0xfeedfacecafebeefULL;
     check(
         ee::ee_vu0_cfc2(&cpu, &runtime, 11, 20, read_mode, 0x00100038u) ==
             static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE),
         "CFC2 special R read succeeds"
     );
-    check(cpu.m_gpr[11].m_lo == 0x00000000002bcdefULL,
-          "CFC2 masks the R register to 23 bits");
+    check(cpu.m_gpr[11].m_lo == 0xfeedface002bcdefULL,
+          "CFC2 R masks UL[0] and preserves UL[1]");
     cpu.m_gpr[0] = zero_gpr_sentinel;
     check(
         ee::ee_vu0_cfc2(&cpu, &runtime, 0, 6, read_mode, 0x0010003cu) ==

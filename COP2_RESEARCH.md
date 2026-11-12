@@ -141,3 +141,9 @@ The runtime now has first-pass implementations for QMFC2, QMTC2 and CFC2. They a
 - All three helpers leave architectural destinations untouched when synchronization is unavailable or reports failure.
 
 These are runtime-callable helpers with unit tests. The LLVM lifter has not yet been taught to emit them and the decoder deliberately continues to report these instructions as UNSUPPORTED. CTC2 remains deferred until its read-only, R, FBRST, CMSAR1 and CLIP_FLAG behavior is mapped and tested.
+
+### Transfer edge cases verified against PCSX2
+
+- VF0 is not an all-zero quadword. It is the immutable vector `(0.0f, 0.0f, 0.0f, 1.0f)`; QMFC2 must return `m_hi = 0x3f80000000000000` and a zero low half even if a backing VF0 slot contains stale data.
+- QMTC2's VF0 destination is discarded.
+- CFC2's R path writes only GPR `UL[0]` with the 23-bit masked value. Unlike ordinary VI reads, it does not update `UL[1]`; that pre-existing upper word must be preserved. Ordinary reads sign-extend bit 31 into `UL[1]`.

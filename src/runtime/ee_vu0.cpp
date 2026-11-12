@@ -104,7 +104,11 @@ extern "C" uint32_t ee_vu0_qmfc2(
 
     if (gpr_index != 0)
     {
-        cpu->m_gpr[gpr_index] = cpu->m_vu0[vf_index];
+        // VF0 is architecturally constant: (0, 0, 0, 1.0f). Do not trust
+        // the backing array for register zero, which must never be written.
+        cpu->m_gpr[gpr_index] = vf_index == 0
+            ? s_ee_u128{0, 0x3f80000000000000ULL}
+            : cpu->m_vu0[vf_index];
     }
 
     return result;
@@ -165,11 +169,18 @@ extern "C" uint32_t ee_vu0_cfc2(
         uint32_t value = ee_vu0_read_vi(rt->m_vu0_state, vi_index);
         if (vi_index == VU0_REG_R)
         {
-            value &= VU0_R_MASK;
+            // PCSX2 writes only UL[0] on this special path. Preserve UL[1]
+            // rather than sign-extending or zero-extending the 23-bit value.
+            cpu->m_gpr[gpr_index].m_lo =
+                (cpu->m_gpr[gpr_index].m_lo & 0xffffffff00000000ULL) |
+                (static_cast<uint64_t>(value) & VU0_R_MASK);
         }
-
-        cpu->m_gpr[gpr_index].m_lo =
-            static_cast<uint64_t>(static_cast<int64_t>(static_cast<int32_t>(value)));
+        else
+        {
+            // All ordinary VI reads sign-extend UL[0] into UL[1].
+            cpu->m_gpr[gpr_index].m_lo =
+                static_cast<uint64_t>(static_cast<int64_t>(static_cast<int32_t>(value)));
+        }
     }
 
     return result;
