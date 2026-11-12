@@ -118,7 +118,7 @@ void usage(const char* program)
         "  --entry=0xADDR       Override ELF entry PC\n"
         "  --stack=0xADDR       Initial EE stack pointer (default 0x01fff000)\n"
         "  --trace              Print guest PC, reason and dispatch count per step\n"
-        "  --hle-startup        Handle SetupThread/SetupHeap startup calls\n"
+        "  --hle-startup        Handle selected startup and semaphore kernel calls\n"
         "  --help               Show this message\n"
         "\n"
         "Runs already-linked translated functions, not a PS2 BIOS/IOP/GS.\n"
@@ -345,6 +345,16 @@ int main(int argc, char** argv)
     uint32_t startup_stack_size = 0;
     bool startup_thread_set = false;
 
+    struct s_kernel_semaphore
+    {
+        bool m_used = false;
+        uint32_t m_count = 0;
+        uint32_t m_max_count = 0;
+        uint32_t m_attr = 0;
+        uint32_t m_option = 0;
+    };
+    s_kernel_semaphore semaphores[64]{};
+
     uint32_t remaining = budget;
     uint64_t dispatched = 0;
     uint32_t status = 0;
@@ -391,7 +401,7 @@ int main(int argc, char** argv)
         {
             const uint32_t service =
                 static_cast<uint32_t>(cpu.m_gpr[3].m_lo);
-            if (service == 0x3cu || service == 0x3du)
+            if (service == 0x3cu || service == 0x3du || service == 0x40u)
             {
                 const uint32_t epc = cpu.m_cop0[14];
                 uint32_t opcode = 0;
@@ -454,7 +464,7 @@ int main(int argc, char** argv)
                         );
                     }
                 }
-                else
+                else if (service == 0x3du)
                 {
                     const uint32_t request_base =
                         static_cast<uint32_t>(cpu.m_gpr[4].m_lo);
@@ -486,6 +496,69 @@ int main(int argc, char** argv)
                             "size=0x%08x\n",
                             static_cast<uint32_t>(aligned_base),
                             static_cast<uint32_t>(heap_end), request_size
+                        );
+                    }
+                }
+
+                else
+                {
+                    // PS2SDK ee_sema_t is six consecutive 32-bit fields:
+                    // count, max_count, init_count, wait_threads, attr,
+                    // option. Initial allocation uses max_count/init_count;
+                    // count and wait_threads are runtime output fields.
+                    const uint32_t parameter_address =
+                        static_cast<uint32_t>(cpu.m_gpr[4].m_lo);
+                    if ((parameter_address & 3u) != 0 ||
+                        !memory->contains(parameter_address, 24u))
+                    {
+                        std::fprintf(stderr, "CreateSema HLE refused unbacked parameter block\\n");
+                        break;
+                    }
+                    const uint32_t max_count =
+                        memory->read32(parameter_address + 4u);
+                    const uint32_t init_count =
+                        memory->read32(parameter_address + 8u);
+                    const uint32_t attr =
+                        memory->read32(parameter_address + 16u);
+                    const uint32_t option =
+                        memory->read32(parameter_address + 20u);
+                    if (max_count == 0u || max_count > 0x7fffffffu ||
+                        init_count > max_count)
+                    {
+                        std::fprintf(stderr,
+                            "CreateSema HLE refused invalid count init=%u max=%u\\n",
+                            init_count, max_count
+                        );
+                        break;
+                    }
+                    uint32_t id = 0u;
+                    for (uint32_t candidate = 1u; candidate <= 64u; ++candidate)
+                    {
+                        if (!semaphores[candidate - 1u].m_used)
+                        {
+                            id = candidate;
+                            break;
+                        }
+                    }
+                    if (id == 0u)
+                    {
+                        std::fprintf(stderr, "CreateSema HLE exhausted semaphore slots\\n");
+                        break;
+                    }
+                    s_kernel_semaphore& semaphore = semaphores[id - 1u];
+                    semaphore.m_used = true;
+                    semaphore.m_count = init_count;
+                    semaphore.m_max_count = max_count;
+                    semaphore.m_attr = attr;
+                    semaphore.m_option = option;
+                    cpu.m_gpr[2].m_lo = id;
+                    if (trace)
+                    {
+                        std::printf(
+                            "HLE CreateSema: id=%u init=%u max=%u attr=0x%08x "
+                            "option=0x%08x parameters=0x%08x\\n",
+                            id, init_count, max_count, attr, option,
+                            parameter_address
                         );
                     }
                 }
