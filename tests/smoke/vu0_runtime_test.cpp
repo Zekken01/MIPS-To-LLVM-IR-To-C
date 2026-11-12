@@ -249,6 +249,24 @@ int main()
                ee::EE_VU0_MICRO_FLAG_M | ee::EE_VU0_MICRO_FLAG_D |
                ee::EE_VU0_MICRO_FLAG_T),
               "VU0 micro fetch decodes I/E/M/D/T flag bits");
+        check(instruction.m_lower_fields.m_opcode == 8 &&
+              instruction.m_lower_fields.m_ft == 2 &&
+              instruction.m_lower_fields.m_fs == 6 &&
+              instruction.m_lower_fields.m_fd == 13 &&
+              instruction.m_lower_fields.m_it == 2 &&
+              instruction.m_lower_fields.m_is == 6 &&
+              instruction.m_lower_fields.m_id == 13 &&
+              instruction.m_lower_fields.m_xyzw == 9,
+              "VU0 micro fetch extracts lower primary opcode and operands");
+        check(instruction.m_upper_fields.m_opcode == 52 &&
+              instruction.m_upper_fields.m_ft == 0 &&
+              instruction.m_upper_fields.m_fs == 2 &&
+              instruction.m_upper_fields.m_fd == 8 &&
+              instruction.m_upper_fields.m_it == 0 &&
+              instruction.m_upper_fields.m_is == 2 &&
+              instruction.m_upper_fields.m_id == 8 &&
+              instruction.m_upper_fields.m_xyzw == 0,
+              "VU0 micro fetch extracts upper primary opcode and operands");
         check(micro_state.m_micro_pc == 0x28u,
               "VU0 micro fetch advances PC by one 8-byte instruction");
 
