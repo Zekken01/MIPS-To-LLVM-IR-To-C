@@ -791,6 +791,191 @@ bool vu0_is_supported_lower_ialu(const s_ee_vu0_micro_instruction& instruction)
     }
 }
 
+bool vu0_is_supported_lower_branch(const s_ee_vu0_micro_instruction& instruction)
+{
+    using op = e_ee_vu0_micro_opcode;
+    switch (instruction.m_lower_fields.m_operation)
+    {
+    case op::B:
+    case op::BAL:
+    case op::IBEQ:
+    case op::IBNE:
+    case op::IBLTZ:
+    case op::IBGTZ:
+    case op::IBLEZ:
+    case op::IBGEZ:
+        return true;
+    default:
+        return false;
+    }
+}
+
+uint32_t vu0_lower_branch_read_mask(
+    const s_ee_vu0_micro_instruction& instruction
+)
+{
+    using op = e_ee_vu0_micro_opcode;
+    const auto& fields = instruction.m_lower_fields;
+    uint32_t read_mask = 0;
+
+    switch (fields.m_operation)
+    {
+    case op::IBEQ:
+    case op::IBNE:
+        if (fields.m_it != 0) read_mask |= 1u << fields.m_it;
+        if (fields.m_is != 0) read_mask |= 1u << fields.m_is;
+        break;
+
+    case op::IBLTZ:
+    case op::IBGTZ:
+    case op::IBLEZ:
+    case op::IBGEZ:
+        if (fields.m_is != 0) read_mask |= 1u << fields.m_is;
+        break;
+
+    default:
+        break;
+    }
+
+    return read_mask;
+}
+
+int32_t vu0_sign_extend_branch_immediate(uint32_t lower_word)
+{
+    const uint32_t immediate = lower_word & 0x07ffu;
+    return (immediate & 0x0400u) != 0
+        ? static_cast<int32_t>(immediate | 0xfffff800u)
+        : static_cast<int32_t>(immediate);
+}
+
+uint32_t vu0_relative_branch_target(
+    const s_ee_vu0_state* vu0,
+    const s_ee_vu0_micro_instruction& instruction
+)
+{
+    // PCSX2's _branchAddr uses the already-advanced TPC plus signed imm10
+    // (the sign bit is instruction bit 10; bit 11 is not part of the offset).
+    const int64_t target = static_cast<int64_t>(vu0->m_micro_pc) +
+        (static_cast<int64_t>(vu0_sign_extend_branch_immediate(instruction.m_lower)) * 8);
+    return static_cast<uint32_t>(target) & EE_VU0_MICRO_MEMORY_MASK;
+}
+
+void vu0_set_branch(s_ee_vu0_state* vu0, uint32_t target)
+{
+    if (vu0->m_branch == 1)
+    {
+        // A branch issued in the current branch's delay pair is deferred until
+        // after the first target instruction has executed.
+        vu0->m_delay_branch_pc = target & EE_VU0_MICRO_MEMORY_MASK;
+        vu0->m_take_delay_branch = 1;
+    }
+    else
+    {
+        vu0->m_branch = 2;
+        vu0->m_branch_pc = target & EE_VU0_MICRO_MEMORY_MASK;
+    }
+}
+
+void vu0_advance_branch_pipeline(s_ee_vu0_state* vu0)
+{
+    if (vu0->m_branch == 0)
+    {
+        return;
+    }
+
+    if (vu0->m_branch > 1)
+    {
+        --vu0->m_branch;
+        return;
+    }
+
+    vu0->m_micro_pc = vu0->m_branch_pc & EE_VU0_MICRO_MEMORY_MASK;
+    if (vu0->m_take_delay_branch != 0)
+    {
+        vu0->m_branch = 1;
+        vu0->m_branch_pc = vu0->m_delay_branch_pc & EE_VU0_MICRO_MEMORY_MASK;
+        vu0->m_take_delay_branch = 0;
+    }
+    else
+    {
+        vu0->m_branch = 0;
+    }
+}
+
+bool vu0_execute_lower_branch(
+    s_ee_vu0_state* vu0,
+    const s_ee_vu0_micro_instruction& instruction
+)
+{
+    if (!vu0)
+    {
+        return false;
+    }
+
+    using op = e_ee_vu0_micro_opcode;
+    const auto& fields = instruction.m_lower_fields;
+    const int16_t source_s = static_cast<int16_t>(
+        vu0_read_ialu_vi(vu0, fields.m_is)
+    );
+    const int16_t source_t = static_cast<int16_t>(
+        vu0_read_ialu_vi(vu0, fields.m_it)
+    );
+    bool taken = false;
+
+    switch (fields.m_operation)
+    {
+    case op::B:
+        taken = true;
+        break;
+
+    case op::BAL:
+        taken = true;
+        if (fields.m_it != 0)
+        {
+            const uint32_t link_pc = vu0->m_branch == 1
+                ? (vu0->m_branch_pc + 8u)
+                : (vu0->m_micro_pc + 8u);
+            vu0_write_ialu_vi(vu0, fields.m_it,
+                static_cast<uint16_t>((link_pc >> 3) & 0xffffu));
+        }
+        break;
+
+    case op::IBEQ:
+        taken = source_t == source_s;
+        break;
+
+    case op::IBNE:
+        taken = source_t != source_s;
+        break;
+
+    case op::IBLTZ:
+        taken = source_s < 0;
+        break;
+
+    case op::IBGTZ:
+        taken = source_s > 0;
+        break;
+
+    case op::IBLEZ:
+        taken = source_s <= 0;
+        break;
+
+    case op::IBGEZ:
+        taken = source_s >= 0;
+        break;
+
+    default:
+        return false;
+    }
+
+    if (taken)
+    {
+        vu0_set_branch(vu0, vu0_relative_branch_target(vu0, instruction));
+    }
+
+    return true;
+}
+
 bool vu0_execute_lower_ialu(
     s_ee_vu0_state* vu0,
     const s_ee_vu0_micro_instruction& instruction,
