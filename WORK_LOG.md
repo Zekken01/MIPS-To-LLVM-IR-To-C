@@ -247,3 +247,14 @@ Further changes should be committed to this branch in small, testable increments
 - GitHub Actions [run 43207855948](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43207855948): clean configure/build and **15/15 CTest passed**, including `function_discovery`.
 - The preserved USA `SLUS_214.42` full-image validation (7,849 functions) predates this JALR recovery. Do not update or reuse that count as a result of the new pass until the full ELF is re-run. A fresh full-image native-link validation is the next check.
 - Remaining limits: JALR targets that depend on GOT/table loads, runtime values, interprocedural register states, or unsupported transformations are not guessed. Function discovery is still conservative and is not proof that every stripped-image function is found.
+
+
+## 2026-11-12 — VU0 integer branches, JR/JALR and VI backup timing
+
+- Cross-checked lower branch control flow against PCSX2 `VU0microInterp.cpp` and `VUops.cpp`: TPC advances before branch target calculation; B/BAL use signed 11-bit encoded offsets with bit 10 as the sign bit; branch issue uses a two-pair delay pipeline; branch-in-delay-slot targets are deferred until after the first target instruction.
+- Extended the executable upper-NOP/lower-integer slice to B, BAL, JR, JALR, IBEQ, IBNE, IBLTZ, IBGTZ, IBLEZ and IBGEZ. JR/JALR sample the low 16-bit VI target in instruction-slot units before any JALR link write; JALR supports the Is == It overlap.
+- Added the PCSX2 VI-backup window to the sidecar. IALU writes preserve the pre-chain low halfword for two cycles; repeated writes to the same VI retain the original value and refresh the window; a write to another VI replaces the backup register. Conditional branch reads use the backup value while active. E termination clears the window.
+- Appended the backup counter/register/value to the VU0 sidecar. C++ layout assertions and the Python ctypes mirror now agree on offsets 8524/8528/8532 and the 8544-byte, 16-byte-aligned state size; Python includes explicit tail padding because ctypes natural alignment is 8 bytes.
+- Added direct runtime cases for B/BAL delay slots, JR, JALR including Is/It overlap, JALR in a branch delay pair, every conditional integer branch, negative relative offsets/wraparound, and both branch-read VI-backup cases (active backup and replacement/chain behaviour).
+- GitHub Actions [run 43210588688](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43210588688): clean build and **15/15 CTest passed**.
+- This remains a restricted lower-integer/branch engine, not a full VU0 interpreter. VU data-memory operations, I/D/T flags, upper vector operations, general dual-issue dependencies, VF forwarding and FMAC/FDIV/EFU pipelines remain unsupported. The new tests are direct runtime regressions, not yet a full differential execution harness against PCSX2.
