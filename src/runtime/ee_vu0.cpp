@@ -851,7 +851,9 @@ bool vu0_is_supported_lower_memory(const s_ee_vu0_micro_instruction& instruction
 {
     using op = e_ee_vu0_micro_opcode;
     return instruction.m_lower_fields.m_operation == op::ILW ||
-           instruction.m_lower_fields.m_operation == op::ISW;
+           instruction.m_lower_fields.m_operation == op::ISW ||
+           instruction.m_lower_fields.m_operation == op::LQ ||
+           instruction.m_lower_fields.m_operation == op::SQ;
 }
 
 int32_t vu0_signed_memory_immediate(uint32_t word)
@@ -869,13 +871,19 @@ uint32_t vu0_memory_byte_address(
 {
     // PCSX2 computes the quadword address through a 16-bit intermediate.
     const int32_t base = static_cast<int16_t>(
-        vu0_read_ialu_vi(vu0, instruction.m_lower_fields.m_is)
+        vu0_read_ialu_vi(
+            vu0, instruction.m_lower_fields.m_operation ==
+                e_ee_vu0_micro_opcode::SQ
+                ? instruction.m_lower_fields.m_it
+                : instruction.m_lower_fields.m_is
+        )
     );
     const int32_t offset = vu0_signed_memory_immediate(instruction.m_lower);
     return (static_cast<uint32_t>((base + offset) * 16) & 0xffffu);
 }
 
 bool vu0_execute_lower_memory(
+    s_ee_cpu_state* cpu,
     s_ee_vu0_state* vu0,
     const s_ee_vu0_micro_instruction& instruction,
     uint32_t address,
@@ -886,6 +894,50 @@ bool vu0_execute_lower_memory(
     *write_mask = 0;
     const uint32_t xyzw = fields.m_xyzw;
     const uint32_t base = address & (EE_VU0_DATA_MEMORY_SIZE - 1u);
+    if (fields.m_operation == e_ee_vu0_micro_opcode::LQ ||
+        fields.m_operation == e_ee_vu0_micro_opcode::SQ)
+    {
+        // VF registers live in the shared EE COP2 bank. Read and write
+        // individual 32-bit lanes without assuming host endianness.
+        const bool load = fields.m_operation == e_ee_vu0_micro_opcode::LQ;
+        const uint32_t register_index = load ? fields.m_ft : fields.m_fs;
+        if (load && register_index == 0)
+        {
+            return true; // VF0 is constant.
+        }
+        s_ee_u128& vector = cpu->m_vu0[register_index];
+        for (uint32_t component = 0; component < 4; ++component)
+        {
+            if ((xyzw & (8u >> component)) == 0)
+            {
+                continue;
+            }
+            const uint32_t offset = base + component * 4u;
+            uint64_t& half = component < 2 ? vector.m_lo : vector.m_hi;
+            const uint32_t shift = (component & 1u) * 32u;
+            if (load)
+            {
+                const uint32_t value =
+                    static_cast<uint32_t>(vu0->m_data_memory[offset]) |
+                    (static_cast<uint32_t>(vu0->m_data_memory[offset + 1u]) << 8) |
+                    (static_cast<uint32_t>(vu0->m_data_memory[offset + 2u]) << 16) |
+                    (static_cast<uint32_t>(vu0->m_data_memory[offset + 3u]) << 24);
+                half = (half & ~(uint64_t{0xffffffffu} << shift)) |
+                       (static_cast<uint64_t>(value) << shift);
+            }
+            else
+            {
+                const uint32_t value = static_cast<uint32_t>(half >> shift);
+                for (uint32_t byte = 0; byte < 4; ++byte)
+                {
+                    vu0->m_data_memory[offset + byte] =
+                        static_cast<uint8_t>(value >> (byte * 8u));
+                }
+            }
+        }
+        return true;
+    }
+
     if (fields.m_operation == e_ee_vu0_micro_opcode::ILW)
     {
         // For multiple selected components, PCSX2 overwrites VI in X,Y,Z,W
@@ -1415,15 +1467,15 @@ uint32_t ee_vu0_execute_ialu_callback(
         {
             uint32_t write_mask = 0;
             if (!vu0_execute_lower_memory(
-                    vu0, instruction, memory_address, &write_mask
+                    cpu, vu0, instruction, memory_address, &write_mask
                 ))
             {
                 vu0->m_micro_pc = pair_pc;
                 return static_cast<uint32_t>(e_ee_vu0_sync_result::UNAVAILABLE);
             }
 
-            // PCSX2 declares a four-cycle IALU reservation for ILW, whereas
-            // ISW does not write a VI register.
+            // PCSX2 declares a four-cycle IALU reservation for ILW.
+            // LQ/SQ access the VF bank rather than the VI IALU pipeline.
             const uint32_t schedule_result = ee_vu0_ialu_schedule_write(
                 vu0, write_mask, 4
             );
