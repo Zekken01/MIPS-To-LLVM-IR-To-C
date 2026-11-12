@@ -750,6 +750,226 @@ extern "C" uint32_t ee_vu0_ialu_flush_all(s_ee_vu0_state* vu0)
     return static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE);
 }
 
+namespace
+{
+uint16_t vu0_read_ialu_vi(const s_ee_vu0_state* vu0, uint32_t index)
+{
+    if (index == 0 || index >= 16)
+    {
+        return 0;
+    }
+    return static_cast<uint16_t>(vu0->m_vi[index]);
+}
+
+void vu0_write_ialu_vi(s_ee_vu0_state* vu0, uint32_t index, uint16_t value)
+{
+    if (index == 0 || index >= 16)
+    {
+        return;
+    }
+
+    // The integer ALU writes only VI[reg].SS[0]; preserve the neighbouring
+    // signed halfword and the rest of the sidecar word.
+    vu0->m_vi[index] = (vu0->m_vi[index] & 0xffff0000u) | value;
+}
+
+bool vu0_execute_lower_ialu(
+    s_ee_vu0_state* vu0,
+    const s_ee_vu0_micro_instruction& instruction
+)
+{
+    using op = e_ee_vu0_micro_opcode;
+    const s_ee_vu0_micro_op_fields& fields = instruction.m_lower_fields;
+    const uint16_t source_s = vu0_read_ialu_vi(vu0, fields.m_is);
+    const uint16_t source_t = vu0_read_ialu_vi(vu0, fields.m_it);
+    uint16_t result = 0;
+    uint32_t destination = 0;
+
+    switch (fields.m_operation)
+    {
+    case op::IADD:
+        destination = fields.m_id;
+        result = static_cast<uint16_t>(
+            static_cast<int16_t>(source_s) + static_cast<int16_t>(source_t)
+        );
+        break;
+
+    case op::ISUB:
+        destination = fields.m_id;
+        result = static_cast<uint16_t>(
+            static_cast<int16_t>(source_s) - static_cast<int16_t>(source_t)
+        );
+        break;
+
+    case op::IAND:
+        destination = fields.m_id;
+        result = static_cast<uint16_t>(source_s & source_t);
+        break;
+
+    case op::IOR:
+        destination = fields.m_id;
+        result = static_cast<uint16_t>(source_s | source_t);
+        break;
+
+    case op::IADDI:
+    {
+        destination = fields.m_it;
+        int32_t immediate = static_cast<int32_t>((instruction.m_lower >> 6) & 0x1fu);
+        if ((immediate & 0x10) != 0)
+        {
+            immediate -= 0x20;
+        }
+        result = static_cast<uint16_t>(
+            static_cast<int16_t>(source_s) + immediate
+        );
+        break;
+    }
+
+    case op::IADDIU:
+    {
+        destination = fields.m_it;
+        const uint32_t immediate =
+            ((instruction.m_lower >> 10) & 0x7800u) |
+            (instruction.m_lower & 0x07ffu);
+        result = static_cast<uint16_t>(
+            static_cast<int16_t>(source_s) + static_cast<int32_t>(immediate)
+        );
+        break;
+    }
+
+    case op::ISUBIU:
+    {
+        destination = fields.m_it;
+        const uint32_t immediate =
+            ((instruction.m_lower >> 10) & 0x7800u) |
+            (instruction.m_lower & 0x07ffu);
+        result = static_cast<uint16_t>(
+            static_cast<int16_t>(source_s) - static_cast<int32_t>(immediate)
+        );
+        break;
+    }
+
+    default:
+        return false;
+    }
+
+    vu0_write_ialu_vi(vu0, destination, result);
+    return true;
+}
+} // namespace
+
+uint32_t ee_vu0_execute_ialu_callback(
+    void* user,
+    s_ee_cpu_state*,
+    s_ee_vu0_state* vu0,
+    uint64_t max_cycles,
+    uint32_t flags,
+    uint32_t
+)
+{
+    if (!user || !vu0 ||
+        (flags & ~(EE_VU0_EXECUTE_STOP_AT_E |
+                   EE_VU0_EXECUTE_STOP_AT_M |
+                   EE_VU0_EXECUTE_EXACT_CYCLES)) != 0)
+    {
+        return static_cast<uint32_t>(e_ee_vu0_sync_result::INVALID_ARGUMENT);
+    }
+
+    auto* engine = static_cast<s_ee_vu0_ialu_engine*>(user);
+    const uint32_t instruction_limit = engine->m_max_instructions_per_call != 0
+        ? engine->m_max_instructions_per_call : 65536u;
+
+    if ((vu0->m_vpu_status & 1u) == 0)
+    {
+        vu0->m_running = 0;
+        return static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE);
+    }
+
+    // PCSX2 clears the per-run M-bit marker whenever it enters the VU engine.
+    vu0->m_m_bit = 0;
+
+    uint64_t executed = 0;
+    while (executed < max_cycles && executed < instruction_limit &&
+           (vu0->m_vpu_status & 1u) != 0)
+    {
+        if (vu0->m_cycle == UINT64_MAX)
+        {
+            return static_cast<uint32_t>(e_ee_vu0_sync_result::FAILED);
+        }
+
+        const uint32_t pair_pc = vu0->m_micro_pc;
+        s_ee_vu0_micro_instruction instruction{};
+        const uint32_t fetch_result =
+            ee_vu0_fetch_micro_instruction(vu0, &instruction);
+        if (fetch_result != static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE))
+        {
+            return fetch_result;
+        }
+
+        // This first executable slice deliberately accepts only lower IALU
+        // operations paired with upper NOP. I/D/T flags require other paths
+        // (immediate-mode vector execution and interrupt delivery).
+        if ((instruction.m_flags &
+             (EE_VU0_MICRO_FLAG_I | EE_VU0_MICRO_FLAG_D | EE_VU0_MICRO_FLAG_T)) != 0 ||
+            instruction.m_upper_fields.m_operation != e_ee_vu0_micro_opcode::NOP ||
+            !vu0_execute_lower_ialu(vu0, instruction))
+        {
+            vu0->m_micro_pc = pair_pc;
+            return static_cast<uint32_t>(e_ee_vu0_sync_result::UNAVAILABLE);
+        }
+
+        // IALU results update the architectural low halfword; VI0 ignores
+        // writes. One issued pair consumes one VU cycle.
+        ++vu0->m_cycle;
+        ++executed;
+        vu0->m_tpc = (vu0->m_micro_pc >> 3) & 0x1ffu;
+
+        if ((instruction.m_flags & EE_VU0_MICRO_FLAG_M) != 0)
+        {
+            vu0->m_m_bit = 1;
+        }
+
+        if ((instruction.m_flags & EE_VU0_MICRO_FLAG_E) != 0)
+        {
+            vu0->m_e_bit = 2;
+        }
+
+        if (vu0->m_e_bit != 0)
+        {
+            --vu0->m_e_bit;
+            if (vu0->m_e_bit == 0)
+            {
+                vu0->m_vpu_status &= ~1u;
+            }
+        }
+
+        vu0->m_running = (vu0->m_vpu_status & 1u) != 0 ? 1u : 0u;
+
+        if ((flags & EE_VU0_EXECUTE_STOP_AT_M) != 0 && vu0->m_m_bit != 0)
+        {
+            break;
+        }
+    }
+
+    if (executed >= instruction_limit &&
+        executed < max_cycles &&
+        (vu0->m_vpu_status & 1u) != 0 &&
+        !((flags & EE_VU0_EXECUTE_STOP_AT_M) != 0 && vu0->m_m_bit != 0))
+    {
+        return static_cast<uint32_t>(e_ee_vu0_sync_result::FAILED);
+    }
+
+    if ((flags & EE_VU0_EXECUTE_EXACT_CYCLES) == 0 &&
+        executed < max_cycles &&
+        (vu0->m_vpu_status & 1u) != 0 &&
+        !((flags & EE_VU0_EXECUTE_STOP_AT_M) != 0 && vu0->m_m_bit != 0))
+    {
+        return static_cast<uint32_t>(e_ee_vu0_sync_result::FAILED);
+    }
+
+    return static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE);
+}
+
 extern "C" uint32_t ee_vu0_read_vi(
     const s_ee_vu0_state* vu0,
     uint32_t index
