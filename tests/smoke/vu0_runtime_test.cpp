@@ -1912,6 +1912,55 @@ int main()
               "VU0 signed and equality branch conditions take at their true boundaries");
     }
     {
+        struct s_branch_condition_case
+        {
+            uint32_t m_primary;
+            uint16_t m_source_s;
+            uint16_t m_source_t;
+        };
+
+        const s_branch_condition_case cases[] =
+        {
+            { 0x28u, 1u, 2u },       // IBEQ: unequal
+            { 0x29u, 1u, 1u },       // IBNE: equal
+            { 0x2cu, 0u, 0u },       // IBLTZ: zero
+            { 0x2du, 0u, 0u },       // IBGTZ: zero
+            { 0x2eu, 1u, 0u },       // IBLEZ: positive
+            { 0x2fu, 0xffffu, 0u },  // IBGEZ: negative
+        };
+
+        bool all_not_taken = true;
+        for (const s_branch_condition_case& branch_case : cases)
+        {
+            ee::s_ee_vu0_state state{};
+            ee::s_ee_vu0_ialu_engine ialu_engine{};
+            state.m_vpu_status = 1u;
+            state.m_vi[1] = branch_case.m_source_s;
+            state.m_vi[2] = branch_case.m_source_t;
+            install_vu0_pair(
+                &state,
+                0,
+                make_vu0_branch(branch_case.m_primary, 2, 1, 3),
+                make_vu0_upper_nop()
+            );
+
+            const uint32_t result = ee::ee_vu0_execute_ialu_callback(
+                &ialu_engine, &cpu, &state, 1,
+                ee::EE_VU0_EXECUTE_EXACT_CYCLES, 0x00102014u
+            );
+            all_not_taken = all_not_taken &&
+                result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+                state.m_cycle == 1 &&
+                state.m_micro_pc == 8 &&
+                state.m_tpc == 1 &&
+                state.m_branch == 0 &&
+                state.m_vpu_status == 1;
+        }
+
+        check(all_not_taken,
+              "VU0 equality and signed branches fall through at their false boundaries");
+    }
+    {
         ee::s_ee_vu0_state state{};
         ee::s_ee_vu0_ialu_engine ialu_engine{};
         state.m_vpu_status = 1u;
@@ -1928,6 +1977,40 @@ int main()
               state.m_micro_pc == 0 && state.m_tpc == 0 &&
               static_cast<uint16_t>(state.m_vi[8]) == 8,
               "VU0 negative relative branch offset sign-extends and wraps the 4 KB program");
+    }
+    {
+        ee::s_ee_vu0_state state{};
+        ee::s_ee_vu0_ialu_engine ialu_engine{};
+        state.m_vpu_status = 1u;
+        install_vu0_pair(
+            &state, 0, make_vu0_branch(0x20u, 0, 0, 3),
+            make_vu0_upper_nop(0x40000000u)
+        );
+        install_vu0_pair(
+            &state, 1, make_vu0_iaddiu(2, 0, 2),
+            make_vu0_upper_nop()
+        );
+        install_vu0_pair(
+            &state, 4, make_vu0_iaddiu(3, 0, 3),
+            make_vu0_upper_nop()
+        );
+
+        const uint32_t result = ee::ee_vu0_execute_ialu_callback(
+            &ialu_engine, &cpu, &state, 8,
+            ee::EE_VU0_EXECUTE_EXACT_CYCLES, 0x00102018u
+        );
+        check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              state.m_cycle == 2 &&
+              state.m_vpu_status == 0 &&
+              state.m_running == 0 &&
+              state.m_e_bit == 0 &&
+              state.m_micro_pc == 32 &&
+              state.m_tpc == 4 &&
+              state.m_branch == 0,
+              "VU0 E on a branch pair still permits its delay pair before stopping");
+        check(static_cast<uint16_t>(state.m_vi[2]) == 2 &&
+              static_cast<uint16_t>(state.m_vi[3]) == 0,
+              "VU0 E termination follows the branch target and does not execute beyond it");
     }
     {
         ee::s_ee_vu0_state state{};
@@ -1972,14 +2055,14 @@ int main()
             &state, 1u << 1, 3
         );
         const uint32_t result = ee::ee_vu0_execute_ialu_callback(
-            &ialu_engine, &cpu, &state, 3,
+            &ialu_engine, &cpu, &state, 1,
             ee::EE_VU0_EXECUTE_EXACT_CYCLES, 0x0010200au
         );
         check(scheduled == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
               result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
               state.m_cycle == 13 && state.m_micro_pc == 8 &&
               state.m_branch == 0 && state.m_ialu_count == 0,
-              "VU0 branch read interlock consumes the outstanding IALU reservation");
+              "VU0 branch read interlock finishes its issued pair beyond a one-cycle budget");
         check(state.m_vi_backup_cycles == 0,
               "VU0 VI backup expires after the stalled branch issue");
     }
