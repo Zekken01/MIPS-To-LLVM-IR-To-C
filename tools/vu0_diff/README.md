@@ -20,7 +20,7 @@ The adapter retains three focused issue-order probes:
 3. A scalar IALU write starts a fresh two-cycle VI-backup window after the
    interpreter's pre-handler aging phase.
 
-It also has an opt-in per-pair trace test. That test executes a shared 52-pair
+It also has an opt-in per-pair trace test. That test executes a shared 56-pair
 program through vu0Exec(&VU0) one pair at a time and writes architectural
 state after each pair. The fixture executes all seven supported scalar lower
 operations, B/BAL/JR/JALR, all six conditional branches, an M-marked pair, and
@@ -108,10 +108,11 @@ architectural difference and returns nonzero when traces differ.
 
 ## Limits
 
-This fixture executes 45 pairs from a 52-pair program and covers the lower
-scalar integer/branch subset plus ordinary VU0 ILW/ISW data-memory operations,
+This fixture executes 49 pairs from a 56-pair program and covers the lower
+scalar integer/branch subset plus ordinary VU0 ILW/ISW and masked LQ/SQ memory operations,
 with upper NOP. The comparator checks all 4 KB of VU0 data memory using a
-SHA-256 digest after each pair. The pinned 45-pair comparison passed in
-differential run #9 (47 cycles). Memory-mapped VU1 register accesses, other
+SHA-256 digest and all 32 VF register lane patterns after each pair. The pinned 45-pair comparison passed in
+differential run #9 (47 cycles). The new 49-pair fixture has not yet been
+confirmed against the pinned interpreter. Memory-mapped VU1 register accesses, other
 VU memory operations, upper vector instructions, dual-issue dependencies,
 VF forwarding and FMAC/FDIV/EFU pipelines remain out of scope.
