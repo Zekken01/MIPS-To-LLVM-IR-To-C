@@ -146,10 +146,10 @@ int main()
     expect("reserved",R(0x1c,0,0,0,0x1f,0x28), "reserved", X);
     // COP2 field decoding is hierarchical: rs selects transfer, BC2, or VU0
     // macro mode; the low funct/sa fields are only interpreted inside macro mode.
-    expect("qmfc2",   R(0x12,1,4,6,0,0), "qmfc2", U);
-    expect("cfc2",    R(0x12,2,4,6,0,0), "cfc2", U);
-    expect("qmtc2",   R(0x12,5,4,6,0,0), "qmtc2", U);
-    expect("ctc2",    R(0x12,6,4,6,0,0), "ctc2", U);
+    expect("qmfc2",   R(0x12,1,4,6,0,0), "qmfc2", V);
+    expect("cfc2",    R(0x12,2,4,6,0,0), "cfc2", V);
+    expect("qmtc2",   R(0x12,5,4,6,0,0), "qmtc2", V);
+    expect("ctc2",    R(0x12,6,4,6,0,0), "ctc2", V);
     // All four transfer forms reserve sa/funct. Do not classify malformed
     // words as merely unsupported valid instructions.
     expect("qmfc2 bad sa",   R(0x12,1,4,6,1,0), "qmfc2", X);
