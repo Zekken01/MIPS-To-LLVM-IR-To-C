@@ -77,6 +77,16 @@ target_link_libraries(ee_dispatcher_test PRIVATE ee_core)
 add_executable(ee_vu0_runtime_test tests/smoke/vu0_runtime_test.cpp)
 target_link_libraries(ee_vu0_runtime_test PRIVATE ee_core)
 
+# Build the real runtime helper symbols into a loadable library so the LLVM
+# MCJIT regression can resolve the helper calls exactly as generated.
+add_library(ee_vu0_jit_helpers SHARED src/runtime/ee_vu0.cpp)
+set_target_properties(ee_vu0_jit_helpers PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+
+add_executable(ee_vu0_transfer_ir_fixture
+    tests/smoke/vu0_transfer_ir_fixture.cpp
+)
+target_link_libraries(ee_vu0_transfer_ir_fixture PRIVATE ee_core)
+
 add_executable(ee_min_test
     tests/smoke/min_test.cpp
 )
@@ -148,6 +158,11 @@ if(EE_HAVE_LLVM_JIT_TEST)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/smoke/test_fpu_compare_ir_runtime.py
                 $<TARGET_FILE:ee_fpu_compare_ir_fixture>)
+    add_test(NAME vu0_transfer_ir_runtime
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/smoke/test_vu0_transfer_ir_runtime.py
+                $<TARGET_FILE:ee_vu0_transfer_ir_fixture>
+                $<TARGET_FILE:ee_vu0_jit_helpers>)
     add_test(NAME compare_ir_runtime
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/smoke/test_compare_ir_runtime.py
