@@ -66,7 +66,7 @@ enum class e_ee_vu0_micro_opcode : uint16_t
     MINI_X, MINI_Y, MINI_Z, MINI_W,
     MUL_X, MUL_Y, MUL_Z, MUL_W,
     MUL_Q, MAX_I, MUL_I, MINI_I,
-    ADD_Q, MADD_Q, ADD_I, MADDI,
+    ADD_Q, MADD_Q, ADD_I, MADD_I,
     SUB_Q, MSUB_Q, SUB_I, MSUB_I,
     ADD, MADD, MUL, MAX, SUB, MSUB, OPMSUB, MINI,
 
@@ -97,8 +97,9 @@ struct s_ee_vu0_micro_op_fields
 
 // VU micro-instructions are 64-bit pairs: lower word at +0, upper word at +4.
 // m_pc is a byte address in the 4 KB micro-program memory. Flags are decoded
-// from the upper word and normalized to e_ee_vu0_micro_flags. Opcode fields
-// identify the primary decode slots only; they do not imply implementation.
+// from the upper word and normalized to e_ee_vu0_micro_flags. Each half also
+// carries the primary/secondary opcode identity; classification does not
+// imply that the micro-op has an execution implementation.
 struct s_ee_vu0_micro_instruction
 {
     uint32_t m_pc;
