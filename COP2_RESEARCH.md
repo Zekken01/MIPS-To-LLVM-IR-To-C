@@ -34,6 +34,15 @@ There is an additional synchronization distinction when the current EE instructi
 - QMFC2 and CFC2 call `_vu0FinishMicro()`: run VU0 until its E-bit termination.
 - QMTC2 and CTC2 call `_vu0WaitMicro()`: run VU0 until E-bit or M-bit termination.
 
+The synchronization helpers have materially different run policies:
+
+- `vu0Sync()` is catch-up-only: if VU0 is active, it runs for the cycle distance `EE_cycle - VU0_cycle`. If that distance is negative, VU0 is already ahead and no VU instruction is run.
+- `_vu0FinishMicro()` runs until E-bit termination, ignoring M-bit as an early stop.
+- `_vu0WaitMicro()` may stop at E-bit or M-bit termination.
+- The finish/wait variants add elapsed VU0 cycles to the EE, execute a VU1 catch-up block, and schedule a near-term event again if VU0 remains active.
+
+PCSX2's `_vu0run` also checks whether VU0 is already ahead with M-bit set before entering the main loop. A host recompiler that does not model the EE cycle counter, VU0 cycle counter, E/M status and VU1 catch-up cannot faithfully replace these calls with no-ops or immediate array access.
+
 The data movement and register-zero rules are:
 
 ### QMFC2
