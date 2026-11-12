@@ -74,12 +74,14 @@ void write_header(std::ostream& output, const ee::s_ee_vu0_state& vu0)
 void write_step(
     std::ostream& output,
     uint32_t step,
+    uint32_t pair_pc,
     uint32_t lower,
     uint32_t upper,
     const ee::s_ee_vu0_state& vu0
 )
 {
     output << "{\"kind\":\"step\",\"step\":" << step
+           << ",\"pc\":" << pair_pc
            << ",\"lower\":" << lower
            << ",\"upper\":" << upper
            << ",\"state\":{";
@@ -152,7 +154,7 @@ int main(int argc, char** argv)
             return 1;
         }
 
-        write_step(output, step, lower, upper, vu0);
+        write_step(output, step, pair_pc, lower, upper, vu0);
         ++step;
     }
 
