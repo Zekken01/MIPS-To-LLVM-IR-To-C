@@ -67,7 +67,9 @@ int main(int argc, char** argv)
              std::strcmp(mode, "mtc1") == 0 ||
              std::strcmp(mode, "cfc1") == 0 ||
              std::strcmp(mode, "ctc1") == 0 ||
-             std::strcmp(mode, "ctc1_after_branch") == 0) funct = 0;
+             std::strcmp(mode, "ctc1_after_branch") == 0 ||
+             std::strcmp(mode, "bc1_t_delay") == 0 ||
+             std::strcmp(mode, "bc1_fl_annul") == 0) funct = 0;
     else
     {
         std::fprintf(stderr, "unknown COP1 comparison mode: %s\n", mode);
@@ -107,24 +109,50 @@ int main(int argc, char** argv)
     else
         word = make_cop1_s(2, 1, destination_or_cc, funct);
     std::map<uint32_t, ee::s_ee_instruction> insn_map;
-    if (std::strcmp(mode, "ctc1_after_branch") == 0)
+    if (std::strcmp(mode, "ctc1_after_branch") == 0 ||
+        std::strcmp(mode, "bc1_t_delay") == 0 ||
+        std::strcmp(mode, "bc1_fl_annul") == 0)
     {
-        // ADDIU writes $t0 in the first block. CTC1 in the successor block
-        // consumes it, exercising read-before-write propagation across CFG
-        // edges rather than merely reading an initial architectural value.
-        const uint32_t words[] = {
-            (0x09u << 26) | (8u << 16) | 0x2345u, // addiu $t0,$zero,0x2345
-            (0x04u << 26) | 1u,                   // beq $zero,$zero, next block
-            0u,                                    // delay-slot nop
-            make_cop1_transfer(6, 8, 31)           // ctc1 $t0,FCR31
-        };
-        for (size_t i = 0; i < sizeof(words) / sizeof(words[0]); ++i)
+        std::vector<uint32_t> words;
+        if (std::strcmp(mode, "ctc1_after_branch") == 0)
+        {
+            // ADDIU writes $t0 in the first block. CTC1 in the successor block
+            // consumes it, exercising read-before-write propagation.
+            words = {
+                (0x09u << 26) | (8u << 16) | 0x2345u, // addiu $t0,$zero,0x2345
+                (0x04u << 26) | 1u,                   // beq $zero,$zero, next block
+                0u,                                    // delay-slot nop
+                make_cop1_transfer(6, 8, 31)           // ctc1 $t0,FCR31
+            };
+        }
+        else
+        {
+            const uint32_t branch_kind =
+                std::strcmp(mode, "bc1_t_delay") == 0 ? 1u : 2u;
+            const uint32_t bc1 =
+                (0x11u << 26) | (0x08u << 21) |
+                (branch_kind << 16) | 4u;             // BC1T/BC1FL to +0x14
+            const uint32_t jump_external =
+                (0x02u << 26) | (0x00140000u >> 2);
+            words = {
+                bc1,
+                make_cop1_transfer(6, 8, 31),          // delay slot: ctc1 $t0,FCR31
+                (0x09u << 26) | (9u << 16) | 0x1111u, // fallthrough: addiu $t1,$zero,0x1111
+                jump_external,
+                0u,
+                (0x09u << 26) | (10u << 16) | 0x2222u, // taken: addiu $t2,$zero,0x2222
+                (31u << 21) | 0x08u,                   // jr $ra
+                0u
+            };
+        }
+
+        for (size_t i = 0; i < words.size(); ++i)
         {
             const uint32_t pc = entry_pc + static_cast<uint32_t>(i * 4);
             const ee::s_ee_instruction decoded = ee::decode(pc, words[i]);
             if (decoded.valid != ee::e_ee_valid::VALID)
             {
-                std::fprintf(stderr, "COP1 transfer CFG instruction at 0x%08x is not VALID: %s\n",
+                std::fprintf(stderr, "COP1 control-flow instruction at 0x%08x is not VALID: %s\n",
                              pc, decoded.mnemonic);
                 return 3;
             }
@@ -152,6 +180,8 @@ int main(int argc, char** argv)
         return 4;
     }
     if (std::strcmp(mode, "ctc1_after_branch") != 0 &&
+        std::strcmp(mode, "bc1_t_delay") != 0 &&
+        std::strcmp(mode, "bc1_fl_annul") != 0 &&
         (functions[0].blocks.size() != 1 ||
          functions[0].blocks[0].insn_indices.size() != 1))
     {
