@@ -21,18 +21,39 @@ ee_memory::~ee_memory()
     m_data = nullptr;
 }
 
+void ee_memory::set_kseg_ram_aliases(bool enabled)
+{
+    m_kseg_ram_aliases = enabled;
+}
+
+uint32_t ee_memory::normalize_ram_address(uint32_t addr) const
+{
+    if (m_kseg_ram_aliases && (addr & 0xc0000000u) == 0x80000000u)
+    {
+        const uint32_t physical = addr & 0x1fffffffu;
+        if (static_cast<size_t>(physical) < m_size)
+        {
+            return physical;
+        }
+    }
+    return addr;
+}
+
 bool ee_memory::contains(uint32_t addr, size_t len) const
 {
-    return m_data && addr + len <= m_size;
+    const size_t physical = normalize_ram_address(addr);
+    return m_data != nullptr && physical <= m_size && len <= m_size - physical;
 }
 
 uint8_t ee_memory::read8(uint32_t addr)
 {
+    addr = normalize_ram_address(addr);
     return contains(addr, 1) ? m_data[addr] : 0;
 }
 
 uint16_t ee_memory::read16(uint32_t addr)
 {
+    addr = normalize_ram_address(addr);
     if (!contains(addr, 2)) return 0;
     return (uint16_t)(m_data[addr] | (m_data[addr + 1] << 8));
 }
@@ -47,11 +68,13 @@ void ee_memory::read128(uint32_t addr, s_ee_u128* out)
 
 void ee_memory::write8(uint32_t addr, uint8_t v)
 {
+    addr = normalize_ram_address(addr);
     if (contains(addr, 1)) m_data[addr] = v;
 }
 
 void ee_memory::write16(uint32_t addr, uint16_t v)
 {
+    addr = normalize_ram_address(addr);
     if (!contains(addr, 2)) return;
     m_data[addr]   = (uint8_t)(v & 0xff);
     m_data[addr+1] = (uint8_t)((v >> 8) & 0xff);
@@ -106,6 +129,7 @@ void ee_memory::direct_write64(uint32_t addr, uint64_t v)
 
 uint32_t ee_memory::read32(uint32_t addr)
 {
+    addr = normalize_ram_address(addr);
     if (in_ram_range(addr, 4)) return direct_read32(addr);
     if (!contains(addr, 4)) return 0;
     return (uint32_t)(m_data[addr] | (m_data[addr + 1] << 8) |
@@ -114,6 +138,7 @@ uint32_t ee_memory::read32(uint32_t addr)
 
 void ee_memory::write32(uint32_t addr, uint32_t v)
 {
+    addr = normalize_ram_address(addr);
     if (in_ram_range(addr, 4)) { direct_write32(addr, v); return; }
     if (!contains(addr, 4)) return;
     m_data[addr]   = (uint8_t)(v & 0xff);
@@ -124,6 +149,7 @@ void ee_memory::write32(uint32_t addr, uint32_t v)
 
 uint64_t ee_memory::read64(uint32_t addr)
 {
+    addr = normalize_ram_address(addr);
     if (in_ram_range(addr, 8)) return direct_read64(addr);
     if (!contains(addr, 8)) return 0;
     uint64_t lo = read32(addr);
@@ -133,6 +159,7 @@ uint64_t ee_memory::read64(uint32_t addr)
 
 void ee_memory::write64(uint32_t addr, uint64_t v)
 {
+    addr = normalize_ram_address(addr);
     if (in_ram_range(addr, 8)) { direct_write64(addr, v); return; }
     write32(addr,   (uint32_t)(v & 0xffffffffu));
     write32(addr+4, (uint32_t)((v >> 32) & 0xffffffffu));
