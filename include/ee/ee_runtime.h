@@ -251,6 +251,23 @@ uint32_t ee_vu0_fetch_micro_instruction(
     s_ee_vu0_micro_instruction* out
 );
 
+// Deliberately narrow first execution slice: lower IALU operations paired
+// with upper NOP only. It does not implement branches, memory, flags, or
+// vector arithmetic. Unsupported pairs leave the micro-PC at the pair start.
+struct s_ee_vu0_ialu_engine
+{
+    uint32_t m_max_instructions_per_call = 65536;
+};
+
+uint32_t ee_vu0_execute_ialu_callback(
+    void* user,
+    s_ee_cpu_state* cpu,
+    s_ee_vu0_state* vu0,
+    uint64_t max_cycles,
+    uint32_t flags,
+    uint32_t pc
+);
+
 // IALU reservation queue. A schedule call records the destination mask and
 // latency at the current VU cycle. Read-stall advances m_cycle to the latest
 // completion among pending entries that overlap read_mask. Retire removes
