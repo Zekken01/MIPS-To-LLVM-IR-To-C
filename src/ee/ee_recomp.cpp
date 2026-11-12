@@ -166,6 +166,7 @@ bool ee_recomp(const char* elf_path,
     std::set<uint32_t> entry_set(entries.begin(), entries.end());
     std::set<uint32_t> static_jalr_targets;
     std::set<uint32_t> jalr_only_entries;
+    std::vector<s_static_jalr_site> jalr_site_audit;
 
     // Iterate to a fixed point. Direct JAL/branch-and-link targets are
     // harvested as before. JALR targets are added only when CFG constant
@@ -208,7 +209,7 @@ bool ee_recomp(const char* elf_path,
 
         const std::set<uint32_t> block_starts =
             collect_function_block_starts(global_insns, entries);
-        std::vector<s_static_jalr_site> jalr_site_audit;
+        jalr_site_audit.clear();
         const std::set<uint32_t> indirect_targets =
             collect_static_jalr_targets(
                 global_insns, entries, entries, &block_starts,
