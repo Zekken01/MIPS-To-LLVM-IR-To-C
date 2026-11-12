@@ -2,9 +2,11 @@
 
 ## Decision
 
-Keep VU0/COP2 execution unsupported in the LLVM lifter until the project models the VU0 architectural state and the EE/VU0 synchronization boundary. Do not lower QMFC2/QMTC2 as plain vector copies yet. Their register data movement is simple; the ordering and state around that movement are not.
+The decoder and LLVM lifter now support the COP2 transfer/control forms QMFC2, QMTC2, CFC2, CTC2 and the four BC2 branches through runtime helpers. They do **not** provide a VU0 micro-engine. A host must supply the VU0 state, execution callback, VU1 catch-up callback and event scheduling hook; absent services fail closed.
 
-This note records the current PCSX2 interpreter reference and the gaps in the current recompiler state model. It is a research checkpoint, not an implementation claim.
+VU0 macro instructions remain unsupported. Do not promote SPECIAL1/SPECIAL2 forms until a real micro-engine and the required FMAC/FDIV/EFU pipeline semantics are available.
+
+This note records the PCSX2 interpreter reference, implemented integration boundary and remaining semantic gaps. The runtime helper tests are not proof of a complete VU0 execution engine.
 
 ## R5900 COP2 top-level decode
 
@@ -21,7 +23,9 @@ The top-level COP2 opcode is `0x12`. The `rs` field selects the instruction fami
 
 PCSX2's R5900 opcode table exposes QMFC2, CFC2, QMTC2, CTC2, BC2 and COP2_SPECIAL at these positions. Its COP2 SPECIAL1/SPECIAL2 dispatch is separate from the main SPECIAL and MMI tables.
 
-The current decoder already recognises these top-level forms but marks transfer/control forms unsupported. BC2 has a known branch flow and delay slot, but remains unsupported because its condition is VU0 state that the current CPU model does not expose. The macro forms are classified by opcode tables but are not lowered.
+The decoder now classifies the four transfer forms and BC2F/T/FL/TL as VALID only for their documented encodings. The LLVM path invokes the synchronized runtime helpers; BC2 reads VPU_STAT bit 8 and retains ordinary/likely delay-slot behaviour. If the runtime has no VU0 sidecar/scheduler where required, generated code exits at the guest instruction instead of guessing.
+
+The VU0 SPECIAL1/SPECIAL2 macro forms are still classified by opcode table but remain unsupported by the lifter.
 
 ## Transfer semantics from PCSX2's interpreter
 
@@ -97,22 +101,21 @@ PCSX2's VU register set contains substantially more than the 32 vector registers
 - Current instruction/micro-PC state, branch-delay state, E-bit state and pending pipeline state.
 - FMAC, FDIV and EFU pipeline bookkeeping and flags.
 
-The project currently has only `m_vu0[32]` in `s_ee_cpu_state`. It has no VI/control-register bank, ACC, Q/P, VU micro-PC, VU status, branch state, cycle accounting, or pipeline state. In addition, the project's LLVM state type and native dispatcher/runtime interfaces currently assume the smaller state layout.
+The project retains `s_ee_cpu_state::m_vu0[32]` as the VF bank and adds a separate aligned `s_ee_vu0_state` sidecar. The sidecar provides VI[32], ACC, Q/P, visible control/flag values, micro-PC, EE/VU cycle counters and E/M/running state without shifting the established CPU-state offsets.
 
-A direct QMFC2/QMTC2 implementation would therefore be observably wrong when a VU0 microprogram is active, and CFC2/CTC2 cannot be represented correctly with the current state.
+The sidecar is not a full `VURegs` equivalent. It does not contain micro-memory, a complete pipeline scoreboard, branch-delay bookkeeping, FMAC/FDIV/EFU internal state, or a VU1 execution engine. Those remain host-engine responsibilities. A helper-only mock can validate ABI and transfer rules, but cannot establish correct behaviour while a real VU microprogram is executing.
 
 ## Implementation path
 
-1. Define an explicit VU0 state structure with VF, VI/control registers, ACC, Q/P, status, micro-PC, E/M state and the minimum pipeline/scheduler fields required by the runtime.
-2. Add runtime entry points for VU0 synchronization: sync-to-EE-cycle, finish-to-E, and wait-to-E-or-M. Keep the scheduler policy out of generated LLVM IR.
-3. Implement and test the transfer semantics above through those helpers, including delay-slot variants and all zero/read-only/special-register cases.
-4. Implement CFC2/CTC2 register mapping as an explicit whitelist/switch, not an unchecked array access. Treat side-effectful FBRST/CMSAR1 operations as runtime actions.
-5. Add BC2 condition state and verify ordinary versus likely branch timing/annulment.
-6. Only then consider VU0 macro instructions. Their dual-issue scheduling, FMAC/FDIV/EFU pipelines, flags, ACC and Q/P dependencies require independent semantic tests.
+1. **Host VU0 engine:** provide the execution callback that consumes bounded cycle budgets, updates VF/VI/ACC/Q/P, E/M status and micro-PC, and preserves the VU pipeline state.
+2. **Scheduler integration:** install `ee_vu0_scheduler_sync_callback` as the runtime sync callback and supply the VU1 catch-up and EE event callbacks. Differential-test the three scheduling policies against PCSX2.
+3. **Control actions:** implement FBRST reset/force-break and CMSAR1 VU1 startup in the host control callback. The current runtime only routes these actions; it does not emulate them.
+4. **Runtime validation:** test real microprograms that write VI/VF registers while the EE executes transfers in ordinary code and delay slots.
+5. **VU0 macro instructions:** only after the engine has correct dual-issue scheduling, FMAC/FDIV/EFU pipelines, flags, ACC/Q/P forwarding and branch timing.
 
 ## Current guardrail
 
-No COP2 transfer or macro opcode is promoted to `VALID` solely because its bit fields are understood. The current `UNSUPPORTED` classification is intentional until the runtime and state representation can preserve the PCSX2-observed synchronization and side effects.
+QMFC2/QMTC2/CFC2/CTC2 and BC2 are enabled only through the fail-closed runtime boundary and only when the required host callbacks/state exist. This is integration support, not a claim that the host contains a VU0 engine. All VU0 macro instructions remain unsupported.
 
 
 ## Runtime state and synchronization interface
@@ -162,3 +165,14 @@ The first CTC2 runtime helper now implements the interpreter's explicit register
 - Missing/failed host control callbacks fail closed before the helper commits the relevant register state.
 
 The helper does not emulate VU1 or execute FBRST hardware actions itself. These remain responsibilities of the host callback. All COP2 transfer/control opcodes still remain UNSUPPORTED in the decoder and LLVM emitter until generated-code integration is completed.
+## Bounded scheduler policy adapter
+
+`ee_vu0_scheduler_sync_callback` now implements the orchestration around a host-provided micro-engine slice callback:
+
+- Catch-up-only calls the engine with the exact positive difference between EE and VU0 cycle counts; when VU0 is already ahead it does no execution. It does not account cycles on the EE, catch VU1 up, or schedule an EE event.
+- Finish-to-E repeatedly runs with STOP_AT_E and ignores M-bit termination.
+- Wait-to-E-or-M runs with STOP_AT_E and STOP_AT_M. The early M-bit/already-ahead path advances EE time to the VU0 cycle and returns without the normal epilogue.
+- Finish/wait account the elapsed VU0 cycles on EE, call the host VU1 catch-up hook, and schedule a four-cycle EE event if VU0 remains active.
+- Every callback result is validated. Missing VU1/event services are detected before interlocked execution; non-progressing engines and excessive run-call counts fail rather than looping indefinitely.
+
+The adapter deliberately does not execute VU micro-instructions. The host's `m_execute` callback is responsible for instruction semantics, pipeline hazards, micro-PC advancement and updating the sidecar's cycle/E/M state. Tests use a mock engine to validate scheduler orchestration only.
