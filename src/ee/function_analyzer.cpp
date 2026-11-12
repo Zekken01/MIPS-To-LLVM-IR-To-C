@@ -520,7 +520,9 @@ void transfer_block_constants(
 std::set<uint32_t> collect_jalr_targets_in_block(
     const s_ee_basic_block& block,
     const std::map<uint32_t, s_ee_instruction>& insns,
-    s_gpr_constant_state state
+    s_gpr_constant_state state,
+    uint32_t caller_entry,
+    std::vector<s_static_jalr_site>* site_audit
 )
 {
     std::set<uint32_t> targets;
@@ -539,13 +541,28 @@ std::set<uint32_t> collect_jalr_targets_in_block(
             ins.funct == static_cast<uint8_t>(e_ee_opcode::FUNCT_JALR))
         {
             uint64_t target_value = 0;
-            if (read_gpr_constant(state, ins.rs, &target_value))
+            const bool source_known =
+                read_gpr_constant(state, ins.rs, &target_value);
+            const uint32_t target = static_cast<uint32_t>(target_value);
+            const bool target_aligned =
+                source_known && target != 0 && (target & 3u) == 0;
+
+            if (site_audit != nullptr)
             {
-                const uint32_t target = static_cast<uint32_t>(target_value);
-                if (target != 0 && (target & 3u) == 0)
-                {
-                    targets.insert(target);
-                }
+                s_static_jalr_site site{};
+                site.m_caller_entry = caller_entry;
+                site.m_pc = ins.pc;
+                site.m_source_register = ins.rs;
+                site.m_source_known = source_known;
+                site.m_source_value = target_value;
+                site.m_target = target;
+                site.m_target_aligned = target_aligned;
+                site_audit->push_back(site);
+            }
+
+            if (target_aligned)
+            {
+                targets.insert(target);
             }
         }
 
@@ -630,7 +647,8 @@ std::set<uint32_t> collect_static_jalr_targets(
     const std::map<uint32_t, s_ee_instruction>& insns,
     const std::vector<uint32_t>& entry_points,
     const std::vector<uint32_t>& all_entries,
-    const std::set<uint32_t>* block_starts
+    const std::set<uint32_t>* block_starts,
+    std::vector<s_static_jalr_site>* site_audit
 )
 {
     std::set<uint32_t> targets;
@@ -789,7 +807,9 @@ std::set<uint32_t> collect_static_jalr_targets(
             }
 
             const std::set<uint32_t> block_targets =
-                collect_jalr_targets_in_block(block, insns, in_it->second);
+                collect_jalr_targets_in_block(
+                    block, insns, in_it->second, entry, site_audit
+                );
             targets.insert(block_targets.begin(), block_targets.end());
         }
     }
