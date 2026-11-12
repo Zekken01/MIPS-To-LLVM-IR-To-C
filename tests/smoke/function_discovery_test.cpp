@@ -2,11 +2,14 @@
 #include "ee_instruction.h"
 #include "ee_opcode.h"
 #include "function_analyzer.h"
+#include "elf_loader.h"
 
 #include <cstdint>
 #include <cstdio>
 #include <map>
 #include <set>
+#include <string>
+#include <vector>
 
 namespace
 {
@@ -51,6 +54,70 @@ uint32_t encode_lw(uint32_t rs, uint32_t rt, int16_t immediate)
     return encode_i(0x23, rs, rt, static_cast<uint16_t>(immediate));
 }
 
+uint32_t encode_lwu(uint32_t rs, uint32_t rt, int16_t immediate)
+{
+    return encode_i(0x27, rs, rt, static_cast<uint16_t>(immediate));
+}
+
+void write_le16(std::vector<uint8_t>& bytes, size_t offset, uint16_t value)
+{
+    bytes[offset + 0] = static_cast<uint8_t>(value);
+    bytes[offset + 1] = static_cast<uint8_t>(value >> 8);
+}
+
+void write_le32(std::vector<uint8_t>& bytes, size_t offset, uint32_t value)
+{
+    bytes[offset + 0] = static_cast<uint8_t>(value);
+    bytes[offset + 1] = static_cast<uint8_t>(value >> 8);
+    bytes[offset + 2] = static_cast<uint8_t>(value >> 16);
+    bytes[offset + 3] = static_cast<uint8_t>(value >> 24);
+}
+
+std::vector<uint8_t> make_static_data_elf()
+{
+    // Minimal ET_EXEC with one executable segment, one read-only data segment,
+    // and one writable data segment. Each data segment stores the same target.
+    std::vector<uint8_t> bytes(0x214, 0);
+    bytes[0] = 0x7f;
+    bytes[1] = 'E';
+    bytes[2] = 'L';
+    bytes[3] = 'F';
+    bytes[4] = 1; // ELFCLASS32
+    bytes[5] = 1; // little endian
+    bytes[6] = 1; // ELF version
+
+    write_le16(bytes, 16, 2);  // ET_EXEC
+    write_le16(bytes, 18, 8);  // EM_MIPS
+    write_le32(bytes, 20, 1);
+    write_le32(bytes, 24, 0x1000);
+    write_le32(bytes, 28, 52); // program header table
+    write_le16(bytes, 40, 52);
+    write_le16(bytes, 42, 32);
+    write_le16(bytes, 44, 3);
+
+    auto write_segment = [&](size_t header, uint32_t offset,
+                             uint32_t address, uint32_t filesz,
+                             uint32_t memsz, uint32_t flags)
+    {
+        write_le32(bytes, header + 0, 1); // PT_LOAD
+        write_le32(bytes, header + 4, offset);
+        write_le32(bytes, header + 8, address);
+        write_le32(bytes, header + 12, address);
+        write_le32(bytes, header + 16, filesz);
+        write_le32(bytes, header + 20, memsz);
+        write_le32(bytes, header + 24, flags);
+        write_le32(bytes, header + 28, 4);
+    };
+
+    write_segment(52, 0x100, 0x1000, 0x40, 0x40, 5); // PF_R | PF_X
+    write_segment(84, 0x200, 0x2000, 4, 8, 4);        // PF_R, file + BSS
+    write_segment(116, 0x210, 0x3000, 4, 4, 6);       // PF_R | PF_W
+
+    write_le32(bytes, 0x200, 0x00001020);
+    write_le32(bytes, 0x210, 0x00001020);
+    return bytes;
+}
+
 uint32_t encode_beq(uint32_t rs, uint32_t rt, int16_t immediate)
 {
     return encode_i(0x04, rs, rt, static_cast<uint16_t>(immediate));
@@ -81,10 +148,13 @@ void add(std::map<uint32_t, ee::s_ee_instruction>& insns,
 
 std::set<uint32_t> recover(
     const std::map<uint32_t, ee::s_ee_instruction>& insns,
-    uint32_t entry
+    uint32_t entry,
+    const ee::elf_loader* memory_image = nullptr
 )
 {
-    return ee::collect_static_jalr_targets(insns, {entry}, {entry});
+    return ee::collect_static_jalr_targets(
+        insns, {entry}, {entry}, nullptr, nullptr, memory_image
+    );
 }
 
 std::vector<ee::s_static_jalr_site> audit_jalr_sites(
