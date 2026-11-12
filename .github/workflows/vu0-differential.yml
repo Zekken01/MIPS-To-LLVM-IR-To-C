@@ -2,6 +2,9 @@ name: VU0 PCSX2 differential
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - tests/tools/test_vu0_trace_candidate.py
 
 permissions:
   contents: read
