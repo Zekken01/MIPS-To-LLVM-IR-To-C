@@ -11,8 +11,8 @@ import sys
 import tempfile
 
 
-def make_elf(path):
-    image = bytearray(0x120)
+def make_elf(path, startup=False):
+    image = bytearray(0x140)
     image[0:16] = b"\x7fELF\x01\x01\x01" + bytes(9)
     struct.pack_into(
         "<HHIIIIIHHHHHH", image, 16,
@@ -22,14 +22,24 @@ def make_elf(path):
     struct.pack_into(
         "<IIIIIIII", image, 52,
         1, 0x100, 0x00100000, 0x00100000,
-        0x20, 0x40, 5, 16,
+        0x40, 0x60, 5, 16,
     )
     # Entry starts after two NOPs. ADDIU $v0,$zero,7;
     # JR $ra; NOP (delay slot).
-    for offset, value in (
-        (0x108, 0x24020007),
-        (0x10c, 0x03e00008),
-    ):
+    instructions = (
+        (
+            (0x108, 0x2405ffff), # a1 = -1: auto-allocate stack
+            (0x10c, 0x24064000), # a2 = 16 KiB
+            (0x110, 0x2403003c), # v1 = SetupThread
+            (0x114, 0x0000000c), # syscall
+            (0x118, 0x0040e821), # addu sp, v0, zero
+            (0x11c, 0x03e00008), # jr ra
+        ) if startup else (
+            (0x108, 0x24020007),
+            (0x10c, 0x03e00008),
+        )
+    )
+    for offset, value in instructions:
         struct.pack_into("<I", image, offset, value)
     path.write_bytes(image)
 
@@ -82,6 +92,34 @@ def main():
         ), result.stdout + result.stderr
         assert (root / "out" / "ir" / "ee_functions.json").is_file()
         assert (root / "out" / "objects" / "objects.json").is_file()
+
+    with tempfile.TemporaryDirectory(prefix="ee-native-setupthread-") as tmp:
+        root = Path(tmp)
+        elf = root / "startup-mips.elf"
+        make_elf(elf, startup=True)
+        result = subprocess.run(
+            [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf),
+                "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--max-dispatches=8",
+                "--hle-startup",
+                "--trace",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert "HLE SetupThread:" in result.stdout, (
+            result.stdout + result.stderr
+        )
+        assert "EE stopped: dispatched=2" in result.stdout, (
+            result.stdout + result.stderr
+        )
+        assert "guest left compiled code" in result.stderr, (
+            result.stdout + result.stderr
+        )
 
     print("game_runner end-to-end ELF/native smoke: PASS")
     return 0
