@@ -189,3 +189,12 @@ Further changes should be committed to this branch in small, testable increments
 - GitHub Actions [run 43180405182](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43180405182): clean configure/build and **14/14 CTest passed**, including `vu0_runtime` and `vu0_transfer_ir_runtime` plus the existing suites.
 - Documentation follow-up Actions [run 43180563505](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43180563505) also completed successfully.
 - Remaining: supply a real host VU0 micro-engine and differential-test real running microprograms against PCSX2. VU0 SPECIAL1/SPECIAL2 macros remain UNSUPPORTED.
+
+
+## 2026-11-12 — Correct VU0 interlocked EE cycle accounting
+
+- Cross-checked the scheduler adapter against PCSX2 `VU0.cpp` `_vu0run`: the normal finish/wait epilogue advances EE cycle by the amount of VU0 execution consumed during that wait (`VU0.cycle - startcycle`); it does not assign EE cycle to the final VU0 cycle.
+- Corrected `ee_vu0_scheduler_sync_callback` to preserve both start counters and add only the elapsed VU0 cycles to the original EE cycle. The special early M-bit/already-ahead path remains an assignment to the VU0 cycle, matching PCSX2's separate early return.
+- Strengthened tests so finish-to-E starts with VU0 already ahead of EE, and wait-to-E-or-M verifies EE advances by the consumed amount while remaining offset from VU0.
+- GitHub Actions [run 43182310781](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43182310781): clean configure/build and **14/14 CTest passed**.
+- Next micro-engine work remains gated on the 4 KB VU0 micro-memory, paired 64-bit instruction format, upper/lower dual-issue ordering, delay/branch/E/M state, and pipeline hazards. Implementing isolated lower-ALU operations without those rules would not be a safe execution engine.
