@@ -37,6 +37,66 @@ using t_ee_vu0_sync_callback = uint32_t (*)(
     uint32_t pc
 );
 
+// Flags passed to the host VU0 micro-engine for one bounded execution slice.
+enum e_ee_vu0_execute_flags : uint32_t
+{
+    EE_VU0_EXECUTE_STOP_AT_E = 1u << 0,
+    EE_VU0_EXECUTE_STOP_AT_M = 1u << 1,
+    EE_VU0_EXECUTE_EXACT_CYCLES = 1u << 2
+};
+
+// Execute at most max_cycles of VU0 work. The callback must update m_cycle,
+// m_vpu_status and m_m_bit as execution proceeds. STOP_AT_E always applies
+// to scheduler calls; STOP_AT_M is used only by WAIT_TO_E_OR_M. EXACT_CYCLES
+// forbids the engine from running past a catch-up budget.
+using t_ee_vu0_execute_callback = uint32_t (*)(
+    void* user,
+    s_ee_cpu_state* cpu,
+    s_ee_vu0_state* vu0,
+    uint64_t max_cycles,
+    uint32_t flags,
+    uint32_t pc
+);
+
+// PCSX2's interlocked COP2 paths also catch VU1 up after waiting for VU0.
+using t_ee_vu0_vu1_catch_up_callback = uint32_t (*)(
+    void* user,
+    s_ee_cpu_state* cpu,
+    s_ee_vu0_state* vu0,
+    uint32_t pc
+);
+
+// Schedule the EE event used to resume a still-running VU0.
+using t_ee_vu0_schedule_event_callback = void (*)(
+    void* user,
+    s_ee_cpu_state* cpu,
+    s_ee_vu0_state* vu0,
+    uint32_t delta_cycles,
+    uint32_t pc
+);
+
+// Reusable timing-policy adapter. It supplies the PCSX2-style catch-up,
+// finish-to-E and wait-to-E-or-M orchestration around a host VU micro-engine.
+// The engine and VU1 callbacks remain host-provided; no fake engine is implied.
+struct s_ee_vu0_scheduler
+{
+    void* m_user = nullptr;
+    t_ee_vu0_execute_callback m_execute = nullptr;
+    t_ee_vu0_vu1_catch_up_callback m_vu1_catch_up = nullptr;
+    t_ee_vu0_schedule_event_callback m_schedule_event = nullptr;
+    uint32_t m_max_run_calls = 65536;
+};
+
+// Can be assigned directly to s_ee_runtime::m_vu0_sync. user points to an
+// s_ee_vu0_scheduler. Returns UNAVAILABLE when required host callbacks are absent.
+uint32_t ee_vu0_scheduler_sync_callback(
+    void* user,
+    s_ee_cpu_state* cpu,
+    s_ee_vu0_state* vu0,
+    uint32_t mode,
+    uint32_t pc
+);
+
 // Host callback for CTC2 operations with external effects (FBRST and CMSAR1).
 // It must perform the requested action or return UNAVAILABLE/FAILED without
 // committing a partial action.
