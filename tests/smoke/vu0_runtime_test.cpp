@@ -274,8 +274,8 @@ int main()
         );
         check(
             instruction.m_upper_fields.m_operation ==
-                ee::e_ee_vu0_micro_opcode::ADD_I,
-            "VU0 upper primary table classifies ADDi"
+                ee::e_ee_vu0_micro_opcode::UNKNOWN,
+            "VU0 upper primary table marks an unassigned opcode as unknown"
         );
         check(micro_state.m_micro_pc == 0x28u,
               "VU0 micro fetch advances PC by one 8-byte instruction");
@@ -327,6 +327,16 @@ int main()
             instruction.m_upper_fields.m_operation ==
                 ee::e_ee_vu0_micro_opcode::ADD_X,
             "VU0 upper primary table classifies ADDx"
+        );
+
+        write_le32(&micro_state.m_micro_memory[4], 0x22u);
+        micro_state.m_micro_pc = 0;
+        check(
+            ee::ee_vu0_fetch_micro_instruction(&micro_state, &instruction) ==
+                static_cast<uint32_t>(ee::e_ee_vu0_sync_result::COMPLETE) &&
+            instruction.m_upper_fields.m_operation ==
+                ee::e_ee_vu0_micro_opcode::ADD_I,
+            "VU0 upper primary table classifies ADDi"
         );
 
         write_le32(&micro_state.m_micro_memory[4], upper_nop);
