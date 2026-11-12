@@ -26,6 +26,30 @@ enum class e_ee_vu0_transfer_direction : uint8_t
     TO_VU0
 };
 
+constexpr uint32_t EE_VU0_DATA_MEMORY_SIZE = 0x1000u;
+constexpr uint32_t EE_VU0_MICRO_MEMORY_SIZE = 0x1000u;
+constexpr uint32_t EE_VU0_MICRO_MEMORY_MASK = EE_VU0_MICRO_MEMORY_SIZE - 1u;
+
+enum e_ee_vu0_micro_flags : uint32_t
+{
+    EE_VU0_MICRO_FLAG_I = 1u << 0,
+    EE_VU0_MICRO_FLAG_E = 1u << 1,
+    EE_VU0_MICRO_FLAG_M = 1u << 2,
+    EE_VU0_MICRO_FLAG_D = 1u << 3,
+    EE_VU0_MICRO_FLAG_T = 1u << 4
+};
+
+// VU micro-instructions are 64-bit pairs: lower word at +0, upper word at +4.
+// m_pc is a byte address in the 4 KB micro-program memory. Flags are decoded
+// from the upper word and normalized to e_ee_vu0_micro_flags.
+struct s_ee_vu0_micro_instruction
+{
+    uint32_t m_pc;
+    uint32_t m_lower;
+    uint32_t m_upper;
+    uint32_t m_flags;
+};
+
 // Callback supplied by the host's VU0 scheduler. It must execute the requested
 // synchronization policy, update cpu/vu0 state, and return an e_ee_vu0_sync_result.
 // The user pointer is separate from m_user, which remains the EE memory context.
@@ -157,6 +181,15 @@ uint32_t ee_vu0_sync(s_ee_cpu_state* cpu, s_ee_runtime* rt,
                      uint32_t mode, uint32_t pc);
 uint32_t ee_vu0_read_vi(const s_ee_vu0_state* vu0, uint32_t index);
 void     ee_vu0_write_vi(s_ee_vu0_state* vu0, uint32_t index, uint32_t value);
+
+// Fetch one aligned 64-bit VU0 micro-instruction pair from m_micro_memory.
+// m_micro_pc is a byte offset and wraps at the 4 KB program-memory boundary.
+// The PC advances only after a successful fetch. Returns COMPLETE or
+// INVALID_ARGUMENT; unsupported opcode handling belongs to the micro-engine.
+uint32_t ee_vu0_fetch_micro_instruction(
+    s_ee_vu0_state* vu0,
+    s_ee_vu0_micro_instruction* out
+);
 
 // Synchronized VU0 transfers. The indices are decoded 5-bit fields: gpr_index
 // is rt and vu_index is fs/rd. Destinations obey hardwired GPR0/VF0 semantics.
