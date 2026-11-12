@@ -25,6 +25,10 @@ EXPECTED_PAIR_PCS = [
 
 def executed_operation(lower):
     primary = (lower >> 25) & 0x7f
+    if primary == 0x04:
+        return "ILW"
+    if primary == 0x05:
+        return "ISW"
     if primary == 0x08:
         return "IADDIU"
     if primary == 0x09:
@@ -100,7 +104,7 @@ class VU0CandidateTraceTests(unittest.TestCase):
                 operations,
                 {
                     "IADDIU", "IADDI", "IADD", "ISUB", "IAND", "IOR",
-                    "ISUBIU", "B", "BAL", "JR", "JALR", "IBEQ", "IBNE",
+                    "ISUBIU", "ILW", "ISW", "B", "BAL", "JR", "JALR", "IBEQ", "IBNE",
                     "IBLTZ", "IBGTZ", "IBLEZ", "IBGEZ",
                 },
             )
