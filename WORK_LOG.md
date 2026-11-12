@@ -198,3 +198,14 @@ Further changes should be committed to this branch in small, testable increments
 - Strengthened tests so finish-to-E starts with VU0 already ahead of EE, and wait-to-E-or-M verifies EE advances by the consumed amount while remaining offset from VU0.
 - GitHub Actions [run 43182310781](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43182310781): clean configure/build and **14/14 CTest passed**.
 - Next micro-engine work remains gated on the 4 KB VU0 micro-memory, paired 64-bit instruction format, upper/lower dual-issue ordering, delay/branch/E/M state, and pipeline hazards. Implementing isolated lower-ALU operations without those rules would not be a safe execution engine.
+
+
+## 2026-11-12 — VU0 local memories and paired micro fetch
+
+- Added the two architectural 4 KB VU0 memories as separately 16-byte-aligned arrays in the VU0 sidecar: data memory and micro-program memory. Existing CPU-state layout and offsets remain unchanged because the sidecar is separate and the arrays are appended after its existing fields.
+- Added `ee_vu0_fetch_micro_instruction`: fetches the paired lower/upper 32-bit words from the byte-addressed micro store, explicitly decodes little-endian words, extracts the upper I/E/M/D/T flag bits, advances by eight bytes and wraps at `0x1000`.
+- Invalid or unaligned fetches fail without changing the PC or output record. `m_tpc` is documented in instruction-slot units; `m_micro_pc` is the active byte fetch address.
+- Added compile-time state layout checks plus runtime tests for pair ordering, all five control flags, PC increment, end-of-memory wrap, invalid alignment and null arguments.
+- Expanded the Python JIT harness's `VU0State` mirror with the two memories and explicit 16-byte padding, including offset/size assertions (`data_memory=240`, `micro_memory=4336`, `sizeof=8432`).
+- GitHub Actions [run 43183141780](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43183141780): clean configure/build and **14/14 CTest passed**.
+- This is fetch/storage only. The VU0 dual-issue interpreter, instruction decoder, delayed VI/VF writes, branch pipeline, and FMAC/FDIV/EFU hazard machinery remain unimplemented. Macro instructions remain unsupported.
