@@ -61,10 +61,26 @@ For the original US executable `SLUS_214.42`:
   **0x83**. The call arguments reference EE KSEG0 addresses
   **0x80000000..0x80080000**.
 
-The next meaningful work is implementing a safe kernel-call handoff for
-guest-registered syscall callbacks and the relevant KSEG0 RAM mapping.
-**Do not blindly return success for syscall 0x83**: the game installed a
-real guest handler and expects its observable behaviour.
+The native runner now has an experimental registered-syscall handoff:
+when a SetSyscall-installed service is invoked, it dispatches the registered
+guest handler as translated code, preserving the interrupted RA. On a return
+through a dedicated synthetic return address it restores RA, clears EXL, and
+resumes the instruction after the original syscall. Callback V0 and guest
+memory writes are retained. A missing translated handler is surfaced as a
+normal external dispatch PC so `--auto-expand` can compile it on replay.
+Unexpected exceptions or departures from compiled code are *not* treated as
+successful callback returns.
+
+The user's submitted `first-boot.json` confirms the previous 20-dispatch
+stop at `0x0017eec4`: COP0.Cause 0x20 (syscall), EPC `0x0017eec4`,
+service `0x83`, with KSEG0 arguments `0x80000000` and `0x80080000`.
+The installed handler is `0x0017ee80`, which is real game code. Its
+execution and eventual return require a fresh game run; reaching a higher
+PC or dispatch count must be verified rather than assumed.
+
+The callback path is not a PS2 kernel exception implementation: nested
+callback handoffs, accurate privilege/interrupt scheduling, and BIOS-specific
+callback ABI details remain outside the currently verified scope.
 
 ## Validation limits
 
