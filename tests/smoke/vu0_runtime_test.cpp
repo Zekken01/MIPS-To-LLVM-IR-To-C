@@ -1655,16 +1655,36 @@ int main()
                 reference_matches = false;
                 std::printf(
                     "VU0 control-flow oracle mismatch at pair %u "
-                    "(slot=%u pc=0x%x actual_pc=0x%x cycle=%llu/%llu "
-                    "branch=%u/%u backup=%u/%u e=%u/%u status=%u/%u)\n",
+                    "(slot=%u pc=0x%x/0x%x cycle=%llu/%llu "
+                    "branch=%u/%u target=0x%x/0x%x deferred=0x%x/0x%x "
+                    "take=%u/%u backup=%u/%u reg=%u/%u old=0x%x/0x%x "
+                    "e=%u/%u m=%u/%u status=%u/%u running=%u)\n",
                     step, slot, reference_pc, actual.m_micro_pc,
                     static_cast<unsigned long long>(actual.m_cycle),
                     static_cast<unsigned long long>(reference_cycle),
                     actual.m_branch, reference_branch,
+                    actual.m_branch_pc, reference_branch_pc,
+                    actual.m_delay_branch_pc, reference_delay_branch_pc,
+                    actual.m_take_delay_branch, reference_take_delay_branch,
                     actual.m_vi_backup_cycles, reference_backup_cycles,
+                    actual.m_vi_backup_register, reference_backup_register,
+                    static_cast<uint16_t>(actual.m_vi_backup_old_value),
+                    reference_backup_old_value,
                     actual.m_e_bit, reference_e_bit,
-                    actual.m_vpu_status, reference_vpu_status
+                    actual.m_m_bit, reference_m_bit,
+                    actual.m_vpu_status, reference_vpu_status,
+                    actual.m_running
                 );
+                for (uint32_t reg = 0; reg < 16; ++reg)
+                {
+                    if (actual.m_vi[reg] != reference_vi[reg])
+                    {
+                        std::printf(
+                            "  VI%u actual=0x%08x expected=0x%08x\n",
+                            reg, actual.m_vi[reg], reference_vi[reg]
+                        );
+                    }
+                }
                 break;
             }
 
