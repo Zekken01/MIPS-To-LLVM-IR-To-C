@@ -20,7 +20,7 @@ EXPECTED_PAIR_PCS = [
     168, 176, 192, 200, 208, 216, 224, 232, 240, 248,
     256, 264, 280, 288,
     296, 304, 312, 320, 328, 336, 344, 352, 360, 368, 376,
-    384, 392, 400, 408, 416, 424, 432, 440,
+    384, 392, 400, 408, 416, 424, 432, 440, 448, 456, 464, 472,
 ]
 
 
@@ -40,6 +40,10 @@ def executed_operation(lower):
         return "ISUBIU"
     if primary == 0x40:
         secondary = lower & 0x3f
+        if (lower >> 6) & 0x1f == 13:
+            return {0x3c: "LQI", 0x3d: "SQI", 0x3e: "LQD", 0x3f: "SQD"}.get(
+                secondary, "UNKNOWN"
+            )
         return {
             0x30: "IADD",
             0x31: "ISUB",
@@ -115,7 +119,7 @@ class VU0CandidateTraceTests(unittest.TestCase):
                 operations,
                 {
                     "IADDIU", "IADDI", "IADD", "ISUB", "IAND", "IOR",
-                    "ISUBIU", "ILW", "ISW", "LQ", "SQ", "B", "BAL", "JR", "JALR", "IBEQ", "IBNE",
+                    "ISUBIU", "ILW", "ISW", "LQ", "SQ", "LQI", "SQI", "LQD", "SQD", "B", "BAL", "JR", "JALR", "IBEQ", "IBNE",
                     "IBLTZ", "IBGTZ", "IBLEZ", "IBGEZ",
                 },
             )
@@ -147,16 +151,16 @@ class VU0CandidateTraceTests(unittest.TestCase):
             self.assertEqual(final["vi"][14], 0x7fef)
             self.assertEqual(final["vi"][15], 18)
             self.assertEqual(final["vi"][2], 0x7fef)
-            self.assertEqual(final["vi"][26], 448)
+            self.assertEqual(final["vi"][26], 480)
             self.assertEqual(final["vi"][29], 0)
-            self.assertEqual(final["micro_pc"], 448)
-            self.assertEqual(final["tpc"], 56)
+            self.assertEqual(final["micro_pc"], 480)
+            self.assertEqual(final["tpc"], 60)
             # PCSX2 does not stall an ISW on ILW's IALU destination.
             self.assertEqual(steps[40]["state"]["cycle"], 41)
             self.assertEqual(steps[41]["state"]["cycle"], 42)
             # PCSX2 flushes the four-cycle lower FMAC pipeline at E,
             # including the final LQ destination reservation.
-            self.assertEqual(final["cycle"], 54)
+            self.assertEqual(final["cycle"], 61)
             self.assertNotEqual(
                 steps[38]["state"]["data_sha256"],
                 steps[39]["state"]["data_sha256"],
@@ -181,6 +185,8 @@ class VU0CandidateTraceTests(unittest.TestCase):
                 steps[46]["state"]["vf"][4],
                 [0x11223344, 0x05060708, 0, 0],
             )
+            self.assertEqual(final["vi"][1], 5)
+            self.assertEqual(final["vf"][6][0], 0x11223344)
             self.assertEqual(final["e_bit"], 0)
             self.assertFalse(final["running"])
 
