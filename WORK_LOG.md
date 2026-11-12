@@ -364,3 +364,14 @@ Further changes should be committed to this branch in small, testable increments
 - The directed 21-pair prefix still guarantees all 17 lower opcode classes are executed before the randomized tail.
 - GitHub Actions [run #43227644333](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43227644333): clean build and **15/15 CTest passed**.
 - Remaining: extend forced dependency coverage to more than one source register and exercise multiple exact budget boundaries; then compare trace dumps against a live PCSX2 interpreter build.
+
+
+## 2026-11-12 — Correct VU0 branch interlock and VI-backup issue ordering
+
+- Audited the implementation against PCSX2 interpreter source at commit `82cac38b2af19d593dedfd9ddaa63448e7ec493c`. In `_vu0Exec`, PCSX2 decodes lower-op metadata, applies `_vuTestLowerStalls`, retires matured pipes through `_vuTestPipes`, ages `VIBackupCycles` by the elapsed issue/stall cycles, and only then invokes `_vu0ExecLower`. Conditional predicates and JR/JALR targets are consequently sampled after the interlock and backup aging.
+- This disproved the previous runtime comment and test assumption that branch operands were snapshotted before the stall. Corrected `ee_vu0_execute_ialu_callback` to age the existing VI-backup window after the stall/retirement phase and before executing the lower operation. IALU writes now create a fresh two-cycle backup after this pre-handler aging; branch predicates, jump targets and link values are prepared from the post-stall state.
+- Corrected both test-side models to apply backup aging before lower-op execution. Updated boundary expectations so a newly issued IALU write leaves two backup cycles at the instruction boundary, and a one-cycle later branch observes one remaining cycle.
+- Added post-stall semantics to the direct tests: a three-cycle branch interlock expires a one-cycle backup before IBEQ executes; a second test places different three- and five-cycle reservations on both IBEQ sources with a two-cycle exact budget and verifies that the branch waits for the latest dependency, then compares the current VI values after backup expiry.
+- Updated the 384-pair mixed oracle's injected three-cycle IBEQ dependency to verify current-value sampling after the stall. The oracle still guarantees that all 17 supported lower operation classes execute before its randomized control-flow tail.
+- GitHub Actions [run #43229844156](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43229844156): clean build, artifact upload, and **15/15 CTest passed**.
+- Remaining semantic gap: the reference models are still test-side PCSX2-derived models, not a live PCSX2 interpreter differential. The next validation step is a reproducible harness that runs matching fixtures through PCSX2's interpreter and compares per-pair state/cycle traces.
