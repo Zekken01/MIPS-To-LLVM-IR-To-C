@@ -76,6 +76,7 @@ void module_builder::declare_memory_helpers()
     m_out += "declare i32 @ee_vu0_qmtc2(ptr, ptr, i32, i32, i32, i32)\n";
     m_out += "declare i32 @ee_vu0_cfc2(ptr, ptr, i32, i32, i32, i32)\n";
     m_out += "declare i32 @ee_vu0_ctc2(ptr, ptr, i32, i32, i32, i32)\n";
+    m_out += "declare i32 @ee_vu0_get_branch_condition(ptr)\n";
     m_out += "\n";
 }
 
@@ -2275,6 +2276,31 @@ void module_builder::emit_block(const std::vector<ee::s_ee_instruction>& block,
             m_out += "  " + fcc + " = and i32 " + fcsr + ", 8388608\n";
             m_out += "  " + cmp + " = icmp " + std::string((ctrl.rt & 1) ? "ne" : "eq") +
                      " i32 " + fcc + ", 0\n";
+        } else if (ctrl.opcode == e_ee_opcode::OP_COP2 &&
+                   ctrl.rs == static_cast<uint8_t>(e_ee_opcode::COP2_BC2)) {
+            // PCSX2's BC2 predicate is VPU_STAT bit 8. Read it before the
+            // delay slot; missing VU0 state is an execution failure, not a
+            // guessed branch outcome.
+            const std::string condition = newtemp();
+            const std::string unavailable = newtemp();
+            const std::string suffix = std::to_string(m_temp_counter++);
+            const std::string fail_label = "bc2_fail_" + suffix;
+            const std::string ready_label = "bc2_ready_" + suffix;
+            m_out += "  " + condition +
+                     " = call i32 @ee_vu0_get_branch_condition(ptr %rt)\n";
+            m_out += "  " + unavailable + " = icmp eq i32 " + condition + ", 2\n";
+            m_out += "  br i1 " + unavailable + ", label %" + fail_label +
+                     ", label %" + ready_label + "\n";
+            m_out += fail_label + ":\n";
+            const std::string pc_ptr = state_field(6);
+            const std::string exit_ptr = state_field(7);
+            m_out += "  store i32 " + std::to_string(ctrl.pc) + ", ptr " + pc_ptr + "\n";
+            m_out += "  store i32 4, ptr " + exit_ptr + "\n";
+            m_out += "  ret i32 4\n";
+            m_out += ready_label + ":\n";
+            m_out += "  " + cmp + " = icmp " +
+                     std::string((ctrl.rt & 1) ? "ne" : "eq") +
+                     " i32 " + condition + ", 0\n";
         } else {
             // Unconditional or unsupported — treat as always-taken.
             m_out += "  " + cmp + " = add i1 1, 0\n";
@@ -2374,7 +2400,9 @@ void module_builder::emit_block(const std::vector<ee::s_ee_instruction>& block,
                  ctrl.opcode == e_ee_opcode::OP_BLEZ ||
                  ctrl.opcode == e_ee_opcode::OP_BGTZ ||
                  ctrl.opcode == e_ee_opcode::OP_REGIMM ||
-                 (ctrl.opcode == e_ee_opcode::OP_COP1 && ctrl.rs == 0x08));
+                 (ctrl.opcode == e_ee_opcode::OP_COP1 && ctrl.rs == 0x08) ||
+                 (ctrl.opcode == e_ee_opcode::OP_COP2 &&
+                  ctrl.rs == static_cast<uint8_t>(e_ee_opcode::COP2_BC2)));
             if (supported_conditional)
             {
                 const std::string cmp = make_cond(ctrl);
