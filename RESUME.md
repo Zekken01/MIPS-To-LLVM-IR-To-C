@@ -4,7 +4,7 @@
 
 This branch is a reconstructed baseline from the preserved 2026-11-11 09:57 MMI/HI1/LO1 follow-up, with subsequent decoder, lifting, control-flow, dispatcher, and validation work. Do not merge it into `main` until source provenance and the latest changes have been reviewed.
 
-Latest fully verified CI: [Actions run #43180405182](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43180405182), **14/14 CTest passed**, including native object emission/linking, dispatcher execution, COP1 JIT tests, VU0 runtime scheduler tests, COP2 transfer/BC2 JIT tests, and the MMI/HI1/LO1 regression suites.
+Latest fully verified CI: [Actions run #43181208334](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43181208334), **14/14 CTest passed**, including native object emission/linking, dispatcher execution, COP1 JIT tests, VU0 runtime scheduler tests, COP2 transfer/BC2 JIT tests, and the MMI/HI1/LO1 regression suites.
 
 Latest USA `SLUS_214.42` validation:
 - **7,849 functions discovered and emitted**.
@@ -39,7 +39,7 @@ See [`COP2_RESEARCH.md`](COP2_RESEARCH.md) for the PCSX2 reference and semantic 
 - `ee_vu0_scheduler_sync_callback` now provides bounded catch-up, finish-to-E, and wait-to-E-or-M orchestration, including VU1 catch-up and EE event callbacks. It does **not** execute VU micro-instructions. A real host VU0 engine remains to be supplied.
 - VU0 SPECIAL1/SPECIAL2 macro instructions remain UNSUPPORTED. Do not enable them until the engine models dual-issue scheduling and FMAC/FDIV/EFU pipelines, flags, ACC/Q/P forwarding and branch timing.
 
-The scheduler/runtime test suite plus all existing tests passed **14/14** in [Actions run #43180405182](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43180405182).
+The scheduler/runtime test suite plus all existing tests passed **14/14** in [Actions run #43181208334](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43181208334).
 
 ## Remaining priorities
 
