@@ -129,6 +129,10 @@ int main(int argc, char** argv)
 
     ee::s_ee_cpu_state cpu{};
     cpu.m_vu0[0].m_hi = uint64_t{0x3f800000u} << 32; // Constant VF0.w = 1.
+    cpu.m_vu0[2].m_lo = 0x5566778811223344ull;
+    cpu.m_vu0[2].m_hi = 0xddeeff0099aabbccull;
+    cpu.m_vu0[3].m_lo = 0x0506070801020304ull;
+    cpu.m_vu0[3].m_hi = 0x0d0e0f10090a0b0cull;
     ee::s_ee_vu0_state vu0{};
     ee::s_ee_vu0_ialu_engine engine{};
 
