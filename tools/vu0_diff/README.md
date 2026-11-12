@@ -39,11 +39,14 @@ python3 tools/vu0_diff/integrate_pcsx2_test.py --pcsx2-root pcsx2-vu0-reference
 ~~~
 
 Configure and build the existing PCSX2 core test target using the toolchain
-and system dependencies from PCSX2's normal Linux build instructions:
+and system dependencies from PCSX2's normal Linux build instructions. On
+Linux, keep X11 enabled even with OpenGL/Vulkan and Wayland disabled: the
+pinned PCSX2 common target links X11::X11, X11::Xrandr and X11::Xi.
 
 ~~~sh
 cmake -S pcsx2-vu0-reference -B pcsx2-vu0-reference/build-vu0-diff -G Ninja \
-    -DENABLE_TESTS=ON -DENABLE_QT_UI=OFF -DCMAKE_BUILD_TYPE=Release
+    -DENABLE_TESTS=ON -DENABLE_QT_UI=OFF -DX11_API=ON -DWAYLAND_API=OFF \
+    -DCMAKE_BUILD_TYPE=Release
 cmake --build pcsx2-vu0-reference/build-vu0-diff --target core_test --parallel 2
 ~~~
 
