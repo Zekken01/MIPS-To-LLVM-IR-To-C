@@ -27,6 +27,10 @@ public:
 
     bool contains(uint32_t addr, size_t len) const;
 
+    // Opt-in EE KSEG0/KSEG1 direct-mapped RAM aliases. This does not
+    // implement TLB translation or expose physical MMIO devices.
+    void set_kseg_ram_aliases(bool enabled);
+
     // Direct-RAM fast path (Phase 7 optimisation). Marks a guest address
     // range as safe for direct host pointer access, bypassing bounds checks.
     // Accesses outside this range still go through the checked helpers.
@@ -45,8 +49,10 @@ private:
     uint32_t m_ram_base = 0;
     uint32_t m_ram_size = 0;
     bool m_ram_configured = false;
+    bool m_kseg_ram_aliases = false;
 
     bool in_ram_range(uint32_t addr, size_t len) const;
+    uint32_t normalize_ram_address(uint32_t addr) const;
 };
 
 } // namespace ee
