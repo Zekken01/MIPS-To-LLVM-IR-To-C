@@ -111,6 +111,11 @@ add_executable(ee_recomp
 )
 target_link_libraries(ee_recomp PRIVATE ee_core)
 
+# Standalone host for a linked set of translated guest functions.
+# It loads the original ELF PT_LOAD segments and executes via ee_game_run.
+add_executable(ee_game_runner src/tools/ee_game_runner_main.cpp)
+target_link_libraries(ee_game_runner PRIVATE ee_core ${CMAKE_DL_LIBS})
+
 # Decoder regression test (MMI classification, VALID/UNSUPPORTED contract).
 add_executable(ee_decoder_test tests/decoder/decoder_test.cpp)
 target_link_libraries(ee_decoder_test PRIVATE ee_core)
