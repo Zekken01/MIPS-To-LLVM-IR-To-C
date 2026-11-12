@@ -231,6 +231,284 @@ uint32_t read_le32(const uint8_t* bytes)
            (static_cast<uint32_t>(bytes[3]) << 24);
 }
 
+e_ee_vu0_micro_opcode decode_lower_secondary(uint32_t word)
+{
+    using op = e_ee_vu0_micro_opcode;
+    const uint32_t secondary = word & 0x3fu;
+
+    switch (secondary)
+    {
+    case 0x30: return op::IADD;
+    case 0x31: return op::ISUB;
+    case 0x32: return op::IADDI;
+    case 0x34: return op::IAND;
+    case 0x35: return op::IOR;
+    default: break;
+    }
+
+    if (secondary < 0x3cu || secondary > 0x3fu)
+    {
+        return op::UNKNOWN;
+    }
+
+    const uint32_t table = secondary - 0x3cu;
+    const uint32_t index = (word >> 6) & 0x1fu;
+
+    switch (table)
+    {
+    case 0:
+        switch (index)
+        {
+        case 12: return op::MOVE;
+        case 13: return op::LQI;
+        case 14: return op::DIV;
+        case 15: return op::MTIR;
+        case 16: return op::RNEXT;
+        case 25: return op::MFP;
+        case 26: return op::XTOP;
+        case 27: return op::XGKICK;
+        case 28: return op::ESADD;
+        case 29: return op::EATAN_XY;
+        case 30: return op::ESQRT;
+        case 31: return op::ESIN;
+        default: return op::UNKNOWN;
+        }
+    case 1:
+        switch (index)
+        {
+        case 12: return op::MR32;
+        case 13: return op::SQI;
+        case 14: return op::SQRT;
+        case 15: return op::MFIR;
+        case 16: return op::RGET;
+        case 26: return op::XITOP;
+        case 28: return op::ERSADD;
+        case 29: return op::EATAN_XZ;
+        case 30: return op::ERSQRT;
+        case 31: return op::EATAN;
+        default: return op::UNKNOWN;
+        }
+    case 2:
+        switch (index)
+        {
+        case 13: return op::LQD;
+        case 14: return op::RSQRT;
+        case 15: return op::ILWR;
+        case 16: return op::RINIT;
+        case 28: return op::ELENG;
+        case 29: return op::ESUM;
+        case 30: return op::ERCPR;
+        case 31: return op::EEXP;
+        default: return op::UNKNOWN;
+        }
+    case 3:
+        switch (index)
+        {
+        case 13: return op::SQD;
+        case 14: return op::WAITQ;
+        case 15: return op::ISWR;
+        case 16: return op::RXOR;
+        case 28: return op::ERLENG;
+        case 30: return op::WAITP;
+        default: return op::UNKNOWN;
+        }
+    default:
+        return op::UNKNOWN;
+    }
+}
+
+e_ee_vu0_micro_opcode decode_lower_micro_opcode(uint32_t word)
+{
+    using op = e_ee_vu0_micro_opcode;
+    const uint32_t primary = word >> 25;
+
+    switch (primary)
+    {
+    case 0x00: return op::LQ;
+    case 0x01: return op::SQ;
+    case 0x04: return op::ILW;
+    case 0x05: return op::ISW;
+    case 0x08: return op::IADDIU;
+    case 0x09: return op::ISUBIU;
+
+    case 0x10: return op::FCEQ;
+    case 0x11: return op::FCSET;
+    case 0x12: return op::FCAND;
+    case 0x13: return op::FCOR;
+    case 0x14: return op::FSEQ;
+    case 0x15: return op::FSSET;
+    case 0x16: return op::FSAND;
+    case 0x17: return op::FSOR;
+    case 0x18: return op::FMEQ;
+    case 0x1a: return op::FMAND;
+    case 0x1b: return op::FMOR;
+    case 0x1c: return op::FCGET;
+
+    case 0x20: return op::B;
+    case 0x21: return op::BAL;
+    case 0x24: return op::JR;
+    case 0x25: return op::JALR;
+    case 0x28: return op::IBEQ;
+    case 0x29: return op::IBNE;
+    case 0x2c: return op::IBLTZ;
+    case 0x2d: return op::IBGTZ;
+    case 0x2e: return op::IBLEZ;
+    case 0x2f: return op::IBGEZ;
+
+    case 0x60:
+        return decode_lower_secondary(word);
+
+    default:
+        return op::UNKNOWN;
+    }
+}
+
+e_ee_vu0_micro_opcode decode_upper_secondary(
+    uint32_t word,
+    uint32_t table
+)
+{
+    using op = e_ee_vu0_micro_opcode;
+    const uint32_t index = (word >> 6) & 0x1fu;
+
+    switch (table)
+    {
+    case 0:
+        switch (index)
+        {
+        case 0: return op::ADDA_X;
+        case 1: return op::SUBA_X;
+        case 2: return op::MADDA_X;
+        case 3: return op::MSUBA_X;
+        case 4: return op::ITOF0;
+        case 5: return op::FTOI0;
+        case 6: return op::MULA_X;
+        case 7: return op::MULA_Q;
+        case 8: return op::ADDA_Q;
+        case 9: return op::SUBA_Q;
+        case 10: return op::ADDA;
+        case 11: return op::SUBA;
+        default: return op::UNKNOWN;
+        }
+    case 1:
+        switch (index)
+        {
+        case 0: return op::ADDA_Y;
+        case 1: return op::SUBA_Y;
+        case 2: return op::MADDA_Y;
+        case 3: return op::MSUBA_Y;
+        case 4: return op::ITOF4;
+        case 5: return op::FTOI4;
+        case 6: return op::MULA_Y;
+        case 7: return op::ABS;
+        case 8: return op::MADDA_Q;
+        case 9: return op::MSUBA_Q;
+        case 10: return op::MADDA;
+        case 11: return op::MSUBA;
+        default: return op::UNKNOWN;
+        }
+    case 2:
+        switch (index)
+        {
+        case 0: return op::ADDA_Z;
+        case 1: return op::SUBA_Z;
+        case 2: return op::MADDA_Z;
+        case 3: return op::MSUBA_Z;
+        case 4: return op::ITOF12;
+        case 5: return op::FTOI12;
+        case 6: return op::MULA_Z;
+        case 7: return op::MULA_I;
+        case 8: return op::ADDA_I;
+        case 9: return op::SUBA_I;
+        case 10: return op::MULA;
+        case 11: return op::OPMULA;
+        default: return op::UNKNOWN;
+        }
+    case 3:
+        switch (index)
+        {
+        case 0: return op::ADDA_W;
+        case 1: return op::SUBA_W;
+        case 2: return op::MADDA_W;
+        case 3: return op::MSUBA_W;
+        case 4: return op::ITOF15;
+        case 5: return op::FTOI15;
+        case 6: return op::MULA_W;
+        case 7: return op::CLIP;
+        case 8: return op::MADDA_I;
+        case 9: return op::MSUBA_I;
+        case 11: return op::NOP;
+        default: return op::UNKNOWN;
+        }
+    default:
+        return op::UNKNOWN;
+    }
+}
+
+e_ee_vu0_micro_opcode decode_upper_micro_opcode(uint32_t word)
+{
+    using op = e_ee_vu0_micro_opcode;
+    const uint32_t primary = word & 0x3fu;
+
+    if (primary >= 0x3cu)
+    {
+        return decode_upper_secondary(word, primary - 0x3cu);
+    }
+
+    switch (primary)
+    {
+    case 0x00: return op::ADD_X;
+    case 0x01: return op::ADD_Y;
+    case 0x02: return op::ADD_Z;
+    case 0x03: return op::ADD_W;
+    case 0x04: return op::SUB_X;
+    case 0x05: return op::SUB_Y;
+    case 0x06: return op::SUB_Z;
+    case 0x07: return op::SUB_W;
+    case 0x08: return op::MADD_X;
+    case 0x09: return op::MADD_Y;
+    case 0x0a: return op::MADD_Z;
+    case 0x0b: return op::MADD_W;
+    case 0x0c: return op::MSUB_X;
+    case 0x0d: return op::MSUB_Y;
+    case 0x0e: return op::MSUB_Z;
+    case 0x0f: return op::MSUB_W;
+    case 0x10: return op::MAX_X;
+    case 0x11: return op::MAX_Y;
+    case 0x12: return op::MAX_Z;
+    case 0x13: return op::MAX_W;
+    case 0x14: return op::MINI_X;
+    case 0x15: return op::MINI_Y;
+    case 0x16: return op::MINI_Z;
+    case 0x17: return op::MINI_W;
+    case 0x18: return op::MUL_X;
+    case 0x19: return op::MUL_Y;
+    case 0x1a: return op::MUL_Z;
+    case 0x1b: return op::MUL_W;
+    case 0x1c: return op::MUL_Q;
+    case 0x1d: return op::MAX_I;
+    case 0x1e: return op::MUL_I;
+    case 0x1f: return op::MINI_I;
+    case 0x20: return op::ADD_Q;
+    case 0x21: return op::MADD_Q;
+    case 0x22: return op::ADD_I;
+    case 0x23: return op::MADDI;
+    case 0x24: return op::SUB_Q;
+    case 0x25: return op::MSUB_Q;
+    case 0x26: return op::SUB_I;
+    case 0x27: return op::MSUB_I;
+    case 0x28: return op::ADD;
+    case 0x29: return op::MADD;
+    case 0x2a: return op::MUL;
+    case 0x2b: return op::MAX;
+    case 0x2c: return op::SUB;
+    case 0x2d: return op::MSUB;
+    case 0x2e: return op::OPMSUB;
+    case 0x2f: return op::MINI;
+    default: return op::UNKNOWN;
+    }
+}
+
 s_ee_vu0_micro_op_fields decode_micro_op_fields(
     uint32_t word,
     bool upper
@@ -248,10 +526,10 @@ s_ee_vu0_micro_op_fields decode_micro_op_fields(
         static_cast<uint8_t>(ft & 0x0fu),
         static_cast<uint8_t>(fs & 0x0fu),
         static_cast<uint8_t>(fd & 0x0fu),
-        static_cast<uint8_t>((word >> 21) & 0x0fu)
+        static_cast<uint8_t>((word >> 21) & 0x0fu),
+        upper ? decode_upper_micro_opcode(word) : decode_lower_micro_opcode(word)
     };
-}
-} // namespace
+}} // namespace
 
 extern "C" uint32_t ee_vu0_fetch_micro_instruction(
     s_ee_vu0_state* vu0,
