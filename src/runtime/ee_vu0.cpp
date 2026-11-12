@@ -1004,7 +1004,11 @@ uint32_t ee_vu0_execute_ialu_callback(
 
         vu0->m_running = (vu0->m_vpu_status & 1u) != 0 ? 1u : 0u;
 
-        if ((flags & EE_VU0_EXECUTE_STOP_AT_M) != 0 && vu0->m_m_bit != 0)
+        // PCSX2's micro-engine returns from each Execute() slice on M,
+        // regardless of the caller's wait policy. FINISH_TO_E is implemented
+        // by the outer scheduler invoking another slice after M; only that
+        // scheduler decides whether M ends the complete interlock.
+        if (vu0->m_m_bit != 0)
         {
             break;
         }
@@ -1013,7 +1017,7 @@ uint32_t ee_vu0_execute_ialu_callback(
     if (executed >= instruction_limit &&
         executed < max_cycles &&
         (vu0->m_vpu_status & 1u) != 0 &&
-        !((flags & EE_VU0_EXECUTE_STOP_AT_M) != 0 && vu0->m_m_bit != 0))
+        vu0->m_m_bit == 0)
     {
         return static_cast<uint32_t>(e_ee_vu0_sync_result::FAILED);
     }
@@ -1021,7 +1025,7 @@ uint32_t ee_vu0_execute_ialu_callback(
     if ((flags & EE_VU0_EXECUTE_EXACT_CYCLES) == 0 &&
         executed < max_cycles &&
         (vu0->m_vpu_status & 1u) != 0 &&
-        !((flags & EE_VU0_EXECUTE_STOP_AT_M) != 0 && vu0->m_m_bit != 0))
+        vu0->m_m_bit == 0)
     {
         return static_cast<uint32_t>(e_ee_vu0_sync_result::FAILED);
     }
