@@ -325,3 +325,13 @@ Further changes should be committed to this branch in small, testable increments
 - The first run caught an error in the test oracle's timing assumption: PCSX2 samples branch state before stalls and ages VIBackupCycles after lower execution; a newly written VI backup therefore reads as one remaining cycle at the end of its issue pair. Corrected the oracle to age the window after the operation, consistent with the dedicated M-bit issue-age test.
 - The final run passed the deterministic sequence and the complete suite. GitHub Actions [run #43224000835](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43224000835): clean build and **15/15 CTest passed**.
 - This is test-side reference-model coverage derived from PCSX2 semantics; it is not a live instruction-by-instruction differential run against the PCSX2 executable/interpreter.
+
+
+## 2026-11-12 — Mixed VU0 branch/control-flow reference model
+
+- Added a deterministic 512-slot lower-NOP/upper-NOP microprogram containing all 17 supported lower scalar/branch encodings; a fixed program seed and fixed initial VI values make the control-flow path reproducible.
+- Executed up to 384 pairs one at a time through the runtime callback and compared each state transition with an independent test-side decoder/reference model: VI contents, backup register/value/age, byte micro-PC/TPC, branch counter/target/deferred target, E/M state, VPU running status, cycle count and scalar reservation queue.
+- The first comparison failed at a bitwise op because the oracle bypassed the hardwired VI0 rule. Corrected IAND/IOR source reads to use zero-aware VI values; also made the JR/JALR oracle targets treat VI0 as zero. No runtime behavior needed changing for either test-oracle correction.
+- The previously corrected lower issue ordering is now checked in both the focused forced-stall regression and the mixed reference trace. The scalar and mixed oracles together cover deterministic data dependencies plus branch/delay/E/M state transitions.
+- GitHub Actions [run #43225840963](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43225840963): clean build and **15/15 CTest passed**.
+- This remains a test-side PCSX2-derived model. It is not a live differential run of the PCSX2 interpreter; the next validation step is to run comparable traces through a PCSX2 interpreter build and compare serialized architectural states.
