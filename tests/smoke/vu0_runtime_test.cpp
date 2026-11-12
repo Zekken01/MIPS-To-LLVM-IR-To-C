@@ -1009,6 +1009,197 @@ int main()
               "finish-to-E enforces the configured execution-call budget");
     }
 
+    // A deterministic scalar oracle exercises mixed register dependencies
+    // over a longer program. The oracle is independent of the runtime decoder
+    // and models the architectural VI low-halfword and VI-backup rules.
+    {
+        constexpr uint32_t instruction_count = 256u;
+        uint32_t random_state = 0x6d2b79f5u;
+        auto next_random = [&random_state]() -> uint32_t
+        {
+            random_state ^= random_state << 13;
+            random_state ^= random_state >> 17;
+            random_state ^= random_state << 5;
+            return random_state;
+        };
+
+        ee::s_ee_vu0_state actual{};
+        ee::s_ee_vu0_ialu_engine ialu_engine{};
+        uint32_t reference_vi[16]{};
+        uint32_t reference_backup_cycles = 0;
+        uint32_t reference_backup_register = 0;
+        uint16_t reference_backup_old_value = 0;
+        actual.m_vpu_status = 1u;
+
+        for (uint32_t i = 0; i < 16; ++i)
+        {
+            actual.m_vi[i] = next_random();
+            reference_vi[i] = actual.m_vi[i];
+        }
+
+        bool reference_matches = true;
+        for (uint32_t step = 0; step < instruction_count; ++step)
+        {
+            const uint32_t operation = next_random() % 7u;
+            const uint32_t it = next_random() & 0x0fu;
+            const uint32_t is = next_random() & 0x0fu;
+            const uint32_t id = next_random() & 0x0fu;
+            const uint32_t immediate = next_random() & 0x7fffu;
+            uint32_t lower = 0;
+            uint32_t destination = 0;
+            uint16_t result_value = 0;
+
+            const uint16_t source_s = is == 0
+                ? 0u : static_cast<uint16_t>(reference_vi[is]);
+            const uint16_t source_t = it == 0
+                ? 0u : static_cast<uint16_t>(reference_vi[it]);
+
+            switch (operation)
+            {
+            case 0:
+                lower = make_vu0_ialu_3r(0x30u, it, is, id);
+                destination = id;
+                result_value = static_cast<uint16_t>(
+                    static_cast<int16_t>(source_s) +
+                    static_cast<int16_t>(source_t)
+                );
+                break;
+
+            case 1:
+                lower = make_vu0_ialu_3r(0x31u, it, is, id);
+                destination = id;
+                result_value = static_cast<uint16_t>(
+                    static_cast<int16_t>(source_s) -
+                    static_cast<int16_t>(source_t)
+                );
+                break;
+
+            case 2:
+                lower = make_vu0_ialu_3r(0x34u, it, is, id);
+                destination = id;
+                result_value = static_cast<uint16_t>(source_s & source_t);
+                break;
+
+            case 3:
+                lower = make_vu0_ialu_3r(0x35u, it, is, id);
+                destination = id;
+                result_value = static_cast<uint16_t>(source_s | source_t);
+                break;
+
+            case 4:
+            {
+                const int32_t signed_immediate =
+                    static_cast<int32_t>(next_random() & 0x1fu);
+                const int32_t immediate_value =
+                    (signed_immediate & 0x10) != 0
+                        ? signed_immediate - 0x20
+                        : signed_immediate;
+                lower = make_vu0_iaddi(it, is, immediate_value);
+                destination = it;
+                result_value = static_cast<uint16_t>(
+                    static_cast<int16_t>(source_s) + immediate_value
+                );
+                break;
+            }
+
+            case 5:
+                lower = make_vu0_iaddiu(it, is, immediate);
+                destination = it;
+                result_value = static_cast<uint16_t>(
+                    static_cast<int16_t>(source_s) +
+                    static_cast<int32_t>(immediate)
+                );
+                break;
+
+            case 6:
+                lower = make_vu0_isubiu(it, is, immediate);
+                destination = it;
+                result_value = static_cast<uint16_t>(
+                    static_cast<int16_t>(source_s) -
+                    static_cast<int32_t>(immediate)
+                );
+                break;
+
+            default:
+                reference_matches = false;
+                break;
+            }
+
+            // Advance the two-cycle VI-backup window before the current
+            // operation, matching PCSX2's lower-operation ordering.
+            if (reference_backup_cycles != 0)
+            {
+                --reference_backup_cycles;
+            }
+
+            if (destination != 0)
+            {
+                if (reference_backup_cycles == 0 ||
+                    reference_backup_register != destination)
+                {
+                    reference_backup_old_value =
+                        static_cast<uint16_t>(reference_vi[destination]);
+                }
+                reference_backup_register = destination;
+                reference_backup_cycles = 2;
+                reference_vi[destination] =
+                    (reference_vi[destination] & 0xffff0000u) | result_value;
+            }
+
+            install_vu0_pair(&actual, step, lower, make_vu0_upper_nop());
+            const uint32_t execute_result = ee::ee_vu0_execute_ialu_callback(
+                &ialu_engine, &cpu, &actual, 1,
+                ee::EE_VU0_EXECUTE_EXACT_CYCLES, 0x00102000u
+            );
+
+            if (execute_result !=
+                    static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) ||
+                actual.m_cycle != static_cast<uint64_t>(step + 1u) ||
+                actual.m_micro_pc != (step + 1u) * 8u ||
+                actual.m_tpc != ((step + 1u) & 0x1ffu) ||
+                actual.m_ialu_count != 0 ||
+                actual.m_vi_backup_cycles != reference_backup_cycles ||
+                actual.m_vi_backup_register != reference_backup_register ||
+                static_cast<uint16_t>(actual.m_vi_backup_old_value) !=
+                    reference_backup_old_value)
+            {
+                reference_matches = false;
+                std::printf(
+                    "VU0 scalar oracle mismatch at pair %u: result=%u "
+                    "cycle=%llu pc=0x%x backup=%u/%u expected=%u/%u\n",
+                    step, execute_result,
+                    static_cast<unsigned long long>(actual.m_cycle),
+                    actual.m_micro_pc, actual.m_vi_backup_register,
+                    actual.m_vi_backup_cycles, reference_backup_register,
+                    reference_backup_cycles
+                );
+                break;
+            }
+
+            for (uint32_t reg = 0; reg < 16; ++reg)
+            {
+                if (actual.m_vi[reg] != reference_vi[reg])
+                {
+                    reference_matches = false;
+                    std::printf(
+                        "VU0 scalar oracle VI mismatch at pair %u, VI%u: "
+                        "actual=0x%08x expected=0x%08x\n",
+                        step, reg, actual.m_vi[reg], reference_vi[reg]
+                    );
+                    break;
+                }
+            }
+
+            if (!reference_matches)
+            {
+                break;
+            }
+        }
+
+        check(reference_matches,
+              "256-pair scalar IALU sequence matches the independent VI/backup oracle");
+    }
+
     // Execute the conservative lower-IALU/upper-NOP subset through the
     // same callback shape used by the VU scheduler.
     {
