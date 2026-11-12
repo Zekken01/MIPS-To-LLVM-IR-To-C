@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import platform
 import subprocess
 import sys
 from pathlib import Path
@@ -160,10 +161,14 @@ def main() -> int:
             "-DUSE_LINKED_FFMPEG=ON",
             "-DUSE_OPENGL=OFF",
             "-DUSE_VULKAN=OFF",
-            "-DX11_API=OFF",
             "-DWAYLAND_API=OFF",
             "-DUSE_BACKTRACE=OFF",
         ]
+        if platform.system() == "Linux":
+            # PCSX2 common/CMakeLists.txt always links X11 imported targets
+            # on Linux, so keep FindX11 enabled even with graphics backends off.
+            pcsx2_cmake_args.append("-DX11_API=ON")
+
         pcsx2_prefix = (
             args.pcsx2_prefix_path.resolve()
             if args.pcsx2_prefix_path
