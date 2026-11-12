@@ -280,6 +280,13 @@ TEST_F(VU0IssueOrder, EmitDeterministicPerPairTrace)
     VU0.VIRegNumber = 0;
     VU0.VIOldValue = 0;
     VU0.flags &= ~VUFLAG_MFLAGSET;
+    const u32 vf2[4] = { 0x11223344u, 0x55667788u, 0x99aabbccu, 0xddeeff00u };
+    const u32 vf3[4] = { 0x01020304u, 0x05060708u, 0x090a0b0cu, 0x0d0e0f10u };
+    for (u32 lane = 0; lane < 4; ++lane)
+    {
+        VU0.VF[2].UL[lane] = vf2[lane];
+        VU0.VF[3].UL[lane] = vf3[lane];
+    }
 
     const std::string program_sha256 = vu0_trace_fixture::sha256_hex(
         m_micro.data(), m_micro.size()
