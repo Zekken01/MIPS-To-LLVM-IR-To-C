@@ -382,6 +382,46 @@ int main(int argc, char** argv)
         static_cast<unsigned long long>(dispatched), cpu.m_pc,
         exit_name(reason), reason, status
     );
+    if (reason == static_cast<uint32_t>(
+            ee::e_ee_exit_reason::EE_EXIT_EXCEPTION))
+    {
+        // COP0 Cause[6:2] describes the exception; EPC identifies the
+        // original guest instruction, not the architectural vector PC.
+        const uint32_t cause = cpu.m_cop0[13];
+        const uint32_t epc = cpu.m_cop0[14];
+        const uint32_t exception_code = (cause >> 2) & 0x1fu;
+        uint32_t instruction = 0;
+        const bool has_instruction = image.read32_at(epc, &instruction);
+        std::printf(
+            "EE exception: code=%u EPC=0x%08x Cause=0x%08x "
+            "Status=0x%08x BadVAddr=0x%08x\n",
+            exception_code, epc, cause,
+            cpu.m_cop0[12], cpu.m_cop0[8]
+        );
+        if (has_instruction)
+        {
+            std::printf("  instruction=0x%08x", instruction);
+            if (exception_code == 8u && (instruction & 0x3fu) == 0x0cu)
+            {
+                std::printf(" syscall_code=0x%05x", (instruction >> 6) & 0xfffffu);
+            }
+            std::printf("\n");
+        }
+        if (exception_code == 8u)
+        {
+            std::printf(
+                "  v0=0x%016llx v1=0x%016llx "
+                "a0=0x%016llx a1=0x%016llx "
+                "a2=0x%016llx a3=0x%016llx\n",
+                static_cast<unsigned long long>(cpu.m_gpr[2].m_lo),
+                static_cast<unsigned long long>(cpu.m_gpr[3].m_lo),
+                static_cast<unsigned long long>(cpu.m_gpr[4].m_lo),
+                static_cast<unsigned long long>(cpu.m_gpr[5].m_lo),
+                static_cast<unsigned long long>(cpu.m_gpr[6].m_lo),
+                static_cast<unsigned long long>(cpu.m_gpr[7].m_lo)
+            );
+        }
+    }
     if (status == 1u && remaining == 0)
     {
         std::fprintf(stderr, "dispatch budget exhausted; resume or raise the limit\n");
