@@ -20,6 +20,14 @@ uint32_t make_cop1_s(uint8_t ft, uint8_t fs, uint8_t cc, uint8_t funct)
            (static_cast<uint32_t>(cc) << 6) |
            funct;
 }
+
+uint32_t make_cop1_transfer(uint8_t fmt, uint8_t rt, uint8_t rd)
+{
+    return (0x11u << 26) |
+           (static_cast<uint32_t>(fmt) << 21) |
+           (static_cast<uint32_t>(rt) << 16) |
+           (static_cast<uint32_t>(rd) << 11);
+}
 }
 
 int main(int argc, char** argv)
@@ -55,6 +63,10 @@ int main(int argc, char** argv)
     else if (std::strcmp(mode, "min_s") == 0) funct = 0x29;
     else if (std::strcmp(mode, "abs_s") == 0) funct = 0x05;
     else if (std::strcmp(mode, "neg_s") == 0) funct = 0x07;
+    else if (std::strcmp(mode, "mfc1") == 0 ||
+             std::strcmp(mode, "mtc1") == 0 ||
+             std::strcmp(mode, "cfc1") == 0 ||
+             std::strcmp(mode, "ctc1") == 0) funct = 0;
     else
     {
         std::fprintf(stderr, "unknown COP1 comparison mode: %s\n", mode);
@@ -79,10 +91,20 @@ int main(int argc, char** argv)
         std::strcmp(mode, "abs_s") == 0 ||
         std::strcmp(mode, "neg_s") == 0;
     const uint8_t destination_or_cc = writes_fpr6 ? 6 : 0;
-    const uint32_t word = std::strcmp(mode, "cvt_s_w") == 0
-        ? ((0x11u << 26) | (0x14u << 21) | (1u << 11) |
-           (static_cast<uint32_t>(destination_or_cc) << 6) | funct)
-        : make_cop1_s(2, 1, destination_or_cc, funct);
+    uint32_t word = 0;
+    if (std::strcmp(mode, "mfc1") == 0)
+        word = make_cop1_transfer(0, 6, 1);
+    else if (std::strcmp(mode, "mtc1") == 0)
+        word = make_cop1_transfer(4, 8, 6);
+    else if (std::strcmp(mode, "cfc1") == 0)
+        word = make_cop1_transfer(2, 6, 31);
+    else if (std::strcmp(mode, "ctc1") == 0)
+        word = make_cop1_transfer(6, 8, 31);
+    else if (std::strcmp(mode, "cvt_s_w") == 0)
+        word = (0x11u << 26) | (0x14u << 21) | (1u << 11) |
+               (static_cast<uint32_t>(destination_or_cc) << 6) | funct;
+    else
+        word = make_cop1_s(2, 1, destination_or_cc, funct);
     const ee::s_ee_instruction ins = ee::decode(entry_pc, word);
     if (ins.valid != ee::e_ee_valid::VALID ||
         ins.opcode != ee::e_ee_opcode::OP_COP1)
