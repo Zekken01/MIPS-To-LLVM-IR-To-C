@@ -1125,13 +1125,9 @@ int main()
                 break;
             }
 
-            // Advance the two-cycle VI-backup window before the current
-            // operation, matching PCSX2's lower-operation ordering.
-            if (reference_backup_cycles != 0)
-            {
-                --reference_backup_cycles;
-            }
-
+            // PCSX2 retains the old low halfword through the current
+            // lower operation, then ages the backup window by the cycles
+            // consumed by this pair (including any lower-pipe stall).
             if (destination != 0)
             {
                 if (reference_backup_cycles == 0 ||
@@ -1144,6 +1140,10 @@ int main()
                 reference_backup_cycles = 2;
                 reference_vi[destination] =
                     (reference_vi[destination] & 0xffff0000u) | result_value;
+            }
+            if (reference_backup_cycles != 0)
+            {
+                --reference_backup_cycles;
             }
 
             install_vu0_pair(&actual, step, lower, make_vu0_upper_nop());
