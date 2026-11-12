@@ -380,6 +380,14 @@ static std::set<uint8_t> block_written(const std::vector<ee::s_ee_instruction>& 
                 w.insert(ins.rt);
             }
             break;
+        case e_ee_opcode::OP_COP2:
+            if ((ins.rs == static_cast<uint8_t>(e_ee_opcode::COP2_QMFC2) ||
+                 ins.rs == static_cast<uint8_t>(e_ee_opcode::COP2_CFC2)) &&
+                ins.rt != 0)
+            {
+                w.insert(ins.rt);
+            }
+            break;
         case e_ee_opcode::OP_MMI:
             switch (ins.funct)
             {
@@ -525,6 +533,13 @@ static std::set<uint8_t> block_read_before_write(const std::vector<ee::s_ee_inst
             }
             if (ins.rs == static_cast<uint8_t>(e_ee_opcode::COP1_SWC1)) {
                 consider_read(ins.rs);
+                consider_read(ins.rt);
+            }
+            break;
+        case e_ee_opcode::OP_COP2:
+            if (ins.rs == static_cast<uint8_t>(e_ee_opcode::COP2_QMTC2) ||
+                ins.rs == static_cast<uint8_t>(e_ee_opcode::COP2_CTC2))
+            {
                 consider_read(ins.rt);
             }
             break;
