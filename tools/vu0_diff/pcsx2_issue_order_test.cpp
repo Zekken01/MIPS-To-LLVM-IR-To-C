@@ -62,7 +62,7 @@ void write_vi(std::ostream& output)
 
 void write_vf(std::ostream& output)
 {
-    output << "\\"vf\\":[";
+    output << "\"vf\":[";
     for (u32 index = 0; index < 32; ++index)
     {
         if (index != 0)
