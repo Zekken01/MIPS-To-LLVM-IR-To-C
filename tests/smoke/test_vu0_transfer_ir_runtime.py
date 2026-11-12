@@ -174,14 +174,15 @@ def make_runtime(vu0, sync_result=VU0_SYNC_COMPLETE,
 
 
 def run_guest(fixture, temp_dir, target, mode, setup=None,
-              sync_result=VU0_SYNC_COMPLETE):
+              sync_result=VU0_SYNC_COMPLETE,
+              control_result=VU0_SYNC_COMPLETE):
     guest_fn, engine, module, target_machine = compile_jit(
         fixture, temp_dir, mode, target
     )
     cpu_backing, cpu = aligned_instance(EEState)
     vu0_backing, vu0 = aligned_instance(VU0State)
     runtime, sync_ref, control_ref, sync_state, control_state = make_runtime(
-        vu0, sync_result=sync_result
+        vu0, sync_result=sync_result, control_result=control_result
     )
 
     if setup:
@@ -269,6 +270,93 @@ def main():
                 "CTC2 must write the low GPR word to VI")
         check_sync(sync, 0, ENTRY_PC, "CTC2")
 
+        # VF0 is the fixed (0, 0, 0, 1.0f) vector, independent of its
+        # backing slot, and writes to VF0 are discarded.
+        def init_vf0_read(cpu, _vu0):
+            cpu.vu0[0] = U128(0xdeadbeef01234567, 0x89abcdef76543210)
+
+        result, cpu, vu0, sync, control, keep = run_guest(
+            fixture, temp_dir, target, "qmfc2_vf0", init_vf0_read
+        )
+        require(cpu.gpr[8].lo == 0 and
+                cpu.gpr[8].hi == 0x3f80000000000000,
+                "QMFC2 VF0 must return the constant vector (0,0,0,1.0)")
+        check_sync(sync, 0, ENTRY_PC, "QMFC2 VF0")
+
+        def init_vf0_write(cpu, _vu0):
+            cpu.vu0[0] = U128(0xdeadbeef01234567, 0x89abcdef76543210)
+            cpu.gpr[8] = U128(0x0123456789abcdef, 0xfedcba9876543210)
+
+        result, cpu, vu0, sync, control, keep = run_guest(
+            fixture, temp_dir, target, "qmtc2_vf0", init_vf0_write
+        )
+        require(cpu.vu0[0].lo == 0xdeadbeef01234567 and
+                cpu.vu0[0].hi == 0x89abcdef76543210,
+                "QMTC2 to VF0 must leave the backing slot untouched")
+        check_sync(sync, 0, ENTRY_PC, "QMTC2 VF0")
+
+        # CFC2's R special case replaces only UL[0], preserving both UL[1]
+        # and the separate upper 64-bit half of the GPR.
+        def init_cfc_r(cpu, vu0):
+            cpu.gpr[8].lo = 0xfeedfacecafebeef
+            cpu.gpr[8].hi = 0x123456789abcdef0
+            vu0.vi[20] = 0xffabcdef
+
+        result, cpu, vu0, sync, control, keep = run_guest(
+            fixture, temp_dir, target, "cfc2_r", init_cfc_r
+        )
+        require(cpu.gpr[8].lo == 0xcafebeef002bcdef,
+                "CFC2 R must mask UL[0] and preserve UL[1]")
+        require(cpu.gpr[8].hi == 0x123456789abcdef0,
+                "CFC2 R must preserve the upper 64-bit GPR half")
+        check_sync(sync, 0, ENTRY_PC, "CFC2 R")
+
+        def init_ctc_r(cpu, _vu0):
+            cpu.gpr[8].lo = 0xabcdef01
+
+        result, cpu, vu0, sync, control, keep = run_guest(
+            fixture, temp_dir, target, "ctc2_r", init_ctc_r
+        )
+        require(vu0.vi[20] == ((0xabcdef01 & 0x007fffff) | 0x3f800000),
+                "CTC2 R must force the implicit 1.0 exponent")
+        check_sync(sync, 0, ENTRY_PC, "CTC2 R")
+
+        def init_fbrst(cpu, _vu0):
+            cpu.gpr[8].lo = 0x00000c0f
+
+        result, cpu, vu0, sync, control, keep = run_guest(
+            fixture, temp_dir, target, "ctc2_fbrst", init_fbrst
+        )
+        require(vu0.vi[28] == 0x00000c0c,
+                "CTC2 FBRST must store only mask 0x0c0c")
+        require(control["calls"] == [(28, 0x00000c0f, ENTRY_PC)],
+                "CTC2 FBRST must forward action bits and guest PC")
+        check_sync(sync, 0, ENTRY_PC, "CTC2 FBRST")
+
+        def init_cmsar1(cpu, _vu0):
+            cpu.gpr[8].lo = 0x12345678
+
+        result, cpu, vu0, sync, control, keep = run_guest(
+            fixture, temp_dir, target, "ctc2_cmsar1", init_cmsar1
+        )
+        require(vu0.cmsar1 == 0x5678,
+                "CTC2 CMSAR1 must retain its low 16-bit micro entry")
+        require(control["calls"] == [(31, 0x5678, ENTRY_PC)],
+                "CTC2 CMSAR1 must forward the low 16 bits and PC")
+        check_sync(sync, 0, ENTRY_PC, "CTC2 CMSAR1")
+
+        result, cpu, vu0, sync, control, keep = run_guest(
+            fixture, temp_dir, target, "ctc2_cmsar1", init_cmsar1,
+            control_result=VU0_SYNC_FAILED
+        )
+        require(result == EE_EXIT_UNSUPPORTED and
+                cpu.exit_reason == EE_EXIT_UNSUPPORTED and cpu.pc == ENTRY_PC,
+                "failed CMSAR1 host action must exit at the transfer")
+        require(vu0.cmsar1 == 0,
+                "failed CMSAR1 action must not commit register state")
+        require(control["calls"] == [(31, 0x5678, ENTRY_PC)],
+                "failed CMSAR1 action must still be observable by the host")
+
         # The same operations in a standard branch delay slot use the
         # direction-specific wait policy, not the ordinary catch-up policy.
         for mode, expected_mode in (
@@ -338,7 +426,8 @@ def main():
     _ = runtime_library
     print(
         "vu0_transfer_ir_runtime: PASS (QMFC2/QMTC2/CFC2/CTC2 helper calls, "
-        "GPR cache barriers, delay-slot synchronization, failure exits)"
+        "VF0/R special cases, CTC2 control callbacks, GPR cache barriers, "
+        "delay-slot synchronization, failure exits)"
     )
 
 
