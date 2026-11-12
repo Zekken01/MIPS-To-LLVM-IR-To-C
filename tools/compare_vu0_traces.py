@@ -18,6 +18,7 @@ needed for the currently supported integer/branch subset.
 """
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -28,6 +29,13 @@ STATE_FIELDS = (
     "vi_backup_register", "vi_backup_old_value", "e_bit", "m_bit",
     "vpu_status", "running", "data_sha256",
 )
+
+
+SHA256_PATTERN = re.compile(r"[0-9a-fA-F]{64}\Z")
+
+
+def valid_sha256(value):
+    return isinstance(value, str) and SHA256_PATTERN.fullmatch(value) is not None
 
 
 class TraceError(Exception):
@@ -62,12 +70,12 @@ def read_trace(path):
         raise TraceError(
             f"{path}: unsupported schema {header.get('schema')!r}"
         )
-    if not isinstance(header.get("program_sha256"), str):
+    if not valid_sha256(header.get("program_sha256")):
         raise TraceError(f"{path}: header has no program_sha256")
     if not isinstance(header.get("initial_state"), dict):
         raise TraceError(f"{path}: header has no initial_state object")
-    if "data_sha256" not in header["initial_state"]:
-        raise TraceError(f"{path}: header has no data_sha256")
+    if not valid_sha256(header["initial_state"].get("data_sha256")):
+        raise TraceError(f"{path}: header has invalid data_sha256")
 
     steps = []
     for index, record in enumerate(records[1:]):
@@ -94,7 +102,7 @@ def read_trace(path):
             )
         if not isinstance(state["vi"], list) or len(state["vi"]) != 32:
             raise TraceError(f"{path}: step {step} vi must contain 32 entries")
-        if not isinstance(state["data_sha256"], str) or len(state["data_sha256"]) != 64:
+        if not valid_sha256(state["data_sha256"]):
             raise TraceError(f"{path}: step {step} has invalid data_sha256")
         steps.append(record)
     return header, steps
