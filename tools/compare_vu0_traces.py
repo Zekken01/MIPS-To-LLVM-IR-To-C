@@ -26,7 +26,7 @@ STATE_FIELDS = (
     "vi", "cycle", "micro_pc", "tpc", "branch", "branch_pc",
     "delay_branch_pc", "take_delay_branch", "vi_backup_cycles",
     "vi_backup_register", "vi_backup_old_value", "e_bit", "m_bit",
-    "vpu_status", "running",
+    "vpu_status", "running", "data_sha256",
 )
 
 
@@ -66,6 +66,8 @@ def read_trace(path):
         raise TraceError(f"{path}: header has no program_sha256")
     if not isinstance(header.get("initial_state"), dict):
         raise TraceError(f"{path}: header has no initial_state object")
+    if "data_sha256" not in header["initial_state"]:
+        raise TraceError(f"{path}: header has no data_sha256")
 
     steps = []
     for index, record in enumerate(records[1:]):
@@ -92,6 +94,8 @@ def read_trace(path):
             )
         if not isinstance(state["vi"], list) or len(state["vi"]) != 32:
             raise TraceError(f"{path}: step {step} vi must contain 32 entries")
+        if not isinstance(state["data_sha256"], str) or len(state["data_sha256"]) != 64:
+            raise TraceError(f"{path}: step {step} has invalid data_sha256")
         steps.append(record)
     return header, steps
 
