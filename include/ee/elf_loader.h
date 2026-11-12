@@ -63,6 +63,7 @@ private:
     uint16_t m_machine = 0;
     uint16_t m_type = 0;
     bool m_relocations_complete = false;
+    bool m_has_dynamic_segment = false;
     std::set<uint32_t> m_relocation_addresses;
     std::vector<load_segment> m_segments;
     std::vector<symbol> m_symbols;
