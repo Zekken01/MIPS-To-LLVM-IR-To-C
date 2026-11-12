@@ -226,6 +226,19 @@ uint32_t make_vu0_iaddi(uint32_t it, uint32_t is, int32_t immediate)
            ((static_cast<uint32_t>(immediate) & 0x1fu) << 6) | 0x32u;
 }
 
+uint32_t make_vu0_memory(
+    uint32_t primary,
+    uint32_t xyzw,
+    uint32_t it,
+    uint32_t is,
+    int32_t immediate
+)
+{
+    return (primary << 25) | ((xyzw & 0x0fu) << 21) |
+           ((it & 0x0fu) << 16) | ((is & 0x0fu) << 11) |
+           (static_cast<uint32_t>(immediate) & 0x07ffu);
+}
+
 uint32_t make_vu0_iaddiu(uint32_t it, uint32_t is, uint32_t immediate)
 {
     return (0x08u << 25) | (it << 16) | (is << 11) |
@@ -2474,6 +2487,78 @@ int main()
         check(ee::ee_vu0_ialu_retire_matured(&state, nullptr) ==
                   static_cast<uint32_t>(e_ee_vu0_sync_result::INVALID_ARGUMENT),
               "IALU retirement rejects missing output counter");
+    }
+
+    // Integer VU0 data-memory slice: PCSX2 uses quadword addressing,
+    // lane masks, 16-bit integer values and zeroed upper store halfwords.
+    {
+        ee::s_ee_vu0_state state{};
+        ee::s_ee_vu0_ialu_engine engine{};
+        state.m_vpu_status = 1;
+        state.m_running = 1;
+        state.m_vi[1] = 1;                  // quadword base address
+        state.m_vi[2] = 0xabcd1234u;       // store source
+        state.m_vi[3] = 0xface0000u;       // load destination
+        install_vu0_pair(
+            &state, 0, make_vu0_memory(0x05u, 0xau, 2, 1, 1),
+            make_vu0_upper_nop()
+        );
+        install_vu0_pair(
+            &state, 1, make_vu0_memory(0x04u, 0xau, 3, 1, 1),
+            make_vu0_upper_nop()
+        );
+        const uint32_t result = ee::ee_vu0_execute_ialu_callback(
+            &engine, &cpu, &state, 2, ee::EE_VU0_EXECUTE_EXACT_CYCLES, 0
+        );
+        check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE),
+              "VU0 ISW/ILW execute through the bounded micro-engine");
+        check(state.m_data_memory[32] == 0x34u &&
+              state.m_data_memory[33] == 0x12u &&
+              state.m_data_memory[34] == 0 &&
+              state.m_data_memory[35] == 0 &&
+              state.m_data_memory[36] == 0 &&
+              state.m_data_memory[40] == 0x34u &&
+              state.m_data_memory[41] == 0x12u &&
+              state.m_data_memory[42] == 0 &&
+              state.m_data_memory[43] == 0,
+              "ISW honors XYZW lane mask and clears each stored word's upper half");
+        check(state.m_vi[3] == 0xface1234u,
+              "ILW loads the selected 16-bit lane and preserves upper VI bits");
+        check(state.m_ialu_count == 1 &&
+              state.m_ialu[0].m_register_mask == (1u << 3) &&
+              state.m_ialu[0].m_latency == 4,
+              "ILW reserves its destination for four cycles");
+    }
+    {
+        ee::s_ee_vu0_state state{};
+        ee::s_ee_vu0_ialu_engine engine{};
+        state.m_vpu_status = 1;
+        state.m_vi[1] = 0x100u;            // 0x100 * 16 wraps to data byte 0
+        state.m_data_memory[0] = 0x78u;
+        state.m_data_memory[1] = 0x56u;
+        install_vu0_pair(
+            &state, 0, make_vu0_memory(0x04u, 8u, 2, 1, 0),
+            make_vu0_upper_nop()
+        );
+        check(ee::ee_vu0_execute_ialu_callback(
+                  &engine, &cpu, &state, 1, ee::EE_VU0_EXECUTE_EXACT_CYCLES, 0
+              ) == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              state.m_vi[2] == 0x5678u,
+              "ILW wraps ordinary VU0 quadword addresses at 4 KB");
+
+        ee::s_ee_vu0_state mapped{};
+        mapped.m_vpu_status = 1;
+        mapped.m_vi[1] = 0x400;            // 0x400 * 16 is VU1 register window
+        install_vu0_pair(
+            &mapped, 0, make_vu0_memory(0x05u, 8u, 2, 1, 0),
+            make_vu0_upper_nop()
+        );
+        check(ee::ee_vu0_execute_ialu_callback(
+                  &engine, &cpu, &mapped, 1, ee::EE_VU0_EXECUTE_EXACT_CYCLES, 0
+              ) == static_cast<uint32_t>(e_ee_vu0_sync_result::UNAVAILABLE) &&
+              mapped.m_micro_pc == 0 && mapped.m_cycle == 0 &&
+              mapped.m_data_memory[0] == 0,
+              "VU1 mapped register-window stores fail closed without mutation");
     }
 
     std::printf("vu0_runtime_test: %d passed, %d failed\n", g_pass, g_fail);
