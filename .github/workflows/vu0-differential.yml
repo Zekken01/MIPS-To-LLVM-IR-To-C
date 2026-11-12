@@ -2,6 +2,9 @@ name: VU0 PCSX2 differential
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - src/runtime/ee_vu0.cpp
 
 permissions:
   contents: read
