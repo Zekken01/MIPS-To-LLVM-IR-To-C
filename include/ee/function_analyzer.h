@@ -18,6 +18,19 @@ std::set<uint32_t> collect_function_block_starts(
     const std::map<uint32_t, s_ee_instruction>& insns,
     const std::vector<uint32_t>& all_entries = {});
 
+// One JALR site observed by the static target analysis. The source value is
+// sampled before the JALR link write and before its delay-slot instruction.
+struct s_static_jalr_site
+{
+    uint32_t m_caller_entry = 0;
+    uint32_t m_pc = 0;
+    uint8_t m_source_register = 0;
+    bool m_source_known = false;
+    uint64_t m_source_value = 0;
+    uint32_t m_target = 0;
+    bool m_target_aligned = false;
+};
+
 // Recover JALR targets whose source register is provably constant on every
 // path through the caller CFG. Values that disagree at a merge are discarded.
 std::set<uint32_t> collect_static_jalr_targets(
