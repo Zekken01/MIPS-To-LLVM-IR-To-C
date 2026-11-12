@@ -355,7 +355,9 @@ e_ee_vu0_micro_opcode decode_lower_micro_opcode(uint32_t word)
     case 0x2e: return op::IBLEZ;
     case 0x2f: return op::IBGEZ;
 
-    case 0x3c:
+    // Lower1 uses the top-seven-bit selector 0x40 (bit 31 set), then
+    // dispatches the operation through the low six bits.
+    case 0x40:
         return decode_lower_secondary(word);
 
     default:
