@@ -208,8 +208,12 @@ bool ee_recomp(const char* elf_path,
 
         const std::set<uint32_t> block_starts =
             collect_function_block_starts(global_insns, entries);
+        std::vector<s_static_jalr_site> jalr_site_audit;
         const std::set<uint32_t> indirect_targets =
-            collect_static_jalr_targets(global_insns, entries, entries, &block_starts);
+            collect_static_jalr_targets(
+                global_insns, entries, entries, &block_starts,
+                &jalr_site_audit
+            );
         for (uint32_t target : indirect_targets)
         {
             if (loader.is_executable_address(target))
@@ -490,6 +494,39 @@ bool ee_recomp(const char* elf_path,
             os << "\"" << u32hex(target) << "\"";
         }
         os << "],\n";
+        os << "  \"jalr_sites\": [\n";
+        for (size_t i = 0; i < jalr_site_audit.size(); ++i)
+        {
+            const auto& site = jalr_site_audit[i];
+            const bool target_executable =
+                site.m_target_aligned &&
+                loader.is_executable_address(site.m_target);
+            const char* status = !site.m_source_known
+                ? "unknown_source"
+                : !site.m_target_aligned
+                    ? "invalid_target"
+                    : target_executable
+                        ? "resolved_executable"
+                        : "resolved_non_executable";
+
+            os << "    { \"caller_entry\": \""
+               << u32hex(site.m_caller_entry)
+               << "\", \"pc\": \"" << u32hex(site.m_pc)
+               << "\", \"source_register\": "
+               << static_cast<unsigned>(site.m_source_register)
+               << ", \"source_known\": "
+               << (site.m_source_known ? "true" : "false")
+               << ", \"source_value\": "
+               << site.m_source_value
+               << ", \"target\": \"" << u32hex(site.m_target)
+               << "\", \"target_aligned\": "
+               << (site.m_target_aligned ? "true" : "false")
+               << ", \"target_executable\": "
+               << (target_executable ? "true" : "false")
+               << ", \"status\": \"" << status << "\" }"
+               << (i + 1u < jalr_site_audit.size() ? "," : "") << "\n";
+        }
+        os << "  ],\n";
         os << "  \"jalr_only_entries\": [";
         size_t jalr_only_index = 0;
         for (uint32_t entry : jalr_only_entries)
