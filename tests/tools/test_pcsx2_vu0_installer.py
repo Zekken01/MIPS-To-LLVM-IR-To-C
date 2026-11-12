@@ -77,15 +77,15 @@ class PCSX2VU0InstallerTests(unittest.TestCase):
 
         self.assertIn(self.installer.CMAKE_INSERTION, installed_cmake)
         self.assertEqual(
-            (self.core_dir / self.installer.TEST_RELATIVE_PATH).read_bytes(),
+            (self.root / self.installer.TEST_RELATIVE_PATH).read_bytes(),
             self.adapter_source.read_bytes(),
         )
         self.assertEqual(
-            (self.core_dir / self.installer.FIXTURE_RELATIVE_PATH).read_bytes(),
+            (self.root / self.installer.FIXTURE_RELATIVE_PATH).read_bytes(),
             self.fixture_source.read_bytes(),
         )
         self.assertEqual(
-            (self.core_dir / self.installer.SHA256_RELATIVE_PATH).read_bytes(),
+            (self.root / self.installer.SHA256_RELATIVE_PATH).read_bytes(),
             self.sha256_source.read_bytes(),
         )
 
@@ -101,13 +101,13 @@ class PCSX2VU0InstallerTests(unittest.TestCase):
             self.cmake_path.read_text(encoding="utf-8"), original_cmake
         )
         self.assertFalse(
-            (self.core_dir / self.installer.TEST_RELATIVE_PATH).exists()
+            (self.root / self.installer.TEST_RELATIVE_PATH).exists()
         )
         self.assertFalse(
-            (self.core_dir / self.installer.FIXTURE_RELATIVE_PATH).exists()
+            (self.root / self.installer.FIXTURE_RELATIVE_PATH).exists()
         )
         self.assertFalse(
-            (self.core_dir / self.installer.SHA256_RELATIVE_PATH).exists()
+            (self.root / self.installer.SHA256_RELATIVE_PATH).exists()
         )
 
     def test_wrong_revision_is_rejected_without_mutation(self):
@@ -123,7 +123,7 @@ class PCSX2VU0InstallerTests(unittest.TestCase):
             self.cmake_path.read_text(encoding="utf-8"), original_cmake
         )
         self.assertFalse(
-            (self.core_dir / self.installer.TEST_RELATIVE_PATH).exists()
+            (self.root / self.installer.TEST_RELATIVE_PATH).exists()
         )
 
     def test_unexpected_cmake_layout_is_rejected(self):
@@ -135,7 +135,7 @@ class PCSX2VU0InstallerTests(unittest.TestCase):
             )
 
         self.assertFalse(
-            (self.core_dir / self.installer.TEST_RELATIVE_PATH).exists()
+            (self.root / self.installer.TEST_RELATIVE_PATH).exists()
         )
 
     def test_uninstall_refuses_unknown_cmake_mutation(self):
@@ -152,13 +152,13 @@ class PCSX2VU0InstallerTests(unittest.TestCase):
             self.installer.uninstall(self.root)
 
         self.assertTrue(
-            (self.core_dir / self.installer.TEST_RELATIVE_PATH).exists()
+            (self.root / self.installer.TEST_RELATIVE_PATH).exists()
         )
         self.assertTrue(
-            (self.core_dir / self.installer.FIXTURE_RELATIVE_PATH).exists()
+            (self.root / self.installer.FIXTURE_RELATIVE_PATH).exists()
         )
         self.assertTrue(
-            (self.core_dir / self.installer.SHA256_RELATIVE_PATH).exists()
+            (self.root / self.installer.SHA256_RELATIVE_PATH).exists()
         )
 
 
