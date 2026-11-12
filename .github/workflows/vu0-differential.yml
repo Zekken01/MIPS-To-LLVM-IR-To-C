@@ -106,6 +106,7 @@ jobs:
             -DUSE_LINKED_FFMPEG=ON \
             -DUSE_OPENGL=OFF \
             -DUSE_VULKAN=OFF \
+            -DX11_API=ON \
             -DWAYLAND_API=OFF \
             -DUSE_BACKTRACE=OFF
 
