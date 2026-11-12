@@ -280,9 +280,9 @@ int main()
         check(micro_state.m_micro_pc == 0x28u,
               "VU0 micro fetch advances PC by one 8-byte instruction");
 
-        // Lower primary 0x60 selects the secondary integer-ALU table;
-        // primary 0x60 with sub-op 0x3c selects T3_00.
-        const uint32_t lower_iadd = (0x60u << 25) | 0x30u;
+        // Lower primary 0x3c selects the secondary lower-op table;
+        // sub-op 0x3c within that table selects T3_00.
+        const uint32_t lower_iadd = (0x3cu << 25) | 0x30u;
         write_le32(&micro_state.m_micro_memory[0], lower_iadd);
         write_le32(&micro_state.m_micro_memory[4], 0);
         micro_state.m_micro_pc = 0;
@@ -295,7 +295,7 @@ int main()
         );
 
         const uint32_t lower_lqi =
-            (0x60u << 25) | (13u << 6) | 0x3cu;
+            (0x3cu << 25) | (13u << 6) | 0x3cu;
         write_le32(&micro_state.m_micro_memory[0], lower_lqi);
         micro_state.m_micro_pc = 0;
         check(
