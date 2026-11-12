@@ -167,6 +167,10 @@ if(Python3_Interpreter_FOUND)
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_vu0_trace_candidate.py
                 $<TARGET_FILE:ee_vu0_trace_candidate>
                 ${CMAKE_SOURCE_DIR}/tools/compare_vu0_traces.py)
+    add_test(NAME vu0_differential_driver_help
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tools/vu0_diff/run_differential.py
+                --help)
 endif()
 add_test(NAME decoder COMMAND ee_decoder_test)
 add_test(NAME dispatcher COMMAND ee_dispatcher_test)
