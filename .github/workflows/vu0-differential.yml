@@ -2,6 +2,9 @@ name: VU0 PCSX2 differential
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - tests/smoke/vu0_runtime_test.cpp
 
 permissions:
   contents: read
