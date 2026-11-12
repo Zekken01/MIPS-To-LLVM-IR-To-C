@@ -240,6 +240,18 @@ uint32_t make_vu0_memory(
            (static_cast<uint32_t>(immediate) & 0x07ffu);
 }
 
+uint32_t make_vu0_indexed_memory(
+    uint32_t secondary,
+    uint32_t xyzw,
+    uint32_t ft,
+    uint32_t fs
+)
+{
+    return (0x40u << 25) | ((xyzw & 0x0fu) << 21) |
+           ((ft & 0x1fu) << 16) | ((fs & 0x1fu) << 11) |
+           (13u << 6) | secondary;
+}
+
 uint32_t make_vu0_iaddiu(uint32_t it, uint32_t is, uint32_t immediate)
 {
     return (0x08u << 25) | (it << 16) | (is << 11) |
@@ -2471,6 +2483,108 @@ int main()
               state.m_data_memory[offset + 1u] == (overlap ? 0x56u : 0xefu),
               overlap ? "dependent SQ writes loaded VF lane after interlock" :
                         "disjoint SQ writes preserved VF lane without stall");
+    }
+
+    {
+        ee::s_ee_vu0_state state{};
+        ee::s_ee_cpu_state vector_cpu{};
+        ee::s_ee_vu0_ialu_engine ialu_engine{};
+        state.m_vpu_status = 1u;
+        state.m_vi[1] = 0xabcd0001u;
+        state.m_data_memory[16] = 0x78u;
+        state.m_data_memory[17] = 0x56u;
+        state.m_data_memory[18] = 0x34u;
+        state.m_data_memory[19] = 0x12u;
+        install_vu0_pair(
+            &state, 0, make_vu0_indexed_memory(0x3cu, 0x8u, 2, 1),
+            make_vu0_upper_nop()
+        ); // LQI VF2.x, (VI1)++
+        install_vu0_pair(
+            &state, 1, make_vu0_indexed_memory(0x3du, 0x8u, 1, 2),
+            make_vu0_upper_nop()
+        ); // SQI VF2.x, (VI1)++
+        const uint32_t result = ee::ee_vu0_execute_ialu_callback(
+            &ialu_engine, &vector_cpu, &state, 2,
+            ee::EE_VU0_EXECUTE_EXACT_CYCLES, 0x0010200cu
+        );
+        check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              state.m_cycle == 5 && state.m_micro_pc == 16,
+              "LQI to dependent SQI stalls on overlapping VF lane");
+        check(vector_cpu.m_vu0[2].m_lo == 0x12345678ull &&
+              state.m_vi[1] == 0xabcd0003u &&
+              state.m_data_memory[32] == 0x78u &&
+              state.m_data_memory[35] == 0x12u,
+              "LQI loads before increment and SQI stores before increment");
+        check(state.m_vi_backup_register == 1 &&
+              state.m_vi_backup_old_value == 1,
+              "indexed-memory VI backup preserves the original base");
+    }
+    {
+        ee::s_ee_vu0_state state{};
+        ee::s_ee_cpu_state vector_cpu{};
+        ee::s_ee_vu0_ialu_engine ialu_engine{};
+        state.m_vpu_status = 1u;
+        state.m_vi[1] = 2u;
+        state.m_vi[2] = 3u;
+        state.m_data_memory[16] = 0xabu;
+        vector_cpu.m_vu0[4].m_lo = 0x1122334455667788ull;
+        install_vu0_pair(
+            &state, 0, make_vu0_indexed_memory(0x3eu, 0x8u, 3, 1),
+            make_vu0_upper_nop()
+        ); // LQD VF3.x, --(VI1)
+        install_vu0_pair(
+            &state, 1, make_vu0_indexed_memory(0x3fu, 0x4u, 2, 4),
+            make_vu0_upper_nop()
+        ); // SQD VF4.y, --(VI2)
+        const uint32_t result = ee::ee_vu0_execute_ialu_callback(
+            &ialu_engine, &vector_cpu, &state, 2,
+            ee::EE_VU0_EXECUTE_EXACT_CYCLES, 0x0010200cu
+        );
+        check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              state.m_cycle == 2 && state.m_micro_pc == 16,
+              "LQD/SQD decrement independent VI bases without VF stall");
+        check(state.m_vi[1] == 1u && state.m_vi[2] == 2u &&
+              static_cast<uint32_t>(vector_cpu.m_vu0[3].m_lo) == 0xabu &&
+              state.m_data_memory[36] == 0x44u &&
+              state.m_data_memory[39] == 0x11u,
+              "LQD/SQD use decremented quadword addresses");
+    }
+    {
+        ee::s_ee_vu0_state state{};
+        ee::s_ee_cpu_state vector_cpu{};
+        ee::s_ee_vu0_ialu_engine ialu_engine{};
+        state.m_vpu_status = 1u;
+        state.m_vi[1] = 0x4001u;
+        install_vu0_pair(
+            &state, 0, make_vu0_indexed_memory(0x3eu, 0xfu, 3, 1),
+            make_vu0_upper_nop()
+        ); // LQD would decrement to VU1-mapped quadword 0x4000.
+        const uint32_t result = ee::ee_vu0_execute_ialu_callback(
+            &ialu_engine, &vector_cpu, &state, 1,
+            ee::EE_VU0_EXECUTE_EXACT_CYCLES, 0x0010200cu
+        );
+        check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::UNAVAILABLE) &&
+              state.m_vi[1] == 0x4001u && state.m_cycle == 0 &&
+              state.m_micro_pc == 0 && state.m_vi_backup_cycles == 0,
+              "VU1-mapped indexed-memory address fails before VI update");
+    }
+    {
+        ee::s_ee_vu0_state state{};
+        ee::s_ee_cpu_state vector_cpu{};
+        ee::s_ee_vu0_ialu_engine ialu_engine{};
+        state.m_vpu_status = 1u;
+        state.m_vi[1] = 7u;
+        install_vu0_pair(
+            &state, 0, make_vu0_indexed_memory(0x3cu, 0xfu, 0, 1),
+            make_vu0_upper_nop()
+        ); // LQI VF0 ignores the load but increments VI1.
+        const uint32_t result = ee::ee_vu0_execute_ialu_callback(
+            &ialu_engine, &vector_cpu, &state, 1,
+            ee::EE_VU0_EXECUTE_EXACT_CYCLES, 0x0010200cu
+        );
+        check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              state.m_vi[1] == 8u && vector_cpu.m_vu0[0].m_lo == 0,
+              "LQI VF0 suppresses vector writes without suppressing base update");
     }
 
     // The generic four-entry IALU interlock queue is used by lower
