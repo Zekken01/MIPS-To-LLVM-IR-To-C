@@ -140,3 +140,5 @@ Further changes should be committed to this branch in small, testable increments
 - Added positive and negative decoder cases for all four transfer forms.
 - GitHub Actions runs [43170109202](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43170109202) and [43170132717](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43170132717) were queued/in progress at the time of this note; verify their final results before treating this change as tested.
 - Next: build the VU0 runtime state and synchronization interface, then test the transfer helpers independently before allowing the lifter to emit them.
+
+- CI caught a mnemonic-table index error in the first patch (the compiler build passed; the decoder test reported two failures). Corrected the selector-to-name mapping in commit `f8762ed`; that commit's Actions result is pending.
