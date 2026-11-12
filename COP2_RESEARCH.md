@@ -131,9 +131,11 @@ The runtime sidecar and COP2 integration are now represented in source:
 - The transfer policy selector maps non-delay-slot transfers to catch-up-to-EE-cycle; delay-slot reads to finish-to-E; and delay-slot writes to wait-to-E-or-M.
 - VI0 is exposed as a hardwired zero register by the new read/write helpers.
 
-This remains a fetch and scheduling foundation, not a VU0 interpreter. The host engine must still decode and execute upper/lower operations, resolve dual-issue dependencies, maintain delayed writes and FMAC/FDIV/EFU pipelines, process branches and end flags, and update architectural state. Transfer forms are integrated into the LLVM path and remain guarded by missing/failed scheduler callbacks.
+The fetch path now also performs a table-driven **classification** of both micro-op halves. The lower half uses the 7-bit primary opcode (`word >> 25`); primary `0x3c` selects the lower secondary table, whose low-six-bit selector includes the IADD/ISUB/IADDI/IAND/IOR entries and four T3 sub-tables. Each T3 sub-table selects its operation with bits 10..6. The upper half uses the low-six-bit primary opcode; `0x3c..0x3f` select the four FD sub-tables, again indexed by bits 10..6. All other primary entries are decoded directly. Unassigned table slots return `UNKNOWN`.
 
-The `vu0_runtime_test` suite checks sidecar layout, VI0 behavior, micro fetch and wrap, flag decoding, transfer helpers, synchronization modes, callback state identity, error propagation, and fail-closed behaviour. Its mock-engine cases validate orchestration, not instruction semantics.
+The operation identities are based on PCSX2's VU0 tables in [`VUops.cpp`](https://github.com/PCSX2/pcsx2/blob/master/pcsx2/VUops.cpp). This is encoding classification only, not an execution implementation. The host engine must still resolve upper/lower dual-issue dependencies, maintain delayed VI/VF writes and FMAC/FDIV/EFU pipelines, process branches and end flags, and update architectural state. Transfer forms are integrated into the LLVM path and remain guarded by missing/failed scheduler callbacks. VU0 SPECIAL1/SPECIAL2 macro instructions remain unsupported.
+
+The `vu0_runtime_test` suite checks sidecar layout, VI0 behavior, micro fetch and wrap, I/E/M/D/T flags, lower/upper operand extraction, primary and secondary opcode classification, transfer helpers, synchronization modes, callback state identity, error propagation, and fail-closed behaviour. Its mock-engine cases validate orchestration and decode identities, not instruction semantics.
 
 
 ## Initial synchronized transfer helpers
