@@ -218,8 +218,6 @@ def main():
         temp_dir = pathlib.Path(directory)
 
         def init_qmfc(cpu, vu0):
-            cpu.gpr[8] = U128(0x0123456789abcdef, 0xfedcba9876543210)
-            cpu.gpr[8] = U128(0xaaaaaaaa55555555, 0xbbbbbbbb66666666)
             cpu.gpr[8] = U128(0, 0)
             cpu.vu0[6] = U128(0x0123456789abcdef, 0xfedcba9876543210)
 
@@ -282,7 +280,7 @@ def main():
             def init_delay(cpu, vu0):
                 cpu.gpr[8] = U128(0x1122334455667788, 0x99aabbccddeeff00)
                 vu0.vi[6] = 0x12345678
-                vu0.m_vi[6] = 0x12345678
+                vu0.vi[6] = 0x12345678
 
             result, cpu, vu0, sync, control, keep = run_guest(
                 fixture, temp_dir, target, mode, init_delay
@@ -298,8 +296,8 @@ def main():
             fixture, temp_dir, target, "qmtc2_after_addiu",
             init_qmtc_after_addiu
         )
-        require(vu0.vu0[6].lo == 0x1234 and
-                vu0.vu0[6].hi == 0x1020304050607080,
+        require(cpu.vu0[6].lo == 0x1234 and
+                cpu.vu0[6].hi == 0x1020304050607080,
                 "QMTC2 must observe preceding ADDIU after the GPR cache flush")
 
         result, cpu, vu0, sync, control, keep = run_guest(
@@ -322,7 +320,7 @@ def main():
         # helper's destination untouched.
         def init_failure(cpu, vu0):
             cpu.gpr[8] = U128(0xaaaaaaaa55555555, 0xbbbbbbbb66666666)
-            vu0.vu0[6] = U128(0x0123456789abcdef, 0xfedcba9876543210)
+            cpu.vu0[6] = U128(0x0123456789abcdef, 0xfedcba9876543210)
 
         result, cpu, vu0, sync, control, keep = run_guest(
             fixture, temp_dir, target, "qmfc2", init_failure,
