@@ -145,6 +145,9 @@ class VU0CandidateTraceTests(unittest.TestCase):
             self.assertEqual(final["vi"][29], 0)
             self.assertEqual(final["micro_pc"], 416)
             self.assertEqual(final["tpc"], 52)
+            # PCSX2 does not stall an ISW on ILW's IALU destination.
+            self.assertEqual(steps[40]["state"]["cycle"], 41)
+            self.assertEqual(steps[41]["state"]["cycle"], 42)
             self.assertEqual(final["cycle"], 47)
             self.assertNotEqual(
                 steps[38]["state"]["data_sha256"],
