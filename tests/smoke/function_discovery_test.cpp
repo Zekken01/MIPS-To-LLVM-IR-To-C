@@ -231,6 +231,74 @@ int main()
               "do not infer target after an unknown memory load");
     }
 
+    // A file-backed read from a readable, non-writable ET_EXEC segment can
+    // remain constant through LW and make a table-based JALR target static.
+    {
+        const std::vector<uint8_t> elf_bytes = make_static_data_elf();
+        ee::elf_loader image;
+        std::string error;
+        const bool loaded = image.load_buffer(
+            elf_bytes.data(), elf_bytes.size(), &error
+        );
+        uint32_t word = 0;
+        check(loaded && image.read32_const_at(0x2000, &word) &&
+              word == 0x00001020u,
+              "read file-backed word from immutable ELF segment");
+
+        std::map<uint32_t, ee::s_ee_instruction> insns;
+        add(insns, 0x1000, encode_ori(0, 8, 0x2000));
+        add(insns, 0x1004, encode_lw(8, 25, 0));
+        add(insns, 0x1008, encode_jalr(25));
+        add(insns, 0x100c, 0);
+        const auto targets = recover(insns, 0x1000, &image);
+        check(targets == std::set<uint32_t>{0x00001020u},
+              "recover JALR target loaded from immutable ELF data");
+    }
+
+    // Writable globals are never treated as constants, even when their
+    // on-disk contents look like valid function pointers.
+    {
+        const std::vector<uint8_t> elf_bytes = make_static_data_elf();
+        ee::elf_loader image;
+        std::string error;
+        const bool loaded = image.load_buffer(
+            elf_bytes.data(), elf_bytes.size(), &error
+        );
+        uint32_t word = 0;
+        check(loaded && !image.read32_const_at(0x3000, &word),
+              "reject pointer data in writable ELF segment");
+
+        std::map<uint32_t, ee::s_ee_instruction> insns;
+        add(insns, 0x1100, encode_ori(0, 8, 0x3000));
+        add(insns, 0x1104, encode_lw(8, 25, 0));
+        add(insns, 0x1108, encode_jalr(25));
+        add(insns, 0x110c, 0);
+        check(recover(insns, 0x1100, &image).empty(),
+              "keep writable-global JALR target dynamic");
+    }
+
+    // The memory tail of a PT_LOAD segment is BSS, not file-backed data.
+    // It must not be mistaken for the zero-filled bytes in the current ELF.
+    {
+        const std::vector<uint8_t> elf_bytes = make_static_data_elf();
+        ee::elf_loader image;
+        std::string error;
+        const bool loaded = image.load_buffer(
+            elf_bytes.data(), elf_bytes.size(), &error
+        );
+        uint32_t word = 0;
+        check(loaded && !image.read32_const_at(0x2004, &word),
+              "reject uninitialized BSS words from static memory analysis");
+
+        std::map<uint32_t, ee::s_ee_instruction> insns;
+        add(insns, 0x1200, encode_ori(0, 8, 0x2004));
+        add(insns, 0x1204, encode_lw(8, 25, 0));
+        add(insns, 0x1208, encode_jalr(25));
+        add(insns, 0x120c, 0);
+        check(recover(insns, 0x1200, &image).empty(),
+              "keep BSS-derived JALR target unknown");
+    }
+
     // Two CFG paths reaching JALR with different constants must merge to
     // unknown; seeing either individual path is not enough to report a target.
     {
