@@ -102,7 +102,7 @@ the normal PCSX2 core test suite does not write files. The focused issue-order
 tests still run normally.
 
 The comparator checks program identity, initial state, executed pair PC,
-lower/upper instruction words, all 32 VI values, cycle count, branch/delay
+lower/upper instruction words, all 32 VI values, all 32 four-lane VF values, cycle count, branch/delay
 state, VI backup state, E/M state and running status. It reports every
 architectural difference and returns nonzero when traces differ.
 
@@ -111,8 +111,12 @@ architectural difference and returns nonzero when traces differ.
 This fixture executes 49 pairs from a 56-pair program and covers the lower
 scalar integer/branch subset plus ordinary VU0 ILW/ISW and masked LQ/SQ memory operations,
 with upper NOP. The comparator checks all 4 KB of VU0 data memory using a
-SHA-256 digest and all 32 VF register lane patterns after each pair. The pinned 45-pair comparison passed in
-differential run #9 (47 cycles). The new 49-pair fixture has not yet been
-confirmed against the pinned interpreter. Memory-mapped VU1 register accesses, other
-VU memory operations, upper vector instructions, dual-issue dependencies,
-VF forwarding and FMAC/FDIV/EFU pipelines remain out of scope.
+SHA-256 digest and all 32 VF register lane patterns after each pair.
+The earlier pinned 45-pair comparison passed in differential run #9
+(47 cycles); the expanded 49-pair LQ/SQ comparison passed in
+[run 43316781870](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43316781870)
+(51 cycles). Memory-mapped VU1 register accesses, other VU memory
+operations, upper vector instructions, dual-issue dependencies, VF
+forwarding, general VF stalls, and full FMAC/FDIV/EFU pipelines remain
+out of scope. Only ordinary LQ/SQ's four-cycle FMAC completion deadline
+at E termination is currently modeled.
