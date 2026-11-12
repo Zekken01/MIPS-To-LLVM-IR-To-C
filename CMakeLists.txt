@@ -69,6 +69,13 @@ add_executable(ee_multi_test
 )
 target_link_libraries(ee_multi_test PRIVATE ee_core)
 
+# Function entry discovery, including conservative CFG constant propagation
+# for static JALR call targets.
+add_executable(ee_function_discovery_test
+    tests/smoke/function_discovery_test.cpp
+)
+target_link_libraries(ee_function_discovery_test PRIVATE ee_core)
+
 # Host-side PC-based dispatcher regression tests.
 add_executable(ee_dispatcher_test tests/smoke/dispatcher_test.cpp)
 target_link_libraries(ee_dispatcher_test PRIVATE ee_core)
@@ -151,6 +158,7 @@ add_test(NAME decoder COMMAND ee_decoder_test)
 add_test(NAME dispatcher COMMAND ee_dispatcher_test)
 add_test(NAME vu0_runtime COMMAND ee_vu0_runtime_test)
 add_test(NAME multi_function COMMAND ee_multi_test)
+add_test(NAME function_discovery COMMAND ee_function_discovery_test)
 add_test(NAME smoke COMMAND ee_smoke_test)
 add_test(NAME mmi_ops COMMAND ee_mmi_ops_test)
 if(EE_HAVE_LLVM_JIT_TEST)
