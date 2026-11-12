@@ -177,6 +177,8 @@ def main(argv=None):
     parser.add_argument("--trace", action="store_true")
     parser.add_argument("--report", type=Path,
                         help="Save structured EE stop state and last 64 native dispatches as JSON")
+    parser.add_argument("--kseg-ram", action="store_true",
+                        help="Map EE KSEG0/KSEG1 RAM mirrors (not MMIO or TLB)")
     parser.add_argument("--hle-startup", action="store_true",
                         help="Experimental SetupThread and SetupHeap HLE")
     parser.add_argument("--no-recompile", action="store_true",
@@ -265,6 +267,8 @@ def main(argv=None):
             command.append(f"--report={report_path}")
         if args.hle_startup:
             command.append("--hle-startup")
+        if args.kseg_ram:
+            command.append("--kseg-ram")
 
         ranges = executable_segments(elf) if args.auto_expand else []
         for replay in range(args.auto_expand + 1):
