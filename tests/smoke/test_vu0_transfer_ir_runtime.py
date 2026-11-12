@@ -63,9 +63,15 @@ class VU0State(ctypes.Structure):
         ("running", ctypes.c_uint32),
         ("e_bit", ctypes.c_uint32),
         ("m_bit", ctypes.c_uint32),
+        ("_padding_before_memories", ctypes.c_uint32),
         ("data_memory", ctypes.c_uint8 * 0x1000),
         ("micro_memory", ctypes.c_uint8 * 0x1000),
     ]
+
+
+assert VU0State.data_memory.offset == 240
+assert VU0State.micro_memory.offset == 4336
+assert ctypes.sizeof(VU0State) == 8432
 
 
 class Runtime(ctypes.Structure):
