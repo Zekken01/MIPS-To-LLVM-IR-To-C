@@ -1054,6 +1054,13 @@ int main()
             const uint16_t source_t = it == 0
                 ? 0u : static_cast<uint16_t>(reference_vi[it]);
 
+            // PCSX2 ages the previous VI-backup window after pipe stalls
+            // and before executing the current lower operation.
+            if (reference_backup_cycles != 0)
+            {
+                --reference_backup_cycles;
+            }
+
             switch (operation)
             {
             case 0:
@@ -1125,9 +1132,8 @@ int main()
                 break;
             }
 
-            // PCSX2 retains the old low halfword through the current
-            // lower operation, then ages the backup window by the cycles
-            // consumed by this pair (including any lower-pipe stall).
+            // The lower operation captures the old low halfword after
+            // this pair's previous backup window has aged.
             if (destination != 0)
             {
                 if (reference_backup_cycles == 0 ||
@@ -1141,11 +1147,6 @@ int main()
                 reference_vi[destination] =
                     (reference_vi[destination] & 0xffff0000u) | result_value;
             }
-            if (reference_backup_cycles != 0)
-            {
-                --reference_backup_cycles;
-            }
-
             install_vu0_pair(&actual, step, lower, make_vu0_upper_nop());
             const uint32_t execute_result = ee::ee_vu0_execute_ialu_callback(
                 &ialu_engine, &cpu, &actual, 1,
@@ -1348,9 +1349,9 @@ int main()
             if (step == 15u)
             {
                 // Force the first conditional branch to interlock on VI1.
-                // It must sample the one-cycle VI-backup value before the
-                // three-cycle reservation completes, even though this
-                // callback was given an exact one-cycle execution budget.
+                // The three-cycle reservation outlasts the one-cycle backup,
+                // so the lower handler must compare current VI values after
+                // the stall, despite this one-cycle execution budget.
                 actual.m_vi[1] =
                     (actual.m_vi[1] & 0xffff0000u) | 0u;
                 actual.m_vi[2] =
@@ -1381,6 +1382,21 @@ int main()
 
             reference_pc = (reference_pc + 8u) & 0x0fffu;
             reference_cycle += pair_elapsed_cycles;
+
+            // PCSX2 applies lower-pipe stalls and retires matured pipes
+            // before aging VIBackupCycles and invoking the lower handler.
+            // Age by the full elapsed issue interval before evaluating a
+            // branch predicate or capturing a fresh IALU-write backup.
+            if (pair_elapsed_cycles >= reference_backup_cycles)
+            {
+                reference_backup_cycles = 0;
+            }
+            else if (reference_backup_cycles != 0)
+            {
+                reference_backup_cycles -= static_cast<uint32_t>(
+                    pair_elapsed_cycles
+                );
+            }
 
             const uint32_t primary = lower >> 25;
             const uint32_t it = (lower >> 16) & 0x0fu;
@@ -1644,18 +1660,6 @@ int main()
                 }
             }
 
-            // PCSX2 ages backup after lower issue and lower-pipe stalls.
-            if (pair_elapsed_cycles >= reference_backup_cycles)
-            {
-                reference_backup_cycles = 0;
-            }
-            else if (reference_backup_cycles != 0)
-            {
-                reference_backup_cycles -= static_cast<uint32_t>(
-                    pair_elapsed_cycles
-                );
-            }
-
             // Branch retirement follows the pair's lower operation.
             if (reference_branch != 0)
             {
@@ -1850,8 +1854,8 @@ int main()
               static_cast<uint16_t>(state.m_vi[1]) == 0x1234u &&
               state.m_vi_backup_register == 1 &&
               static_cast<uint16_t>(state.m_vi_backup_old_value) == 7u &&
-              state.m_vi_backup_cycles == 1,
-              "VU0 IALU write ages its new VI backup to one cycle after issue");
+              state.m_vi_backup_cycles == 2,
+              "VU0 IALU write starts a fresh two-cycle VI backup after issue");
     }
     {
         ee::s_ee_vu0_state state{};
@@ -2116,16 +2120,15 @@ int main()
               state.m_cycle == 2 && state.m_micro_pc == 16 &&
               state.m_branch == 0 && static_cast<uint16_t>(state.m_vi[1]) == 0,
               "VU0 conditional branch sees the backed-up VI value in its hazard window");
-        check(state.m_vi_backup_cycles == 0 &&
+        check(state.m_vi_backup_cycles == 1 &&
               state.m_vi_backup_register == 1 &&
               static_cast<uint16_t>(state.m_vi_backup_old_value) == 1,
-              "VU0 VI backup expires after the branch has sampled its final visible cycle");
+              "VU0 branch consumes one cycle of the backed-up value's two-cycle window");
     }
     {
-        // PCSX2 evaluates the lower branch before _vuTestLowerStalls(), then
-        // ages VIBackupCycles by the full elapsed issue/stall cycles. The
-        // branch must therefore use the backed-up value even when its source
-        // reservation forces the branch pair to stall past backup expiry.
+        // PCSX2 applies the lower-pipe interlock and ages VIBackupCycles
+        // before invoking the branch handler. A three-cycle stall therefore
+        // expires this one-cycle backup before IBEQ reads its operands.
         ee::s_ee_vu0_state state{};
         ee::s_ee_vu0_ialu_engine ialu_engine{};
         state.m_vpu_status = 1u;
@@ -2147,17 +2150,18 @@ int main()
         check(scheduled == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
               result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
               state.m_cycle == 13 && state.m_micro_pc == 8 &&
-              state.m_branch == 0 && state.m_ialu_count == 0,
-              "VU0 branch read interlock finishes its issued pair beyond a one-cycle budget");
+              state.m_branch == 1 && state.m_branch_pc == 24 &&
+              state.m_ialu_count == 0,
+              "VU0 branch reads current VI after a three-cycle interlock expires the backup");
         check(state.m_vi_backup_cycles == 0,
-              "VU0 VI backup expires after the stalled branch issue");
+              "VU0 VI backup expires before the stalled branch handler executes");
     }
     {
         // Both operands of IBEQ have independent pending reservations with
-        // different completion cycles. The predicate is sampled before the
-        // stall from VIBackup/VI, while execution waits for the later of the
-        // two matching reservations. A two-cycle slice budget must still
-        // finish the issued pair atomically when the dependency takes longer.
+        // different completion cycles. Execution waits for the later of the
+        // two matching reservations, then ages the backup window before the
+        // branch handler reads VI. A two-cycle slice budget must still finish
+        // the issued pair atomically when the dependency takes longer.
         ee::s_ee_vu0_state state{};
         ee::s_ee_vu0_ialu_engine ialu_engine{};
         state.m_vpu_status = 1u;
@@ -2185,7 +2189,7 @@ int main()
               scheduled_second == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
               result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
               state.m_cycle == 25 && state.m_micro_pc == 8 && state.m_tpc == 1 &&
-              state.m_branch == 1 && state.m_branch_pc == 24 &&
+              state.m_branch == 0 && state.m_branch_pc == 0 &&
               state.m_ialu_count == 0,
               "VU0 branch waits for the latest matching source reservation beyond a two-cycle budget");
         check(state.m_vi_backup_cycles == 0 &&
@@ -2193,7 +2197,7 @@ int main()
               static_cast<uint16_t>(state.m_vi_backup_old_value) == 1 &&
               static_cast<uint16_t>(state.m_vi[1]) == 0 &&
               static_cast<uint16_t>(state.m_vi[2]) == 1,
-              "VU0 branch samples both operands before the five-cycle stall and expires backup afterward");
+              "VU0 branch reads current VI after the five-cycle stall expires the backup");
     }
     {
         ee::s_ee_vu0_state state{};
