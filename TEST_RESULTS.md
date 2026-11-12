@@ -187,3 +187,18 @@ LLVM validation on the newly emitted 7,849 modules:
 - Aggregate in-memory host object bytes: **34,756,008**.
 
 As before, the in-memory llvmlite object-generation test does not implement the project's `object_emitter::emit_object()`, write/link a per-function object set, or produce a runnable game executable.
+
+
+## 2026-11-12 — Supported COP1-S and transfer/control-flow JIT validation
+
+GitHub Actions run [43125195580](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43125195580), commit `ce5f3522b515a3f5bd5689bd94fb53d30d789a75`:
+
+- Clean configure: PASS.
+- Clean build: PASS.
+- CTest: **12/12 PASS**.
+- `fpu_compare_ir_runtime` covers the supported R5900 COP1 scalar table: transfers/control transfers, FCC0 comparisons, arithmetic, square root/reciprocal square root, min/max, sign operations, conversions, and accumulator variants.
+- Transfer coverage verifies MFC1 sign extension, MTC1 low-word transfer, CFC1 FCSR read/sign extension, CTC1 FCSR write, upper GPR preservation, and cross-block CTC1 source liveness.
+- BC1 control-flow coverage verifies condition sampling before an ordinary delay slot changes FCSR and branch-likely annulment when BC1FL is not taken.
+- Existing decoder, dispatcher, native object emission/link, MMI and delay-slot suites also passed.
+
+The C++ implementation and JIT tests are validated for the covered instruction cases. This does not establish full EE/FPU equivalence or a complete bootable game. VU0/COP2 remains unsupported pending the state and synchronization foundation documented in `COP2_RESEARCH.md`.
