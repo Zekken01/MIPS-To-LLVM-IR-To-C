@@ -377,9 +377,10 @@ int main()
         check(
             ee::ee_vu0_fetch_micro_instruction(&micro_state, &instruction) ==
                 static_cast<uint32_t>(ee::e_ee_vu0_sync_result::COMPLETE) &&
+            instruction.m_lower_fields.m_opcode == 0x40u &&
             instruction.m_lower_fields.m_operation ==
                 ee::e_ee_vu0_micro_opcode::IADD,
-            "VU0 lower secondary table classifies IADD"
+            "VU0 lower1 selector and secondary table classify IADD"
         );
 
         const uint32_t lower_lqi =
@@ -389,9 +390,10 @@ int main()
         check(
             ee::ee_vu0_fetch_micro_instruction(&micro_state, &instruction) ==
                 static_cast<uint32_t>(ee::e_ee_vu0_sync_result::COMPLETE) &&
+            instruction.m_lower_fields.m_opcode == 0x40u &&
             instruction.m_lower_fields.m_operation ==
                 ee::e_ee_vu0_micro_opcode::LQI,
-            "VU0 lower T3_00 table classifies LQI"
+            "VU0 lower1 T3_00 table classifies LQI"
         );
 
         write_le32(&micro_state.m_micro_memory[0], 0x7fu << 25);
