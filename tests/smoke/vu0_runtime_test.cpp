@@ -184,6 +184,52 @@ void write_le32(uint8_t* destination, uint32_t value)
     destination[3] = static_cast<uint8_t>(value >> 24);
 }
 
+uint32_t make_vu0_upper_nop(uint32_t raw_flags = 0)
+{
+    return (0x3fu | (11u << 6) | raw_flags);
+}
+
+uint32_t make_vu0_ialu_3r(
+    uint32_t secondary,
+    uint32_t it,
+    uint32_t is,
+    uint32_t id
+)
+{
+    return (0x3cu << 25) | (it << 16) | (is << 11) |
+           (id << 6) | secondary;
+}
+
+uint32_t make_vu0_iaddi(uint32_t it, uint32_t is, int32_t immediate)
+{
+    return (0x3cu << 25) | (it << 16) | (is << 11) |
+           ((static_cast<uint32_t>(immediate) & 0x1fu) << 6) | 0x32u;
+}
+
+uint32_t make_vu0_iaddiu(uint32_t it, uint32_t is, uint32_t immediate)
+{
+    return (0x08u << 25) | (it << 16) | (is << 11) |
+           ((immediate & 0x7800u) << 10) | (immediate & 0x07ffu);
+}
+
+uint32_t make_vu0_isubiu(uint32_t it, uint32_t is, uint32_t immediate)
+{
+    return (0x09u << 25) | (it << 16) | (is << 11) |
+           ((immediate & 0x7800u) << 10) | (immediate & 0x07ffu);
+}
+
+void install_vu0_pair(
+    ee::s_ee_vu0_state* vu0,
+    uint32_t slot,
+    uint32_t lower,
+    uint32_t upper
+)
+{
+    const uint32_t byte_pc = slot * 8u;
+    write_le32(&vu0->m_micro_memory[byte_pc], lower);
+    write_le32(&vu0->m_micro_memory[byte_pc + 4u], upper);
+}
+
 int g_pass = 0;
 int g_fail = 0;
 
@@ -923,6 +969,128 @@ int main()
         check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::FAILED) &&
               engine.m_run_calls == 2,
               "finish-to-E enforces the configured execution-call budget");
+    }
+
+    // Execute the conservative lower-IALU/upper-NOP subset through the
+    // same callback shape used by the VU scheduler.
+    {
+        ee::s_ee_vu0_state state{};
+        ee::s_ee_vu0_ialu_engine ialu_engine{};
+        state.m_vpu_status = 1u;
+        state.m_vi[1] = 0xabcd0000u; // Preserve VI[1].SS[1] on low-halfword writes.
+        state.m_vi[0] = 0xdeadbeefu; // Reads are hardwired to zero; writes ignored.
+
+        install_vu0_pair(&state, 0, make_vu0_iaddiu(1, 0, 0x1234), make_vu0_upper_nop());
+        install_vu0_pair(&state, 1, make_vu0_iaddi(2, 1, -3), make_vu0_upper_nop());
+        install_vu0_pair(&state, 2, make_vu0_ialu_3r(0x30, 2, 1, 3), make_vu0_upper_nop());
+        install_vu0_pair(&state, 3, make_vu0_ialu_3r(0x31, 2, 3, 4), make_vu0_upper_nop());
+        install_vu0_pair(&state, 4, make_vu0_ialu_3r(0x34, 1, 3, 5), make_vu0_upper_nop());
+        install_vu0_pair(&state, 5, make_vu0_ialu_3r(0x35, 2, 3, 6), make_vu0_upper_nop());
+        install_vu0_pair(&state, 6, make_vu0_isubiu(7, 6, 0x0123), make_vu0_upper_nop());
+        install_vu0_pair(&state, 7, make_vu0_ialu_3r(0x30, 1, 2, 0), make_vu0_upper_nop());
+
+        const uint32_t result = ee::ee_vu0_execute_ialu_callback(
+            &ialu_engine, &cpu, &state, 8,
+            ee::EE_VU0_EXECUTE_EXACT_CYCLES |
+                ee::EE_VU0_EXECUTE_STOP_AT_E,
+            0x00102000u
+        );
+        check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE),
+              "VU0 IALU slice executes an exact instruction budget");
+        check(static_cast<uint16_t>(state.m_vi[1]) == 0x1234u &&
+              (state.m_vi[1] & 0xffff0000u) == 0xabcd0000u,
+              "IADDIU writes low VI halfword and preserves the upper halfword");
+        check(static_cast<uint16_t>(state.m_vi[2]) == 0x1231u,
+              "IADDI sign-extends its five-bit immediate");
+        check(static_cast<uint16_t>(state.m_vi[3]) == 0x2465u,
+              "IADD uses the encoded VI source and destination fields");
+        check(static_cast<uint16_t>(state.m_vi[4]) == 0x1234u,
+              "ISUB computes a wrapped 16-bit result");
+        check(static_cast<uint16_t>(state.m_vi[5]) == 0x0024u,
+              "IAND computes the low 16-bit integer result");
+        check(static_cast<uint16_t>(state.m_vi[6]) == 0x3675u,
+              "IOR computes the low 16-bit integer result");
+        check(static_cast<uint16_t>(state.m_vi[7]) == 0x3552u,
+              "ISUBIU uses the encoded unsigned 15-bit immediate");
+        check(state.m_vi[0] == 0xdeadbeefu,
+              "VU0 IALU ignores writes to VI0");
+        check(state.m_cycle == 8 && state.m_micro_pc == 64 && state.m_tpc == 8 &&
+              state.m_ialu_count == 0,
+              "IALU slice advances cycles, byte PC, TPC and retires prior reservations");
+    }
+    {
+        ee::s_ee_vu0_state state{};
+        ee::s_ee_vu0_ialu_engine ialu_engine{};
+        state.m_vpu_status = 1u;
+        install_vu0_pair(&state, 0, make_vu0_iaddiu(1, 0, 1),
+                         make_vu0_upper_nop(0x20000000u)); // M flag
+
+        const uint32_t result = ee::ee_vu0_execute_ialu_callback(
+            &ialu_engine, &cpu, &state, 10,
+            ee::EE_VU0_EXECUTE_STOP_AT_M, 0x00102004u
+        );
+        check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              state.m_m_bit == 1 && state.m_cycle == 1 &&
+              state.m_micro_pc == 8 && (state.m_vpu_status & 1u) != 0,
+              "VU0 IALU slice stops after the M-flagged pair when requested");
+        check(state.m_ialu_count == 1,
+              "M-bit stop preserves the outstanding IALU destination reservation");
+    }
+    {
+        ee::s_ee_vu0_state state{};
+        ee::s_ee_vu0_ialu_engine ialu_engine{};
+        state.m_vpu_status = 1u;
+        install_vu0_pair(&state, 0, make_vu0_iaddiu(1, 0, 1),
+                         make_vu0_upper_nop(0x40000000u)); // E flag
+        install_vu0_pair(&state, 1, make_vu0_iaddiu(2, 0, 2),
+                         make_vu0_upper_nop());
+        install_vu0_pair(&state, 2, make_vu0_iaddiu(3, 0, 3),
+                         make_vu0_upper_nop());
+
+        const uint32_t result = ee::ee_vu0_execute_ialu_callback(
+            &ialu_engine, &cpu, &state, 10,
+            ee::EE_VU0_EXECUTE_STOP_AT_E, 0x00102008u
+        );
+        check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
+              state.m_cycle == 3 && state.m_micro_pc == 16 && state.m_tpc == 2,
+              "E flag terminates after its two-instruction delay and flushes IALU");
+        check((state.m_vpu_status & 1u) == 0 && state.m_running == 0 &&
+              state.m_e_bit == 0 && state.m_ialu_count == 0,
+              "E termination clears VU0 running state and retires pending IALU writes");
+        check(static_cast<uint16_t>(state.m_vi[1]) == 1 &&
+              static_cast<uint16_t>(state.m_vi[2]) == 2 &&
+              static_cast<uint16_t>(state.m_vi[3]) == 0,
+              "E delay executes one following pair but not the subsequent pair");
+    }
+    {
+        ee::s_ee_vu0_state state{};
+        ee::s_ee_vu0_ialu_engine ialu_engine{};
+        state.m_vpu_status = 1u;
+        install_vu0_pair(&state, 0, make_vu0_iaddiu(1, 0, 1), make_vu0_upper_nop());
+
+        const uint32_t result = ee::ee_vu0_execute_ialu_callback(
+            &ialu_engine, &cpu, &state, 4,
+            ee::EE_VU0_EXECUTE_EXACT_CYCLES, 0x0010200cu
+        );
+        check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::UNAVAILABLE) &&
+              state.m_micro_pc == 0 && state.m_cycle == 0 &&
+              state.m_vi[1] == 0,
+              "unsupported lower operation leaves the pair unconsumed");
+    }
+    {
+        ee::s_ee_vu0_state state{};
+        ee::s_ee_vu0_ialu_engine ialu_engine{};
+        state.m_vpu_status = 1u;
+        install_vu0_pair(&state, 0, make_vu0_iaddiu(1, 0, 1), 0x00000000u);
+
+        const uint32_t result = ee::ee_vu0_execute_ialu_callback(
+            &ialu_engine, &cpu, &state, 1,
+            ee::EE_VU0_EXECUTE_EXACT_CYCLES, 0x00102010u
+        );
+        check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::UNAVAILABLE) &&
+              state.m_micro_pc == 0 && state.m_cycle == 0 &&
+              state.m_vi[1] == 0,
+              "unsupported upper operation leaves the pair unconsumed");
     }
 
     // Integer ALU reservations model the VU's four-deep destination
