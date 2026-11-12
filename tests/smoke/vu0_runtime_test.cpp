@@ -176,6 +176,26 @@ ee::s_ee_vu0_scheduler make_mock_vu0_scheduler(s_mock_vu0_engine* engine)
     return scheduler;
 }
 
+uint32_t mock_ialu_vu1_catch_up(
+    void*,
+    ee::s_ee_cpu_state*,
+    ee::s_ee_vu0_state*,
+    uint32_t
+)
+{
+    return static_cast<uint32_t>(ee::e_ee_vu0_sync_result::COMPLETE);
+}
+
+void mock_ialu_schedule_event(
+    void*,
+    ee::s_ee_cpu_state*,
+    ee::s_ee_vu0_state*,
+    uint32_t,
+    uint32_t
+)
+{
+}
+
 void write_le32(uint8_t* destination, uint32_t value)
 {
     destination[0] = static_cast<uint8_t>(value);
@@ -1027,14 +1047,59 @@ int main()
 
         const uint32_t result = ee::ee_vu0_execute_ialu_callback(
             &ialu_engine, &cpu, &state, 10,
-            ee::EE_VU0_EXECUTE_STOP_AT_M, 0x00102004u
+            ee::EE_VU0_EXECUTE_EXACT_CYCLES, 0x00102004u
         );
         check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE) &&
               state.m_m_bit == 1 && state.m_cycle == 1 &&
               state.m_micro_pc == 8 && (state.m_vpu_status & 1u) != 0,
-              "VU0 IALU slice stops after the M-flagged pair when requested");
+              "VU0 engine slice returns at M even without a wait-at-M request");
         check(state.m_ialu_count == 1,
               "M-bit stop preserves the outstanding IALU destination reservation");
+    }
+    {
+        // M ends one interpreter Execute() slice, not a FINISH_TO_E wait.
+        // The scheduler resumes a fresh slice, then observes E after its delay.
+        ee::s_ee_vu0_state state{};
+        ee::s_ee_vu0_ialu_engine ialu_engine{};
+        ee::s_ee_vu0_scheduler scheduler{};
+        scheduler.m_user = &ialu_engine;
+        scheduler.m_execute = ee::ee_vu0_execute_ialu_callback;
+        scheduler.m_vu1_catch_up = mock_ialu_vu1_catch_up;
+        scheduler.m_schedule_event = mock_ialu_schedule_event;
+        scheduler.m_max_run_calls = 8;
+
+        state.m_vpu_status = 1u;
+        state.m_ee_cycle = 20;
+        install_vu0_pair(&state, 0, make_vu0_iaddiu(1, 0, 1),
+                         make_vu0_upper_nop(0x20000000u)); // M
+        install_vu0_pair(&state, 1, make_vu0_iaddiu(2, 0, 2),
+                         make_vu0_upper_nop());
+        install_vu0_pair(&state, 2, make_vu0_iaddiu(3, 0, 3),
+                         make_vu0_upper_nop(0x40000000u)); // E
+        install_vu0_pair(&state, 3, make_vu0_iaddiu(4, 0, 4),
+                         make_vu0_upper_nop()); // E delay
+        install_vu0_pair(&state, 4, make_vu0_iaddiu(5, 0, 5),
+                         make_vu0_upper_nop()); // Must not execute.
+
+        const uint32_t result = ee::ee_vu0_scheduler_sync_callback(
+            &scheduler, &cpu, &state,
+            static_cast<uint32_t>(e_ee_vu0_sync_mode::FINISH_TO_E),
+            0x00102006u
+        );
+        check(result == static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE),
+              "finish-to-E resumes after M and completes at E");
+        check(state.m_cycle == 4 && state.m_ee_cycle == 24 &&
+              state.m_micro_pc == 32,
+              "finish-to-E counts both slices and preserves the E delay pair");
+        check(static_cast<uint16_t>(state.m_vi[1]) == 1 &&
+              static_cast<uint16_t>(state.m_vi[2]) == 2 &&
+              static_cast<uint16_t>(state.m_vi[3]) == 3 &&
+              static_cast<uint16_t>(state.m_vi[4]) == 4 &&
+              static_cast<uint16_t>(state.m_vi[5]) == 0,
+              "finish-to-E resumes after M and stops after the E delay");
+        check((state.m_vpu_status & 1u) == 0 && state.m_m_bit == 0 &&
+              state.m_ialu_count == 0,
+              "finish-to-E clears running state and flushes pending IALU writes");
     }
     {
         ee::s_ee_vu0_state state{};
