@@ -96,7 +96,7 @@ private:
                     uint32_t fallthrough_pc = 0,
                     bool is_terminator = false);
     void emit_insn(const ee::s_ee_instruction& ins, bool is_last_in_block,
-                   uint32_t fallthrough_pc);
+                   uint32_t fallthrough_pc, bool in_delay_slot = false);
     void emit_mmi_insn(const ee::s_ee_instruction& ins);
 
     // IR text optimisation passes (Phase 7). Operates on the emitted LLVM IR
