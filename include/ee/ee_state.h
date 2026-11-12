@@ -80,6 +80,19 @@ struct alignas(16) s_ee_vu0_state
     // including stores with no VF destination. Track the latest completion
     // for E-bit flush accounting in this conservative memory-only slice.
     uint64_t m_vf_memory_ready_cycle;
+
+    // Four in-flight lower-memory FMAC issues. VF writes are immediately
+    // visible, but subsequent reads of overlapping lanes must wait until
+    // the writing issue's four-cycle reservation matures.
+    struct s_vf_memory_issue
+    {
+        uint64_t m_ready_cycle;
+        uint32_t m_register;
+        uint32_t m_lane_mask;
+    };
+
+    s_vf_memory_issue m_vf_memory_issues[4];
+    uint32_t m_vf_memory_issue_index;
 };
 
 // Architectural EE CPU state. GPRs are 128 bits wide in the lifter (i128);
