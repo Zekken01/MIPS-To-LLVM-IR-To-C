@@ -209,3 +209,14 @@ Further changes should be committed to this branch in small, testable increments
 - Expanded the Python JIT harness's `VU0State` mirror with the two memories and explicit 16-byte padding, including offset/size assertions (`data_memory=240`, `micro_memory=4336`, `sizeof=8432`).
 - GitHub Actions [run 43183141780](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43183141780): clean configure/build and **14/14 CTest passed**.
 - This is fetch/storage only. The VU0 dual-issue interpreter, instruction decoder, delayed VI/VF writes, branch pipeline, and FMAC/FDIV/EFU hazard machinery remain unimplemented. Macro instructions remain unsupported.
+
+
+## 2026-11-12 — VU0 micro-op primary and secondary decode tables
+
+- Added symbolic decode identities for the documented VU0 lower and upper micro-op table entries. Each fetched instruction now carries the decoded operation for its lower and upper word, alongside the raw primary opcode, FT/FS/FD, IT/IS/ID and XYZW fields.
+- Lower primary decode uses `word >> 25`. Primary `0x3c` is the `LowerOP` dispatch; the low-six-bit secondary selector maps IADD/ISUB/IADDI/IAND/IOR and `0x3c..0x3f` to the four T3 subtables indexed by bits 10..6.
+- Upper primary decode uses `word & 0x3f`. Upper primaries `0x3c..0x3f` select the four FD subtables indexed by bits 10..6. Other upper primary slots are decoded directly.
+- Unassigned primary/secondary slots map to `UNKNOWN`; no micro-op execution has been enabled. This prevents an encoding being mistaken for an implemented operation.
+- A first attempt misread the lower secondary-table selector as primary `0x60`; table recounting against PCSX2 `VUops.cpp` showed the correct primary is `0x3c`. Corrected implementation and test encodings. Tests also corrected sample-word expectations (`0x11223344` lower = IADDIU; `0xf8001234` upper = unassigned primary `0x34`). Added a separate upper ADDi (`0x22`) vector.
+- GitHub Actions [run 43185095496](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/actions/runs/43185095496): clean configure/build and **14/14 CTest passed**, covering the corrected lower IADD/T3 LQI paths, upper ADDx/ADDi/FD-NOP and unassigned table slots.
+- Remaining: implement issue/retirement scheduling with delayed VI/VF writes, branch-delay state and the IALU/FMAC/FDIV/EFU pipeline interlocks before executing any nontrivial VU instruction pair.
