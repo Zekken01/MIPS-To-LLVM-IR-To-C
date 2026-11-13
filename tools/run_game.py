@@ -310,10 +310,36 @@ def main(argv=None):
                         end="", file=sys.stderr,
                     )
                 print(
-                    "run_game: guest execution exceeded its replay timeout; "
-                    "a translated function may contain an unbounded loop",
+                    "run_game: replay exceeded its wall-clock timeout; "
+                    "this may be slow tracing, guest polling, or an internal loop",
                     file=sys.stderr,
                 )
+                if args.report is not None and report_path.is_file():
+                    try:
+                        snapshot = json.loads(report_path.read_text(encoding="utf-8"))
+                        recent = snapshot.get("history", [])
+                        latest = recent[-1] if recent else None
+                        print(
+                            "run_game: last saved snapshot "
+                            f"kind={snapshot.get('snapshot_kind', 'unknown')} "
+                            f"dispatches={snapshot.get('dispatches')} "
+                            f"pc=0x{snapshot['final_pc']:08x} "
+                            f"replay={replay}",
+                            file=sys.stderr,
+                        )
+                        if latest:
+                            print(
+                                "run_game: last recorded dispatch "
+                                f"pc=0x{latest['from_pc']:08x} -> "
+                                f"0x{latest['to_pc']:08x} "
+                                f"reason={latest['reason']}",
+                                file=sys.stderr,
+                            )
+                    except (OSError, ValueError, KeyError, TypeError) as snapshot_error:
+                        print(
+                            f"run_game: could not read timeout snapshot: {snapshot_error}",
+                            file=sys.stderr,
+                        )
                 return 124
             if replay == args.auto_expand or result.returncode not in (3, 4):
                 return result.returncode
