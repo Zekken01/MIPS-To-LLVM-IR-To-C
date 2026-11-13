@@ -104,6 +104,40 @@ The callback path is not a PS2 kernel exception implementation: nested
 callback handoffs, accurate privilege/interrupt scheduling, and BIOS-specific
 callback ABI details remain outside the currently verified scope.
 
+## Why the callback keeps repeating
+
+Disassembly of the user's US `SLUS_214.42` ELF confirms this isn't
+necessarily a hardware-polling loop:
+
+- Guest handler `0x0017EE80` loads 32-bit words from address A0 forward to
+  address A1, comparing against A2. It returns the matching address in V0,
+  or zero on an unsuccessful search.
+- Startup function `0x0017EF08` invokes that handler through the registered
+  `0x83` syscall, initially scanning physical EE RAM mirrored through
+  `0x80000000..0x80080000` for the function addresses `0x0017EE80`
+  and `0x0017EE48`. The caller subsequently adjusts the found addresses
+  and repeats searches until a specific relative layout condition matches.
+- Our RAM-only host initializes that region to zero by default, not to the
+  live EE kernel state normally established by the PS2 BIOS. Thus the
+  translated search can behave correctly while the expected addresses never
+  appear. Increasing dispatch or wall-clock budgets alone cannot supply
+  the missing kernel memory.
+
+The runner now accepts `--kernel-ram=FILE --kseg-ram` to load an **optional,
+exactly 524,288-byte raw snapshot** of physical EE RAM addresses
+`0x00000000..0x0007FFFF` (equivalently KSEG0 `0x80000000..0x8007FFFF`)
+*before* loading the game's ELF segments. This should be captured from an
+actual running PS2/PCSX2 environment **at the game entry point**, before
+these kernel patch searches execute. A PS2 BIOS ROM dump is not the same
+as an initialized EE RAM snapshot. No proprietary BIOS image is bundled.
+
+Use `--no-recompile --auto-expand=16 --kernel-ram=/path/to/ee-kernel-ram.bin`
+with the existing translated library to test a captured snapshot. This
+only supplies memory data; it does not create missing kernel threads,
+interrupts, DMA, or device behaviour. Without a real capture, leave the
+option unset and treat unsuccessful searches as a missing-kernel-state
+boundary rather than falsifying their return values.
+
 ## Validation limits
 
 CTest contains `game_runner_end_to_end` which creates small synthetic MIPS
