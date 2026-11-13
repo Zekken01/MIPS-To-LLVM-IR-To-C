@@ -321,6 +321,10 @@ def main():
         command.append(str(dispatch_object))
         command += ["-o", str(args.output)]
 
+        if pdb_path is not None and pdb_path.exists():
+            # Never accept a PDB left over from an earlier, unrelated DLL.
+            pdb_path.unlink()
+
         print(
             f"link_native_objects: linking {len(objects)} guest objects "
             f"for {object_manifest['target_triple']} -> {args.output}",
@@ -347,6 +351,8 @@ def main():
             "dispatcher_optimization_level": args.dispatcher_opt,
             "pdb": pdb_path.name if pdb_path is not None else None,
             "pdb_size_bytes": pdb_path.stat().st_size if pdb_path is not None else None,
+            "pdb_sha256": hashlib.sha256(pdb_path.read_bytes()).hexdigest()
+                          if pdb_path is not None else None,
         }
         manifest_path = args.output.with_suffix(args.output.suffix + ".link.json")
         manifest_path.write_text(json.dumps(link_manifest, indent=2) + "\n", encoding="utf-8")
