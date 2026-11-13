@@ -252,29 +252,41 @@ def main():
         root = Path(tmp)
         elf = root / "caller-callee.elf"
         make_call_elf(elf)
-        result = subprocess.run(
-            [
-                sys.executable, str(source / "tools" / "run_game.py"),
-                str(elf),
-                "--build-dir", str(build),
-                "--work-dir", str(root / "out"),
-                "--max-dispatches=8",
-                "--auto-expand=1",
-                "--trace",
-            ],
+        base = [
+            sys.executable, str(source / "tools" / "run_game.py"),
+            str(elf),
+            "--build-dir", str(build),
+            "--work-dir", str(root / "out"),
+            "--max-dispatches=8",
+            "--trace",
+        ]
+        initial = subprocess.run(
+            base,
             capture_output=True,
             text=True,
             check=False,
         )
-        assert "auto-expand: compiling reachable PC 0x00100030" in result.stdout, (
-            result.stdout + result.stderr
+        assert "EE stopped: dispatched=" in initial.stdout, (
+            initial.stdout + initial.stderr
         )
-        assert "EE stopped: dispatched=" in result.stdout, (
-            result.stdout + result.stderr
+        assert "auto-expand: compiling" not in initial.stdout, initial.stdout
+        metadata_path = root / "out" / "ir" / "ee_functions.json"
+        assert json.loads(metadata_path.read_text(encoding="utf-8"))["function_count"] == 1
+
+        resumed = subprocess.run(
+            base + ["--no-recompile", "--auto-expand=1"],
+            capture_output=True,
+            text=True,
+            check=False,
         )
-        metadata = __import__("json").loads(
-            (root / "out" / "ir" / "ee_functions.json").read_text(encoding="utf-8")
+        assert "auto-expand: compiling reachable PC 0x00100030" in resumed.stdout, (
+            resumed.stdout + resumed.stderr
         )
+        assert "EE stopped: dispatched=" in resumed.stdout, (
+            resumed.stdout + resumed.stderr
+        )
+        assert "ee_recomp: loading" in resumed.stdout, resumed.stdout
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         assert metadata["function_count"] == 2, metadata
 
     with tempfile.TemporaryDirectory(prefix="ee-native-semaphore-") as tmp:
