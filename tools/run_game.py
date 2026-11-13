@@ -149,18 +149,23 @@ def append_function(recomp, elf, work, metadata_path, address):
     return True
 
 
-def build_linked_library(source_root, work, metadata_path, object_dir, library, emit_opt):
-    run([
+def build_linked_library(source_root, work, metadata_path, object_dir, library,
+                         emit_opt, pdb=False, reuse_objects=False):
+    if not reuse_objects:
+        run([
         sys.executable, source_root / "tools" / "verify_ir.py",
         str(work / "ir" / "*.ll"),
         f"--emit-dir={object_dir}",
         f"--emit-opt={emit_opt}",
-    ])
-    run([
+        ])
+    command = [
         sys.executable, source_root / "tools" / "link_native_objects.py",
         metadata_path, object_dir, library,
         "--source-root", source_root,
-    ])
+    ]
+    if pdb:
+        command.append("--pdb")
+    run(command)
 
 
 def main(argv=None):
@@ -182,6 +187,8 @@ def main(argv=None):
         "--auto-expand", type=int, default=0,
         help="relink/replay with up to N newly reached executable function PCs",
     )
+    parser.add_argument("--pdb", action="store_true",
+                        help="Generate game-translated.pdb using Windows Clang/LLD")
     parser.add_argument("--emit-opt", type=int, choices=range(4), default=0,
                         metavar="{0,1,2,3}",
                         help="LLVM native object optimization level (default: 0)")
@@ -211,6 +218,8 @@ def main(argv=None):
         parser.error("--timeout-seconds must be in [1, 3600]")
     if args.auto_expand < 0 or args.auto_expand > 128:
         parser.error("--auto-expand must be between 0 and 128")
+    if args.pdb and os.name != "nt":
+        parser.error("--pdb requires a Windows Clang/LLD host toolchain")
     if args.no_recompile and args.extra_functions:
         parser.error("--no-recompile cannot combine with --extra-functions")
     try:
@@ -268,7 +277,7 @@ def main(argv=None):
                 append_function(recomp, elf, work, metadata_path, address)
             build_linked_library(
                 source_root, work, metadata_path, object_dir, library,
-                args.emit_opt
+                args.emit_opt, pdb=args.pdb
             )
         else:
             if not library.is_file() or not metadata_path.is_file():
@@ -286,6 +295,11 @@ def main(argv=None):
             if entry not in covered_pcs(metadata):
                 raise ValueError(
                     f"--no-recompile entry 0x{entry:08x} has no translated block"
+                )
+            if args.pdb:
+                build_linked_library(
+                    source_root, work, metadata_path, object_dir, library,
+                    args.emit_opt, pdb=True, reuse_objects=True
                 )
             if args.auto_expand:
                 recomp = native_executable(build, "ee_recomp", args.config)
@@ -414,7 +428,7 @@ def main(argv=None):
                 return result.returncode
             build_linked_library(
                 source_root, work, metadata_path, object_dir, library,
-                args.emit_opt
+                args.emit_opt, pdb=args.pdb
             )
         return 3
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
