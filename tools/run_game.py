@@ -82,13 +82,26 @@ def run(command, capture=False, timeout_seconds=None):
     return result
 
 
-def native_executable(build_dir, name):
+def native_executable(build_dir, name, config="Release"):
     suffix = ".exe" if os.name == "nt" else ""
-    executable = build_dir / (name + suffix)
+    cache = build_dir / "CMakeCache.txt"
+    multiconfig = False
+    if cache.is_file():
+        multiconfig = any(
+            line.startswith("CMAKE_CONFIGURATION_TYPES:")
+            for line in cache.read_text(encoding="utf-8", errors="replace").splitlines()
+        )
+
+    # Visual Studio and other multi-config generators write to
+    # build/Release (or build/Debug), not the build directory itself.
+    # Never accidentally use an older root executable in that case.
+    executable = (build_dir / config / (name + suffix) if multiconfig
+                  else build_dir / (name + suffix))
     if not executable.is_file():
         raise ValueError(
             f"required build target not found: {executable}\n"
-            f"Run cmake --build {build_dir} --target ee_recomp ee_game_runner"
+            f"Run cmake --build {build_dir} --config {config} "
+            "--target ee_recomp ee_game_runner"
         )
     return executable
 
@@ -154,6 +167,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("elf", type=Path)
     parser.add_argument("--build-dir", type=Path, default=Path("build"))
+    parser.add_argument("--config", default="Release", choices=("Debug", "Release", "RelWithDebInfo", "MinSizeRel"),
+                        help="CMake configuration for multi-config generators (default: Release)")
     parser.add_argument("--work-dir", type=Path, default=Path("build/game-run"))
     parser.add_argument(
         "--functions", default="entry",
@@ -214,7 +229,7 @@ def main(argv=None):
             parser.error("--stack must fit uint32")
 
         source_root = Path(__file__).resolve().parents[1]
-        runner = native_executable(build, "ee_game_runner")
+        runner = native_executable(build, "ee_game_runner", args.config)
         metadata_path = work / "ir" / "ee_functions.json"
         object_dir = work / "objects"
         library_name = "game-translated.dll" if os.name == "nt" else (
@@ -225,7 +240,7 @@ def main(argv=None):
         recomp = None
 
         if not args.no_recompile:
-            recomp = native_executable(build, "ee_recomp")
+            recomp = native_executable(build, "ee_recomp", args.config)
             (work / "ir").mkdir(parents=True, exist_ok=True)
             for stale in (work / "ir").glob("*.ll"):
                 stale.unlink()
