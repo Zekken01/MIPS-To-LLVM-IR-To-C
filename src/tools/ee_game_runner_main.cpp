@@ -163,7 +163,8 @@ bool write_report(
     uint64_t dispatched,
     uint32_t reason,
     uint32_t status,
-    const std::vector<s_dispatch_sample>& history
+    const std::vector<s_dispatch_sample>& history,
+    bool in_progress
 )
 {
     FILE* output = std::fopen(path, "wb");
@@ -177,13 +178,14 @@ bool write_report(
     uint32_t instruction = 0;
     const bool has_instruction = image.read32_at(epc, &instruction);
     std::fprintf(output,
-        "{\n  \"schema\": \"ee-game-run-report-v1\","
+        "{\n  \"schema\": \"ee-game-run-report-v1\","\n        "\n  \"snapshot_kind\": \"%s\","
         "\n  \"entry_pc\": %u, \"final_pc\": %u,"
         "\n  \"dispatches\": %llu, \"exit_reason\": %u,"
         "\n  \"exit_name\": \"%s\", \"dispatch_status\": %u,"
         "\n  \"cop0_cause\": %u, \"cop0_epc\": %u,"
         "\n  \"cop0_status\": %u, \"bad_vaddr\": %u,"
         "\n  \"epc_instruction\": ",
+        in_progress ? "in_progress" : "stopped",
         entry, cpu.m_pc, static_cast<unsigned long long>(dispatched),
         reason, exit_name(reason), status, cause, epc,
         cpu.m_cop0[12], cpu.m_cop0[8]);
@@ -473,8 +475,32 @@ int main(int argc, char** argv)
     }
     uint32_t status = 0;
     uint32_t reason = cpu.m_exit_reason;
+    uint64_t last_snapshot_dispatch = 0;
+    bool last_snapshot_callback_active = false;
+    if (trace)
+    {
+        // Preserve recent trace lines when the Python host kills a timed-out
+        // process: redirected stdout is normally fully buffered on Windows.
+        std::setvbuf(stdout, nullptr, _IONBF, 0);
+    }
     while (remaining != 0)
     {
+        if (report_path != nullptr &&
+            (dispatched == 0 ||
+             dispatched - last_snapshot_dispatch >= 16u ||
+             callback_active != last_snapshot_callback_active))
+        {
+            // Durable progress state: survives an external wall-clock kill.
+            // The translated function may still loop internally without
+            // dispatching, so this is the *last observed* guest state.
+            if (!write_report(report_path, image, cpu, entry, dispatched,
+                              reason, status, history, true))
+            {
+                return 1;
+            }
+            last_snapshot_dispatch = dispatched;
+            last_snapshot_callback_active = callback_active;
+        }
         const uint32_t from_pc = cpu.m_pc;
         uint32_t count = 0;
         uint32_t out_pc = from_pc;
@@ -846,7 +872,7 @@ int main(int argc, char** argv)
     }
     if (report_path != nullptr &&
         !write_report(report_path, image, cpu, entry, dispatched,
-                      reason, status, history))
+                      reason, status, history, false))
     {
         return 1;
     }
