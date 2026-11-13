@@ -146,6 +146,20 @@ const char* exit_name(uint32_t reason)
     }
 }
 
+struct s_syscall_sample
+{
+    uint64_t m_dispatch = 0;
+    uint32_t m_service = 0;
+    uint32_t m_handler = 0;
+    uint32_t m_resume = 0;
+    uint32_t m_a0 = 0;
+    uint32_t m_a1 = 0;
+    uint32_t m_a2 = 0;
+    uint32_t m_a3 = 0;
+    uint32_t m_v0 = 0;
+    bool m_returned = false;
+};
+
 struct s_dispatch_sample
 {
     uint64_t m_index = 0;
@@ -164,6 +178,7 @@ bool write_report(
     uint32_t reason,
     uint32_t status,
     const std::vector<s_dispatch_sample>& history,
+    const std::vector<s_syscall_sample>& syscall_history,
     bool in_progress
 )
 {
@@ -214,7 +229,22 @@ bool write_report(
             i ? "," : "", static_cast<unsigned long long>(item.m_index),
             item.m_from, item.m_to, item.m_reason, item.m_status);
     }
-    std::fputs(history.empty() ? "]\n}\n" : "\n  ]\n}\n", output);
+    std::fputs(history.empty() ? "]," : "\n  ],", output);
+    std::fputs("\n  \"syscall_history\": [", output);
+    for (size_t i = 0; i < syscall_history.size(); ++i)
+    {
+        const auto& item = syscall_history[i];
+        std::fprintf(output,
+            "%s\n    {\"dispatch\": %llu, \"service\": %u,"
+            " \"handler\": %u, \"resume_pc\": %u,"
+            " \"a0\": %u, \"a1\": %u, \"a2\": %u, \"a3\": %u,"
+            " \"v0\": %u, \"returned\": %s}",
+            i ? "," : "", static_cast<unsigned long long>(item.m_dispatch),
+            item.m_service, item.m_handler, item.m_resume,
+            item.m_a0, item.m_a1, item.m_a2, item.m_a3,
+            item.m_v0, item.m_returned ? "true" : "false");
+    }
+    std::fputs(syscall_history.empty() ? "]\n}\n" : "\n  ]\n}\n", output);
     const bool no_write_error = std::ferror(output) == 0;
     const bool closed = std::fclose(output) == 0;
     const bool ok = no_write_error && closed;
@@ -473,6 +503,12 @@ int main(int argc, char** argv)
     bool callback_active = false;
     uint32_t callback_resume_pc = 0u;
     ee::s_ee_u128 callback_saved_ra{};
+    std::vector<s_syscall_sample> syscall_history;
+    uint32_t callback_sample_index = 0;
+    if (report_path != nullptr)
+    {
+        syscall_history.reserve(32u);
+    }
 
     uint32_t remaining = budget;
     uint64_t dispatched = 0;
@@ -496,7 +532,7 @@ int main(int argc, char** argv)
             // The translated function may still loop internally without
             // dispatching, so this is the *last observed* guest state.
             if (!write_report(report_path, image, cpu, entry, dispatched,
-                              reason, status, history, true))
+                              reason, status, history, syscall_history, true))
             {
                 return 1;
             }
@@ -544,6 +580,12 @@ int main(int argc, char** argv)
         {
             // The guest callback supplies V0 and memory side effects. The
             // host restores only the interrupted call's return address.
+            if (report_path != nullptr && callback_sample_index < syscall_history.size())
+            {
+                syscall_history[callback_sample_index].m_v0 =
+                    static_cast<uint32_t>(cpu.m_gpr[2].m_lo);
+                syscall_history[callback_sample_index].m_returned = true;
+            }
             cpu.m_gpr[31] = callback_saved_ra;
             cpu.m_cop0[12] &= ~2u;
             cpu.m_pc = callback_resume_pc;
@@ -596,6 +638,22 @@ int main(int argc, char** argv)
                 }
                 callback_saved_ra = cpu.m_gpr[31];
                 callback_resume_pc = epc + 4u;
+                if (report_path != nullptr)
+                {
+                    if (syscall_history.size() == 32u)
+                    {
+                        syscall_history.erase(syscall_history.begin());
+                    }
+                    syscall_history.push_back({
+                        dispatched, service, handler, callback_resume_pc,
+                        static_cast<uint32_t>(cpu.m_gpr[4].m_lo),
+                        static_cast<uint32_t>(cpu.m_gpr[5].m_lo),
+                        static_cast<uint32_t>(cpu.m_gpr[6].m_lo),
+                        static_cast<uint32_t>(cpu.m_gpr[7].m_lo),
+                        0u, false
+                    });
+                    callback_sample_index = static_cast<uint32_t>(syscall_history.size() - 1u);
+                }
                 callback_active = true;
                 cpu.m_gpr[31].m_lo = static_cast<uint64_t>(-16ll);
                 cpu.m_gpr[31].m_hi = 0u;
@@ -874,7 +932,7 @@ int main(int argc, char** argv)
     }
     if (report_path != nullptr &&
         !write_report(report_path, image, cpu, entry, dispatched,
-                      reason, status, history, false))
+                      reason, status, history, syscall_history, false))
     {
         return 1;
     }
