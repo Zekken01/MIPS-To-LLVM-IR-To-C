@@ -197,7 +197,7 @@ def main(argv=None):
     parser.add_argument("--hle-startup", action="store_true",
                         help="Experimental SetupThread and SetupHeap HLE")
     parser.add_argument("--no-recompile", action="store_true",
-                        help="Reuse existing metadata, objects and linked library")
+                        help="Reuse existing metadata and linked library; --auto-expand may still add functions")
     args = parser.parse_args(argv)
 
     if args.max_dispatches <= 0 or args.max_dispatches > 0xFFFFFFFF:
@@ -206,8 +206,8 @@ def main(argv=None):
         parser.error("--timeout-seconds must be in [1, 3600]")
     if args.auto_expand < 0 or args.auto_expand > 128:
         parser.error("--auto-expand must be between 0 and 128")
-    if args.no_recompile and (args.auto_expand or args.extra_functions):
-        parser.error("--no-recompile cannot add or discover new functions")
+    if args.no_recompile and args.extra_functions:
+        parser.error("--no-recompile cannot combine with --extra-functions")
     try:
         functions = args.functions
         if functions not in ("entry", "all") and (
@@ -264,8 +264,29 @@ def main(argv=None):
             build_linked_library(
                 source_root, work, metadata_path, object_dir, library
             )
-        elif not library.is_file():
-            raise ValueError(f"no linked library for --no-recompile: {library}")
+        else:
+            if not library.is_file() or not metadata_path.is_file():
+                raise ValueError(
+                    f"--no-recompile needs an existing linked library and metadata: "
+                    f"{library}, {metadata_path}"
+                )
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            source_elf = Path(metadata.get("elf", "")).resolve()
+            if source_elf != elf:
+                raise ValueError(
+                    "--no-recompile ELF does not match existing translation: "
+                    f"{source_elf} != {elf}"
+                )
+            if entry not in covered_pcs(metadata):
+                raise ValueError(
+                    f"--no-recompile entry 0x{entry:08x} has no translated block"
+                )
+            if args.auto_expand:
+                recomp = native_executable(build, "ee_recomp", args.config)
+                if not object_dir.is_dir():
+                    raise ValueError(
+                        f"--no-recompile --auto-expand requires object directory: {object_dir}"
+                    )
 
         command = [
             runner, elf, library,
