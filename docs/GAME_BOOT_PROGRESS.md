@@ -18,6 +18,13 @@ python3 tools/run_game.py /path/to/SLUS_214.42 \
   --max-dispatches=128 --timeout-seconds=60
 ```
 
+To continue with existing translations instead of rebuilding the initial
+function set, use `--no-recompile --auto-expand=N`. This reuses the
+existing linked library and metadata from the same ELF, and only compiles and
+relinks if execution reaches a new guest function PC. The ELF path and entry
+are validated against the saved metadata. Do not use this after changing the
+ELF or compiler/lifter semantics without a clean recompilation.
+
 `tools/run_game.py` invokes `ee_recomp`, verifies each LLVM IR module,
 emits native objects, links a guest-PC dispatcher library, and starts
 `ee_game_runner`. The game binary remains local. `--auto-expand=N`
@@ -37,7 +44,14 @@ written at replay entry, every 16 dispatches, and on transitions into or out
 of a registered syscall callback; this permits diagnosis when a hard replay
 timeout kills a translated function without ever returning to the dispatcher.
 The in-progress PC is the **last observed** PC, not necessarily the instruction
-that was executing when the timeout occurred. With `--auto-expand`, each
+that was executing when the timeout occurred.
+The report also contains a rolling `syscall_history` of the latest 32
+installed guest-handler invocations, including the guest's A0-A3 arguments,
+handler PC, resume PC, dispatch index, V0 return value, and whether the
+handler returned. An unfinished entry has `returned: false`; its `v0`
+value is not a valid result until the callback completes. This makes it
+possible to identify repeated, unchanging syscall arguments without assuming
+that repeated dispatches imply progress. With `--auto-expand`, each
 replay overwrites the report, so its latest snapshot belongs to the most
 recent attempted run. For timeouts, the Python driver prints the last saved
 dispatch and PC if the report is readable. `--kseg-ram` opts into mapping the EE KSEG0/KSEG1 direct-RAM mirrors
