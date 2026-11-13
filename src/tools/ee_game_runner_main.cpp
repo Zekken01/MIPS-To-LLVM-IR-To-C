@@ -380,6 +380,13 @@ int main(int argc, char** argv)
         return 2;
     }
 
+    if (trace)
+    {
+        // Preserve recent trace lines when the Python host kills a timed-out
+        // process: redirected stdout is normally fully buffered on Windows.
+        std::setvbuf(stdout, nullptr, _IONBF, 0);
+    }
+
     ee::elf_loader image;
     std::string error;
     if (!image.load_file(elf_path, &error))
@@ -478,12 +485,6 @@ int main(int argc, char** argv)
     uint32_t reason = cpu.m_exit_reason;
     uint64_t last_snapshot_dispatch = 0;
     bool last_snapshot_callback_active = false;
-    if (trace)
-    {
-        // Preserve recent trace lines when the Python host kills a timed-out
-        // process: redirected stdout is normally fully buffered on Windows.
-        std::setvbuf(stdout, nullptr, _IONBF, 0);
-    }
     while (remaining != 0)
     {
         if (report_path != nullptr &&
