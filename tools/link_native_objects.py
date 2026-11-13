@@ -212,6 +212,10 @@ def main():
     parser.add_argument("--source-root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--cxx", default=os.environ.get("CXX", "c++"))
     parser.add_argument(
+        "--pdb", action="store_true",
+        help="Generate a matching Windows PDB using Clang, CodeView and LLD",
+    )
+    parser.add_argument(
         "--dispatcher-opt",
         type=int,
         choices=range(0, 4),
@@ -222,6 +226,17 @@ def main():
 
     source_root = args.source_root.resolve()
     try:
+        if args.pdb and sys.platform != "win32":
+            raise ValueError("--pdb requires a Windows host and a Clang/LLD MinGW toolchain")
+        pdb_path = args.output.with_suffix(".pdb") if args.pdb else None
+        if args.pdb:
+            # GNU/binutils and GCC cannot emit a matching CodeView/PDB pair.
+            # Do not silently write a partial or unrelated .pdb file.
+            compiler_info = subprocess.run(
+                [args.cxx, "--version"], capture_output=True, text=True, check=True
+            )
+            if "clang" not in (compiler_info.stdout + compiler_info.stderr).lower():
+                raise ValueError("--pdb requires clang++ (with lld), not GCC")
         metadata, object_manifest, functions, objects = load_inputs(
             args.functions_json.resolve(), args.object_dir.resolve()
         )
@@ -261,6 +276,8 @@ def main():
         ]
         if sys.platform in ("linux", "darwin"):
             compile_command.append("-fPIC")
+        if args.pdb:
+            compile_command += ["-g", "-gcodeview"]
         compile_command += include_args
         compile_command += ["-c", str(dispatch_source), "-o", str(dispatch_object)]
 
@@ -290,6 +307,11 @@ def main():
             command += ["-dynamiclib", "-fPIC"]
         elif sys.platform == "win32":
             command += ["-shared"]
+            if args.pdb:
+                command += [
+                    "-g", "-gcodeview", "-fuse-ld=lld",
+                    "-Wl,--pdb=" + str(pdb_path).replace("\\", "/"),
+                ]
         else:
             raise ValueError(f"unsupported host platform for shared-library linking: {sys.platform}")
 
@@ -305,6 +327,10 @@ def main():
             flush=True,
         )
         subprocess.run(command, check=True)
+        if args.pdb and (not pdb_path.is_file() or pdb_path.stat().st_size == 0):
+            raise ValueError(
+                f"link completed without producing the requested PDB: {pdb_path}"
+            )
 
         linked_data = args.output.read_bytes()
         link_manifest = {
@@ -319,6 +345,8 @@ def main():
             "dispatch_glue": dispatch_source.name,
             "dispatch_object": dispatch_object.name,
             "dispatcher_optimization_level": args.dispatcher_opt,
+            "pdb": pdb_path.name if pdb_path is not None else None,
+            "pdb_size_bytes": pdb_path.stat().st_size if pdb_path is not None else None,
         }
         manifest_path = args.output.with_suffix(args.output.suffix + ".link.json")
         manifest_path.write_text(json.dumps(link_manifest, indent=2) + "\n", encoding="utf-8")
