@@ -233,6 +233,36 @@ def main():
         assert len(report["gpr_lo"]) == 32, report
         assert (root / "out" / "ir" / "ee_functions.json").is_file()
         assert (root / "out" / "objects" / "objects.json").is_file()
+        # Compare unoptimized and optimized native EE output for the same
+        # guest instructions. Optimizing host code must not change EE state.
+        optimized_report = root / "optimized.json"
+        optimized = subprocess.run(
+            [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf),
+                "--build-dir", str(build),
+                "--work-dir", str(root / "optimized"),
+                "--max-dispatches=8",
+                "--emit-opt=2",
+                "--kseg-ram",
+                "--report", str(optimized_report),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        optimized_state = json.loads(optimized_report.read_text(encoding="utf-8"))
+        optimized_objects = json.loads(
+            (root / "optimized" / "objects" / "objects.json").read_text(encoding="utf-8")
+        )
+        assert optimized_objects["optimization_level"] == 2, optimized_objects
+        for field in ("entry_pc", "final_pc", "dispatches", "exit_reason",
+                      "dispatch_status", "gpr_lo"):
+            assert optimized_state[field] == report[field], (field, optimized_state, report)
+        assert optimized.returncode == result.returncode, (
+            optimized.stdout + optimized.stderr
+        )
+
 
     with tempfile.TemporaryDirectory(prefix="ee-native-setupthread-") as tmp:
         root = Path(tmp)
