@@ -360,6 +360,14 @@ def main():
         assert report["gpr_lo"][8] == 12, report
         assert report["gpr_lo"][31] == 0, report
         assert report["dispatches"] >= 4, report
+        events = report["syscall_history"]
+        assert len(events) == 1, report
+        assert events[0]["service"] == 0x83, events
+        assert events[0]["handler"] == 0x00100050, events
+        assert events[0]["resume_pc"] == 0x00100028, events
+        assert events[0]["a0"] == 7, events
+        assert events[0]["v0"] == 12, events
+        assert events[0]["returned"] is True, events
 
     with tempfile.TemporaryDirectory(prefix="ee-native-timeout-snapshot-") as tmp:
         root = Path(tmp)
@@ -386,6 +394,7 @@ def main():
         snapshot = json.loads(report_path.read_text(encoding="utf-8"))
         assert snapshot["snapshot_kind"] == "in_progress", snapshot
         assert snapshot["dispatches"] == 0, snapshot
+        assert snapshot["syscall_history"] == [], snapshot
         assert snapshot["final_pc"] == 0x00100008, snapshot
         assert "last saved snapshot" in result.stderr, result.stderr
 
