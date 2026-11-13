@@ -111,6 +111,16 @@ def make_registered_callback_elf(path):
     path.write_bytes(image)
 
 
+def make_spin_elf(path):
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    # A branch to itself remains inside a single translated CFG. The
+    # dispatcher count cannot interrupt this native loop.
+    struct.pack_into("<I", image, 0x108, 0x1000ffff)  # beq zero,zero,-1
+    struct.pack_into("<I", image, 0x10c, 0x00000000)  # delay-slot nop
+    path.write_bytes(image)
+
+
 def make_call_elf(path):
     make_elf(path)
     image = bytearray(path.read_bytes())
@@ -201,6 +211,7 @@ def main():
         ), result.stdout + result.stderr
         report = json.loads((root / "first_boot.json").read_text(encoding="utf-8"))
         assert report["schema"] == "ee-game-run-report-v1", report
+        assert report["snapshot_kind"] == "stopped", report
         assert report["entry_pc"] == 0x00100008, report
         assert report["dispatches"] >= 1, report
         assert report["history"][0]["from_pc"] == 0x00100008, report
@@ -349,6 +360,34 @@ def main():
         assert report["gpr_lo"][8] == 12, report
         assert report["gpr_lo"][31] == 0, report
         assert report["dispatches"] >= 4, report
+
+    with tempfile.TemporaryDirectory(prefix="ee-native-timeout-snapshot-") as tmp:
+        root = Path(tmp)
+        elf = root / "loop-mips.elf"
+        make_spin_elf(elf)
+        report_path = root / "timeout.json"
+        result = subprocess.run(
+            [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf),
+                "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--max-dispatches=8",
+                "--timeout-seconds=1",
+                "--report", str(report_path),
+                "--trace",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=40,
+        )
+        assert result.returncode == 124, result.stdout + result.stderr
+        snapshot = json.loads(report_path.read_text(encoding="utf-8"))
+        assert snapshot["snapshot_kind"] == "in_progress", snapshot
+        assert snapshot["dispatches"] == 0, snapshot
+        assert snapshot["final_pc"] == 0x00100008, snapshot
+        assert "last saved snapshot" in result.stderr, result.stderr
 
     print("game_runner end-to-end ELF/native smoke: PASS")
     return 0
