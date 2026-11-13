@@ -111,6 +111,20 @@ def make_registered_callback_elf(path):
     path.write_bytes(image)
 
 
+def make_kernel_ram_probe_elf(path):
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    for offset, opcode in (
+        (0x108, 0x3c048000),  # lui a0, 0x8000
+        (0x10c, 0x8c820000),  # lw v0, 0(a0)
+        (0x110, 0x00404021),  # addu t0, v0, zero
+        (0x114, 0x00000008),  # jr zero
+        (0x118, 0x00000000),  # nop
+    ):
+        struct.pack_into("<I", image, offset, opcode)
+    path.write_bytes(image)
+
+
 def make_spin_elf(path):
     make_elf(path)
     image = bytearray(path.read_bytes())
@@ -409,6 +423,38 @@ def main():
         assert snapshot["syscall_history"] == [], snapshot
         assert snapshot["final_pc"] == 0x00100008, snapshot
         assert "last saved snapshot" in result.stderr, result.stderr
+
+    with tempfile.TemporaryDirectory(prefix="ee-kernel-snapshot-") as tmp:
+        root = Path(tmp)
+        elf = root / "kernel-probe.elf"
+        make_kernel_ram_probe_elf(elf)
+        kernel = root / "kernel-ram.bin"
+        kernel.write_bytes(struct.pack("<I", 0x12345678) + bytes(0x80000 - 4))
+        report = root / "kernel-probe.json"
+        cmd = [
+            sys.executable, str(source / "tools" / "run_game.py"),
+            str(elf),
+            "--build-dir", str(build),
+            "--work-dir", str(root / "out"),
+            "--max-dispatches=8",
+            "--kseg-ram",
+            "--report", str(report),
+        ]
+        first = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        assert first.returncode != 0, first.stdout + first.stderr
+        before = json.loads(report.read_text(encoding="utf-8"))
+        assert before["gpr_lo"][8] == 0, before
+
+        second = subprocess.run(
+            cmd + ["--no-recompile", "--kernel-ram", str(kernel)],
+            capture_output=True, text=True, check=False,
+        )
+        assert second.returncode != 0, second.stdout + second.stderr
+        assert "EE kernel RAM snapshot: 524288 bytes" in second.stdout, (
+            second.stdout + second.stderr
+        )
+        after = json.loads(report.read_text(encoding="utf-8"))
+        assert after["gpr_lo"][8] == 0x12345678, after
 
     print("game_runner end-to-end ELF/native smoke: PASS")
     return 0
