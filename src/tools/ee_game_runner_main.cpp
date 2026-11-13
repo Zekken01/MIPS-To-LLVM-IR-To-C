@@ -28,6 +28,7 @@ constexpr uint32_t k_ee_ram_size = 32u * 1024u * 1024u;
 constexpr uint32_t k_default_stack = 0x01fff000u;
 constexpr uint32_t k_default_dispatch_budget = 10000u;
 constexpr uint32_t k_report_history_limit = 64u;
+constexpr uint32_t k_kernel_ram_snapshot_size = 0x80000u;
 
 using t_game_run = uint32_t (*)(
     ee::s_ee_cpu_state*,
@@ -125,6 +126,7 @@ void usage(const char* program)
         "  --trace              Print guest PC, reason and dispatch count per step\n"
         "  --hle-startup        Handle selected startup and semaphore kernel calls\n"
         "  --kseg-ram           Alias KSEG0/KSEG1 addresses into 32 MiB EE RAM\n"
+        "  --kernel-ram=FILE    Load 512 KiB of captured EE kernel RAM (not BIOS ROM)\n"
         "  --help               Show this message\n"
         "\n"
         "Runs already-linked translated functions, not a PS2 BIOS/IOP/GS.\n"
@@ -255,6 +257,41 @@ bool write_report(
     return ok;
 }
 
+bool load_kernel_ram_snapshot(const char* path, ee::ee_memory* memory)
+{
+    FILE* input = std::fopen(path, "rb");
+    if (input == nullptr)
+    {
+        std::fprintf(stderr, "could not open EE kernel RAM snapshot: %s\n", path);
+        return false;
+    }
+    std::vector<uint8_t> data(k_kernel_ram_snapshot_size);
+    const size_t count = std::fread(data.data(), 1, data.size(), input);
+    const int trailing = std::fgetc(input);
+    const bool read_ok = count == data.size() && trailing == EOF &&
+                         std::ferror(input) == 0;
+    const bool closed = std::fclose(input) == 0;
+    if (!read_ok || !closed)
+    {
+        std::fprintf(stderr,
+            "EE kernel RAM snapshot must be exactly %u bytes: %s\n",
+            k_kernel_ram_snapshot_size, path);
+        return false;
+    }
+    if (!memory->contains(0u, data.size()))
+    {
+        std::fprintf(stderr, "EE memory cannot hold kernel RAM snapshot\n");
+        return false;
+    }
+    for (uint32_t i = 0u; i < k_kernel_ram_snapshot_size; ++i)
+    {
+        memory->write8(i, data[i]);
+    }
+    std::printf("  EE kernel RAM snapshot: %u bytes -> physical 0x00000000\n",
+                k_kernel_ram_snapshot_size);
+    return true;
+}
+
 bool load_segments(
     const ee::elf_loader& image,
     ee::ee_memory* memory
@@ -311,6 +348,7 @@ int main(int argc, char** argv)
     bool trace = false;
     bool hle_startup = false;
     bool kseg_ram = false;
+    const char* kernel_ram_path = nullptr;
     const char* report_path = nullptr;
     uint32_t budget = k_default_dispatch_budget;
     uint32_t stack = k_default_stack;
@@ -338,6 +376,16 @@ int main(int argc, char** argv)
                 return 2;
             }
             report_path = argv[i] + 9;
+            continue;
+        }
+        if (argument.compare(0, 13, "--kernel-ram=") == 0)
+        {
+            if (argument.size() == 13)
+            {
+                std::fprintf(stderr, "empty EE kernel RAM snapshot path\n");
+                return 2;
+            }
+            kernel_ram_path = argv[i] + 13;
             continue;
         }
         if (argument == "--kseg-ram")
@@ -450,6 +498,11 @@ int main(int argc, char** argv)
 
     std::printf("EE ELF entry 0x%08x; RAM %u MiB; stack 0x%08x\n",
                 entry, k_ee_ram_size >> 20, stack);
+    if (kernel_ram_path != nullptr &&
+        !load_kernel_ram_snapshot(kernel_ram_path, memory.get()))
+    {
+        return 1;
+    }
     if (!load_segments(image, memory.get()))
     {
         return 1;
