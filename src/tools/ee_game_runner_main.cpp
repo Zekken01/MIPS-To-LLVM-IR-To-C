@@ -178,7 +178,8 @@ bool write_report(
     uint32_t instruction = 0;
     const bool has_instruction = image.read32_at(epc, &instruction);
     std::fprintf(output,
-        "{\n  \"schema\": \"ee-game-run-report-v1\","\n        "\n  \"snapshot_kind\": \"%s\","
+        "{\n  \"schema\": \"ee-game-run-report-v1\","
+        "\n  \"snapshot_kind\": \"%s\","
         "\n  \"entry_pc\": %u, \"final_pc\": %u,"
         "\n  \"dispatches\": %llu, \"exit_reason\": %u,"
         "\n  \"exit_name\": \"%s\", \"dispatch_status\": %u,"
