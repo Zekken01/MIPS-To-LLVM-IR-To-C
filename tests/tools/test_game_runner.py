@@ -189,6 +189,28 @@ def main():
     )
     assert help_result.returncode == 0, help_result.stderr
     assert "--max-dispatches=N" in help_result.stdout
+    # Requesting a Windows PDB on another host must fail rather than
+    # pretending a useful symbols file was generated.
+    if sys.platform != "win32":
+        denied = subprocess.run(
+            [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(source / "CMakeLists.txt"), "--pdb",
+            ],
+            capture_output=True, text=True, check=False,
+        )
+        assert denied.returncode != 0, denied
+        assert "--pdb requires a Windows" in denied.stderr, denied.stderr
+        link_denied = subprocess.run(
+            [
+                sys.executable, str(source / "tools" / "link_native_objects.py"),
+                "missing.json", "missing-objects", "missing.so", "--pdb",
+            ],
+            capture_output=True, text=True, check=False,
+        )
+        assert link_denied.returncode != 0, link_denied
+        assert "--pdb requires a Windows" in link_denied.stderr, link_denied.stderr
+
     assert "NOT guest instructions" in help_result.stdout
 
     with tempfile.TemporaryDirectory(prefix="ee-native-game-runner-") as tmp:
