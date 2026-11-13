@@ -315,6 +315,13 @@ def main(argv=None):
                 raise ValueError(
                     f"EE kernel RAM snapshot must be exactly 524288 bytes: {snapshot}"
                 )
+            with snapshot.open("rb") as snapshot_file:
+                signature = snapshot_file.read(4)
+            if signature in (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"):
+                raise ValueError(
+                    "kernel RAM snapshot contains ZIP/savestate bytes, not raw EE RAM; "
+                    "extract and decompress the internal eeMemory.bin member first"
+                )
             command.append(f"--kernel-ram={snapshot}")
 
         ranges = executable_segments(elf) if args.auto_expand else []
