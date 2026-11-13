@@ -132,6 +132,30 @@ def main():
     source = Path(sys.argv[1]).resolve()
     build = Path(sys.argv[2]).resolve()
     runner = Path(sys.argv[3]).resolve()
+    # Multi-config CMake builds must select build/Release rather than a
+    # stale build-root executable. Exercise the path selection on CI too.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "run_game_driver", source / "tools" / "run_game.py"
+    )
+    driver = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(driver)
+    with tempfile.TemporaryDirectory(prefix="ee-multiconfig-lookup-") as tmp:
+        fake_build = Path(tmp)
+        (fake_build / "CMakeCache.txt").write_text(
+            "CMAKE_CONFIGURATION_TYPES:STRING=Debug;Release\\n", encoding="utf-8"
+        )
+        suffix = ".exe" if sys.platform == "win32" else ""
+        old = fake_build / ("ee_recomp" + suffix)
+        preferred = fake_build / "Release" / ("ee_recomp" + suffix)
+        preferred.parent.mkdir()
+        old.write_bytes(b"stale")
+        preferred.write_bytes(b"current")
+        assert driver.native_executable(fake_build, "ee_recomp") == preferred
+        assert driver.native_executable(fake_build, "ee_recomp", "Debug") != old if (
+            fake_build / "Debug" / ("ee_recomp" + suffix)
+        ).is_file() else True
+
 
     help_result = subprocess.run(
         [str(runner), "--help"], capture_output=True, text=True
