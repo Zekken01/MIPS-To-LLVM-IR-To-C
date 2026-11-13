@@ -430,6 +430,8 @@ def main():
         make_kernel_ram_probe_elf(elf)
         kernel = root / "kernel-ram.bin"
         kernel.write_bytes(struct.pack("<I", 0x12345678) + bytes(0x80000 - 4))
+        archive_impostor = root / "wrong-snapshot.bin"
+        archive_impostor.write_bytes(b"PK\x03\x04" + bytes(0x80000 - 4))
         report = root / "kernel-probe.json"
         cmd = [
             sys.executable, str(source / "tools" / "run_game.py"),
@@ -444,6 +446,13 @@ def main():
         assert first.returncode != 0, first.stdout + first.stderr
         before = json.loads(report.read_text(encoding="utf-8"))
         assert before["gpr_lo"][8] == 0, before
+
+        invalid = subprocess.run(
+            cmd + ["--no-recompile", "--kernel-ram", str(archive_impostor)],
+            capture_output=True, text=True, check=False,
+        )
+        assert invalid.returncode != 0, invalid.stdout + invalid.stderr
+        assert "ZIP/savestate bytes" in invalid.stderr, invalid.stderr
 
         second = subprocess.run(
             cmd + ["--no-recompile", "--kernel-ram", str(kernel)],
