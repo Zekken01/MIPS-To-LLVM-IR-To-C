@@ -33,6 +33,17 @@ up to N times; this is not an instruction-step emulator. `--max-dispatches`
 counts *native function entries*, not MIPS instructions. A replay timeout
 catches guest loops that do not return to the dispatcher.
 
+Native host-object generation defaults to `--emit-opt=0` for fast iteration.
+To compare LLVM backend optimization, run with `--emit-opt=2` (supported
+levels 0–3). This option changes **host machine-code optimization**;
+it does not modify guest code, patch emulation, or supply PS2 kernel state.
+An O0/O2 synthetic-ELF equivalence test checks that the guest's resulting
+register state and exit behavior agree. For game comparisons, prefer
+a separate `--work-dir` per optimization level to avoid overwriting
+previously linked objects and to keep benchmark results reproducible.
+When auto-expanding an existing work directory via `--no-recompile`,
+the chosen optimization level is applied on the next relink.
+
 `--report=FILE` produces a JSON report with the stop reason, COP0 exception
 fields, all 32 low GPR halves, the instruction at EPC when available, and the
 last 64 native dispatch transitions. Reports are written even when the guest
