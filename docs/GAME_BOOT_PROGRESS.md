@@ -33,6 +33,21 @@ up to N times; this is not an instruction-step emulator. `--max-dispatches`
 counts *native function entries*, not MIPS instructions. A replay timeout
 catches guest loops that do not return to the dispatcher.
 
+On Windows, `--pdb` requests a matching
+`game-translated.pdb` beside `game-translated.dll` using Clang and
+the LLD MinGW linker. This passes `-g -gcodeview` for runtime and
+dispatcher C++ compilation and `-Wl,--pdb=...` at link time.
+The DLL and PDB are checked after linking and recorded in the
+`.dll.link.json` manifest. A GCC/binutils-only toolchain is not
+supported for PDB output. To generate a PDB without rebuilding the
+guest IR, use `--no-recompile --pdb` with the existing `--work-dir`.
+This relinks the DLL using already-generated guest objects. Generated
+guest functions have native symbols but do not yet carry source-level
+LLVM debug metadata, so a PDB does not provide reconstructed MIPS/C++
+source lines; it primarily makes native symbols and compiled runtime
+information available to Windows debuggers. If you change the
+`--emit-opt` setting, perform a fresh compilation first.
+
 Native host-object generation defaults to `--emit-opt=0` for fast iteration.
 To compare LLVM backend optimization, run with `--emit-opt=2` (supported
 levels 0–3). This option changes **host machine-code optimization**;
