@@ -143,7 +143,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="ee-multiconfig-lookup-") as tmp:
         fake_build = Path(tmp)
         (fake_build / "CMakeCache.txt").write_text(
-            "CMAKE_CONFIGURATION_TYPES:STRING=Debug;Release\\n", encoding="utf-8"
+            "CMAKE_CONFIGURATION_TYPES:STRING=Debug;Release\n", encoding="utf-8"
         )
         suffix = ".exe" if sys.platform == "win32" else ""
         old = fake_build / ("ee_recomp" + suffix)
@@ -152,9 +152,12 @@ def main():
         old.write_bytes(b"stale")
         preferred.write_bytes(b"current")
         assert driver.native_executable(fake_build, "ee_recomp") == preferred
-        assert driver.native_executable(fake_build, "ee_recomp", "Debug") != old if (
-            fake_build / "Debug" / ("ee_recomp" + suffix)
-        ).is_file() else True
+        try:
+            driver.native_executable(fake_build, "ee_recomp", "Debug")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("multi-config lookup used a stale root binary")
 
 
     help_result = subprocess.run(
