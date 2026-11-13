@@ -278,6 +278,18 @@ bool load_kernel_ram_snapshot(const char* path, ee::ee_memory* memory)
             k_kernel_ram_snapshot_size, path);
         return false;
     }
+    // A .p2s is a ZIP archive. Simply slicing its first 512 KiB creates
+    // a correctly sized but invalid kernel snapshot; reject it explicitly.
+    if (data[0] == 0x50u && data[1] == 0x4bu &&
+        ((data[2] == 0x03u && data[3] == 0x04u) ||
+         (data[2] == 0x05u && data[3] == 0x06u) ||
+         (data[2] == 0x07u && data[3] == 0x08u)))
+    {
+        std::fprintf(stderr,
+            "EE kernel RAM snapshot is a ZIP/savestate archive, not raw EE RAM: %s\n",
+            path);
+        return false;
+    }
     if (!memory->contains(0u, data.size()))
     {
         std::fprintf(stderr, "EE memory cannot hold kernel RAM snapshot\n");
