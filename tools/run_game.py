@@ -210,6 +210,8 @@ def main(argv=None):
                         help="Experimental SetupThread and SetupHeap HLE")
     parser.add_argument("--no-recompile", action="store_true",
                         help="Reuse existing metadata and linked library; --auto-expand may still add functions")
+    parser.add_argument("--link-only", action="store_true",
+                        help="Stop after generating/linking the native DLL (and PDB if requested)")
     args = parser.parse_args(argv)
 
     if args.max_dispatches <= 0 or args.max_dispatches > 0xFFFFFFFF:
@@ -222,6 +224,8 @@ def main(argv=None):
         parser.error("--pdb requires a Windows Clang/LLD host toolchain")
     if args.no_recompile and args.extra_functions:
         parser.error("--no-recompile cannot combine with --extra-functions")
+    if args.link_only and args.auto_expand:
+        parser.error("--link-only cannot be combined with --auto-expand")
     try:
         functions = args.functions
         if functions not in ("entry", "all") and (
@@ -307,6 +311,12 @@ def main(argv=None):
                     raise ValueError(
                         f"--no-recompile --auto-expand requires object directory: {object_dir}"
                     )
+
+        if args.link_only:
+            print(f"run_game: native library ready: {library}", flush=True)
+            if args.pdb:
+                print(f"run_game: PDB ready: {library.with_suffix('.pdb')}", flush=True)
+            return 0
 
         command = [
             runner, elf, library,
