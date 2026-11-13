@@ -149,12 +149,12 @@ def append_function(recomp, elf, work, metadata_path, address):
     return True
 
 
-def build_linked_library(source_root, work, metadata_path, object_dir, library):
+def build_linked_library(source_root, work, metadata_path, object_dir, library, emit_opt):
     run([
         sys.executable, source_root / "tools" / "verify_ir.py",
         str(work / "ir" / "*.ll"),
         f"--emit-dir={object_dir}",
-        "--emit-opt=0",
+        f"--emit-opt={emit_opt}",
     ])
     run([
         sys.executable, source_root / "tools" / "link_native_objects.py",
@@ -182,6 +182,9 @@ def main(argv=None):
         "--auto-expand", type=int, default=0,
         help="relink/replay with up to N newly reached executable function PCs",
     )
+    parser.add_argument("--emit-opt", type=int, choices=range(4), default=0,
+                        metavar="{0,1,2,3}",
+                        help="LLVM native object optimization level (default: 0)")
     parser.add_argument("--max-dispatches", type=int, default=10000)
     parser.add_argument(
         "--timeout-seconds", type=int, default=10,
@@ -264,7 +267,8 @@ def main(argv=None):
             for address in dict.fromkeys(extra):
                 append_function(recomp, elf, work, metadata_path, address)
             build_linked_library(
-                source_root, work, metadata_path, object_dir, library
+                source_root, work, metadata_path, object_dir, library,
+                args.emit_opt
             )
         else:
             if not library.is_file() or not metadata_path.is_file():
@@ -409,7 +413,8 @@ def main(argv=None):
             if not append_function(recomp, elf, work, metadata_path, address):
                 return result.returncode
             build_linked_library(
-                source_root, work, metadata_path, object_dir, library
+                source_root, work, metadata_path, object_dir, library,
+                args.emit_opt
             )
         return 3
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
