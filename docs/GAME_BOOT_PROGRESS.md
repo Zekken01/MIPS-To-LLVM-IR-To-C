@@ -15,7 +15,7 @@ python3 tools/run_game.py /path/to/SLUS_214.42 \
   --build-dir=build --work-dir=build/sdbz \
   --hle-startup --kseg-ram --trace --auto-expand=16 \
   --report=build/sdbz/first-boot.json \
-  --max-dispatches=128 --timeout-seconds=10
+  --max-dispatches=128 --timeout-seconds=60
 ```
 
 `tools/run_game.py` invokes `ee_recomp`, verifies each LLVM IR module,
@@ -30,9 +30,17 @@ catches guest loops that do not return to the dispatcher.
 fields, all 32 low GPR halves, the instruction at EPC when available, and the
 last 64 native dispatch transitions. Reports are written even when the guest
 returns a non-zero blocked-execution status. Report history tracks **native
-function dispatches**, not individual MIPS instructions. With `--auto-expand`,
-the report is overwritten on each replay and reflects the final attempted
-run. `--kseg-ram` opts into mapping the EE KSEG0/KSEG1 direct-RAM mirrors
+function dispatches**, not individual MIPS instructions. The report has a
+`snapshot_kind` field: `stopped` after an orderly runner exit and
+`in_progress` while code is still executing. An in-progress snapshot is
+written at replay entry, every 16 dispatches, and on transitions into or out
+of a registered syscall callback; this permits diagnosis when a hard replay
+timeout kills a translated function without ever returning to the dispatcher.
+The in-progress PC is the **last observed** PC, not necessarily the instruction
+that was executing when the timeout occurred. With `--auto-expand`, each
+replay overwrites the report, so its latest snapshot belongs to the most
+recent attempted run. For timeouts, the Python driver prints the last saved
+dispatch and PC if the report is readable. `--kseg-ram` opts into mapping the EE KSEG0/KSEG1 direct-RAM mirrors
 onto physical RAM; it does not implement TLB, PS2 hardware MMIO, or device
 side effects.
 
