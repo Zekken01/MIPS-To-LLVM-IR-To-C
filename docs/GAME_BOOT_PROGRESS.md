@@ -40,8 +40,10 @@ dispatcher C++ compilation and `-Wl,--pdb=...` at link time.
 The DLL and PDB are checked after linking and recorded in the
 `.dll.link.json` manifest. A GCC/binutils-only toolchain is not
 supported for PDB output. To generate a PDB without rebuilding the
-guest IR, use `--no-recompile --pdb` with the existing `--work-dir`.
-This relinks the DLL using already-generated guest objects. Generated
+guest IR **or launching the game**, use `--no-recompile --pdb --link-only`
+with the existing `--work-dir`. This relinks the DLL using already-generated
+guest objects and writes `game-translated.dll` and
+`game-translated.pdb` side by side. Generated
 guest functions have native symbols but do not yet carry source-level
 LLVM debug metadata, so a PDB does not provide reconstructed MIPS/C++
 source lines; it primarily makes native symbols and compiled runtime
