@@ -255,6 +255,20 @@ def main():
         assert len(report["gpr_lo"]) == 32, report
         assert (root / "out" / "ir" / "ee_functions.json").is_file()
         assert (root / "out" / "objects" / "objects.json").is_file()
+        link_only = subprocess.run(
+            [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf),
+                "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--no-recompile", "--link-only",
+            ],
+            capture_output=True, text=True, check=False,
+        )
+        assert link_only.returncode == 0, link_only.stdout + link_only.stderr
+        assert "native library ready:" in link_only.stdout, link_only.stdout
+        assert "EE stopped:" not in link_only.stdout, link_only.stdout
+
         # Compare unoptimized and optimized native EE output for the same
         # guest instructions. Optimizing host code must not change EE state.
         optimized_report = root / "optimized.json"
