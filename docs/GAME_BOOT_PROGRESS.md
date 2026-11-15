@@ -239,6 +239,43 @@ presentation, device DMA chain engine for channels 0..2, MFIFO, or a
 timed hardware queue. Only PSMCT32, PSMCT24, PSMCT16, PSMCT16S, PSMT8 and PSMT4 IMAGE uploads have GS VRAM effects;
 real SDBZ image-stream and PCSX2 differential validation remain needed.
 
+
+### Indexed CLUT snapshots (CSM1 and CSM2)
+
+The GS state-only consumer now loads a **512-entry raw palette snapshot**
+on supported TEX0/TEX2 CLD requests, rather than deriving an index's
+color directly from live GS VRAM. CSM1 handles the PSMT8 index 3/4 bit
+swap and 4-bit 8x2 entry layout. CSM2 reads TEXCLUT.CBW/COU/COV,
+including page-spanning rows. Palette base CBP uses the same
+256-byte GS VRAM units as the other GS buffers. Supported CPSM
+storage formats are PSMCT32, PSMCT16 and PSMCT16S, using their
+existing swizzles. Palette entries are returned as **raw 32- or
+16-bit values**; 16-bit channel expansion, TEXA alpha expansion,
+TCC/TFX, texturing filters, and rasterization are not implemented.
+
+CLD=0 and CLD=6/7 do not load. CLD=1 forces a load; CLD=2/3
+load and record CBP in one of two cached slots; CLD=4/5 skip the load
+if the associated CBP matches, otherwise load and replace that slot.
+These markers and CLUT contents are kept in transactional GS state,
+including across GIF/DMA batches, and cleared by host reset.
+TEXCLUT writes alone do not reload a palette. Images written *after*
+a TEX0/TEX2 load do not silently change its snapshot; an IMAGE before
+TEX0/TEX2 in the **same** event batch is visible to the palette load
+using a palette-only staged-byte overlay. A later unsupported event
+rolls back both VRAM and palette state.
+
+\`read_clut_entry(slot)\` and
+\`read_indexed_clut_value(context,x,y)\` are diagnostic read APIs,
+not a GS renderer. Indexed reads support PSMT8 and PSMT4, returning
+their loaded raw palette words; the latter applies the TEX0.CSA bank
+selection. The indexed palette storage modes and load semantics here
+follow \`ps2-web-recomp/runtime/src/gs/gs.cpp::load_clut()\`.
+Explicitly unsupported CPSM values and formats with unknown CLUT
+semantics reject CLD-triggered loads instead of inventing colors.
+Real SDBZ/PCSX2 differential validation and full GS rasterization,
+texture filtering, palette alpha treatment, PSMT8H/PSMT4H and other
+GS transfer directions remain outstanding.
+
 `fromSPR` channel 8 also supports
 **synchronous chain mode** (CHCR.MOD=1). It copies a preloaded QWC segment
 when present, then consumes 16-byte DMA tags from scratchpad, selecting

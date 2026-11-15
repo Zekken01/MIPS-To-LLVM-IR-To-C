@@ -25,6 +25,14 @@ struct s_ee_gs_state
     uint32_t m_transfer_pixels_written = 0; // across IMAGE events
     uint8_t m_transfer_pending_size = 0; // PSMCT24 incomplete pixel
     std::array<uint8_t, 3> m_transfer_pending{};
+
+    // Snapshot of the GS internal CLUT, not a view of current VRAM.
+    // TEX0/TEX2 CLD controls when entries are reloaded from GS memory.
+    std::array<uint32_t, 512> m_clut{};
+    std::array<bool, 512> m_clut_valid{};
+    uint32_t m_clut_cbp0 = 0xffffffffu;
+    uint32_t m_clut_cbp1 = 0xffffffffu;
+    uint64_t m_clut_load_count = 0;
 };
 
 // Transactional consumer for c_ee_gif_path3::t_event_callback.
@@ -42,6 +50,14 @@ public:
     // Returns false for out-of-range raw VRAM accesses.
     bool read_vram16(uint32_t offset, uint16_t& value) const;
     bool read_vram32(uint32_t offset, uint32_t& value) const;
+
+    // Return raw 32-bit or 16-bit CPSM palette words without RGBA
+    // expansion, alpha conversion, filtering, or texture rasterization.
+    // Only entries loaded by a supported TEX0/TEX2 CLD are readable.
+    bool read_clut_entry(uint32_t slot, uint32_t& value) const;
+    bool read_indexed_clut_value(
+        uint32_t context, uint32_t x, uint32_t y, uint32_t& value
+    ) const;
 
     void reset();
     const s_ee_gs_state& state() const;
@@ -95,6 +111,13 @@ private:
     static uint32_t psmt4_nibble_address(
         uint32_t base, uint32_t width, uint32_t x, uint32_t y
     );
+
+    // Load a CLUT snapshot on TEX0/TEX2 writes. Staged IMAGE writes
+    // are overlaid for same-batch palette uploads before final commit.
+    bool load_clut(
+        s_ee_gs_state& state, uint64_t tex0,
+        const std::vector<s_vram_write>& writes
+    ) const;
 
     static bool write_register(
         s_ee_gs_state& state, uint32_t reg, uint64_t value

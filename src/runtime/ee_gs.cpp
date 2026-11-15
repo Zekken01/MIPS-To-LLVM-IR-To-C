@@ -1,6 +1,7 @@
 #include "ee_gs.h"
 
 #include <algorithm>
+#include <unordered_map>
 #include <utility>
 
 namespace ee
@@ -213,6 +214,55 @@ bool c_ee_gs_state::read_vram32(uint32_t offset, uint32_t& value) const
     return true;
 }
 
+bool c_ee_gs_state::read_clut_entry(
+    uint32_t slot, uint32_t& value) const
+{
+    if (slot >= m_state.m_clut.size() ||
+        !m_state.m_clut_valid[slot])
+    {
+        return false;
+    }
+    value = m_state.m_clut[slot];
+    return true;
+}
+
+bool c_ee_gs_state::read_indexed_clut_value(
+    uint32_t context, uint32_t x, uint32_t y,
+    uint32_t& value) const
+{
+    if (context >= 2u || !m_state.m_written[0x06u + context])
+    {
+        return false;
+    }
+
+    const uint64_t tex0 = m_state.m_registers[0x06u + context];
+    const uint32_t bp = static_cast<uint32_t>(tex0 & 0x3fffu);
+    const uint32_t bw = static_cast<uint32_t>((tex0 >> 14u) & 0x3fu);
+    const uint32_t psm = static_cast<uint32_t>((tex0 >> 20u) & 0x3fu);
+    const uint32_t csa = static_cast<uint32_t>((tex0 >> 56u) & 0x1fu);
+    uint32_t slot = 0u;
+
+    if (psm == 0x13u) // PSMT8
+    {
+        slot = m_vram[psmt8_address(bp, bw, x, y)];
+    }
+    else if (psm == 0x14u) // PSMT4
+    {
+        const uint32_t nibble = psmt4_nibble_address(bp, bw, x, y);
+        const uint32_t index = (
+            m_vram[nibble / 2u] >> ((nibble & 1u) * 4u)
+        ) & 0x0fu;
+        // Same CLUT slot selection as the reference's dump_texture().
+        slot = (csa * 16u + index) & 511u;
+    }
+    else
+    {
+        return false;
+    }
+
+    return read_clut_entry(slot, value);
+}
+
 void c_ee_gs_state::reset()
 {
     m_state = {};
@@ -233,6 +283,152 @@ uint64_t c_ee_gs_state::register_value(uint32_t reg) const
 {
     return reg < m_state.m_registers.size() ?
         m_state.m_registers[reg] : 0u;
+}
+
+bool c_ee_gs_state::load_clut(
+    s_ee_gs_state& state, uint64_t tex0,
+    const std::vector<s_vram_write>& writes) const
+{
+    const uint32_t cld = static_cast<uint32_t>((tex0 >> 61u) & 7u);
+    if (cld == 0u || cld >= 6u)
+    {
+        return true;
+    }
+
+    const uint32_t cbp = static_cast<uint32_t>((tex0 >> 37u) & 0x3fffu);
+    if ((cld == 4u && state.m_clut_cbp0 == cbp) ||
+        (cld == 5u && state.m_clut_cbp1 == cbp))
+    {
+        return true;
+    }
+
+    const uint32_t psm = static_cast<uint32_t>((tex0 >> 20u) & 0x3fu);
+    const uint32_t cpsm = static_cast<uint32_t>((tex0 >> 51u) & 0x0fu);
+    const uint32_t csm = static_cast<uint32_t>((tex0 >> 55u) & 1u);
+    const uint32_t csa = static_cast<uint32_t>((tex0 >> 56u) & 0x1fu);
+    // A CLD-triggered load of a different indexed format or unknown
+    // palette storage layout cannot yet be executed faithfully.
+    if ((psm != 0x13u && psm != 0x14u) ||
+        (cpsm != 0u && cpsm != 2u && cpsm != 0x0au))
+    {
+        return false;
+    }
+
+    const bool eight = psm == 0x13u;
+    const uint32_t entries = eight ? 256u : 16u;
+    const uint32_t entry_bytes = cpsm == 0u ? 4u : 2u;
+    const uint32_t texclut = static_cast<uint32_t>(
+        state.m_registers[0x1cu]
+    );
+    const uint32_t cbw = csm ? (texclut & 0x3fu) : 1u;
+    const uint32_t cou = (texclut >> 6u) & 0x3fu;
+    const uint32_t cov = (texclut >> 12u) & 0x3ffu;
+
+    std::array<uint32_t, 256> addresses{};
+    // Collect at most 1024 palette bytes. An optional same-batch IMAGE
+    // is overlaid only at these bytes, not copied into a 4 MiB VRAM
+    // snapshot or scanned separately for every palette entry.
+    std::unordered_map<uint32_t, uint8_t> palette_bytes;
+    palette_bytes.reserve(entries * entry_bytes);
+
+    for (uint32_t i = 0u; i < entries; ++i)
+    {
+        uint32_t x = 0u;
+        uint32_t y = 0u;
+        if (csm != 0u) // CSM2: TEXCLUT.CBW/COU/COV
+        {
+            x = cou * 16u + i;
+            y = cov;
+        }
+        else if (eight) // CSM1: swap index bits 3 and 4
+        {
+            const uint32_t j = (i & ~0x18u) |
+                ((i & 0x08u) << 1u) | ((i & 0x10u) >> 1u);
+            x = j & 15u;
+            y = j >> 4u;
+        }
+        else // CSM1: 4-bit entries occupy an 8x2 rectangle
+        {
+            x = i & 7u;
+            y = i >> 3u;
+        }
+
+        const uint32_t address = cpsm == 0u ?
+            psmct32_address(cbp, std::max(1u, cbw), x, y) :
+            psmct16_address(cbp, std::max(1u, cbw), x, y, cpsm);
+        addresses[i] = address;
+        for (uint32_t b = 0u; b < entry_bytes; ++b)
+        {
+            const uint32_t at = (address + b) & (k_vram_bytes - 1u);
+            palette_bytes.emplace(at, m_vram[at]);
+        }
+    }
+
+    // Model exactly the bytes visible at this TEX0/TEX2 instruction.
+    // This also handles multiple writes to a single nibble in order.
+    for (const s_vram_write& write : writes)
+    {
+        if (write.m_bytes == 0u)
+        {
+            auto it = palette_bytes.find(write.m_offset);
+            if (it != palette_bytes.end())
+            {
+                const uint8_t mask = static_cast<uint8_t>(
+                    0x0fu << write.m_shift
+                );
+                it->second = static_cast<uint8_t>(
+                    (it->second & static_cast<uint8_t>(~mask)) |
+                    static_cast<uint8_t>(
+                        (write.m_value & 0x0fu) << write.m_shift
+                    )
+                );
+            }
+        }
+        else
+        {
+            for (uint32_t b = 0u; b < write.m_bytes; ++b)
+            {
+                const uint32_t at =
+                    (write.m_offset + b) & (k_vram_bytes - 1u);
+                auto it = palette_bytes.find(at);
+                if (it != palette_bytes.end())
+                {
+                    it->second = static_cast<uint8_t>(
+                        write.m_value >> (8u * b)
+                    );
+                }
+            }
+        }
+    }
+
+    for (uint32_t i = 0u; i < entries; ++i)
+    {
+        uint32_t value = 0u;
+        for (uint32_t b = 0u; b < entry_bytes; ++b)
+        {
+            const uint32_t at =
+                (addresses[i] + b) & (k_vram_bytes - 1u);
+            value |= static_cast<uint32_t>(palette_bytes.at(at))
+                << (8u * b);
+        }
+
+        const uint32_t slot = csm != 0u ?
+            (csa * 16u + i) & 511u :
+            eight ? i : ((csa & 15u) * 16u + i) & 255u;
+        state.m_clut[slot] = value;
+        state.m_clut_valid[slot] = true;
+    }
+
+    if (cld == 2u || cld == 4u)
+    {
+        state.m_clut_cbp0 = cbp;
+    }
+    else if (cld == 3u || cld == 5u)
+    {
+        state.m_clut_cbp1 = cbp;
+    }
+    ++state.m_clut_load_count;
+    return true;
 }
 
 bool c_ee_gs_state::write_register(
@@ -449,6 +645,26 @@ bool c_ee_gs_state::consume(
     std::vector<s_vram_write> writes;
     const uint64_t bytes = static_cast<uint64_t>(qwc) * 16u;
 
+    // TEX0 and TEX2 load CLUT entries at the register write, not at
+    // the end of the GIF batch or on every subsequent VRAM write.
+    const auto refresh_clut = [&](uint32_t reg) -> bool
+    {
+        uint32_t tex0_reg = 0u;
+        if (reg == 0x06u || reg == 0x07u)
+        {
+            tex0_reg = reg;
+        }
+        else if (reg == 0x16u || reg == 0x17u)
+        {
+            tex0_reg = 0x06u + (reg - 0x16u);
+        }
+        else
+        {
+            return true;
+        }
+        return load_clut(next, next.m_registers[tex0_reg], writes);
+    };
+
     for (size_t i = 0; i < count; ++i)
     {
         const s_ee_gif_event& e = events[i];
@@ -483,6 +699,11 @@ bool c_ee_gs_state::consume(
                 e.m_register > 0xfu ||
                 !write_packed(
                     next, e.m_register, e.m_word0, e.m_word1
+                ) ||
+                !refresh_clut(
+                    e.m_register == 0x0eu ?
+                    static_cast<uint32_t>(e.m_word1 & 0xffu) :
+                    e.m_register
                 ))
             {
                 return false;
@@ -492,7 +713,8 @@ bool c_ee_gs_state::consume(
             if ((offset & 7u) != 0u ||
                 offset + 8u > bytes ||
                 e.m_register > 0xfu ||
-                !write_register(next, e.m_register, e.m_word0))
+                !write_register(next, e.m_register, e.m_word0) ||
+                !refresh_clut(e.m_register))
             {
                 return false;
             }
