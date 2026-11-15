@@ -211,7 +211,10 @@ int main()
     }
 
     // The same guard is mandatory for fromSPR sparse RAM destinations.
+    // Hardware reset clears D_SQWC, so restore TQWC=1/SQWC=1 before
+    // starting this deliberately invalid interleave transfer.
     hardware.reset();
+    ee::ee_mem_write32(&runtime, k_sqwc, (1u << 16u) | 1u);
     write_quad(&runtime, 0x1fc0u, sentinel);
     write_quad(&runtime, 0x1fe0u, sentinel);
     program(&runtime, k_from_spr, 0x1fc0u, 3u, 0x100u);
