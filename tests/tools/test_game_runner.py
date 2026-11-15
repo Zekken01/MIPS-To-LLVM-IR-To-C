@@ -91,6 +91,39 @@ def make_create_thread_elf(path):
     path.write_bytes(image)
 
 
+def make_get_thread_id_elf(path):
+    """GetThreadId must return the running main thread, not a dormant child."""
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    image.extend(bytes(max(0, 0x400 - len(image))))
+    # The test's guest thread descriptor is at VA 0x00100200.
+    struct.pack_into("<I", image, 52 + 16, 0x300)
+    struct.pack_into("<I", image, 52 + 20, 0x300)
+    instructions = (
+        (0x108, 0x2403002f),  # v1 = GetThreadId
+        (0x10c, 0x0000000c),  # syscall
+        (0x110, 0x00404021),  # t0 = GetThreadId before CreateThread
+        (0x114, 0x3c040010),  # a0 = 0x00100200
+        (0x118, 0x34840200),
+        (0x11c, 0x24030020),  # v1 = CreateThread
+        (0x120, 0x0000000c),  # syscall
+        (0x124, 0x00404821),  # t1 = created dormant thread ID
+        (0x128, 0x2403002f),  # v1 = GetThreadId again
+        (0x12c, 0x0000000c),  # syscall (a0 still holds 0x00100200)
+        (0x130, 0x00405021),  # t2 = GetThreadId after creation
+        (0x134, 0x00000008),  # jr zero: finish bounded synthetic test
+        (0x138, 0x00000000),
+    )
+    for offset, word in instructions:
+        struct.pack_into("<I", image, offset, word)
+    struct.pack_into(
+        "<9I", image, 0x300,
+        0, 0x001000f0, 0x00102000, 0x800,
+        0x0010f000, 64, 0, 0, 0,
+    )
+    path.write_bytes(image)
+
+
 def make_semaphore_elf(path):
     make_elf(path)
     image = bytearray(path.read_bytes())
@@ -840,6 +873,51 @@ def main():
         assert "ee_recomp: loading" in resumed.stdout, resumed.stdout
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         assert metadata["function_count"] == 2, metadata
+
+    with tempfile.TemporaryDirectory(prefix="ee-native-get-thread-id-") as tmp:
+        root = Path(tmp)
+        elf = root / "kernel-get-thread-id.elf"
+        make_get_thread_id_elf(elf)
+        report_path = root / "get-thread-id.json"
+        command = [
+            sys.executable, str(source / "tools" / "run_game.py"),
+            str(elf),
+            "--build-dir", str(build),
+            "--work-dir", str(root / "out"),
+            "--max-dispatches=16",
+            "--trace",
+            "--report", str(report_path),
+        ]
+
+        without_hle = subprocess.run(
+            command, capture_output=True, text=True, check=False,
+        )
+        assert without_hle.returncode != 0, (
+            without_hle.stdout + without_hle.stderr
+        )
+        refused = json.loads(report_path.read_text(encoding="utf-8"))
+        assert refused["cop0_epc"] == 0x0010000c, refused
+        assert "HLE GetThreadId:" not in without_hle.stdout, (
+            without_hle.stdout + without_hle.stderr
+        )
+
+        with_hle = subprocess.run(
+            command + ["--no-recompile", "--hle-startup"],
+            capture_output=True, text=True, check=False,
+        )
+        assert with_hle.stdout.count("HLE GetThreadId: id=1") == 2, (
+            with_hle.stdout + with_hle.stderr
+        )
+        assert "HLE CreateThread: id=2" in with_hle.stdout, (
+            with_hle.stdout + with_hle.stderr
+        )
+        state = json.loads(report_path.read_text(encoding="utf-8"))
+        assert state["gpr_lo"][8] == 1, state  # running main thread
+        assert state["gpr_lo"][9] == 2, state  # new dormant thread
+        assert state["gpr_lo"][10] == 1, state # main remains current
+        assert state["gpr_lo"][2] == 1, state  # GetThreadId return value
+        assert state["gpr_lo"][4] == 0x00100200, state # ignores a0
+        assert state["final_pc"] != 0x001000f0, state
 
     with tempfile.TemporaryDirectory(prefix="ee-native-create-thread-") as tmp:
         root = Path(tmp)
