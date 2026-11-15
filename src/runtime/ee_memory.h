@@ -30,9 +30,16 @@ public:
 
     bool contains(uint32_t addr, size_t len) const;
 
-    // Opt-in EE KSEG0/KSEG1 direct-mapped RAM aliases. This does not
-    // implement TLB translation or expose physical MMIO devices.
+    // Opt-in direct-mapped EE aliases. The original KSEG option now also
+    // covers the EE's 0x2/0x3 uncached/accelerated aliases, matching
+    // ps2-web-recomp's physical() mapping; the actual RAM buffer bounds
+    // are still checked. This does not implement the TLB.
     void set_kseg_ram_aliases(bool enabled);
+
+    // Returns the physical bus address for known, enabled direct aliases,
+    // even when the target is a device rather than RAM. Leaves all other
+    // guest addresses unchanged. Used by the guest MMIO/VU dispatcher.
+    uint32_t translate_direct_address(uint32_t addr) const;
 
     // Direct-RAM fast path (Phase 7 optimisation). Marks a guest address
     // range as safe for direct host pointer access, bypassing bounds checks.
