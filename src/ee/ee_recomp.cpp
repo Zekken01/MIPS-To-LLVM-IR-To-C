@@ -11,6 +11,7 @@
 #include "module_builder.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -324,6 +325,7 @@ bool ee_recomp(const char* elf_path,
                std::string* error,
                const s_recomp_options& opts)
 {
+    const auto started = std::chrono::steady_clock::now();
     std::error_code ec;
     std::filesystem::create_directories(output_dir, ec);
 
@@ -563,6 +565,7 @@ bool ee_recomp(const char* elf_path,
             global_insns.size(), entries.size());
     }
 
+    const auto discovery_done = std::chrono::steady_clock::now();
     const std::vector<uint32_t> discovered_entries = entries;
     function_analyzer analyzer;
     llvm::llvm_context ctx("ee_game");
@@ -632,6 +635,7 @@ bool ee_recomp(const char* elf_path,
         record_sub(ins, ok);
     }
 
+    const auto coverage_done = std::chrono::steady_clock::now();
     std::set<uint32_t> emitted_blocks;
 
     auto emit_entry = [&](uint32_t entry) -> bool {
@@ -747,6 +751,14 @@ bool ee_recomp(const char* elf_path,
         }
     }
 
+    const auto emission_done = std::chrono::steady_clock::now();
+    const auto milliseconds = [](auto start, auto end) {
+        return std::chrono::duration<double, std::milli>(end - start).count();
+    };
+    std::printf("ee_recomp timings: discovery=%.1fms coverage=%.1fms IR=%.1fms\n",
+        milliseconds(started, discovery_done),
+        milliseconds(discovery_done, coverage_done),
+        milliseconds(coverage_done, emission_done));
     result->function_count = (uint32_t)result->functions.size();
     result->function_scoped_pcs = (uint32_t)function_pcs.size();
     result->total_insns = total_insns;
