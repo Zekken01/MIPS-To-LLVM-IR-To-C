@@ -85,13 +85,13 @@ int main()
         !write_register(gs, 0x52u, trxreg(1u, 1u)) ||
         write_register(gs, 0x53u, 0u) ||
         gs.was_written(0x53u) ||
-        !write_register(gs, 0x50u, bitblt(k_bp, 1u, 2u)) ||
+        !write_register(gs, 0x50u, bitblt(k_bp, 1u, 0x13u)) ||
         write_register(gs, 0x53u, 0u) ||
         !write_register(gs, 0x50u, bitblt(k_bp, 1u, 0u)) ||
         !write_register(gs, 0x52u, trxreg(0u, 1u)) ||
         write_register(gs, 0x53u, 0u))
     {
-        return fail("invalid DBW, PSMCT16 or zero-size transfer was accepted");
+        return fail("invalid DBW, PSMT8 or zero-size transfer was accepted");
     }
 
     // Two pages across the X axis, two rows, and two unused padding

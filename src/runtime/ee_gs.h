@@ -9,7 +9,7 @@
 
 namespace ee
 {
-// GS register-state and PSMCT32/PSMCT24 host-to-local transfer consumer.
+// GS register-state and PSMCT32/24/16 host-to-local transfer consumer.
 // It does not rasterize primitives, present frames or implement GS IRQs.
 // Based on ps2-web-recomp/runtime/src/gs/gs.cpp::write/write_packed.
 struct s_ee_gs_state
@@ -39,6 +39,7 @@ public:
     // GS VRAM is a separate 4 MiB allocation, not EE RAM.
     const std::vector<uint8_t>& vram() const;
     // Returns false for out-of-range raw VRAM accesses.
+    bool read_vram16(uint32_t offset, uint16_t& value) const;
     bool read_vram32(uint32_t offset, uint32_t& value) const;
 
     void reset();
@@ -65,12 +66,17 @@ private:
     {
         uint32_t m_offset = 0;
         uint32_t m_value = 0;
-        uint8_t m_bytes = 4u; // PSMCT24 preserves VRAM high byte
+        uint8_t m_bytes = 4u; // write 2, 3 or 4 bytes
     };
 
     // GS PSMCT32/24: 64x32 pages, 8 KiB per page, 256-byte blocks.
     // Addresses wrap at 4 MiB, matching ps2-web-recomp GS memory.
     static uint32_t psmct32_address(
+        uint32_t base, uint32_t width, uint32_t x, uint32_t y
+    );
+
+    // PSMCT16 uses 64x64 pages and 16x8 blocks.
+    static uint32_t psmct16_address(
         uint32_t base, uint32_t width, uint32_t x, uint32_t y
     );
 

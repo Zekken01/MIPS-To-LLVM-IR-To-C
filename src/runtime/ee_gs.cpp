@@ -21,6 +21,25 @@ constexpr uint8_t k_column32[2][8] =
     {2, 3, 6, 7, 10, 11, 14, 15}
 };
 
+// Exact PSMCT16 block/column permutations from ps2-web-recomp.
+constexpr uint8_t k_block16[8][4] =
+{
+    {0, 2, 8, 10},
+    {1, 3, 9, 11},
+    {4, 6, 12, 14},
+    {5, 7, 13, 15},
+    {16, 18, 24, 26},
+    {17, 19, 25, 27},
+    {20, 22, 28, 30},
+    {21, 23, 29, 31}
+};
+
+constexpr uint8_t k_column16[2][16] =
+{
+    {0, 2, 8, 10, 16, 18, 24, 26, 1, 3, 9, 11, 17, 19, 25, 27},
+    {4, 6, 12, 14, 20, 22, 28, 30, 5, 7, 13, 15, 21, 23, 29, 31}
+};
+
 uint32_t read_le32(const uint8_t* data)
 {
     return static_cast<uint32_t>(data[0]) |
@@ -46,9 +65,39 @@ uint32_t c_ee_gs_state::psmct32_address(
     );
 }
 
+uint32_t c_ee_gs_state::psmct16_address(
+    uint32_t base, uint32_t width, uint32_t x, uint32_t y)
+{
+    // 64x64 pixels per 8192-byte page, DBW in 64-pixel units.
+    const uint64_t page =
+        (static_cast<uint64_t>(x / 64u) +
+         static_cast<uint64_t>(y / 64u) * width) * 8192u;
+    const uint32_t block =
+        k_block16[(y & 63u) / 8u][(x & 63u) / 16u];
+    const uint32_t column = ((y & 7u) / 2u) * 64u +
+        static_cast<uint32_t>(k_column16[y & 1u][x & 15u]) * 2u;
+    return static_cast<uint32_t>(
+        (static_cast<uint64_t>(base) * 256u + page +
+         block * 256u + column) & (k_vram_bytes - 1u)
+    );
+}
+
 const std::vector<uint8_t>& c_ee_gs_state::vram() const
 {
     return m_vram;
+}
+
+bool c_ee_gs_state::read_vram16(uint32_t offset, uint16_t& value) const
+{
+    if (offset > k_vram_bytes - 2u)
+    {
+        return false;
+    }
+    value = static_cast<uint16_t>(
+        static_cast<uint16_t>(m_vram[offset]) |
+        static_cast<uint16_t>(m_vram[offset + 1u] << 8u)
+    );
+    return true;
 }
 
 bool c_ee_gs_state::read_vram32(uint32_t offset, uint32_t& value) const
@@ -164,7 +213,7 @@ bool c_ee_gs_state::write_register(
         state.m_transfer_pending_size = 0u;
         if ((value & 3u) == 0u)
         {
-            // Only verified PSMCT32 and PSMCT24 uploads are executable.
+            // Only verified PSMCT32, PSMCT24 and PSMCT16 uploads execute.
             // Unsupported formats and malformed setup reject the batch.
             if (!state.m_written[0x50u] ||
                 !state.m_written[0x51u] ||
@@ -183,7 +232,7 @@ bool c_ee_gs_state::write_register(
             const uint32_t pixel_height =
                 static_cast<uint32_t>((reg_size >> 32u) & 0xfffu);
             if (dest_width == 0u ||
-                (dest_psm != 0u && dest_psm != 1u) ||
+                (dest_psm != 0u && dest_psm != 1u && dest_psm != 2u) ||
                 pixel_width == 0u || pixel_height == 0u)
             {
                 return false;
@@ -370,9 +419,8 @@ bool c_ee_gs_state::consume(
             );
             next.m_image_qwc += e.m_qwc;
 
-            // PSMCT32 stores 4 bytes in each swizzled GS word; PSMCT24
-            // uses the same addressing, preserving the word's high byte.
-            // A 16-byte GIF IMAGE boundary can split a 3-byte pixel.
+            // PSMCT32/24 share 64x32 pages; PSMCT16 uses 64x64 pages.
+            // Only PSMCT24 requires 3-byte pixel carry across GIF tags.
             const uint64_t buf = next.m_registers[0x50u];
             const uint64_t pos = next.m_registers[0x51u];
             const uint64_t reg_size = next.m_registers[0x52u];
@@ -393,7 +441,7 @@ bool c_ee_gs_state::consume(
 
             // A transfer setup may have been rewritten after TRXDIR;
             // reject it rather than applying a guessed pixel layout.
-            if (width == 0u || (psm != 0u && psm != 1u) ||
+            if (width == 0u || (psm != 0u && psm != 1u && psm != 2u) ||
                 rrw == 0u || rrh == 0u ||
                 next.m_transfer_pixels_written > total_pixels)
             {
@@ -405,15 +453,17 @@ bool c_ee_gs_state::consume(
                 const uint32_t pixel = next.m_transfer_pixels_written;
                 const uint32_t dx = (x + pixel % rrw) & 0x7ffu;
                 const uint32_t dy = (y + pixel / rrw) & 0x7ffu;
-                writes.push_back({
-                    psmct32_address(base, width, dx, dy),
-                    value, size
-                });
+                const uint32_t address = psm == 2u ?
+                    psmct16_address(base, width, dx, dy) :
+                    psmct32_address(base, width, dx, dy);
+                writes.push_back({address, value, size});
                 ++next.m_transfer_pixels_written;
             };
 
-            if (psm == 0u)
+            if (psm == 0u || psm == 2u)
             {
+                // 2-byte and 4-byte pixels cannot straddle GIF qwords.
+                const uint8_t pixel_bytes = psm == 2u ? 2u : 4u;
                 if (next.m_transfer_pending_size != 0u)
                 {
                     return false;
@@ -421,14 +471,18 @@ bool c_ee_gs_state::consume(
                 const uint32_t remaining =
                     total_pixels - next.m_transfer_pixels_written;
                 const uint32_t pixels = static_cast<uint32_t>(
-                    std::min<uint64_t>(length / 4u, remaining)
+                    std::min<uint64_t>(length / pixel_bytes, remaining)
                 );
                 for (uint32_t j = 0u; j < pixels; ++j)
                 {
                     const size_t data_offset =
                         static_cast<size_t>(offset) +
-                        static_cast<size_t>(j) * 4u;
-                    stage_pixel(read_le32(data + data_offset), 4u);
+                        static_cast<size_t>(j) * pixel_bytes;
+                    const uint32_t value = pixel_bytes == 2u ?
+                        static_cast<uint32_t>(data[data_offset]) |
+                        (static_cast<uint32_t>(data[data_offset + 1u]) << 8u) :
+                        read_le32(data + data_offset);
+                    stage_pixel(value, pixel_bytes);
                 }
             }
             else
@@ -466,7 +520,10 @@ bool c_ee_gs_state::consume(
         const uint32_t value = write.m_value;
         m_vram[offset + 0u] = static_cast<uint8_t>(value);
         m_vram[offset + 1u] = static_cast<uint8_t>(value >> 8u);
-        m_vram[offset + 2u] = static_cast<uint8_t>(value >> 16u);
+        if (write.m_bytes >= 3u)
+        {
+            m_vram[offset + 2u] = static_cast<uint8_t>(value >> 16u);
+        }
         if (write.m_bytes == 4u)
         {
             m_vram[offset + 3u] = static_cast<uint8_t>(value >> 24u);
