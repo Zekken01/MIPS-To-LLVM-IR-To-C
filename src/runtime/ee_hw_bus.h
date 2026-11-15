@@ -16,6 +16,11 @@ public:
         m_dmac.bind_cpu(cpu);
     }
 
+    void bind_memory(ee_memory* memory)
+    {
+        m_dmac.bind_memory(memory);
+    }
+
     void reset()
     {
         m_intc.reset();
