@@ -888,7 +888,8 @@ int main(int argc, char** argv)
                 }
                 continue;
             }
-            if ((service >= 0x10u && service <= 0x13u) ||
+            if ((service >= 0x10u && service <= 0x17u) ||
+                (service >= 0x1au && service <= 0x1du) ||
                 service == 0x3cu || service == 0x3du ||
                 service == 0x40u || service == 0x64u ||
                 service == 0x68u || service == 0x74u)
@@ -962,6 +963,104 @@ int main(int argc, char** argv)
                     // No interrupt callback is executed on registration.
                     // Hardware IRQ delivery to guest handlers is not yet
                     // implemented by this bounded native runner.
+                }
+
+                else if ((service >= 0x14u && service <= 0x17u) ||
+                         (service >= 0x1au && service <= 0x1du))
+                {
+                    // EE kernel enables/disables a single INTC cause or
+                    // DMAC channel. Return 1 only when the mask changed.
+                    // The hardware registers are write-one-to-toggle;
+                    // use their actual MMIO handlers to keep COP0 IRQ
+                    // levels and subsequent guest MMIO reads coherent.
+                    const uint32_t cause =
+                        static_cast<uint32_t>(cpu.m_gpr[4].m_lo);
+                    const uint32_t action = service >= 0x1au
+                        ? service - 0x06u : service;
+                    const bool intc =
+                        action == 0x14u || action == 0x15u;
+                    const bool enabled =
+                        action == 0x14u || action == 0x16u;
+                    const uint32_t maximum = intc ? 32u : 10u;
+                    if (cause >= maximum)
+                    {
+                        std::fprintf(
+                            stderr,
+                            "interrupt mask HLE refused invalid "
+                            "%s cause/channel %u\n",
+                            intc ? "INTC" : "DMAC", cause
+                        );
+                        break;
+                    }
+
+                    const uint32_t bit = intc
+                        ? (1u << cause) : (1u << (16u + cause));
+                    uint32_t old_mask = 0u;
+                    bool valid = true;
+                    if (intc)
+                    {
+                        old_mask = hardware.intc().mask();
+                    }
+                    else
+                    {
+                        ee::s_ee_u128 stat{};
+                        valid = ee::c_ee_dmac::mmio_read(
+                            &hardware.dmac(), ee::c_ee_dmac::k_stat_address,
+                            4u, &stat
+                        );
+                        old_mask = static_cast<uint32_t>(stat.m_lo);
+                    }
+                    if (!valid)
+                    {
+                        std::fprintf(
+                            stderr, "interrupt mask HLE could not read "
+                            "guest hardware mask state\n"
+                        );
+                        break;
+                    }
+
+                    const bool previously_enabled =
+                        (old_mask & bit) != 0u;
+                    const bool changed = previously_enabled != enabled;
+                    if (changed)
+                    {
+                        const ee::s_ee_u128 toggle{bit, 0u};
+                        if (intc)
+                        {
+                            valid = ee::c_ee_intc::mmio_write(
+                                &hardware.intc(),
+                                ee::c_ee_intc::k_mask_address, 4u, &toggle
+                            );
+                        }
+                        else
+                        {
+                            valid = ee::c_ee_dmac::mmio_write(
+                                &hardware.dmac(),
+                                ee::c_ee_dmac::k_stat_address, 4u, &toggle
+                            );
+                        }
+                        if (!valid)
+                        {
+                            std::fprintf(
+                                stderr, "interrupt mask HLE could not "
+                                "update guest hardware mask\n"
+                            );
+                            break;
+                        }
+                    }
+                    cpu.m_gpr[2].m_lo = changed ? 1u : 0u;
+                    cpu.m_gpr[2].m_hi = 0u;
+                    if (trace)
+                    {
+                        std::printf(
+                            "HLE %s%s: cause=%u changed=%u "
+                            "mask=0x%08x\n",
+                            enabled ? "Enable" : "Disable",
+                            intc ? "Intc" : "Dmac",
+                            cause, changed ? 1u : 0u,
+                            old_mask ^ (changed ? bit : 0u)
+                        );
+                    }
                 }
 
                 else if (service == 0x3cu)

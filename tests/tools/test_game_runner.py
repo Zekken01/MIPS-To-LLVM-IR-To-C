@@ -160,6 +160,56 @@ def make_overlapping_entry_elf(path):
     path.write_bytes(image)
 
 
+def make_interrupt_mask_elf(path):
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    image.extend(bytes(max(0, 0x500 - len(image))))
+    struct.pack_into("<I", image, 52 + 16, 0x400)
+    struct.pack_into("<I", image, 52 + 20, 0x400)
+
+    # Exercise both regular and interrupt-context syscall variants.
+    # The return value is 1 only if a hardware mask bit changes.
+    # Read actual EE INTC_MASK and DMAC D_STAT afterward to verify
+    # the syscalls affect emulated guest-visible MMIO state.
+    calls = (
+        (11, 0x14, 8),   # EnableIntc -> 1
+        (11, 0x14, 9),   # EnableIntc again -> 0
+        (11, 0x15, 10),  # DisableIntc -> 1
+        (11, 0x15, 11),  # DisableIntc again -> 0
+        (11, 0x1a, 12),  # iEnableIntc -> 1
+        (11, 0x1b, 13),  # iDisableIntc -> 1
+        (2,  0x16, 14),  # EnableDmac -> 1
+        (2,  0x16, 15),  # EnableDmac again -> 0
+        (2,  0x17, 16),  # DisableDmac -> 1
+        (2,  0x17, 17),  # DisableDmac again -> 0
+        (2,  0x1c, 18),  # iEnableDmac -> 1
+        (2,  0x1d, 19),  # iDisableDmac -> 1
+        (11, 0x14, 20),  # finally enable INTC
+        (2,  0x16, 21),  # finally enable DMAC
+    )
+    words = []
+    for cause, service, dst in calls:
+        words.extend((
+            0x24040000 | cause,       # addiu a0,zero,cause
+            0x24030000 | service,     # addiu v1,zero,service
+            0x0000000c,              # syscall
+            0x00400021 | (dst << 11),  # addu saved_register,v0,zero
+        ))
+    words.extend((
+        0x3c1a1000,  # lui k0,0x1000
+        0x375af010,  # ori k0,k0,INTC_MASK low
+        0x8f560000,  # lw s6,0(k0)
+        0x3c1a1000,  # lui k0,0x1000
+        0x375ae010,  # ori k0,k0,D_STAT low
+        0x8f570000,  # lw s7,0(k0)
+        0x00000008,  # jr zero
+        0x00000000,
+    ))
+    for index, opcode in enumerate(words):
+        struct.pack_into("<I", image, 0x108 + index * 4, opcode)
+    path.write_bytes(image)
+
+
 def make_interrupt_handlers_elf(path):
     make_elf(path)
     image = bytearray(path.read_bytes())
@@ -929,6 +979,36 @@ def main():
         assert state["final_pc"] == 0, state
         assert state["gpr_lo"][9] == 0, state  # second real syscall return
         assert state["gpr_lo"][16] == 0, state  # first real syscall return
+
+    with tempfile.TemporaryDirectory(prefix="ee-native-interrupt-masks-") as tmp:
+        root = Path(tmp)
+        elf = root / "kernel-interrupt-masks.elf"
+        make_interrupt_mask_elf(elf)
+        report_path = root / "masks.json"
+        result = subprocess.run(
+            [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf),
+                "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--max-dispatches=64",
+                "--hle-startup",
+                "--trace",
+                "--report", str(report_path),
+            ],
+            capture_output=True, text=True, check=False,
+        )
+        assert result.returncode != 0, result.stdout + result.stderr
+        for name in (
+            "EnableIntc", "DisableIntc", "EnableDmac", "DisableDmac",
+        ):
+            assert f"HLE {name}" in result.stdout, result.stdout + result.stderr
+        registers = json.loads(report_path.read_text(encoding="utf-8"))["gpr_lo"]
+        assert registers[8:16] == [1, 0, 1, 0, 1, 1, 1, 0], registers
+        assert registers[16:22] == [1, 0, 1, 1, 1, 1], registers
+        assert registers[22] == (1 << 11), registers  # INTC_MASK
+        assert registers[23] == (1 << 18), registers  # DMAC D_STAT
+        assert "interrupt mask HLE refused" not in result.stderr, result.stderr
 
     with tempfile.TemporaryDirectory(prefix="ee-native-interrupt-handlers-") as tmp:
         root = Path(tmp)

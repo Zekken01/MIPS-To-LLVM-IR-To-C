@@ -809,6 +809,39 @@ replayed to establish the actual target of its ErrorEPC
 return and the next initialization dependency. No fake
 ErrorEPC or BIOS register contents are introduced.
 
+### EE interrupt mask syscalls (US SDBZ, dispatch 104)
+
+After correcting ERET, the original US ELF reaches dispatch
+**104**, with a SYSCALL at 0x001749E4 (opcode 0x0000000C,
+V1=0x14, A0=11; the caller is 0x001757E8). This is
+`EnableIntc(11)`, confirmed by the reference kernel.
+The earlier failure at dispatch 98 has been cleared by the
+ERL/ErrorEPC fix, and the shared native code translations at
+0x0017F650 and 0x0017F660 are traversed correctly.
+
+The reference `ps2-web-recomp/runtime/src/kernel.cpp` services
+0x14/0x15 (EnableIntc/DisableIntc), 0x16/0x17
+(EnableDmac/DisableDmac), and 0x1A–0x1D interrupt-context
+variants use `hw::intc_set_mask` / `hw::dmac_set_mask`.
+They return **1 only if a mask bit changes**, otherwise 0.
+The native runner now routes these calls through the
+existing EE hardware MMIO models: INTC_MASK uses write-one-
+to-toggle at 0x1000F010, and DMAC D_STAT uses the upper
+16 write-one-to-toggle mask bits at 0x1000E010.
+Reads and pending interrupt levels remain consistent with
+those device models. Invalid causes/channels fail closed;
+no phantom interrupt callback is invoked.
+
+A synthetic MIPS ELF runs all regular and interrupt-context
+variants, verifies repeated enable/disable return values and
+reads INTC_MASK and D_STAT from guest code after changes.
+
+**Unverified after this change:** replay the real US ELF from
+fresh or provenance-compatible translated code to establish
+the next concrete boot blocker. Native interrupt delivery
+and guest callback scheduling are not implemented by these
+mask-management services alone.
+
 ## Validation limits
 
 CTest contains `game_runner_end_to_end` which creates small synthetic MIPS
