@@ -22,6 +22,16 @@ constexpr uint8_t k_column32[2][8] =
     {2, 3, 6, 7, 10, 11, 14, 15}
 };
 
+// Depth buffers share the color column tables, but use independent
+// GS block permutations from ps2-web-recomp GS build_tables().
+constexpr uint8_t k_blockz32[4][8] =
+{
+    {24, 25, 28, 29, 8, 9, 12, 13},
+    {26, 27, 30, 31, 10, 11, 14, 15},
+    {16, 17, 20, 21, 0, 1, 4, 5},
+    {18, 19, 22, 23, 2, 3, 6, 7}
+};
+
 // Exact PSMCT16 block/column permutations from ps2-web-recomp.
 constexpr uint8_t k_block16[8][4] =
 {
@@ -51,6 +61,30 @@ constexpr uint8_t k_column16[2][16] =
 {
     {0, 2, 8, 10, 16, 18, 24, 26, 1, 3, 9, 11, 17, 19, 25, 27},
     {4, 6, 12, 14, 20, 22, 28, 30, 5, 7, 13, 15, 21, 23, 29, 31}
+};
+
+constexpr uint8_t k_blockz16[8][4] =
+{
+    {24, 26, 16, 18},
+    {25, 27, 17, 19},
+    {28, 30, 20, 22},
+    {29, 31, 21, 23},
+    {8, 10, 0, 2},
+    {9, 11, 1, 3},
+    {12, 14, 4, 6},
+    {13, 15, 5, 7}
+};
+
+constexpr uint8_t k_blockz16s[8][4] =
+{
+    {24, 26, 8, 10},
+    {25, 27, 9, 11},
+    {16, 18, 0, 2},
+    {17, 19, 1, 3},
+    {28, 30, 12, 14},
+    {29, 31, 13, 15},
+    {20, 22, 4, 6},
+    {21, 23, 5, 7}
 };
 
 // PSMT8 uses the reference's word-column permutation; each index
@@ -103,6 +137,41 @@ uint32_t c_ee_gs_state::psmct16_address(
     const uint32_t block = psm == 0x0au ?
         k_block16s[(y & 63u) / 8u][(x & 63u) / 16u] :
         k_block16[(y & 63u) / 8u][(x & 63u) / 16u];
+    const uint32_t column = ((y & 7u) / 2u) * 64u +
+        static_cast<uint32_t>(k_column16[y & 1u][x & 15u]) * 2u;
+    return static_cast<uint32_t>(
+        (static_cast<uint64_t>(base) * 256u + page +
+         block * 256u + column) & (k_vram_bytes - 1u)
+    );
+}
+
+uint32_t c_ee_gs_state::psmz32_address(
+    uint32_t base, uint32_t width, uint32_t x, uint32_t y)
+{
+    // 64x32 pages, 8x8 blocks, shared 32-bit column table.
+    const uint64_t page =
+        (static_cast<uint64_t>(x / 64u) +
+         static_cast<uint64_t>(y / 32u) * width) * 8192u;
+    const uint32_t block = k_blockz32[(y & 31u) / 8u][(x & 63u) / 8u];
+    const uint32_t column = ((y & 7u) / 2u) * 64u +
+        static_cast<uint32_t>(k_column32[y & 1u][x & 7u]) * 4u;
+    return static_cast<uint32_t>(
+        (static_cast<uint64_t>(base) * 256u + page +
+         block * 256u + column) & (k_vram_bytes - 1u)
+    );
+}
+
+uint32_t c_ee_gs_state::psmz16_address(
+    uint32_t base, uint32_t width, uint32_t x, uint32_t y,
+    uint32_t psm)
+{
+    // 64x64 pages, 16x8 blocks, shared 16-bit column table.
+    const uint64_t page =
+        (static_cast<uint64_t>(x / 64u) +
+         static_cast<uint64_t>(y / 64u) * width) * 8192u;
+    const uint32_t block = psm == 0x3au ?
+        k_blockz16s[(y & 63u) / 8u][(x & 63u) / 16u] :
+        k_blockz16[(y & 63u) / 8u][(x & 63u) / 16u];
     const uint32_t column = ((y & 7u) / 2u) * 64u +
         static_cast<uint32_t>(k_column16[y & 1u][x & 15u]) * 2u;
     return static_cast<uint32_t>(
@@ -525,7 +594,7 @@ bool c_ee_gs_state::write_register(
         state.m_transfer_pending_size = 0u;
         if ((value & 3u) == 0u)
         {
-            // Verified PSMCT32/24/16/16S and five indexed formats execute.
+            // Verified color, depth and five indexed formats execute.
             // Unsupported formats and malformed setup reject the batch.
             if (!state.m_written[0x50u] ||
                 !state.m_written[0x51u] ||
@@ -548,7 +617,9 @@ bool c_ee_gs_state::write_register(
                  dest_psm != 2u && dest_psm != 0x0au &&
                  dest_psm != 0x13u && dest_psm != 0x14u &&
                  dest_psm != 0x1bu && dest_psm != 0x24u &&
-                 dest_psm != 0x2cu) ||
+                 dest_psm != 0x2cu && dest_psm != 0x30u &&
+                 dest_psm != 0x31u && dest_psm != 0x32u &&
+                 dest_psm != 0x3au) ||
                 pixel_width == 0u || pixel_height == 0u)
             {
                 return false;
@@ -761,9 +832,10 @@ bool c_ee_gs_state::consume(
             );
             next.m_image_qwc += e.m_qwc;
 
-            // PSMCT32/24 and 8H/4HL/4HH share 64x32 pages,
-            // PSMCT16/16S use 64x64, PSMT8 uses 128x64, and
-            // PSMT4 uses 128x128. Only PSMCT24 needs carry.
+            // Depth PSMZ32/24 use 64x32 pages and Z16/16S use
+            // 64x64 pages, with depth-specific block permutations.
+            // Indexed/high-byte formats retain their own page rules.
+            // Both 24-bit color and depth require partial-pixel carry.
             const uint64_t buf = next.m_registers[0x50u];
             const uint64_t pos = next.m_registers[0x51u];
             const uint64_t reg_size = next.m_registers[0x52u];
@@ -788,7 +860,9 @@ bool c_ee_gs_state::consume(
                 (psm != 0u && psm != 1u && psm != 2u &&
                  psm != 0x0au && psm != 0x13u &&
                  psm != 0x14u && psm != 0x1bu &&
-                 psm != 0x24u && psm != 0x2cu) ||
+                 psm != 0x24u && psm != 0x2cu &&
+                 psm != 0x30u && psm != 0x31u &&
+                 psm != 0x32u && psm != 0x3au) ||
                 rrw == 0u || rrh == 0u ||
                 next.m_transfer_pixels_written > total_pixels)
             {
@@ -820,6 +894,14 @@ bool c_ee_gs_state::consume(
                     // one 8-bit index or one of two 4-bit index lanes.
                     address = psmct32_address(base, width, dx, dy) + 3u;
                     shift = psm == 0x2cu ? 4u : 0u;
+                }
+                else if (psm == 0x30u || psm == 0x31u)
+                {
+                    address = psmz32_address(base, width, dx, dy);
+                }
+                else if (psm == 0x32u || psm == 0x3au)
+                {
+                    address = psmz16_address(base, width, dx, dy, psm);
                 }
                 else if (psm == 2u || psm == 0x0au)
                 {
@@ -857,12 +939,14 @@ bool c_ee_gs_state::consume(
                 }
             }
             else if (psm == 0u || psm == 2u ||
-                     psm == 0x0au || psm == 0x13u || psm == 0x1bu)
+                     psm == 0x0au || psm == 0x13u || psm == 0x1bu ||
+                     psm == 0x30u || psm == 0x32u || psm == 0x3au)
             {
                 // 1-, 2- and 4-byte indices/pixels fit GIF qwords.
                 const uint8_t pixel_bytes =
                     (psm == 0x13u || psm == 0x1bu) ? 1u :
-                    (psm == 2u || psm == 0x0au) ? 2u : 4u;
+                    (psm == 2u || psm == 0x0au ||
+                     psm == 0x32u || psm == 0x3au) ? 2u : 4u;
                 if (next.m_transfer_pending_size != 0u)
                 {
                     return false;
