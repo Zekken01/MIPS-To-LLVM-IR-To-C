@@ -60,10 +60,10 @@ s_lifted_op lift(const s_ee_instruction& insn)
     case e_ee_opcode::OP_BLEZL: op.kind = LOP_BLTZ; break;
     case e_ee_opcode::OP_BGTZL: op.kind = LOP_BGEZ; break;
     case e_ee_opcode::OP_DADDI: op.kind = LOP_DADDIU; break;
-    case e_ee_opcode::OP_LDL: op.kind = LOP_LD; break;
-    case e_ee_opcode::OP_LDR: op.kind = LOP_LD; break;
-    case e_ee_opcode::OP_SWR: op.kind = LOP_SW; break;
-    case e_ee_opcode::OP_SDR: op.kind = LOP_SD; break;
+    case e_ee_opcode::OP_LDL: op.kind = LOP_LDL; break;
+    case e_ee_opcode::OP_LDR: op.kind = LOP_LDR; break;
+    case e_ee_opcode::OP_SWR: op.kind = LOP_SWR; break;
+    case e_ee_opcode::OP_SDR: op.kind = LOP_SDR; break;
     case e_ee_opcode::OP_LQC2: op.kind = LOP_LQC2; break;
     case e_ee_opcode::OP_SQC2: op.kind = LOP_SQC2; break;
     case e_ee_opcode::OP_CACHE: op.kind = LOP_NOP; break;
