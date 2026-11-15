@@ -671,6 +671,15 @@ def make_spin_elf(path):
     path.write_bytes(image)
 
 
+def make_repeated_dispatch_elf(path):
+    """A recursive JAL exits through the dispatcher on every guest call."""
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    struct.pack_into("<I", image, 0x108, 0x0c040002)  # jal 0x00100008
+    struct.pack_into("<I", image, 0x10c, 0x00000000)  # delay slot
+    path.write_bytes(image)
+
+
 def make_call_elf(path):
     make_elf(path)
     image = bytearray(path.read_bytes())
@@ -1627,6 +1636,40 @@ def main():
         assert events[0]["a0"] == 7, events
         assert events[0]["v0"] == 12, events
         assert events[0]["returned"] is True, events
+
+    # Progress diagnostics should measure native dispatch versus JSON
+    # checkpoint costs without relying on the real game ELF. A recursive
+    # JAL creates 300 bounded dispatcher calls and must emit progress at
+    # 256 and an end-of-run timing summary.
+    with tempfile.TemporaryDirectory(prefix="ee-native-progress-profile-") as tmp:
+        root = Path(tmp)
+        elf = root / "dispatch-loop.elf"
+        make_repeated_dispatch_elf(elf)
+        report_path = root / "progress.json"
+        result = subprocess.run(
+            [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf),
+                "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--max-dispatches=300",
+                "--timeout-seconds=30",
+                "--report", str(report_path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+        assert result.returncode == 4, result.stdout + result.stderr
+        snapshot = json.loads(report_path.read_text(encoding="utf-8"))
+        assert snapshot["snapshot_kind"] == "stopped", snapshot
+        assert snapshot["dispatches"] == 300, snapshot
+        assert "EE progress: dispatched=256" in result.stderr, result.stderr
+        assert "EE timing: dispatched=300" in result.stderr, result.stderr
+        assert "native_ms=" in result.stderr, result.stderr
+        assert "report_ms=" in result.stderr, result.stderr
+        assert "slowest_native_pc=" in result.stderr, result.stderr
 
     with tempfile.TemporaryDirectory(prefix="ee-native-timeout-snapshot-") as tmp:
         root = Path(tmp)

@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -31,6 +32,8 @@ constexpr uint32_t k_ee_ram_size = 32u * 1024u * 1024u;
 constexpr uint32_t k_default_stack = 0x01fff000u;
 constexpr uint32_t k_default_dispatch_budget = 10000u;
 constexpr uint32_t k_report_history_limit = 64u;
+constexpr uint64_t k_report_snapshot_interval = 128u;
+constexpr uint64_t k_report_progress_interval = 256u;
 constexpr uint32_t k_kernel_ram_snapshot_size = 0x80000u;
 // ps2-web-recomp runtime/src/kernel.cpp uses this guest-visible HLE
 // syscall table. Kernel addresses 0x80001800..0x80001BFF alias it.
@@ -698,19 +701,33 @@ int main(int argc, char** argv)
     uint32_t status = 0;
     uint32_t reason = cpu.m_exit_reason;
     uint64_t last_snapshot_dispatch = 0;
+    uint64_t last_progress_dispatch = 0;
     bool last_snapshot_callback_active = false;
+    const auto wall_start = std::chrono::steady_clock::now();
+    double report_time_ms = 0.0;
+    double native_time_ms = 0.0;
+    double slowest_native_ms = 0.0;
+    uint32_t slowest_native_pc = 0u;
     while (remaining != 0)
     {
         if (report_path != nullptr &&
             (dispatched == 0 ||
-             dispatched - last_snapshot_dispatch >= 16u ||
+             dispatched - last_snapshot_dispatch >= k_report_snapshot_interval ||
              callback_active != last_snapshot_callback_active))
         {
-            // Durable progress state: survives an external wall-clock kill.
-            // The translated function may still loop internally without
-            // dispatching, so this is the *last observed* guest state.
-            if (!write_report(report_path, image, cpu, entry, dispatched,
-                              reason, status, history, syscall_history, true))
+            // Durable progress state survives an external wall-clock kill.
+            // Report every 128 dispatches instead of reopening and writing
+            // the full JSON report every 16 dispatches. Guest code can still
+            // loop internally without returning to the dispatcher.
+            const auto report_start = std::chrono::steady_clock::now();
+            const bool report_ok = write_report(
+                report_path, image, cpu, entry, dispatched,
+                reason, status, history, syscall_history, true
+            );
+            report_time_ms += std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - report_start
+            ).count();
+            if (!report_ok)
             {
                 return 1;
             }
@@ -780,7 +797,20 @@ int main(int argc, char** argv)
         uint32_t count = 0;
         uint32_t out_pc = from_pc;
         const uint32_t slice = (trace || report_path != nullptr) ? 1u : remaining;
+        const auto native_start = std::chrono::steady_clock::now();
         reason = native_run(&cpu, &runtime, slice, &count, &out_pc, &status);
+        if (report_path != nullptr)
+        {
+            const double duration_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - native_start
+            ).count();
+            native_time_ms += duration_ms;
+            if (duration_ms > slowest_native_ms)
+            {
+                slowest_native_ms = duration_ms;
+                slowest_native_pc = from_pc;
+            }
+        }
 
         if (count > slice)
         {
@@ -797,6 +827,25 @@ int main(int argc, char** argv)
                 history.erase(history.begin());
             }
             history.push_back({dispatched, from_pc, out_pc, reason, status});
+        }
+
+        if (report_path != nullptr &&
+            dispatched - last_progress_dispatch >= k_report_progress_interval)
+        {
+            const double elapsed_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - wall_start
+            ).count();
+            std::fprintf(
+                stderr,
+                "EE progress: dispatched=%llu pc=0x%08x "
+                "elapsed_ms=%.1f native_ms=%.1f report_ms=%.1f "
+                "slowest_native_pc=0x%08x slowest_native_ms=%.3f\n",
+                static_cast<unsigned long long>(dispatched),
+                cpu.m_pc, elapsed_ms, native_time_ms, report_time_ms,
+                slowest_native_pc, slowest_native_ms
+            );
+            std::fflush(stderr);
+            last_progress_dispatch = dispatched;
         }
 
         if (trace)
@@ -1526,6 +1575,22 @@ int main(int argc, char** argv)
         {
             break;
         }
+    }
+
+    if (report_path != nullptr)
+    {
+        const double elapsed_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - wall_start
+        ).count();
+        std::fprintf(
+            stderr,
+            "EE timing: dispatched=%llu elapsed_ms=%.1f native_ms=%.1f "
+            "report_ms=%.1f slowest_native_pc=0x%08x "
+            "slowest_native_ms=%.3f\n",
+            static_cast<unsigned long long>(dispatched), elapsed_ms,
+            native_time_ms, report_time_ms,
+            slowest_native_pc, slowest_native_ms
+        );
     }
 
     if (callback_active)

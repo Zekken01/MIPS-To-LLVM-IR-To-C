@@ -1040,6 +1040,45 @@ exercise multiple passes, reuse flags, halting on a real blocker,
 preserving errors, and final trace generation. The private ELF
 continues to be tested only by the user on Windows.
 
+### Real-game replay 70: wall-clock timeout with 170 guest functions (US SDBZ)
+
+The user's fifth local run used cached ELF translation and successfully
+compiled **70 additional functions**, increasing the linked guest library
+from 100 to **170 functions**. The next replay stopped due to the
+**120-second wall-clock limit**, not function-discovery exhaustion:
+`run_game.py` reported `replay=70`, with its last durable guest
+snapshot at **5,374 dispatches**, PC `0x0030BBB4`. The report was
+`snapshot_kind=in_progress`, not `stopped`, so the last sampled
+PC need not be the exact instruction at host timeout.
+
+The final 64-dispatch history alternated between `0x0030BBB4`
+and `0x0030C1A0`. Static disassembly of the user's US ELF
+shows that `0x0030BB70` performs a bounded 12-digit conversion
+with a per-digit call to `0x0030C1A0` (the one-byte writer).
+Consequently repeated visits alone do not establish an infinite
+loop or a new kernel-service blocker.
+
+The native runner now writes its in-progress JSON checkpoint
+every **128 dispatches**, or when the guest syscall callback state
+changes, rather than every 16. This reduces repeated file
+reopen/truncate/serialize work eightfold, while preserving
+on-exit full stop state. It also prints periodic
+`EE progress:` lines every **256 dispatches**, reporting:
+wall elapsed milliseconds, accumulated guest native-dispatch
+milliseconds, accumulated report-write milliseconds, and the
+slowest completed native dispatch PC/duration. A terminal
+`EE timing:` line reports totals for a normally completed
+runner. These diagnostics distinguish checkpoint overhead from
+native instruction work without guessing, and do not assume
+the game has booted correctly.
+
+Only `src/tools/ee_game_runner_main.cpp` is modified;
+the translator, object linker, and native DLL remain unchanged,
+preserving the 170-function translated cache. The next user-owned
+Windows run is needed to measure the new timing counters and
+determine whether the slowdown is a native loop, a long
+game initialization, or report/dispatch overhead.
+
 ## Validation limits
 
 CTest contains `game_runner_end_to_end` which creates small synthetic MIPS
