@@ -83,6 +83,9 @@ target_link_libraries(ee_function_discovery_test PRIVATE ee_core)
 add_executable(ee_dispatcher_test tests/smoke/dispatcher_test.cpp)
 target_link_libraries(ee_dispatcher_test PRIVATE ee_core)
 
+add_executable(ee_dispatch_interrupt_test tests/smoke/ee_dispatch_interrupt_test.cpp)
+target_link_libraries(ee_dispatch_interrupt_test PRIVATE ee_core)
+
 # VU0 transfer scheduler contract and architectural state regression tests.
 add_executable(ee_vu0_runtime_test tests/smoke/vu0_runtime_test.cpp)
 target_link_libraries(ee_vu0_runtime_test PRIVATE ee_core)
@@ -209,6 +212,7 @@ if(Python3_Interpreter_FOUND)
 endif()
 add_test(NAME decoder COMMAND ee_decoder_test)
 add_test(NAME dispatcher COMMAND ee_dispatcher_test)
+add_test(NAME ee_dispatch_interrupt COMMAND ee_dispatch_interrupt_test)
 add_test(NAME ee_memory_alias COMMAND ee_memory_alias_test)
 add_test(NAME ee_physical_bus COMMAND ee_physical_bus_test)
 add_test(NAME ee_intc COMMAND ee_intc_test)
