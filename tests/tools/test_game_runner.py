@@ -185,6 +185,9 @@ def make_flush_cache_elf(path):
 def make_kernel_ram_handler_elf(path, invoke=False):
     make_elf(path)
     image = bytearray(path.read_bytes())
+    image.extend(bytes(max(0, 0x180 - len(image))))
+    struct.pack_into("<I", image, 52 + 16, 0x80)
+    struct.pack_into("<I", image, 52 + 20, 0x80)
     # Store a tiny guest code word at KSEG0 0x80076000, register that
     # direct RAM address for syscall 0x5B, and read back the kernel
     # table through KSEG0. Invoke it or clear the registration.
