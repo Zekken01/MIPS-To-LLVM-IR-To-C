@@ -105,7 +105,6 @@ echo Log: "%WORK_DIR%\boot.log"
 echo Report: "%WORK_DIR%\first-boot.json"
 
 python tools\run_game.py "%ELF%" ^
-    %REUSE_FLAG% ^
     --build-dir build ^
     --config Release ^
     --work-dir "%WORK_DIR%" ^
@@ -117,7 +116,7 @@ python tools\run_game.py "%ELF%" ^
     --max-dispatches=100000 ^
     --timeout-seconds=120 ^
     --trace ^
-    --report "%WORK_DIR%\first-boot.json" > "%WORK_DIR%\boot.log" 2>&1
+    --report "%WORK_DIR%\first-boot.json" %REUSE_FLAG% > "%WORK_DIR%\boot.log" 2>&1
 
 set "EXIT_CODE=%ERRORLEVEL%"
 echo.
