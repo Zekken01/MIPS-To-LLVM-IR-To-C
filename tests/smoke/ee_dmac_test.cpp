@@ -107,15 +107,15 @@ int main()
         return fail("INTC acknowledgement did not clear its separate line");
     }
 
-    // Register writes only: there is no DMA engine, QWC decrement, or
-    // fabricated completion when a channel control register is written.
-    ee::ee_mem_write32(&runtime, 0x10009000u, 0x100u);
+    // VIF1 register state is now backed, but a missing host VIF
+    // consumer must not generate fake DMA completion or consume QWC.
     ee::ee_mem_write32(&runtime, 0x10009020u, 0x10u);
-    if (ee::ee_mem_read32(&runtime, 0x10009000u) != 0 ||
-        ee::ee_mem_read32(&runtime, 0x10009020u) != 0 ||
+    ee::ee_mem_write32(&runtime, 0x10009000u, 0x101u);
+    if (ee::ee_mem_read32(&runtime, 0x10009000u) != 0x101u ||
+        ee::ee_mem_read32(&runtime, 0x10009020u) != 0x10u ||
         hardware.dmac().status() != ((ch1 | ch8) << 16u))
     {
-        return fail("unimplemented DMA channel control reported false state");
+        return fail("missing VIF1 consumer falsely completed DMA");
     }
 
     // Only 32-bit D_STAT accesses are supported at this milestone.
