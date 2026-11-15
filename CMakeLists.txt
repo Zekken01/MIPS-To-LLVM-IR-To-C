@@ -260,6 +260,9 @@ endif()
 
 enable_testing()
 if(Python3_Interpreter_FOUND)
+    add_test(NAME verify_ir_incremental
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/tools/test_verify_ir_incremental.py)
     add_test(NAME vu0_trace_comparator
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_compare_vu0_traces.py)
