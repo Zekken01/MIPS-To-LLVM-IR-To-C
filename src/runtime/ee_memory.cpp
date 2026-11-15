@@ -262,67 +262,196 @@ void ee_memory::write64(uint32_t addr, uint64_t value)
 
 namespace
 {
+// Map only the two VU0 byte-addressable windows already modelled by
+// s_ee_vu0_state. The EE's VU1 windows, MMIO and TLB are intentionally
+// still unmapped. See ps2-web-recomp's vu_memory() physical decoder.
+uint8_t* map_vu0_memory(s_ee_runtime* rt, uint32_t addr, size_t length)
+{
+    if (rt == nullptr || rt->m_vu0_state == nullptr)
+    {
+        return nullptr;
+    }
+
+    constexpr uint32_t k_vu0_code_base = 0x11000000u;
+    constexpr uint32_t k_vu0_data_base = 0x11004000u;
+    constexpr uint32_t k_vu0_window_size = 0x1000u;
+
+    uint8_t* region = nullptr;
+    uint32_t offset = 0;
+
+    if (addr >= k_vu0_code_base && addr < k_vu0_code_base + k_vu0_window_size)
+    {
+        region = rt->m_vu0_state->m_micro_memory;
+        offset = addr - k_vu0_code_base;
+    }
+    else if (addr >= k_vu0_data_base && addr < k_vu0_data_base + k_vu0_window_size)
+    {
+        region = rt->m_vu0_state->m_data_memory;
+        offset = addr - k_vu0_data_base;
+    }
+    else
+    {
+        return nullptr;
+    }
+
+    // Reject crossing accesses in their entirety. The window does not
+    // overlap ordinary EE RAM and is not a silently wrapping byte array.
+    if (length > static_cast<size_t>(k_vu0_window_size - offset))
+    {
+        return nullptr;
+    }
+
+    return region + offset;
+}
+
 ee_memory* runtime_memory(s_ee_runtime* rt)
 {
-    return static_cast<ee_memory*>(rt ? rt->m_user : nullptr);
+    return static_cast<ee_memory*>(rt != nullptr ? rt->m_user : nullptr);
 }
 } // namespace
 
 uint8_t ee_mem_read8(s_ee_runtime* rt, uint32_t addr)
 {
-    ee_memory* mem = runtime_memory(rt);
-    return mem ? mem->read8(addr) : 0;
+    if (const uint8_t* bytes = map_vu0_memory(rt, addr, 1))
+    {
+        return bytes[0];
+    }
+
+    ee_memory* memory = runtime_memory(rt);
+    return memory != nullptr ? memory->read8(addr) : 0;
 }
 
 uint16_t ee_mem_read16(s_ee_runtime* rt, uint32_t addr)
 {
-    ee_memory* mem = runtime_memory(rt);
-    return mem ? mem->read16(addr) : 0;
+    if (const uint8_t* bytes = map_vu0_memory(rt, addr, 2))
+    {
+        return static_cast<uint16_t>(load_le(bytes, 2));
+    }
+
+    ee_memory* memory = runtime_memory(rt);
+    return memory != nullptr ? memory->read16(addr) : 0;
 }
 
 uint32_t ee_mem_read32(s_ee_runtime* rt, uint32_t addr)
 {
-    ee_memory* mem = runtime_memory(rt);
-    return mem ? mem->read32(addr) : 0;
+    if (const uint8_t* bytes = map_vu0_memory(rt, addr, 4))
+    {
+        return static_cast<uint32_t>(load_le(bytes, 4));
+    }
+
+    ee_memory* memory = runtime_memory(rt);
+    return memory != nullptr ? memory->read32(addr) : 0;
 }
 
 uint64_t ee_mem_read64(s_ee_runtime* rt, uint32_t addr)
 {
-    ee_memory* mem = runtime_memory(rt);
-    return mem ? mem->read64(addr) : 0;
+    if (const uint8_t* bytes = map_vu0_memory(rt, addr, 8))
+    {
+        return load_le(bytes, 8);
+    }
+
+    ee_memory* memory = runtime_memory(rt);
+    return memory != nullptr ? memory->read64(addr) : 0;
 }
 
 void ee_mem_read128(s_ee_runtime* rt, uint32_t addr, s_ee_u128* out)
 {
-    if (!out) return;
-    ee_memory* mem = runtime_memory(rt);
-    if (mem) mem->read128(addr, out);
-    else *out = {};
+    if (out == nullptr)
+    {
+        return;
+    }
+
+    if (const uint8_t* bytes = map_vu0_memory(rt, addr, 16))
+    {
+        out->m_lo = load_le(bytes, 8);
+        out->m_hi = load_le(bytes + 8, 8);
+        return;
+    }
+
+    if (ee_memory* memory = runtime_memory(rt))
+    {
+        memory->read128(addr, out);
+    }
+    else
+    {
+        *out = {};
+    }
 }
 
 void ee_mem_write8(s_ee_runtime* rt, uint32_t addr, uint8_t value)
 {
-    if (ee_memory* mem = runtime_memory(rt)) mem->write8(addr, value);
+    if (uint8_t* bytes = map_vu0_memory(rt, addr, 1))
+    {
+        bytes[0] = value;
+        return;
+    }
+
+    if (ee_memory* memory = runtime_memory(rt))
+    {
+        memory->write8(addr, value);
+    }
 }
 
 void ee_mem_write16(s_ee_runtime* rt, uint32_t addr, uint16_t value)
 {
-    if (ee_memory* mem = runtime_memory(rt)) mem->write16(addr, value);
+    if (uint8_t* bytes = map_vu0_memory(rt, addr, 2))
+    {
+        store_le(bytes, 2, value);
+        return;
+    }
+
+    if (ee_memory* memory = runtime_memory(rt))
+    {
+        memory->write16(addr, value);
+    }
 }
 
 void ee_mem_write32(s_ee_runtime* rt, uint32_t addr, uint32_t value)
 {
-    if (ee_memory* mem = runtime_memory(rt)) mem->write32(addr, value);
+    if (uint8_t* bytes = map_vu0_memory(rt, addr, 4))
+    {
+        store_le(bytes, 4, value);
+        return;
+    }
+
+    if (ee_memory* memory = runtime_memory(rt))
+    {
+        memory->write32(addr, value);
+    }
 }
 
 void ee_mem_write64(s_ee_runtime* rt, uint32_t addr, uint64_t value)
 {
-    if (ee_memory* mem = runtime_memory(rt)) mem->write64(addr, value);
+    if (uint8_t* bytes = map_vu0_memory(rt, addr, 8))
+    {
+        store_le(bytes, 8, value);
+        return;
+    }
+
+    if (ee_memory* memory = runtime_memory(rt))
+    {
+        memory->write64(addr, value);
+    }
 }
 
 void ee_mem_write128(s_ee_runtime* rt, uint32_t addr, const s_ee_u128* value)
 {
-    if (ee_memory* mem = runtime_memory(rt)) mem->write128(addr, value);
+    if (value == nullptr)
+    {
+        return;
+    }
+
+    if (uint8_t* bytes = map_vu0_memory(rt, addr, 16))
+    {
+        store_le(bytes, 8, value->m_lo);
+        store_le(bytes + 8, 8, value->m_hi);
+        return;
+    }
+
+    if (ee_memory* memory = runtime_memory(rt))
+    {
+        memory->write128(addr, value);
+    }
 }
 
 } // namespace ee
