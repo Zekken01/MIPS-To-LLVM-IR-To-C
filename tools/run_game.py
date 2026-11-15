@@ -323,6 +323,10 @@ def main(argv=None):
                         help="parallel LLVM object-emission processes (default: 2)")
     parser.add_argument("--max-dispatches", type=int, default=10000)
     parser.add_argument(
+        "--loop-budget", type=int, default=0,
+        help="Optional translated CFG loop-header watchdog limit per native dispatch (0=off)",
+    )
+    parser.add_argument(
         "--timeout-seconds", type=int, default=10,
         help="hard wall-time limit for each guest replay (default: 10)",
     )
@@ -347,6 +351,8 @@ def main(argv=None):
         parser.error("--emit-jobs must be between 1 and 32")
     if args.max_dispatches <= 0 or args.max_dispatches > 0xFFFFFFFF:
         parser.error("--max-dispatches must fit a positive uint32")
+    if args.loop_budget < 0 or args.loop_budget > 0xFFFFFFFF:
+        parser.error("--loop-budget must fit a uint32")
     if args.timeout_seconds < 1 or args.timeout_seconds > 3600:
         parser.error("--timeout-seconds must be in [1, 3600]")
     if args.auto_expand < 0 or args.auto_expand > 128:
@@ -459,6 +465,7 @@ def main(argv=None):
         command = [
             runner, elf, library,
             f"--max-dispatches={args.max_dispatches}",
+            f"--loop-budget={args.loop_budget}",
             f"--entry=0x{entry:08x}",
         ]
         if args.stack is not None:
