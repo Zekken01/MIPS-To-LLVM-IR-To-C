@@ -216,7 +216,11 @@ def append_function(recomp, elf, work, metadata_path, address):
         return False
 
     output_dir = work / "extra" / f"{address:08x}"
-    run([recomp, elf, output_dir, f"--function=0x{address:08x}"])
+    command = [recomp, elf, output_dir, f"--function=0x{address:08x}"]
+    discovery_cache = work / "ir" / "ee_discovery_cache.bin"
+    if discovery_cache.is_file():
+        command.append(f"--discovery-cache={discovery_cache}")
+    run(command)
     extra_metadata = json.loads((output_dir / "ee_functions.json").read_text(
         encoding="utf-8"
     ))
