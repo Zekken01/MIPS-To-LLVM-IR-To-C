@@ -652,6 +652,7 @@ int main(int argc, char** argv)
         bool m_used = false;
         uint32_t m_count = 0;
         uint32_t m_max_count = 0;
+        uint32_t m_initial_count = 0;
         uint32_t m_attr = 0;
         uint32_t m_option = 0;
     };
@@ -983,7 +984,7 @@ int main(int argc, char** argv)
                 service == 0x29u || service == 0x2au ||
                 service == 0x2fu ||
                 service == 0x3cu || service == 0x3du ||
-                service == 0x40u ||
+                (service >= 0x40u && service <= 0x48u) ||
                 service == 0x4au || service == 0x4bu ||
                 service == 0x64u ||
                 service == 0x68u || service == 0x74u)
@@ -1435,6 +1436,7 @@ int main(int argc, char** argv)
                     semaphore.m_used = true;
                     semaphore.m_count = init_count;
                     semaphore.m_max_count = max_count;
+                    semaphore.m_initial_count = init_count;
                     semaphore.m_attr = attr;
                     semaphore.m_option = option;
                     cpu.m_gpr[2].m_lo = id;
@@ -1446,6 +1448,167 @@ int main(int argc, char** argv)
                             id, init_count, max_count, attr, option,
                             parameter_address
                         );
+                    }
+                }
+
+                else if (service >= 0x41u && service <= 0x48u)
+                {
+                    const uint32_t semaphore_id =
+                        static_cast<uint32_t>(cpu.m_gpr[4].m_lo);
+                    if (semaphore_id == 0u || semaphore_id > 64u ||
+                        !semaphores[semaphore_id - 1u].m_used)
+                    {
+                        // Unallocated/deleted IDs are normal kernel errors,
+                        // not a reason to fabricate semaphore state.
+                        cpu.m_gpr[2].m_lo = static_cast<uint64_t>(-1ll);
+                        cpu.m_gpr[2].m_hi = 0u;
+                        if (trace)
+                        {
+                            std::printf(
+                                "HLE semaphore service=0x%02x id=%u "
+                                "not found, result=-1\n",
+                                service, semaphore_id
+                            );
+                        }
+                    }
+                    else
+                    {
+                        s_kernel_semaphore& semaphore =
+                            semaphores[semaphore_id - 1u];
+                        const uint32_t old_count = semaphore.m_count;
+                        if (service == 0x44u && old_count == 0u)
+                        {
+                            // A real WaitSema blocks the *current thread*
+                            // and schedules another. There is no guest EE
+                            // scheduler in this runner, so leave EPC/EXL
+                            // intact instead of reporting a fake success.
+                            std::fprintf(
+                                stderr,
+                                "WaitSema HLE refused blocking wait: "
+                                "id=%u current_thread=%u count=0 "
+                                "(EE thread scheduler required)\n",
+                                semaphore_id, current_thread_id
+                            );
+                            break;
+                        }
+
+                        if (service == 0x41u)
+                        {
+                            // All allocated semaphores have zero waiters
+                            // because blocking waits currently fail closed.
+                            semaphore = {};
+                        }
+                        else if (service == 0x42u || service == 0x43u)
+                        {
+                            if (semaphore.m_count == semaphore.m_max_count)
+                            {
+                                cpu.m_gpr[2].m_lo =
+                                    static_cast<uint64_t>(-1ll);
+                                cpu.m_gpr[2].m_hi = 0u;
+                                if (trace)
+                                {
+                                    std::printf(
+                                        "HLE %sSignalSema: id=%u count=%u "
+                                        "at maximum=%u result=-1\n",
+                                        service == 0x43u ? "i" : "",
+                                        semaphore_id, old_count,
+                                        semaphore.m_max_count
+                                    );
+                                }
+                                // No state changes on count overflow.
+                                cpu.m_cop0[12] &= ~2u;
+                                cpu.m_pc = epc + 4u;
+                                cpu.m_exit_reason =
+                                    static_cast<uint32_t>(
+                                        ee::e_ee_exit_reason::EE_EXIT_DISPATCH
+                                    );
+                                continue;
+                            }
+                            ++semaphore.m_count;
+                        }
+                        else if (service == 0x44u ||
+                                 service == 0x45u ||
+                                 service == 0x46u)
+                        {
+                            if (semaphore.m_count > 0u)
+                            {
+                                --semaphore.m_count;
+                            }
+                            else
+                            {
+                                // PollSema and iPollSema do not block.
+                                cpu.m_gpr[2].m_lo =
+                                    static_cast<uint64_t>(-1ll);
+                                cpu.m_gpr[2].m_hi = 0u;
+                                if (trace)
+                                {
+                                    std::printf(
+                                        "HLE %sPollSema: id=%u count=0 "
+                                        "result=-1\n",
+                                        service == 0x46u ? "i" : "",
+                                        semaphore_id
+                                    );
+                                }
+                                cpu.m_cop0[12] &= ~2u;
+                                cpu.m_pc = epc + 4u;
+                                cpu.m_exit_reason =
+                                    static_cast<uint32_t>(
+                                        ee::e_ee_exit_reason::EE_EXIT_DISPATCH
+                                    );
+                                continue;
+                            }
+                        }
+                        else
+                        {
+                            // ReferSemaStatus/iReferSemaStatus write the
+                            // ee_sema_t fields in guest address space.
+                            const uint32_t status_address =
+                                static_cast<uint32_t>(cpu.m_gpr[5].m_lo);
+                            if ((status_address & 3u) != 0u ||
+                                !memory->contains(status_address, 24u))
+                            {
+                                std::fprintf(
+                                    stderr,
+                                    "ReferSemaStatus HLE refused unbacked "
+                                    "or unaligned pointer 0x%08x\n",
+                                    status_address
+                                );
+                                break;
+                            }
+                            memory->write32(status_address + 0u,
+                                            semaphore.m_count);
+                            memory->write32(status_address + 4u,
+                                            semaphore.m_max_count);
+                            memory->write32(status_address + 8u,
+                                            semaphore.m_initial_count);
+                            memory->write32(status_address + 12u, 0u);
+                            memory->write32(status_address + 16u,
+                                            semaphore.m_attr);
+                            memory->write32(status_address + 20u,
+                                            semaphore.m_option);
+                        }
+
+                        cpu.m_gpr[2].m_lo = semaphore_id;
+                        cpu.m_gpr[2].m_hi = 0u;
+                        if (trace)
+                        {
+                            const char* name =
+                                service == 0x41u ? "DeleteSema" :
+                                service == 0x42u ? "SignalSema" :
+                                service == 0x43u ? "iSignalSema" :
+                                service == 0x44u ? "WaitSema" :
+                                service == 0x45u ? "PollSema" :
+                                service == 0x46u ? "iPollSema" :
+                                service == 0x47u ? "ReferSemaStatus" :
+                                                   "iReferSemaStatus";
+                            std::printf(
+                                "HLE %s: id=%u old_count=%u "
+                                "new_count=%u result=%u\n",
+                                name, semaphore_id, old_count,
+                                service == 0x41u ? 0u : semaphore.m_count,
+                                semaphore_id
+                            );
+                        }
                     }
                 }
 
