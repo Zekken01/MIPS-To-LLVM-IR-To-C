@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+"""Unit tests for bounded, cache-preserving native EE boot sessions."""
+import importlib.util
+import json
+from pathlib import Path
+import tempfile
+from types import SimpleNamespace
+from unittest.mock import patch
+
+
+ROOT = Path(__file__).resolve().parents[2]
+SPEC = importlib.util.spec_from_file_location(
+    "run_boot_session", ROOT / "tools" / "run_boot_session.py",
+)
+SESSION = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(SESSION)
+
+
+def run_case(passes, initial_reuse=False):
+    with tempfile.TemporaryDirectory(prefix="ee-boot-session-") as temp:
+        work = Path(temp) / "work"
+        report = work / "first-boot.json"
+        elf = Path(temp) / "synthetic.elf"
+        elf.write_bytes(b"synthetic test input, never executed")
+        calls = []
+
+        def fake_run(command, **kwargs):
+            assert kwargs["check"] is False
+            assert kwargs["text"] is True
+            assert kwargs["stderr"] is SESSION.subprocess.STDOUT
+            calls.append(list(map(str, command)))
+            trace = "--trace" in command
+            index = len(calls) - 1
+            item = passes[index]
+            assert trace == item["trace"], (index, command, item)
+            state = {
+                "schema": "ee-game-run-report-v1",
+                "dispatches": 140 + index * 40,
+                "exit_reason": item.get("exit_reason", 3),
+                "dispatch_status": item.get("dispatch_status", 0),
+                "final_pc": 0x004E2640 + 16 * index,
+            }
+            report.write_text(json.dumps(state), encoding="utf-8")
+            replay = item.get("replay")
+            output = (
+                f"== Executing translated EE code (replay {replay}) ==\\n"
+                if replay is not None else ""
+            ) + item.get("message", "EE stopped")
+            return SimpleNamespace(
+                returncode=item.get("code", 3),
+                stdout=output + "\\n",
+            )
+
+        argv = [
+            str(elf), "--work-dir", str(work), "--report", str(report),
+            "--expansion-passes=2", "--expansion-per-pass=2",
+            "--driver", str(ROOT / "tools" / "run_game.py"),
+            "--hle-startup", "--kseg-ram", "--max-dispatches=1000",
+        ]
+        if initial_reuse:
+            argv.append("--no-recompile")
+        with patch.object(SESSION.subprocess, "run", side_effect=fake_run):
+            code = SESSION.main(argv)
+        assert len(calls) == len(passes), calls
+        assert all("--trace" not in call for call in calls[:-1]), calls
+        if len(passes) > 1:
+            assert "--trace" in calls[-1], calls
+        if initial_reuse:
+            assert "--no-recompile" in calls[0], calls
+        if len(passes) > 2:
+            assert "--no-recompile" in calls[1], calls
+        assert "--auto-expand=0" in calls[-1] if len(passes) > 1 else True
+        assert (work / "expansion.log").is_file()
+        assert (work / "boot.log").is_file()
+        return code, calls, (work / "expansion.log").read_text(), (work / "boot.log").read_text()
+
+
+def main():
+    # First pass consumes its expansion cap; the second finds a real
+    # non-DISPATCH blocker and the final run emits the useful trace.
+    code, calls, expansion, boot = run_case([
+        {"trace": False, "replay": 2, "message": "CAP"},
+        {"trace": False, "replay": 1, "exit_reason": 1, "message": "SYSCALL"},
+        {"trace": True, "replay": 0, "exit_reason": 1, "message": "TRACE FINAL"},
+    ])
+    assert code == 3
+    assert "CAP" in expansion and "SYSCALL" in expansion, expansion
+    assert "TRACE FINAL" not in expansion
+    assert "TRACE FINAL" in boot
+    assert "--no-recompile" not in calls[0]
+
+    # Even if the second pass also hits its cap, stop at the session
+    # budget and preserve the translated DLL for next local invocation.
+    code, calls, expansion, boot = run_case([
+        {"trace": False, "replay": 2},
+        {"trace": False, "replay": 2},
+        {"trace": True, "replay": 0, "message": "TRACE FINAL"},
+    ], initial_reuse=True)
+    assert code == 3
+    assert len(calls) == 3
+
+    # Never retry or hide an actual compilation failure. Copy its
+    # output to boot.log, the file the Windows user normally uploads.
+    with tempfile.TemporaryDirectory(prefix="ee-boot-session-failure-") as temp:
+        work = Path(temp) / "work"
+        report = work / "first-boot.json"
+        elf = Path(temp) / "synthetic.elf"
+        elf.write_bytes(b"fixture")
+        calls = []
+
+        def failing_run(command, **kwargs):
+            calls.append(command)
+            return SimpleNamespace(returncode=1, stdout="compilation failed\\n")
+
+        argv = [
+            str(elf), "--work-dir", str(work), "--report", str(report),
+            "--expansion-passes=2", "--expansion-per-pass=2",
+            "--driver", str(ROOT / "tools" / "run_game.py"),
+        ]
+        with patch.object(SESSION.subprocess, "run", side_effect=failing_run):
+            code = SESSION.main(argv)
+        assert code == 1 and len(calls) == 1
+        assert "compilation failed" in (work / "boot.log").read_text()
+
+    print("boot session orchestration: PASS")
+
+
+if __name__ == "__main__":
+    main()

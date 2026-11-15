@@ -260,6 +260,9 @@ endif()
 
 enable_testing()
 if(Python3_Interpreter_FOUND)
+    add_test(NAME boot_session_orchestration
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/tools/test_boot_session.py)
     add_test(NAME recomp_discovery_cache
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_recomp_discovery_cache.py

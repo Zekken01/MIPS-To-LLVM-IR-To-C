@@ -1004,6 +1004,42 @@ existing opt-in `--hle-startup` boundary.
 Only the user executes the private US game ELF. Progress
 beyond dispatch 142 is unverified until another local test.
 
+### Expansion budget, compact logs and cached multi-pass boot (US SDBZ, dispatch 1274)
+
+The user's fourth local run, after OSD configuration HLE, reached
+**1,274 native dispatches** before stopping at guest PC `0x004E2640`.
+It compiled **64 additional function entry PCs**, growing the native
+library to **100 functions** with no failed LLVM translations or
+unsupported-instruction reports. The stop was a `DISPATCH(3)` with
+`status=0` at the *last permitted replay*, not a new unhandled kernel
+service: the Windows launcher previously used `--auto-expand=64`,
+so it exhausted its expansion budget immediately before it could
+translate the next PC.
+
+`tools/run_boot_session.py` now wraps the existing, cache-provenanced
+`run_game.py` without changing the translator or its fingerprint.
+The launcher performs up to **two bounded passes of 128 new guest
+functions each**. If a pass exhausts its limit *and* the report proves
+a missing compiled `DISPATCH(3)` exit, the next pass uses
+`--no-recompile` to keep the native functions already built.
+Exceptions, non-dispatch exits, timeouts and compile errors are not
+misrepresented as reasons to continue blindly.
+
+During expansion, tracing is disabled to avoid repeating complete
+guest dispatch traces for each relink/replay. The wrapper saves
+`expansion.log` (all per-pass compilation/link diagnostics), then
+performs **one final traced replay** to produce the familiar
+`boot.log` and `first-boot.json` for debugging. Errors during
+expansion copy diagnostics into `boot.log` rather than leaving a
+stale success trace. Work persists beyond the two-pass budget for
+the next invocation; the 256-translation ceiling is intentional.
+The next real-game frontier after `0x004E2640` is not yet verified.
+
+Synthetic Python orchestration tests use mock runner reports to
+exercise multiple passes, reuse flags, halting on a real blocker,
+preserving errors, and final trace generation. The private ELF
+continues to be tested only by the user on Windows.
+
 ## Validation limits
 
 CTest contains `game_runner_end_to_end` which creates small synthetic MIPS
