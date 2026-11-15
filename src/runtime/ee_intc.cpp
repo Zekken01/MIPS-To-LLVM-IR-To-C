@@ -25,6 +25,11 @@ void c_ee_intc::sync_interrupt_line()
 
 void c_ee_intc::bind_cpu(s_ee_cpu_state* cpu)
 {
+    if (m_cpu != nullptr && m_cpu != cpu)
+    {
+        ee_interrupt_clear(m_cpu, INT_INTC);
+    }
+
     m_cpu = cpu;
     sync_interrupt_line();
 }
