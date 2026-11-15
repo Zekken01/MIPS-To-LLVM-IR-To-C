@@ -113,6 +113,8 @@ bool c_ee_dmac::read_spr_channel(uint32_t address, uint32_t* value) const
     case 0x10u: *value = channel->m_madr; return true;
     case 0x20u: *value = channel->m_qwc; return true;
     case 0x30u: *value = channel->m_tadr; return true;
+    case 0x40u: *value = channel->m_asr[0]; return true;
+    case 0x50u: *value = channel->m_asr[1]; return true;
     case 0x80u: *value = channel->m_sadr; return true;
     default: return false;
     }
@@ -379,6 +381,202 @@ bool c_ee_dmac::transfer_from_spr_chain()
     return raise(8u);
 }
 
+bool c_ee_dmac::transfer_to_spr_span(
+    s_spr_channel& channel, uint32_t qwc, bool copy_data)
+{
+    // Chain sources for channel 9 are physical EE RAM, never MMIO,
+    // guest KSEG pointers, or VU memory. Validate a whole span before
+    // copying, mirroring the strict normal/interleave RAM policy.
+    const uint64_t bytes = static_cast<uint64_t>(qwc) * 16u;
+    const uint64_t end = static_cast<uint64_t>(channel.m_madr) + bytes;
+    if (qwc != 0u &&
+        ((channel.m_madr & 0x0fu) != 0u ||
+         channel.m_madr >= 0x02000000u ||
+         end > 0x02000000ull ||
+         !m_memory->contains(channel.m_madr, static_cast<size_t>(bytes))))
+    {
+        return false;
+    }
+
+    if (copy_data)
+    {
+        for (uint32_t i = 0; i < qwc; ++i)
+        {
+            const uint32_t ram_address = channel.m_madr + i * 16u;
+            const uint32_t spr_address = ee_memory::k_scratchpad_base +
+                ((channel.m_sadr + i * 16u) & 0x3ff0u);
+            s_ee_u128 quad{};
+            m_memory->read128(ram_address, &quad);
+            m_memory->write128(spr_address, &quad);
+        }
+    }
+
+    channel.m_sadr =
+        (channel.m_sadr + static_cast<uint32_t>(bytes)) & 0x3ff0u;
+    channel.m_madr += static_cast<uint32_t>(bytes);
+    channel.m_qwc = 0u;
+    return true;
+}
+
+bool c_ee_dmac::walk_to_spr_chain(
+    s_spr_channel& channel, bool copy_data)
+{
+    if (m_memory == nullptr ||
+        ((channel.m_chcr >> 2u) & 3u) != 1u)
+    {
+        return false;
+    }
+
+    const bool tie = (channel.m_chcr & 0x80u) != 0u;
+    bool end = false;
+    if (channel.m_qwc != 0u)
+    {
+        const uint32_t id = (channel.m_chcr >> 28u) & 7u;
+        end = id == 0u || id == 7u ||
+            (tie && (channel.m_chcr & 0x80000000u) != 0u);
+        if (!transfer_to_spr_span(channel, channel.m_qwc, copy_data))
+        {
+            return false;
+        }
+    }
+
+    // The reference implementation walks at most 1,000,000 tags.
+    // Bound this experimental runtime to 4,096 to prevent untrusted,
+    // cyclic or malformed DMA chains from stalling the native host.
+    constexpr uint32_t k_max_chain_tags = 4096u;
+    for (uint32_t i = 0; !end && i < k_max_chain_tags; ++i)
+    {
+        const uint64_t tag_address = channel.m_tadr;
+        if ((tag_address & 0x0fu) != 0u ||
+            tag_address >= 0x02000000ull ||
+            tag_address + 16u > 0x02000000ull ||
+            !m_memory->contains(static_cast<uint32_t>(tag_address), 16u))
+        {
+            return false;
+        }
+
+        const uint64_t tag = m_memory->read64(channel.m_tadr);
+        const uint32_t low = static_cast<uint32_t>(tag);
+        const uint32_t qwc = low & 0xffffu;
+        const uint32_t id = (low >> 28u) & 7u;
+        const bool irq = (low & 0x80000000u) != 0u;
+        // The reference masks off low address bits but preserves bit31.
+        const uint32_t addr =
+            static_cast<uint32_t>(tag >> 32u) & 0xfffffff0u;
+        const uint64_t after_tag = tag_address + 16u;
+        const uint64_t after_data =
+            after_tag + static_cast<uint64_t>(qwc) * 16u;
+        channel.m_chcr = (channel.m_chcr & 0x0000ffffu) |
+            (low & 0xffff0000u);
+        uint32_t data_address = static_cast<uint32_t>(after_tag);
+
+        switch (id)
+        {
+        case 0u: // REFE: pointed-to payload, then terminate
+            data_address = addr;
+            channel.m_tadr = static_cast<uint32_t>(after_tag);
+            end = true;
+            break;
+        case 1u: // CNT: inline data, then next sequential tag
+            if (after_data > 0xffffffffull)
+            {
+                return false;
+            }
+            channel.m_tadr = static_cast<uint32_t>(after_data);
+            break;
+        case 2u: // NEXT: inline data, then jump to the tag address
+            channel.m_tadr = addr;
+            break;
+        case 3u: // REF: pointed-to payload, continue sequential tags
+        case 4u: // REFS: equivalent source selection without stall events
+            data_address = addr;
+            channel.m_tadr = static_cast<uint32_t>(after_tag);
+            break;
+        case 5u: // CALL: inline payload and push next sequential tag
+        {
+            const uint32_t asp = (channel.m_chcr >> 4u) & 3u;
+            if (after_data > 0xffffffffull)
+            {
+                return false;
+            }
+            if (asp < 2u)
+            {
+                channel.m_asr[asp] = static_cast<uint32_t>(after_data);
+            }
+            const uint32_t new_asp = asp < 2u ? asp + 1u : 2u;
+            channel.m_chcr = (channel.m_chcr & ~0x30u) |
+                (new_asp << 4u);
+            channel.m_tadr = addr;
+            break;
+        }
+        case 6u: // RET: return to most recent saved tag, or terminate
+        {
+            const uint32_t asp = (channel.m_chcr >> 4u) & 3u;
+            if (asp != 0u && asp <= 2u)
+            {
+                channel.m_tadr = channel.m_asr[asp - 1u];
+                channel.m_chcr = (channel.m_chcr & ~0x30u) |
+                    ((asp - 1u) << 4u);
+            }
+            else if (asp == 0u)
+            {
+                end = true;
+            }
+            else
+            {
+                return false;
+            }
+            break;
+        }
+        case 7u: // END: inline data, terminate
+            end = true;
+            break;
+        default:
+            return false;
+        }
+
+        channel.m_madr = data_address;
+        if (!transfer_to_spr_span(channel, qwc, copy_data))
+        {
+            return false;
+        }
+
+        if (tie && irq)
+        {
+            end = true;
+        }
+    }
+
+    return end;
+}
+
+bool c_ee_dmac::transfer_to_spr_chain()
+{
+    if (m_memory == nullptr)
+    {
+        return false;
+    }
+
+    // Read-only dry run first: all tag/control flow and RAM spans must
+    // be valid before the first scratchpad write. DMA source RAM cannot
+    // be changed by writing SPR, so the second pass follows the same tags.
+    s_spr_channel candidate = m_spr_channels[1];
+    if (!walk_to_spr_chain(candidate, false))
+    {
+        return false;
+    }
+
+    candidate = m_spr_channels[1];
+    if (!walk_to_spr_chain(candidate, true))
+    {
+        return false;
+    }
+
+    candidate.m_chcr &= ~k_chcr_str;
+    m_spr_channels[1] = candidate;
+    return raise(9u);
+}
+
 bool c_ee_dmac::write_spr_channel(uint32_t address, uint32_t value)
 {
     s_spr_channel* channel = nullptr;
@@ -415,6 +613,10 @@ bool c_ee_dmac::write_spr_channel(uint32_t address, uint32_t value)
             {
                 (void)transfer_from_spr_chain();
             }
+            else if (channel_index == 9u && mode == 1u)
+            {
+                (void)transfer_to_spr_chain();
+            }
             else if (mode == 2u && ((m_sqwc >> 16u) & 0xffu) != 0u)
             {
                 (void)transfer_spr_interleave(channel_index);
@@ -429,6 +631,8 @@ bool c_ee_dmac::write_spr_channel(uint32_t address, uint32_t value)
     case 0x10u: channel->m_madr = value; return true;
     case 0x20u: channel->m_qwc = value & 0xffffu; return true;
     case 0x30u: channel->m_tadr = value; return true;
+    case 0x40u: channel->m_asr[0] = value; return true;
+    case 0x50u: channel->m_asr[1] = value; return true;
     case 0x80u: channel->m_sadr = value & 0x3ff0u; return true;
     default: return false;
     }
