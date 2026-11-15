@@ -1,21 +1,28 @@
 #pragma once
 
 #include "ee_runtime.h"
+#include "ee_memory.h"
 
 #include <cstdint>
 
 namespace ee
 {
-// EE DMA interrupt status and mask register (D_STAT). Data transfers,
-// channel control, and event scheduling are deliberately not modelled here.
-// Reference: ps2-web-recomp/runtime/src/hw.cpp::read32/write32/dmac_raise.
+// EE DMA interrupt registers and conservative SPR normal-mode DMA.
+// Reference: ps2-web-recomp/runtime/src/dmac.cpp and hw.cpp.
+// The channel 8/9 normal-mode operations below execute synchronously;
+// DMA chains, interleave, MFIFO, bus contention and timed completion
+// are not emulated.
 class c_ee_dmac
 {
 public:
     static constexpr uint32_t k_stat_address = 0x1000e010u;
     static constexpr uint32_t k_channel_count = 10u;
+    static constexpr uint32_t k_to_spr_base = 0x1000d400u; // channel 9
+    static constexpr uint32_t k_from_spr_base = 0x1000d000u; // channel 8
+    static constexpr uint32_t k_chcr_str = 0x100u;
 
     void bind_cpu(s_ee_cpu_state* cpu);
+    void bind_memory(ee_memory* memory);
     void reset();
     bool raise(uint32_t channel);
     bool acknowledge(uint32_t channel);
@@ -29,9 +36,23 @@ public:
                            uint32_t width, const s_ee_u128* value);
 
 private:
+    struct s_spr_channel
+    {
+        uint32_t m_chcr = 0;
+        uint32_t m_madr = 0;
+        uint32_t m_qwc = 0;
+        uint32_t m_tadr = 0;
+        uint32_t m_sadr = 0;
+    };
+
     void sync_interrupt_line();
+    bool read_spr_channel(uint32_t address, uint32_t* value) const;
+    bool write_spr_channel(uint32_t address, uint32_t value);
+    bool transfer_spr_normal(uint32_t channel);
 
     s_ee_cpu_state* m_cpu = nullptr;
+    ee_memory* m_memory = nullptr;
     uint32_t m_status = 0;
+    s_spr_channel m_spr_channels[2]{}; // [0] fromSPR channel 8, [1] toSPR channel 9
 };
 } // namespace ee

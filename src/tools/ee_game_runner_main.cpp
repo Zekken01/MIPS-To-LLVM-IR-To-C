@@ -534,13 +534,14 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    // Keep the native host deliberately minimal. INTC status/mask
-    // register side effects are modelled, but the host still has no
-    // general device scheduler, BIOS, DMA or full exception lifecycle.
+    // Host models INTC/D_STAT and synchronous normal-mode SPR DMA only.
+    // There is no general hardware scheduler, BIOS, chain DMA, MFIFO,
+    // or complete exception lifecycle.
     ee::s_ee_cpu_state cpu{};
     ee::s_ee_vu0_state vu0{};
     ee::c_ee_hw_bus hardware;
     hardware.bind_cpu(&cpu);
+    hardware.bind_memory(memory.get());
     ee::s_ee_runtime runtime{};
     runtime.m_user = memory.get();
     runtime.m_vu0_state = &vu0;

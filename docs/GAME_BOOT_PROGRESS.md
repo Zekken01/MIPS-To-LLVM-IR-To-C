@@ -126,8 +126,22 @@ These register rules come from `ps2-web-recomp/runtime/src/hw.cpp`.
 Separate INTC and DMAC models preserve their own pending COP0 lines.
 Devices must explicitly call `c_ee_intc::raise(cause)` or
 `c_ee_dmac::raise(channel)` when a real hardware event occurs.
-No channel transfers or DMA-completion events are fabricated by writing
-DMA channel control addresses: those registers remain unsupported.
+The native host also supports **normal-mode scratchpad DMA** for
+`fromSPR` channel 8 (`0x1000d000`) and `toSPR` channel 9
+(`0x1000d400`), using their `CHCR`, `MADR`, `QWC`, `TADR` and
+`SADR` register offsets. Writing `CHCR.STR` from 0 to 1 in normal
+mode transfers `QWC` 16-byte chunks between physical EE RAM and
+the 16 KiB scratchpad. `SADR` wraps on the scratchpad boundary;
+`MADR` advances, `QWC` clears, `STR` clears, and `D_STAT`
+latches the matching channel completion bit, asserting IP3 if enabled.
+The transfer behavior is based on
+`ps2-web-recomp/runtime/src/dmac.cpp::run_normal`.
+Unlike the reference's fast RAM mirroring, this experimental backend
+rejects unaligned/unbacked RAM transfers atomically instead of copying
+partially or pretending to complete. It does **not** implement
+chain/interleave DMA, GIF/VIF/IPU transfers, MFIFO, channels 0..7, or
+cycle-based DMA completion. Unsupported channel modes retain STR set
+without fabricating a completion.
 A translated native dispatch now samples pending, enabled EE COP0
 interrupts **at mapped function-entry boundaries**. When an interrupt is
 pending and IE/EIE/IM permit it, the existing exception helper sets
@@ -145,12 +159,12 @@ interrupts within such code requires instrumentation and a timed scheduler.
 The host does not yet provide device event timing, complete guest BIOS
 interrupt handlers, or general GS/SIF/GIF/VIF behavior.
 
-This still does **not** implement scratchpad DMA, TLB translation,
-VU1, guest address/alignment exceptions, or hardware-specific device
-semantics. VU0 code writes are visible to the current interpreter fetch;
+This still does **not** implement scratchpad DMA chains/interleave,
+TLB translation, VU1, guest address/alignment exceptions, or comprehensive
+hardware-specific device semantics. VU0 code writes are visible to the current interpreter fetch;
 future compiled microcode engines will need explicit invalidation if
 they cache decoded programs. `--hle-startup` is opt-in and only covers explicitly
-recognized kernel calls; it does not implement BIOS, IOP, GS, SIF or DMA.
+recognized kernel calls; it does not implement BIOS, IOP, GS, SIF or general DMA.
 
 ## Confirmed real-ELF checkpoints
 
@@ -235,7 +249,8 @@ dispatch and selected kernel calls resume correctly. The real-game observations
 above were captured locally from the user's privately supplied ELF, not in CI.
 
 The native host has bounded EE RAM, opt-in direct aliases, scratchpad,
-VU0 apertures, a host MMIO bus, and small INTC and D_STAT register models, but still
-no general TLB, BIOS, DMA, device scheduling, or full interrupt emulation. The syscall handling is deliberately
+VU0 apertures, a host MMIO bus, INTC and D_STAT register models, and bounded
+normal-mode SPR DMA channels 8/9, but still no general TLB, BIOS, DMA chains,
+device scheduling, or full interrupt emulation. The syscall handling is deliberately
 opt-in, experimental, and incomplete. Reaching the PCs above is not evidence
 of full console initialization, correct kernel behaviour or graphical output.
