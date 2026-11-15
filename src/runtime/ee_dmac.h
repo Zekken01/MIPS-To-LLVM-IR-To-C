@@ -7,14 +7,18 @@
 
 namespace ee
 {
-// EE DMA registers, normal/interleave SPR DMA, and bounded SPR chains.
+// EE DMA registers, normal/interleave SPR DMA, bounded SPR chains,
+// and normal DMA for VIF0/VIF1/GIF through an optional host consumer.
 // Reference: ps2-web-recomp/runtime/src/dmac.cpp and hw.cpp.
-// Transfers execute synchronously, prevalidating all source/destination
-// RAM ranges. MFIFO, arbitration and cycle-accurate completion
-// remain unimplemented.
+// Transfers execute synchronously, prevalidating physical RAM ranges.
+// MFIFO, general device emulation, chain DMA for channels 0..2,
+// arbitration and cycle-accurate completion remain unimplemented.
 class c_ee_dmac
 {
 public:
+    static constexpr uint32_t k_vif0_base = 0x10008000u; // channel 0
+    static constexpr uint32_t k_vif1_base = 0x10009000u; // channel 1
+    static constexpr uint32_t k_gif_base = 0x1000a000u; // channel 2
     static constexpr uint32_t k_stat_address = 0x1000e010u;
     static constexpr uint32_t k_sqwc_address = 0x1000e030u;
     static constexpr uint32_t k_channel_count = 10u;
@@ -24,6 +28,18 @@ public:
 
     void bind_cpu(s_ee_cpu_state* cpu);
     void bind_memory(ee_memory* memory);
+
+    // A host-owned, synchronous data consumer. channel is 0=VIF0,
+    // 1=VIF1 (RAM-to-device only), 2=GIF PATH3. data is a contiguous,
+    // little-endian array of 16*qwc bytes valid only during the call.
+    // Return true only after consuming the ENTIRE transfer. A false
+    // return means the host rejected it without side effects; the DMA
+    // controller leaves CHCR.STR, MADR and QWC unchanged.
+    using t_device_transfer_callback = bool (*)(
+        void* user, uint32_t channel, const uint8_t* data, uint32_t qwc
+    );
+    void bind_device_transfer(void* user, t_device_transfer_callback callback);
+
     void reset();
     bool raise(uint32_t channel);
     bool acknowledge(uint32_t channel);
@@ -50,6 +66,7 @@ private:
     void sync_interrupt_line();
     bool read_spr_channel(uint32_t address, uint32_t* value) const;
     bool write_spr_channel(uint32_t address, uint32_t value);
+    bool transfer_device_normal(uint32_t channel);
     bool transfer_spr_normal(uint32_t channel);
     bool transfer_spr_interleave(uint32_t channel);
     bool transfer_from_spr_chain();
@@ -61,8 +78,11 @@ private:
 
     s_ee_cpu_state* m_cpu = nullptr;
     ee_memory* m_memory = nullptr;
+    void* m_device_user = nullptr;
+    t_device_transfer_callback m_device_transfer = nullptr;
     uint32_t m_status = 0;
     uint32_t m_sqwc = 0;
-    s_spr_channel m_spr_channels[2]{}; // [0] fromSPR channel 8, [1] toSPR channel 9
+    s_spr_channel m_device_channels[3]{}; // VIF0, VIF1, GIF PATH3
+    s_spr_channel m_spr_channels[2]{}; // fromSPR channel 8, toSPR channel 9
 };
 } // namespace ee
