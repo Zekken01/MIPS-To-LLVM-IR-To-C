@@ -650,7 +650,8 @@ def main():
                 result.stdout + result.stderr
             )
             report = json.loads(report_path.read_text(encoding="utf-8"))
-            assert report["gpr_lo"][8] == 0x80076000, report
+            # MIPS LW sign-extends KSEG0 pointers into 64-bit GPRs.
+            assert report["gpr_lo"][8] & 0xffffffff == 0x80076000, report
             assert report["gpr_lo"][9] == 0x03e00008, report
             if invoke:
                 assert "cannot execute RAM handler number=0x5b handler=0x80076000" in result.stderr, (
