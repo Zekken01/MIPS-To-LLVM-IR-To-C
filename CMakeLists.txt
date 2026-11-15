@@ -120,6 +120,9 @@ target_link_libraries(ee_game_runner PRIVATE ee_core ${CMAKE_DL_LIBS})
 add_executable(ee_memory_alias_test tests/smoke/ee_memory_alias_test.cpp)
 target_link_libraries(ee_memory_alias_test PRIVATE ee_core)
 
+add_executable(ee_physical_bus_test tests/smoke/ee_physical_bus_test.cpp)
+target_link_libraries(ee_physical_bus_test PRIVATE ee_core)
+
 add_executable(ee_scratchpad_test tests/smoke/ee_scratchpad_test.cpp)
 target_link_libraries(ee_scratchpad_test PRIVATE ee_core)
 
@@ -199,6 +202,7 @@ endif()
 add_test(NAME decoder COMMAND ee_decoder_test)
 add_test(NAME dispatcher COMMAND ee_dispatcher_test)
 add_test(NAME ee_memory_alias COMMAND ee_memory_alias_test)
+add_test(NAME ee_physical_bus COMMAND ee_physical_bus_test)
 add_test(NAME ee_scratchpad COMMAND ee_scratchpad_test)
 add_test(NAME ee_vu0_memory_map COMMAND ee_vu0_memory_map_test)
 add_test(NAME ee_unaligned_memory COMMAND ee_unaligned_memory_test)
