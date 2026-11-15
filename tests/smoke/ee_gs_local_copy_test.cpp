@@ -506,7 +506,7 @@ bool test_clut_and_rejections()
         !indexed(gs, 0u, 0u, 0xa000000du) ||
         !reg(gs, 0x06u, tex0(k_dst, 1u, 0x14u,
                              k_palette, 0u, 1u)) ||
-        !indexed(gs, 0u, 0u, 0xa000000du))
+        !indexed(gs, 0u, 0u, 0xb00b000du))
     {
         return false;
     }
