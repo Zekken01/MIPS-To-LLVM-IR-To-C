@@ -25,6 +25,8 @@ struct s_ee_gs_state
     uint32_t m_transfer_pixels_written = 0; // across IMAGE events
     uint8_t m_transfer_pending_size = 0; // PSMCT24 incomplete pixel
     std::array<uint8_t, 3> m_transfer_pending{};
+    uint64_t m_hwreg_write_count = 0; // GS 0x54, 8-byte upload writes
+    uint64_t m_hwreg_bytes = 0; // diagnostics, excludes IMAGE payload
     uint64_t m_local_copy_count = 0; // executed TRXDIR=2 operations
     uint64_t m_local_copy_pixels = 0; // copied pixels, including overlaps
 
@@ -167,6 +169,14 @@ private:
     static bool stage_local_copy(
         s_ee_gs_state& state, const std::vector<uint8_t>& source_vram,
         std::vector<s_vram_write>& writes
+    );
+
+    // Both GIF IMAGE/IMAGE2 and A+D HWREG writes use the same
+    // host-to-local pixel decoder and pending 24-bit carry.
+    // Only completed pixels are staged; final padding is ignored.
+    static bool stage_host_upload(
+        s_ee_gs_state& state, std::vector<s_vram_write>& writes,
+        const uint8_t* data, size_t byte_count
     );
 
     // Load a CLUT snapshot on TEX0/TEX2 writes. Staged IMAGE writes

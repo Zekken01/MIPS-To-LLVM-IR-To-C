@@ -862,6 +862,132 @@ bool c_ee_gs_state::stage_local_copy(
     return true;
 }
 
+bool c_ee_gs_state::stage_host_upload(
+    s_ee_gs_state& state, std::vector<s_vram_write>& writes,
+    const uint8_t* data, size_t byte_count)
+{
+    if (!state.m_transfer_started ||
+        !state.m_written[0x50u] ||
+        !state.m_written[0x51u] ||
+        !state.m_written[0x52u] ||
+        !state.m_written[0x53u] ||
+        (state.m_registers[0x53u] & 3u) != 0u ||
+        data == nullptr || byte_count == 0u)
+    {
+        return false;
+    }
+
+    const uint64_t buf = state.m_registers[0x50u];
+    const uint64_t pos = state.m_registers[0x51u];
+    const uint64_t reg_size = state.m_registers[0x52u];
+    const uint32_t base =
+        static_cast<uint32_t>((buf >> 32u) & 0x3fffu);
+    const uint32_t width =
+        static_cast<uint32_t>((buf >> 48u) & 0x3fu);
+    const uint32_t psm =
+        static_cast<uint32_t>((buf >> 56u) & 0x3fu);
+    const uint32_t x =
+        static_cast<uint32_t>((pos >> 32u) & 0x7ffu);
+    const uint32_t y =
+        static_cast<uint32_t>((pos >> 48u) & 0x7ffu);
+    const uint32_t rrw = static_cast<uint32_t>(reg_size & 0xfffu);
+    const uint32_t rrh =
+        static_cast<uint32_t>((reg_size >> 32u) & 0xfffu);
+    const uint32_t total_pixels = rrw * rrh;
+
+    // Reject layout changes made after TRXDIR and malformed carries
+    // rather than interpreting the payload as a different PSM.
+    if (width == 0u || !supported_psm(psm) ||
+        rrw == 0u || rrh == 0u ||
+        state.m_transfer_pixels_written > total_pixels ||
+        state.m_transfer_pending_size > 2u)
+    {
+        return false;
+    }
+
+    const auto stage_pixel = [&](uint32_t value, uint8_t size)
+    {
+        const uint32_t pixel = state.m_transfer_pixels_written;
+        const uint32_t dx = (x + pixel % rrw) & 0x7ffu;
+        const uint32_t dy = (y + pixel / rrw) & 0x7ffu;
+        writes.push_back(pixel_write(
+            psm, base, width, dx, dy, value, size
+        ));
+        ++state.m_transfer_pixels_written;
+    };
+
+    const bool four_bit =
+        psm == 0x14u || psm == 0x24u || psm == 0x2cu;
+    const bool twenty_four_bit = psm == 0x01u || psm == 0x31u;
+    if (!twenty_four_bit && state.m_transfer_pending_size != 0u)
+    {
+        return false;
+    }
+
+    if (four_bit)
+    {
+        // GIF bytes store even-numbered pixels in the low nibble.
+        // Raster order continues across odd-width rows without
+        // adding per-row padding.
+        for (size_t i = 0u; i < byte_count &&
+             state.m_transfer_pixels_written < total_pixels; ++i)
+        {
+            stage_pixel(data[i] & 0x0fu, 0u);
+            if (state.m_transfer_pixels_written < total_pixels)
+            {
+                stage_pixel((data[i] >> 4u) & 0x0fu, 0u);
+            }
+        }
+    }
+    else if (twenty_four_bit)
+    {
+        // A+D HWREG supplies eight bytes, not 16. In 24-bit modes
+        // partial pixels can span HWREG, IMAGE and DMA calls.
+        for (size_t i = 0u; i < byte_count &&
+             state.m_transfer_pixels_written < total_pixels; ++i)
+        {
+            state.m_transfer_pending[
+                state.m_transfer_pending_size++] = data[i];
+            if (state.m_transfer_pending_size == 3u)
+            {
+                const uint32_t pixel =
+                    static_cast<uint32_t>(state.m_transfer_pending[0]) |
+                    (static_cast<uint32_t>(state.m_transfer_pending[1]) << 8u) |
+                    (static_cast<uint32_t>(state.m_transfer_pending[2]) << 16u);
+                stage_pixel(pixel, 3u);
+                state.m_transfer_pending_size = 0u;
+            }
+        }
+    }
+    else
+    {
+        const uint8_t pixel_bytes =
+            (psm == 0x13u || psm == 0x1bu) ? 1u :
+            (psm == 0x02u || psm == 0x0au ||
+             psm == 0x32u || psm == 0x3au) ? 2u : 4u;
+        const uint32_t remaining =
+            total_pixels - state.m_transfer_pixels_written;
+        const size_t pixels = std::min<size_t>(
+            byte_count / pixel_bytes, remaining
+        );
+        for (size_t i = 0u; i < pixels; ++i)
+        {
+            const size_t at = i * pixel_bytes;
+            uint32_t value = data[at];
+            if (pixel_bytes == 2u)
+            {
+                value |= static_cast<uint32_t>(data[at + 1u]) << 8u;
+            }
+            else if (pixel_bytes == 4u)
+            {
+                value = read_le32(data + at);
+            }
+            stage_pixel(value, pixel_bytes);
+        }
+    }
+    return true;
+}
+
 bool c_ee_gs_state::write_register(
     s_ee_gs_state& state, uint32_t reg, uint64_t value)
 {
@@ -924,6 +1050,7 @@ bool c_ee_gs_state::write_register(
     case 0x50u: // BITBLTBUF
     case 0x51u: // TRXPOS
     case 0x52u: // TRXREG
+    case 0x54u: // HWREG, 8 bytes handled in consume()
         break;
     case 0x16u: // TEX2_1 modifies selected fields of TEX0_1
     case 0x17u: // TEX2_2 modifies selected fields of TEX0_2
@@ -999,8 +1126,8 @@ bool c_ee_gs_state::write_register(
     case 0x0fu:
         return true;
     default:
-        // Especially reject HWREG, SIGNAL, FINISH, LABEL, TEXFLUSH
-        // and unknown registers; they need real GS behavior.
+        // Reject SIGNAL, FINISH, LABEL, TEXFLUSH and unknown
+        // hardware operations; HWREG executes inside consume().
         return false;
     }
 
@@ -1116,6 +1243,25 @@ bool c_ee_gs_state::consume(
         return stage_local_copy(next, local_source_vram, writes);
     };
 
+    // A+D HWREG writes are 8-byte host-to-local image chunks. They
+    // preserve the same pending-pixel state as GIF IMAGE/IMAGE2, and
+    // are staged alongside other GS writes for atomic DMA rollback.
+    const auto feed_hwreg = [&](uint64_t value) -> bool
+    {
+        uint8_t packed[8]{};
+        for (uint32_t b = 0u; b < 8u; ++b)
+        {
+            packed[b] = static_cast<uint8_t>(value >> (b * 8u));
+        }
+        if (!stage_host_upload(next, writes, packed, sizeof(packed)))
+        {
+            return false;
+        }
+        ++next.m_hwreg_write_count;
+        next.m_hwreg_bytes += sizeof(packed);
+        return true;
+    };
+
     // TEX0 and TEX2 load CLUT entries at the register write, not at
     // the end of the GIF batch or on every subsequent VRAM write.
     const auto refresh_clut = [&](uint32_t reg) -> bool
@@ -1175,6 +1321,9 @@ bool c_ee_gs_state::consume(
                  (e.m_word1 & 0xffu) == 0x53u &&
                  (e.m_word0 & 3u) == 2u &&
                  !copy_local()) ||
+                (e.m_register == 0x0eu &&
+                 (e.m_word1 & 0xffu) == 0x54u &&
+                 !feed_hwreg(e.m_word0)) ||
                 !refresh_clut(
                     e.m_register == 0x0eu ?
                     static_cast<uint32_t>(e.m_word1 & 0xffu) :
@@ -1221,126 +1370,11 @@ bool c_ee_gs_state::consume(
             );
             next.m_image_qwc += e.m_qwc;
 
-            // Depth PSMZ32/24 use 64x32 pages and Z16/16S use
-            // 64x64 pages, with depth-specific block permutations.
-            // Indexed/high-byte formats retain their own page rules.
-            // Both 24-bit color and depth require partial-pixel carry.
-            const uint64_t buf = next.m_registers[0x50u];
-            const uint64_t pos = next.m_registers[0x51u];
-            const uint64_t reg_size = next.m_registers[0x52u];
-            const uint32_t base =
-                static_cast<uint32_t>((buf >> 32u) & 0x3fffu);
-            const uint32_t width =
-                static_cast<uint32_t>((buf >> 48u) & 0x3fu);
-            const uint32_t psm =
-                static_cast<uint32_t>((buf >> 56u) & 0x3fu);
-            const uint32_t x =
-                static_cast<uint32_t>((pos >> 32u) & 0x7ffu);
-            const uint32_t y =
-                static_cast<uint32_t>((pos >> 48u) & 0x7ffu);
-            const uint32_t rrw = static_cast<uint32_t>(reg_size & 0xfffu);
-            const uint32_t rrh =
-                static_cast<uint32_t>((reg_size >> 32u) & 0xfffu);
-            const uint32_t total_pixels = rrw * rrh;
-
-            // A transfer setup may have been rewritten after TRXDIR;
-            // reject it rather than applying a guessed pixel layout.
-            if (width == 0u ||
-                !supported_psm(psm) ||
-                rrw == 0u || rrh == 0u ||
-                next.m_transfer_pixels_written > total_pixels)
+            if (!stage_host_upload(
+                    next, writes, data + static_cast<size_t>(offset),
+                    static_cast<size_t>(length)))
             {
                 return false;
-            }
-
-            const auto stage_pixel = [&](uint32_t value, uint8_t size)
-            {
-                const uint32_t pixel = next.m_transfer_pixels_written;
-                const uint32_t dx = (x + pixel % rrw) & 0x7ffu;
-                const uint32_t dy = (y + pixel / rrw) & 0x7ffu;
-                writes.push_back(pixel_write(
-                    psm, base, width, dx, dy, value, size
-                ));
-                ++next.m_transfer_pixels_written;
-            };
-
-            if (psm == 0x14u || psm == 0x24u || psm == 0x2cu)
-            {
-                // Packed GIF pixels: first index is the low nibble.
-                // Each 16-byte IMAGE qword carries 32 indices, so
-                // no partial nibble is carried between DMA batches.
-                if (next.m_transfer_pending_size != 0u)
-                {
-                    return false;
-                }
-                const uint32_t remaining =
-                    total_pixels - next.m_transfer_pixels_written;
-                const uint32_t pixels = static_cast<uint32_t>(
-                    std::min<uint64_t>(length * 2u, remaining)
-                );
-                for (uint32_t j = 0u; j < pixels; ++j)
-                {
-                    const uint8_t packed =
-                        data[static_cast<size_t>(offset + j / 2u)];
-                    const uint32_t value =
-                        (packed >> ((j & 1u) * 4u)) & 0x0fu;
-                    stage_pixel(value, 0u);
-                }
-            }
-            else if (psm == 0u || psm == 2u ||
-                     psm == 0x0au || psm == 0x13u || psm == 0x1bu ||
-                     psm == 0x30u || psm == 0x32u || psm == 0x3au)
-            {
-                // 1-, 2- and 4-byte indices/pixels fit GIF qwords.
-                const uint8_t pixel_bytes =
-                    (psm == 0x13u || psm == 0x1bu) ? 1u :
-                    (psm == 2u || psm == 0x0au ||
-                     psm == 0x32u || psm == 0x3au) ? 2u : 4u;
-                if (next.m_transfer_pending_size != 0u)
-                {
-                    return false;
-                }
-                const uint32_t remaining =
-                    total_pixels - next.m_transfer_pixels_written;
-                const uint32_t pixels = static_cast<uint32_t>(
-                    std::min<uint64_t>(length / pixel_bytes, remaining)
-                );
-                for (uint32_t j = 0u; j < pixels; ++j)
-                {
-                    const size_t data_offset =
-                        static_cast<size_t>(offset) +
-                        static_cast<size_t>(j) * pixel_bytes;
-                    uint32_t value = data[data_offset];
-                    if (pixel_bytes == 2u)
-                    {
-                        value |= static_cast<uint32_t>(
-                            data[data_offset + 1u]) << 8u;
-                    }
-                    else if (pixel_bytes == 4u)
-                    {
-                        value = read_le32(data + data_offset);
-                    }
-                    stage_pixel(value, pixel_bytes);
-                }
-            }
-            else
-            {
-                for (uint64_t j = 0u;
-                     j < length &&
-                     next.m_transfer_pixels_written < total_pixels; ++j)
-                {
-                    next.m_transfer_pending[next.m_transfer_pending_size++] =
-                        data[static_cast<size_t>(offset + j)];
-                    if (next.m_transfer_pending_size == 3u)
-                    {
-                        const uint32_t pixel =
-                            static_cast<uint32_t>(next.m_transfer_pending[0]) |
-                            (static_cast<uint32_t>(next.m_transfer_pending[1]) << 8u) |
-                            (static_cast<uint32_t>(next.m_transfer_pending[2]) << 16u);
-                        stage_pixel(pixel, 3u);
-                        next.m_transfer_pending_size = 0u;
-                    }
-                }
             }
             // Padding after the final pixel is captured but not written.
             break;

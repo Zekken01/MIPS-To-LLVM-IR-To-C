@@ -235,7 +235,8 @@ PSMT4HL/PSMT4HH each have 32 packed 4-bit indices per quadword
 (low nibble first). Odd-width rows do not introduce per-row padding;
 indices remain packed in raster order across rows. Final RGBA
 conversion and texture filtering, other unsupported PSM formats,
-host-to-local HWREG remains unimplemented. GS local-to-host
+host-to-local HWREG is supported through GIF A+D register 0x54.
+GS local-to-host
 (TRXDIR=1) is supported through read_image and VIF1 reverse DMA.
 
 Every event batch is applied to a temporary state copy and its VRAM
@@ -243,7 +244,7 @@ pixel writes are staged until **all** events are supported, input offsets
 are valid and any image payload fits the capture bound. Unsupported
 host-to-local destination formats (including reserved PSM 0x03),
 zero destination buffer width, zero-size transfer rectangles and side
-effects such as GS SIGNAL/FINISH/LABEL, HWREG and TEXFLUSH, or IMAGE
+effects such as GS SIGNAL/FINISH/LABEL and TEXFLUSH, or IMAGE
 without proper setup, reject the whole batch. Rejection preserves the
 GS state, VRAM, and upstream GIF parser/DMA progress. The GS VRAM is
 zero-initialized and cleared by the consumer's reset; this is a
@@ -261,6 +262,31 @@ PSMZ32, PSMZ24, PSMZ16 and PSMZ16S IMAGE uploads have
 GS VRAM effects;
 real SDBZ image-stream and PCSX2 differential validation remain needed.
 
+
+### GS HWREG host-to-local uploads (A+D register 0x54)
+
+The GIF PATH3 state consumer now implements **HWREG (0x54)** writes
+through PACKED A+D as eight little-endian image-data bytes, precisely
+as in `ps2-web-recomp/runtime/src/gs/gs.cpp::write()`. HWREG is
+valid only after a supported `TRXDIR=0` transfer has been configured.
+It shares the same pixel decoding and swizzle staging as IMAGE/IMAGE2,
+covering all thirteen color, depth, and indexed PSMs. For 24-bit
+PSMCT24/PSMZ24, the unfinished 1-2 pixel bytes are carried across
+HWREG writes, IMAGE qwords, and separate GIF DMA calls. Four-bit
+indices are decoded low nibble first across odd-width rows. After
+TRXREG's rectangle completes, surplus HWREG/image data is ignored
+rather than writing extra pixels. A+D and IMAGE transfers in one GIF
+event batch retain their original order, including VRAM updates
+observed by a later TRXDIR=2 copy or TEX0 palette load.
+
+HWREG writes take part in the existing transactional GIF and DMA
+commit: a later unsupported GS register cancels all staged VRAM
+pixels, register changes and pending carry. `m_hwreg_write_count`
+and `m_hwreg_bytes` record cumulative HWREG input, but HWREG
+does *not* increment `m_image_qwc` or append to the IMAGE diagnostic
+capture buffer. Reset clears all counters. The current support is
+the GIF A+D register path; a separate GS privileged-register/MMIO
+HWREG input path is not asserted to exist.
 
 ### GS local-to-host downloads (TRXDIR=1)
 
@@ -319,7 +345,7 @@ total staged per GIF batch) rejects oversized copies rather than
 allocating unbounded temporary storage. TRXDIR=2 does not consume
 GIF IMAGE payload and does not reload an existing CLUT snapshot.
 
-Host-to-local uploads still use TRXDIR=0; HWREG, device rendering,
+Host-to-local uploads still use TRXDIR=0; device rendering,
 other GS GPU behavior, and real SDBZ/PCSX2 differential validation
 remain outstanding.
 

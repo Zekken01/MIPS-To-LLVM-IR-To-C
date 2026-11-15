@@ -290,8 +290,8 @@ int main()
         return fail("IMAGE without GS transfer setup was falsely accepted");
     }
 
-    // Direct batch validation also rejects out-of-range payload offsets
-    // and unimplemented HWREG without mutating the snapshot.
+    // Direct batch validation rejects out-of-range payload offsets
+    // and HWREG without an active host-to-local transfer.
     ee::s_ee_gif_event invalid{};
     invalid.m_type = ee::e_ee_gif_event_type::packed;
     invalid.m_register = 0xeu;
@@ -301,7 +301,7 @@ int main()
     if (gs.consume(&invalid, 1u, qword, 1u) ||
         gs.state().m_tag_count != 0u)
     {
-        return fail("HWREG without GS image-port semantics was accepted");
+        return fail("HWREG without TRXDIR=0 was accepted");
     }
     invalid.m_type = ee::e_ee_gif_event_type::image;
     invalid.m_qwc = 2u;
