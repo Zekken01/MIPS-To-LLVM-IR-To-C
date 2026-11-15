@@ -45,6 +45,13 @@ void c_ee_dmac::bind_device_transfer(
     m_device_transfer = callback;
 }
 
+void c_ee_dmac::bind_device_download(
+    void* user, t_device_download_callback callback)
+{
+    m_download_user = user;
+    m_device_download = callback;
+}
+
 void c_ee_dmac::reset()
 {
     m_status = 0u;
@@ -168,10 +175,9 @@ bool c_ee_dmac::transfer_device_normal(uint32_t channel_index)
     }
 
     s_spr_channel& channel = m_device_channels[channel_index];
-    // Only RAM -> VIF0, RAM -> VIF1, and RAM -> GIF PATH3 are supported.
-    // The reference's VIF1 reverse/GIF image-download path is different.
-    if (((channel.m_chcr >> 2u) & 3u) != 0u ||
-        (channel_index == 1u && (channel.m_chcr & 1u) == 0u))
+    // Normal mode is supported for VIF0/VIF1/GIF. VIF1 CHCR.DIR=0
+    // is a device-to-RAM image download, not a forward VIF stream.
+    if (((channel.m_chcr >> 2u) & 3u) != 0u)
     {
         return false;
     }
@@ -186,34 +192,69 @@ bool c_ee_dmac::transfer_device_normal(uint32_t channel_index)
         return false;
     }
 
-    // A zero-QWC DMA is a real no-op completion, not a device payload.
+    // A zero-QWC DMA completes without invoking either device.
     if (channel.m_qwc != 0u)
     {
-        if (m_device_transfer == nullptr)
-        {
-            return false;
-        }
-
-        // Deliver the COMPLETE transfer as one contiguous little-endian
-        // guest stream. Do not signal successful hardware completion on
-        // a missing/refusing consumer, and do not advance partial QWC.
         std::vector<uint8_t> data(bytes);
-        for (uint32_t i = 0; i < channel.m_qwc; ++i)
+        const bool reverse_vif1 =
+            channel_index == 1u && (channel.m_chcr & 1u) == 0u;
+        if (reverse_vif1)
         {
-            s_ee_u128 quad{};
-            m_memory->read128(channel.m_madr + i * 16u, &quad);
-            for (uint32_t b = 0; b < 8u; ++b)
+            if (m_device_download == nullptr ||
+                !m_device_download(
+                    m_download_user, channel_index,
+                    data.data(), channel.m_qwc))
             {
-                data[static_cast<size_t>(i) * 16u + b] =
-                    static_cast<uint8_t>(quad.m_lo >> (b * 8u));
-                data[static_cast<size_t>(i) * 16u + 8u + b] =
-                    static_cast<uint8_t>(quad.m_hi >> (b * 8u));
+                return false;
+            }
+
+            // All destination RAM spans were prevalidated. Do not
+            // modify EE RAM unless the full device read succeeded.
+            for (uint32_t i = 0; i < channel.m_qwc; ++i)
+            {
+                s_ee_u128 quad{};
+                for (uint32_t b = 0u; b < 8u; ++b)
+                {
+                    quad.m_lo |= static_cast<uint64_t>(
+                        data[static_cast<size_t>(i) * 16u + b]
+                    ) << (b * 8u);
+                    quad.m_hi |= static_cast<uint64_t>(
+                        data[static_cast<size_t>(i) * 16u + 8u + b]
+                    ) << (b * 8u);
+                }
+                m_memory->write128(
+                    channel.m_madr + i * 16u, &quad
+                );
             }
         }
-        if (!m_device_transfer(
-                m_device_user, channel_index, data.data(), channel.m_qwc))
+        else
         {
-            return false;
+            if (m_device_transfer == nullptr)
+            {
+                return false;
+            }
+
+            // Deliver the COMPLETE transfer as one contiguous
+            // little-endian guest stream. A refusing consumer leaves
+            // DMA registers and device state unchanged.
+            for (uint32_t i = 0; i < channel.m_qwc; ++i)
+            {
+                s_ee_u128 quad{};
+                m_memory->read128(channel.m_madr + i * 16u, &quad);
+                for (uint32_t b = 0; b < 8u; ++b)
+                {
+                    data[static_cast<size_t>(i) * 16u + b] =
+                        static_cast<uint8_t>(quad.m_lo >> (b * 8u));
+                    data[static_cast<size_t>(i) * 16u + 8u + b] =
+                        static_cast<uint8_t>(quad.m_hi >> (b * 8u));
+                }
+            }
+            if (!m_device_transfer(
+                    m_device_user, channel_index,
+                    data.data(), channel.m_qwc))
+            {
+                return false;
+            }
         }
     }
 

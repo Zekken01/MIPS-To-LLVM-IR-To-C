@@ -189,12 +189,20 @@ int main()
         return fail("GS reset or 4 MiB VRAM address wrap");
     }
 
-    // An unsupported transfer direction does not accept IMAGE events.
-    if (!write_register(gs, 0x53u, 1u) ||
+    // TRXDIR=1 requires a configured source buffer. Once set up,
+    // it reads through GS read_image / reverse VIF1 DMA and must
+    // still reject attempts to feed IMAGE uploads in this direction.
+    const uint64_t source_buf =
+        static_cast<uint64_t>(0x3fffu) | (1ull << 16u);
+    if (write_register(gs, 0x53u, 1u) ||
+        !write_register(gs, 0x50u,
+                        bitblt(0x3fffu, 1u, 0u) | source_buf) ||
+        !write_register(gs, 0x53u, 1u) ||
+        !gs.state().m_download_active ||
         gs.state().m_transfer_started ||
         write_image(gs, wrap_data.data(), 1u))
     {
-        return fail("local-to-host IMAGE was accepted");
+        return fail("local-to-host source setup or IMAGE rejection");
     }
 
     uint32_t unused = 0u;
