@@ -332,6 +332,10 @@ if(EE_HAVE_LLVM_JIT_TEST)
                 ${CMAKE_SOURCE_DIR}/tools/verify_ir.py
                 ${CMAKE_SOURCE_DIR}/tools/link_native_objects.py
                 ${CMAKE_SOURCE_DIR})
+    add_test(NAME windows_msvc_link_commands
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/tools/test_windows_link_commands.py
+                ${CMAKE_SOURCE_DIR})
     add_test(NAME game_runner_end_to_end
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_game_runner.py
