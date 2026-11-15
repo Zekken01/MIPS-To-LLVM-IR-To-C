@@ -77,16 +77,16 @@ int main()
     constexpr uint32_t k_bp = 0x140u;
     constexpr uint32_t k_base = k_bp * 256u;
 
-    // PSMT4 still uses a different 4-bit/nibble address layout.
+    // PSMT8H uses the high-byte lane of a 32-bit GS word.
     // Unsupported transfer setup must not commit TRXDIR.
-    if (!reg(gs, 0x50u, bitblt(k_bp, 4u, 0x14u)) ||
+    if (!reg(gs, 0x50u, bitblt(k_bp, 4u, 0x1bu)) ||
         !reg(gs, 0x51u, trxpos(0u, 63u)) ||
         !reg(gs, 0x52u, trxreg(129u, 2u)) ||
         reg(gs, 0x53u, 0u) ||
         gs.was_written(0x53u) ||
         gs.state().m_transfer_started)
     {
-        return fail("PSMT4 configuration accepted or partially committed");
+        return fail("PSMT8H configuration accepted or partially committed");
     }
 
     // PSMT8: 128x64-pixel GS pages, 8 KiB per page. The 129x2
