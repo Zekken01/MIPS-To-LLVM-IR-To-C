@@ -150,8 +150,27 @@ Unlike the reference runtime's streaming implementation, this backend
 preflights the **entire** chain's physical RAM destinations before any
 copy. Invalid spans or an unterminated cycle (limited to 4096 tags)
 leave STR set, preserve channel registers, and do not partially copy
-RAM or raise a false completion interrupt. toSPR chain mode, MFIFO,
-and timed completion are still unsupported.
+RAM or raise a false completion interrupt.
+
+**toSPR** channel 9 now implements the reference's general DMA
+chain mode (`CHCR.MOD=1`), including a preloaded QWC segment and the
+following tag IDs: REFE (0), CNT (1), NEXT (2), REF (3), REFS (4),
+CALL (5), RET (6) and END (7). DMA tags live in EE RAM at TADR,
+carry QWC, destination/source-selection and IRQ flags, and can choose
+inline payload or an aligned physical RAM reference. CALL/RET use two
+address-stack registers (ASR0/ASR1 at channel offsets 0x40/0x50);
+TIE-enabled IRQ tags terminate after their payload. Transferred
+quadwords go to scratchpad, with SADR wrapping at 16 KiB.
+TADR, MADR, CHCR tag/stack fields, QWC, STR, D_STAT and COP0 IP3 are
+updated on successful completion.
+
+As in the fromSPR implementation, all tag addresses and source RAM
+spans are checked on a read-only pass before any scratchpad writes.
+Malformed tags, unbacked RAM and nonterminating loops (4,096 tag
+guard) leave STR set and do not fabricate completion. This differs
+from real PS2 streaming side effects; differential ELF/PCSX2
+validation remains necessary. MFIFO, cycle scheduling and
+device-specific DMA channels remain unsupported.
 
 The EE DMA control register `D_SQWC=0x1000e030` is now backed by the
 shared hardware bus. For SPR channels 8 and 9 in `CHCR.MOD=2` when
@@ -186,7 +205,7 @@ interrupts within such code requires instrumentation and a timed scheduler.
 The host does not yet provide device event timing, complete guest BIOS
 interrupt handlers, or general GS/SIF/GIF/VIF behavior.
 
-This still does **not** implement toSPR chains, MFIFO,
+This still does **not** implement MFIFO,
 TLB translation, VU1, guest address/alignment exceptions, or comprehensive
 hardware-specific device semantics. VU0 code writes are visible to the current interpreter fetch;
 future compiled microcode engines will need explicit invalidation if
@@ -277,8 +296,8 @@ above were captured locally from the user's privately supplied ELF, not in CI.
 
 The native host has bounded EE RAM, opt-in direct aliases, scratchpad,
 VU0 apertures, a host MMIO bus, INTC and D_STAT register models, and bounded
-normal/interleave SPR DMA channels 8/9 and channel-8 chains, but still
-no general TLB, BIOS, other DMA channels,
+normal/interleave SPR DMA channels 8/9 and chains for both channels,
+but still no general TLB, BIOS, other DMA channels,
 device scheduling, or full interrupt emulation. The syscall handling is deliberately
 opt-in, experimental, and incomplete. Reaching the PCs above is not evidence
 of full console initialization, correct kernel behaviour or graphical output.

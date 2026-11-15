@@ -7,10 +7,10 @@
 
 namespace ee
 {
-// EE DMA registers, normal/interleave SPR DMA, and bounded fromSPR chains.
+// EE DMA registers, normal/interleave SPR DMA, and bounded SPR chains.
 // Reference: ps2-web-recomp/runtime/src/dmac.cpp and hw.cpp.
-// Transfers execute synchronously, prevalidating all RAM destinations.
-// MFIFO, toSPR chains, arbitration and cycle-accurate completion
+// Transfers execute synchronously, prevalidating all source/destination
+// RAM ranges. MFIFO, arbitration and cycle-accurate completion
 // remain unimplemented.
 class c_ee_dmac
 {
@@ -44,6 +44,7 @@ private:
         uint32_t m_qwc = 0;
         uint32_t m_tadr = 0;
         uint32_t m_sadr = 0;
+        uint32_t m_asr[2]{};
     };
 
     void sync_interrupt_line();
@@ -52,6 +53,9 @@ private:
     bool transfer_spr_normal(uint32_t channel);
     bool transfer_spr_interleave(uint32_t channel);
     bool transfer_from_spr_chain();
+    bool transfer_to_spr_chain();
+    bool walk_to_spr_chain(s_spr_channel& channel, bool copy_data);
+    bool transfer_to_spr_span(s_spr_channel& channel, uint32_t qwc, bool copy_data);
     bool walk_from_spr_chain(s_spr_channel& channel, bool copy_data);
     bool transfer_from_spr_span(s_spr_channel& channel, uint32_t qwc, bool copy_data);
 
