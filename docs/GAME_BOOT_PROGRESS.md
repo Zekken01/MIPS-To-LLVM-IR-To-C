@@ -138,8 +138,32 @@ The transfer behavior is based on
 `ps2-web-recomp/runtime/src/dmac.cpp::run_normal`.
 Unlike the reference's fast RAM mirroring, this experimental backend
 rejects unaligned/unbacked RAM transfers atomically instead of copying
-partially or pretending to complete. Other devices (GIF/VIF/IPU),
-MFIFO, channels 0..7 and cycle-based DMA completion are not implemented. `fromSPR` channel 8 also supports
+partially or pretending to complete. Other IPU/SIF device engines,
+MFIFO, most DMA channels, and cycle-based DMA completion are not implemented.
+
+The controller now also exposes **normal-mode device DMA** for VIF0
+(channel 0, `0x10008000`), VIF1 (channel 1, `0x10009000`), and
+GIF (channel 2, `0x1000a000`). The native host may install a
+`c_ee_hw_bus::bind_device_transfer` callback which receives one
+**complete**, contiguous, little-endian 16-byte/QWC stream and the
+channel index. Channel 2 represents GIF PATH3, and VIF1 accepts only
+RAM-to-VIF uploads (`CHCR.DIR=1`), not reverse GIF/GS image downloads.
+Only normal-mode (`CHCR.MOD=0`) is supported for these channels.
+On an accepted transfer, MADR advances, QWC and STR clear, and
+D_STAT/COP0 IP3 report channel completion. A missing/rejecting callback,
+unsupported mode/direction, or an invalid physical RAM span preserves
+STR and the other channel registers, without pretending that the GPU
+or VIF executed anything. The callback must reject an unavailable
+consumer **before** committing side effects; the DMA host cannot undo
+work performed by a callback that returns false.
+
+These callbacks are **transport integration only**, not a VIF command
+interpreter, GIF packet renderer, GS state machine, DMA chain engine
+for channels 0..2, or timed device queue. The native game runner does
+not install a consumer, so nonempty device DMA remains outstanding until
+a real device implementation is connected.
+
+`fromSPR` channel 8 also supports
 **synchronous chain mode** (CHCR.MOD=1). It copies a preloaded QWC segment
 when present, then consumes 16-byte DMA tags from scratchpad, selecting
 the tag's upper-32-bit MADR and low-16-bit QWC. It updates CHCR tag bits,
@@ -169,8 +193,8 @@ spans are checked on a read-only pass before any scratchpad writes.
 Malformed tags, unbacked RAM and nonterminating loops (4,096 tag
 guard) leave STR set and do not fabricate completion. This differs
 from real PS2 streaming side effects; differential ELF/PCSX2
-validation remains necessary. MFIFO, cycle scheduling and
-device-specific DMA channels remain unsupported.
+validation remains necessary. MFIFO, cycle scheduling, and
+device-side DMA interpretation remain unsupported.
 
 The EE DMA control register `D_SQWC=0x1000e030` is now backed by the
 shared hardware bus. For SPR channels 8 and 9 in `CHCR.MOD=2` when

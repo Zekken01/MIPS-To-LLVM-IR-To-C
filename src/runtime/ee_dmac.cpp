@@ -1,6 +1,8 @@
 #include "ee_dmac.h"
 #include "ee_exceptions.h"
 
+#include <vector>
+
 namespace ee
 {
 void c_ee_dmac::sync_interrupt_line()
@@ -36,10 +38,21 @@ void c_ee_dmac::bind_memory(ee_memory* memory)
     m_memory = memory;
 }
 
+void c_ee_dmac::bind_device_transfer(
+    void* user, t_device_transfer_callback callback)
+{
+    m_device_user = user;
+    m_device_transfer = callback;
+}
+
 void c_ee_dmac::reset()
 {
     m_status = 0u;
     m_sqwc = 0u;
+    for (s_spr_channel& channel : m_device_channels)
+    {
+        channel = {};
+    }
     for (s_spr_channel& channel : m_spr_channels)
     {
         channel = {};
@@ -92,7 +105,26 @@ bool c_ee_dmac::read_spr_channel(uint32_t address, uint32_t* value) const
 
     const s_spr_channel* channel = nullptr;
     uint32_t offset = 0;
-    if (address >= k_from_spr_base && address < k_from_spr_base + 0x100u)
+    bool device_channel = false;
+    if (address >= k_vif0_base && address < k_vif0_base + 0x100u)
+    {
+        channel = &m_device_channels[0];
+        offset = address - k_vif0_base;
+        device_channel = true;
+    }
+    else if (address >= k_vif1_base && address < k_vif1_base + 0x100u)
+    {
+        channel = &m_device_channels[1];
+        offset = address - k_vif1_base;
+        device_channel = true;
+    }
+    else if (address >= k_gif_base && address < k_gif_base + 0x100u)
+    {
+        channel = &m_device_channels[2];
+        offset = address - k_gif_base;
+        device_channel = true;
+    }
+    else if (address >= k_from_spr_base && address < k_from_spr_base + 0x100u)
     {
         channel = &m_spr_channels[0];
         offset = address - k_from_spr_base;
@@ -115,9 +147,80 @@ bool c_ee_dmac::read_spr_channel(uint32_t address, uint32_t* value) const
     case 0x30u: *value = channel->m_tadr; return true;
     case 0x40u: *value = channel->m_asr[0]; return true;
     case 0x50u: *value = channel->m_asr[1]; return true;
-    case 0x80u: *value = channel->m_sadr; return true;
+    case 0x80u:
+    {
+        if (device_channel)
+        {
+            return false;
+        }
+        *value = channel->m_sadr;
+        return true;
+    }
     default: return false;
     }
+}
+
+bool c_ee_dmac::transfer_device_normal(uint32_t channel_index)
+{
+    if (channel_index > 2u || m_memory == nullptr)
+    {
+        return false;
+    }
+
+    s_spr_channel& channel = m_device_channels[channel_index];
+    // Only RAM -> VIF0, RAM -> VIF1, and RAM -> GIF PATH3 are supported.
+    // The reference's VIF1 reverse/GIF image-download path is different.
+    if (((channel.m_chcr >> 2u) & 3u) != 0u ||
+        (channel_index == 1u && (channel.m_chcr & 1u) == 0u))
+    {
+        return false;
+    }
+
+    const size_t bytes = static_cast<size_t>(channel.m_qwc) * 16u;
+    const uint64_t end = static_cast<uint64_t>(channel.m_madr) + bytes;
+    if ((channel.m_madr & 0x0fu) != 0u ||
+        channel.m_madr >= 0x02000000u ||
+        end > 0x02000000ull ||
+        !m_memory->contains(channel.m_madr, bytes))
+    {
+        return false;
+    }
+
+    // A zero-QWC DMA is a real no-op completion, not a device payload.
+    if (channel.m_qwc != 0u)
+    {
+        if (m_device_transfer == nullptr)
+        {
+            return false;
+        }
+
+        // Deliver the COMPLETE transfer as one contiguous little-endian
+        // guest stream. Do not signal successful hardware completion on
+        // a missing/refusing consumer, and do not advance partial QWC.
+        std::vector<uint8_t> data(bytes);
+        for (uint32_t i = 0; i < channel.m_qwc; ++i)
+        {
+            s_ee_u128 quad{};
+            m_memory->read128(channel.m_madr + i * 16u, &quad);
+            for (uint32_t b = 0; b < 8u; ++b)
+            {
+                data[static_cast<size_t>(i) * 16u + b] =
+                    static_cast<uint8_t>(quad.m_lo >> (b * 8u));
+                data[static_cast<size_t>(i) * 16u + 8u + b] =
+                    static_cast<uint8_t>(quad.m_hi >> (b * 8u));
+            }
+        }
+        if (!m_device_transfer(
+                m_device_user, channel_index, data.data(), channel.m_qwc))
+        {
+            return false;
+        }
+    }
+
+    channel.m_madr += static_cast<uint32_t>(bytes);
+    channel.m_qwc = 0u;
+    channel.m_chcr &= ~k_chcr_str;
+    return raise(channel_index);
 }
 
 bool c_ee_dmac::transfer_spr_normal(uint32_t channel_index)
@@ -582,8 +685,30 @@ bool c_ee_dmac::write_spr_channel(uint32_t address, uint32_t value)
     s_spr_channel* channel = nullptr;
     uint32_t channel_index = 0;
     uint32_t offset = 0;
+    bool device_channel = false;
 
-    if (address >= k_from_spr_base && address < k_from_spr_base + 0x100u)
+    if (address >= k_vif0_base && address < k_vif0_base + 0x100u)
+    {
+        channel = &m_device_channels[0];
+        channel_index = 0u;
+        offset = address - k_vif0_base;
+        device_channel = true;
+    }
+    else if (address >= k_vif1_base && address < k_vif1_base + 0x100u)
+    {
+        channel = &m_device_channels[1];
+        channel_index = 1u;
+        offset = address - k_vif1_base;
+        device_channel = true;
+    }
+    else if (address >= k_gif_base && address < k_gif_base + 0x100u)
+    {
+        channel = &m_device_channels[2];
+        channel_index = 2u;
+        offset = address - k_gif_base;
+        device_channel = true;
+    }
+    else if (address >= k_from_spr_base && address < k_from_spr_base + 0x100u)
     {
         channel = &m_spr_channels[0];
         channel_index = 8u;
@@ -609,7 +734,11 @@ bool c_ee_dmac::write_spr_channel(uint32_t address, uint32_t value)
         if (!was_running && (value & k_chcr_str) != 0u)
         {
             const uint32_t mode = (channel->m_chcr >> 2u) & 3u;
-            if (channel_index == 8u && mode == 1u)
+            if (device_channel)
+            {
+                (void)transfer_device_normal(channel_index);
+            }
+            else if (channel_index == 8u && mode == 1u)
             {
                 (void)transfer_from_spr_chain();
             }
@@ -633,7 +762,15 @@ bool c_ee_dmac::write_spr_channel(uint32_t address, uint32_t value)
     case 0x30u: channel->m_tadr = value; return true;
     case 0x40u: channel->m_asr[0] = value; return true;
     case 0x50u: channel->m_asr[1] = value; return true;
-    case 0x80u: channel->m_sadr = value & 0x3ff0u; return true;
+    case 0x80u:
+    {
+        if (device_channel)
+        {
+            return false;
+        }
+        channel->m_sadr = value & 0x3ff0u;
+        return true;
+    }
     default: return false;
     }
 }

@@ -21,6 +21,12 @@ public:
         m_dmac.bind_memory(memory);
     }
 
+    void bind_device_transfer(
+        void* user, c_ee_dmac::t_device_transfer_callback callback)
+    {
+        m_dmac.bind_device_transfer(user, callback);
+    }
+
     void reset()
     {
         m_intc.reset();
