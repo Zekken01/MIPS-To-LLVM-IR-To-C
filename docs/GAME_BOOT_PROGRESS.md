@@ -550,6 +550,32 @@ kernel threads, interrupts, DMA or device behaviour. The table
 mirroring is scoped to accepted SetSyscall registrations, not a
 complete synthesized PS2 BIOS/kernel RAM image.
 
+### Verified US SDBZ first boot without a kernel snapshot (2026-11-15)
+
+The user's actual US `SLUS_214.42` boot trace confirms that the
+guest-visible SetSyscall table solves the first kernel handler lookup:
+service `0x83` returns `0x80001A0C` for `0x0017EE80` and
+`0x80001968` for `0x0017EE48`, with
+`--hle-startup --kseg-ram` and no `--kernel-ram`. Startup then
+installs a second handler for service `0x5A`, invokes that guest
+callback successfully twice, and reaches native dispatch 41.
+
+The new first unsupported service is syscall `0x64` at guest
+EPC `0x00174F24` (A0=0, V1=0x64). This is
+`FlushCache`, not an unsupported instruction. The reference
+`ps2-web-recomp/runtime/src/kernel.cpp` handles both
+`0x64` (FlushCache) and `0x68` (iFlushCache) by returning zero.
+The native runner now implements the same opt-in HLE for both
+services, preserving its syscall instruction-context validation and
+continuing to reject unrecognized services. This is suitable for
+the current statically translated immutable executable image; it
+does not implement self-modifying guest code or invalidate JIT
+translations. A synthetic ELF test checks both return values,
+the unsupported-service boundary and opt-in behavior.
+
+A real-game rerun after this change is required to establish the
+next boundary; the previous 41-dispatch result is **not** a boot.
+
 ## Validation limits
 
 CTest contains `game_runner_end_to_end` which creates small synthetic MIPS

@@ -156,6 +156,32 @@ def make_registered_callback_elf(path):
     path.write_bytes(image)
 
 
+def make_flush_cache_elf(path):
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    # Two recognized cache services followed by an unsupported
+    # service. A missing --hle-startup must reject the very first
+    # service; enabled HLE must resume past both and stop at 0x65.
+    instructions = (
+        0x2402007b,  # addiu v0, zero, 123: prove return overwrites v0
+        0x24030064,  # addiu v1, zero, 0x64 (FlushCache)
+        0x0000000c,  # syscall
+        0x00404021,  # addu t0, v0, zero: expected 0
+        0x2402007c,  # addiu v0, zero, 124
+        0x24030068,  # addiu v1, zero, 0x68 (iFlushCache)
+        0x0000000c,  # syscall
+        0x00404821,  # addu t1, v0, zero: expected 0
+        0x24030065,  # addiu v1, zero, unknown 0x65
+        0x0000000c,  # syscall: must remain unsupported
+        0x240a0001,  # addiu t2, zero, 1: never executed
+        0x00000008,  # jr zero
+        0x00000000,  # delay slot
+    )
+    for index, opcode in enumerate(instructions):
+        struct.pack_into("<I", image, 0x108 + index * 4, opcode)
+    path.write_bytes(image)
+
+
 def make_kernel_ram_probe_elf(path):
     make_elf(path)
     image = bytearray(path.read_bytes())
@@ -437,6 +463,56 @@ def main():
         )
         assert "EE stopped: dispatched=2" in result.stdout, (
             result.stdout + result.stderr
+        )
+
+    with tempfile.TemporaryDirectory(prefix="ee-native-flushcache-") as tmp:
+        root = Path(tmp)
+        elf = root / "flush-cache-mips.elf"
+        make_flush_cache_elf(elf)
+        report = root / "flush-cache.json"
+        command = [
+            sys.executable, str(source / "tools" / "run_game.py"),
+            str(elf),
+            "--build-dir", str(build),
+            "--work-dir", str(root / "out"),
+            "--max-dispatches=8",
+            "--report", str(report),
+            "--trace",
+        ]
+        without_hle = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert without_hle.returncode != 0, without_hle.stdout + without_hle.stderr
+        initial = json.loads(report.read_text(encoding="utf-8"))
+        assert initial["epc"] == 0x00100010, initial
+        assert initial["gpr_lo"][2] == 123, initial
+        assert "HLE FlushCache" not in without_hle.stdout, without_hle.stdout
+
+        with_hle = subprocess.run(
+            command + ["--no-recompile", "--hle-startup"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert with_hle.returncode != 0, with_hle.stdout + with_hle.stderr
+        assert "HLE FlushCache: mode=0x00000000 result=0" in with_hle.stdout, (
+            with_hle.stdout + with_hle.stderr
+        )
+        assert "HLE iFlushCache: mode=0x00000000 result=0" in with_hle.stdout, (
+            with_hle.stdout + with_hle.stderr
+        )
+        stopped = json.loads(report.read_text(encoding="utf-8"))
+        assert stopped["epc"] == 0x0010002c, stopped
+        assert stopped["gpr_lo"][8] == 0, stopped  # first service return
+        assert stopped["gpr_lo"][9] == 0, stopped  # second service return
+        assert stopped["gpr_lo"][10] == 0, stopped  # unknown call never returns
+        assert stopped["gpr_lo"][2] == 0, stopped
+        assert stopped["gpr_lo"][3] == 0x65, stopped
+        assert "guest blocked by an unsupported operation" in with_hle.stderr, (
+            with_hle.stdout + with_hle.stderr
         )
 
     with tempfile.TemporaryDirectory(prefix="ee-native-syscall-hook-") as tmp:
