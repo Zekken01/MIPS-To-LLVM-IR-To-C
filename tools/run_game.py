@@ -11,6 +11,7 @@ Examples:
   python tools/run_game.py SLUS_214.42 --functions=all --work-dir=build/sdbz
 """
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -25,6 +26,101 @@ STOP_PATTERN = re.compile(
     r"EE stopped: dispatched=(\d+) pc=0x([0-9a-fA-F]{8}) "
     r"reason=DISPATCH\(3\) status=0"
 )
+
+
+
+CACHE_SCHEMA = "ee-translation-cache-v1"
+
+
+def sha256_path(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def translation_inputs(elf, recomp, source_root):
+    """Fingerprint the ELF and every local input that builds translated code."""
+    paths = [
+        ("ELF", elf),
+        ("ee_recomp", recomp),
+        ("tools/run_game.py", source_root / "tools" / "run_game.py"),
+        ("tools/verify_ir.py", source_root / "tools" / "verify_ir.py"),
+        ("tools/link_native_objects.py",
+         source_root / "tools" / "link_native_objects.py"),
+        ("src/ee/ee_dispatcher.cpp",
+         source_root / "src" / "ee" / "ee_dispatcher.cpp"),
+        ("src/ee/recompiled_functions.cpp",
+         source_root / "src" / "ee" / "recompiled_functions.cpp"),
+    ]
+    for relative in ("include/ee", "src/runtime"):
+        directory = source_root / relative
+        for path in sorted(directory.rglob("*")):
+            if path.is_file() and path.suffix in (".h", ".hpp", ".cpp"):
+                paths.append((path.relative_to(source_root).as_posix(), path))
+    return {name: sha256_path(path) for name, path in paths}
+
+
+def write_translation_cache(path, inputs, emit_opt, metadata_path, library):
+    """Commit provenance only after the complete translated library is linked."""
+    snapshot = {
+        "schema": CACHE_SCHEMA,
+        "inputs": inputs,
+        "emit_opt": emit_opt,
+        "metadata_sha256": sha256_path(metadata_path),
+        "library_sha256": sha256_path(library),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    try:
+        temporary.write_text(json.dumps(snapshot, indent=2) + "\n",
+                             encoding="utf-8")
+        temporary.replace(path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def validate_translation_cache(path, inputs, emit_opt, metadata_path, library):
+    """Never reuse a translated DLL whose guest code provenance is unknown."""
+    if not path.is_file():
+        raise ValueError(
+            "cached translation has no provenance record; "
+            "rerun without --no-recompile"
+        )
+    snapshot = json.loads(path.read_text(encoding="utf-8"))
+    if snapshot.get("schema") != CACHE_SCHEMA:
+        raise ValueError(
+            "cached translation has an unrecognized provenance schema; "
+            "rerun without --no-recompile"
+        )
+    saved = snapshot.get("inputs")
+    if not isinstance(saved, dict):
+        raise ValueError("cached translation has invalid input fingerprints")
+    for name, digest in inputs.items():
+        if saved.get(name) != digest:
+            raise ValueError(
+                f"cached translation is stale: {name} changed; "
+                "rerun without --no-recompile"
+            )
+    if set(saved) != set(inputs):
+        raise ValueError(
+            "cached translation input list changed; "
+            "rerun without --no-recompile"
+        )
+    if snapshot.get("emit_opt") != emit_opt:
+        raise ValueError(
+            "cached translation uses a different --emit-opt; "
+            "rerun without --no-recompile"
+        )
+    for name, file_path in (("metadata_sha256", metadata_path),
+                            ("library_sha256", library)):
+        if snapshot.get(name) != sha256_path(file_path):
+            raise ValueError(
+                f"cached translation {file_path.name} changed; "
+                "rerun without --no-recompile"
+            )
 
 
 def elf_entry(path):
@@ -255,10 +351,11 @@ def main(argv=None):
             "libgame-translated.so"
         )
         library = work / library_name
-        recomp = None
+        recomp = native_executable(build, "ee_recomp", args.config)
+        cache_path = work / "translation-cache.json"
+        inputs = translation_inputs(elf, recomp, source_root)
 
         if not args.no_recompile:
-            recomp = native_executable(build, "ee_recomp", args.config)
             (work / "ir").mkdir(parents=True, exist_ok=True)
             for stale in (work / "ir").glob("*.ll"):
                 stale.unlink()
@@ -283,6 +380,8 @@ def main(argv=None):
                 source_root, work, metadata_path, object_dir, library,
                 args.emit_opt, pdb=args.pdb
             )
+            write_translation_cache(cache_path, inputs, args.emit_opt,
+                                    metadata_path, library)
         else:
             if not library.is_file() or not metadata_path.is_file():
                 raise ValueError(
@@ -300,11 +399,15 @@ def main(argv=None):
                 raise ValueError(
                     f"--no-recompile entry 0x{entry:08x} has no translated block"
                 )
+            validate_translation_cache(cache_path, inputs, args.emit_opt,
+                                       metadata_path, library)
             if args.pdb:
                 build_linked_library(
                     source_root, work, metadata_path, object_dir, library,
                     args.emit_opt, pdb=True, reuse_objects=True
                 )
+                write_translation_cache(cache_path, inputs, args.emit_opt,
+                                        metadata_path, library)
             if args.auto_expand:
                 recomp = native_executable(build, "ee_recomp", args.config)
                 if not object_dir.is_dir():
@@ -440,6 +543,8 @@ def main(argv=None):
                 source_root, work, metadata_path, object_dir, library,
                 args.emit_opt, pdb=args.pdb
             )
+            write_translation_cache(cache_path, inputs, args.emit_opt,
+                                    metadata_path, library)
         return 3
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
         print(f"run_game: {error}", file=sys.stderr)
