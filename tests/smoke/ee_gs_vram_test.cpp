@@ -133,8 +133,9 @@ int main()
 
     // A rejected batch must roll back its earlier IMAGE, including VRAM
     // and the transfer position, so a subsequent retry can succeed.
-    constexpr uint32_t k_second_base = 0x40u * 256u;
-    if (!write_register(gs, 0x50u, bitblt(0x40u, 1u, 0u)) ||
+    // Use a fresh physical GS page, not the first upload's x=64 page.
+    constexpr uint32_t k_second_base = 0x100u * 256u;
+    if (!write_register(gs, 0x50u, bitblt(0x100u, 1u, 0u)) ||
         !write_register(gs, 0x52u, trxreg(1u, 1u)) ||
         !write_register(gs, 0x53u, 0u))
     {
