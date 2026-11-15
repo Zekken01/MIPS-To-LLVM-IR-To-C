@@ -188,9 +188,6 @@ def run_opt_level(fixture_exe, temp_dir, opt_level, byte_shift, half_shift):
     def broadcast_halfword(value):
         return (value & 0xFFFF) * 0x0001000100010001
 
-    expected_values.update({
-        25: (copy_b[0] << 64) | 0,  # overridden below with correct half order
-    })
     # PCPYLD lower64 = rt.lower64; upper64 = rs.lower64.
     expected_values[25] = (copy_a[0] << 64) | copy_b[0]
     expected_values[26] = (broadcast_halfword(copy_b[1]) << 64) | broadcast_halfword(copy_b[0])
