@@ -79,11 +79,33 @@ if not defined CXX (
     )
 )
 
+rem Reuse the exact previously translated guest DLL when its provenance
+rem is still valid. --link-only validates its complete input fingerprint
+rem without launching the game or recompiling any guest code.
+set "REUSE_FLAG="
+if exist "%WORK_DIR%\translation-cache.json" (
+    python tools\run_game.py "%ELF%" ^
+        --build-dir build ^
+        --config Release ^
+        --work-dir "%WORK_DIR%" ^
+        --emit-opt=0 ^
+        --no-recompile ^
+        --link-only >nul 2>&1
+    if not errorlevel 1 set "REUSE_FLAG=--no-recompile"
+)
+
+if defined REUSE_FLAG (
+    echo === Reusing validated guest translation cache ===
+) else (
+    echo === First translation or changed inputs: full guest translation ===
+)
+
 echo === Running local ELF ===
 echo Log: "%WORK_DIR%\boot.log"
 echo Report: "%WORK_DIR%\first-boot.json"
 
 python tools\run_game.py "%ELF%" ^
+    %REUSE_FLAG% ^
     --build-dir build ^
     --config Release ^
     --work-dir "%WORK_DIR%" ^
