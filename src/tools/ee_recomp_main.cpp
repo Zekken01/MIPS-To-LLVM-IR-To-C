@@ -17,6 +17,7 @@ static void print_usage(const char* argv0)
         "  --opt-level=N       IR optimisations 0-3 (default 0):\n"
         "                        0/1 safe baseline, 2 +CSE, 3 +dead-temp\n"
 
+        "  --discovery-cache=FILE   Reuse matching full-ELF discovery for --function\n"
         "  -h, --help          Show this help\n",
         argv0);
 }
@@ -49,6 +50,10 @@ int main(int argc, char** argv)
         }
         if (arg.compare(0, 11, "--function=") == 0) {
             opts.only_function = parse_u32(arg.substr(11));
+            continue;
+        }
+        if (arg.compare(0, 18, "--discovery-cache=") == 0) {
+            opts.discovery_cache_path = arg.substr(18);
             continue;
         }
         if (arg.compare(0, 12, "--opt-level=") == 0) {
