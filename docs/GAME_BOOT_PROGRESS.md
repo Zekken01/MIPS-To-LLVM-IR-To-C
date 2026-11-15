@@ -1124,6 +1124,45 @@ Once the next trace returns a precise loop-header PC, investigate
 the guest arithmetic/branch or relevant device state before
 raising the loop limit.
 
+### EE semaphore syscalls following guarded boot (US SDBZ, dispatch 5848)
+
+After the loop-safepoint retranslation, the user's seventh real-game
+run rebuilt **184 translated functions** and executed **5,848
+dispatches**. The prior freeze around dispatch 5,376 did not recur:
+the last traced replay completed in roughly 0.52 seconds.
+The next genuine unsupported kernel service is `0x44`
+(`WaitSema`) at EPC `0x00174CE4`, with A0/semaphore ID 1.
+The main thread is still ID 1; the earlier CreateSema for ID 1
+initialised it with **count=1** and max=1.
+
+The reference kernel's `wait_sema` consumes one available count
+and returns the requested ID. Only a wait on count zero blocks the
+running thread and requires scheduling. The runner now implements
+the immediately-completing paths for `WaitSema (0x44)`,
+`SignalSema/iSignalSema (0x42/0x43)`,
+`PollSema/iPollSema (0x45/0x46)`,
+`DeleteSema (0x41)`, and
+`ReferSemaStatus/iReferSemaStatus (0x47/0x48)`.
+It keeps the count, initial count, maximum, attributes and option
+of each 64-slot kernel semaphore. Polling an unavailable token
+returns -1; signaling a semaphore already at its maximum fails
+without incrementing; a nonexistent/deleted ID returns -1.
+Status queries write the six-field 32-bit guest ee_sema_t layout,
+reporting zero waiters because no guest wait has been scheduled.
+
+**Blocking WaitSema still fails closed**: the guest remains at
+its SYSCALL exception with EPC/EXL intact and a diagnostic
+saying the EE thread scheduler is required. This avoids
+fabricating a successful wait or jumping to an uninitialized
+thread, and preserves the known-dormant CreateThread children.
+Synthetic ELF tests check count consumption, signal/poll,
+overflow, delete/invalid ID, status layout, refusal of a zero
+count blocking wait and unmapped status pointers.
+
+These changes are runner-only; the new 184-function translation
+cache stays valid. The real game must be rerun to confirm the
+next actual bootstrap boundary.
+
 ## Validation limits
 
 CTest contains `game_runner_end_to_end` which creates small synthetic MIPS
