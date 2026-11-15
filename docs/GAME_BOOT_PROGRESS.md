@@ -576,6 +576,38 @@ the unsupported-service boundary and opt-in behavior.
 A real-game rerun after this change is required to establish the
 next boundary; the previous 41-dispatch result is **not** a boot.
 
+### Dynamic kernel RAM handler registration (US SDBZ, dispatch 47)
+
+After the two FlushCache calls succeed, the next actual US SDBZ
+stop is SetSyscall at EPC 0x0017F494 with service number 0x5B
+and handler pointer 0x80076000. ELF disassembly explains the
+sequence: 0x0017F4A0 calls the previously registered 0x5A
+guest copy syscall twice; 0x0017F540 installs 0x740 bytes from
+source 0x00462A70 at KSEG0 0x80076000 and 0x0017F558
+copies another 0x28 bytes to 0x00082000. The caller flushes
+instruction caches with modes 0 and 2 before registering the
+relocated code as syscall 0x5B.
+
+The reference ps2-web-recomp accepts this SetSyscall pointer,
+writing it into the physical kernel table without requiring
+its address to be an executable ELF segment. The native runner
+now accepts aligned, backed KSEG0/KSEG1/direct RAM handler
+addresses, and accepts zero to clear handlers, in addition to
+normal compiled-ELF callbacks. It continues to reject
+misaligned and unbacked pointers and out-of-range services.
+A synthetic ELF runner test registers KSEG0 code, verifies the
+guest-visible table and physical RAM, checks zero unregister,
+and confirms invoking an uncompiled RAM handler produces an
+explicit refusal rather than silently executing invalid code.
+
+**Next real-game milestone:** determine whether and how the
+installed 0x80076000 handler is actually invoked. Its MIPS code
+was copied into RAM at runtime, so registering its pointer is
+correct, but the ELF-only native dispatcher cannot yet translate
+or execute that copy. Correct execution will require dynamic
+guest-code lifting/translation or an independently verified
+equivalent kernel service, not just allowing registration.
+
 ## Validation limits
 
 CTest contains `game_runner_end_to_end` which creates small synthetic MIPS

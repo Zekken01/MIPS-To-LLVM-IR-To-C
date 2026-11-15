@@ -182,6 +182,44 @@ def make_flush_cache_elf(path):
     path.write_bytes(image)
 
 
+def make_kernel_ram_handler_elf(path, invoke=False):
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    # Store a tiny guest code word at KSEG0 0x80076000, register that
+    # direct RAM address for syscall 0x5B, and read back the kernel
+    # table through KSEG0. Invoke it or clear the registration.
+    instructions = (
+        0x3c0a8000,  # lui t2, 0x8000 (kernel table alias)
+        0x3c0b8007,  # lui t3, 0x8007
+        0x356b6000,  # ori t3, t3, 0x6000
+        0x3c0c03e0,  # lui t4, 0x03e0 (JR RA opcode)
+        0x358c0008,  # ori t4, t4, 8
+        0xad6c0000,  # sw t4, 0(t3), writing RAM code
+        0x2404005b,  # addiu a0, zero, 0x5B
+        0x01602821,  # addu a1, t3, zero: 0x80076000
+        0x24030074,  # addiu v1, zero, SetSyscall
+        0x0000000c,  # syscall
+        0x8d48196c,  # lw t0, 0x196c(t2): registered pointer
+        0x8d690000,  # lw t1, 0(t3): actual guest RAM instruction
+    )
+    end = (
+        (
+            0x2403005b,  # addiu v1, zero, 0x5B
+            0x0000000c,  # syscall: must reject untranslated RAM handler
+            0x240d0001,  # addiu t5, zero, 1: never executed
+        ) if invoke else (
+            0x2404005b,  # addiu a0, zero, 0x5B
+            0x00002821,  # addu a1, zero, zero: unregister
+            0x24030074,  # addiu v1, zero, SetSyscall
+            0x0000000c,  # syscall
+            0x8d4d196c,  # lw t5, 0x196c(t2): cleared table entry
+        )
+    )
+    for i, opcode in enumerate(instructions + end + (0x00000008, 0x00000000)):
+        struct.pack_into("<I", image, 0x108 + 4 * i, opcode)
+    path.write_bytes(image)
+
+
 def make_kernel_ram_probe_elf(path):
     make_elf(path)
     image = bytearray(path.read_bytes())
@@ -582,6 +620,47 @@ def main():
         assert registers[13] == 0x00100050, report  # 0x83 unchanged by 0x5A
         assert registers[14] == 0x00100030, report  # 0x83 replacement
         assert registers[15] == 0, report  # untouched 0x84 at 0x1A10
+
+    with tempfile.TemporaryDirectory(prefix="ee-native-kernel-ram-handler-") as tmp:
+        root = Path(tmp)
+        for invoke in (False, True):
+            elf = root / ("invoke-ram-handler.elf" if invoke else "clear-ram-handler.elf")
+            make_kernel_ram_handler_elf(elf, invoke=invoke)
+            report_path = root / "ram-handler.json"
+            result = subprocess.run(
+                [
+                    sys.executable, str(source / "tools" / "run_game.py"),
+                    str(elf),
+                    "--build-dir", str(build),
+                    "--work-dir", str(root / ("invoke" if invoke else "clear")),
+                    "--max-dispatches=16",
+                    "--hle-startup",
+                    "--kseg-ram",
+                    "--trace",
+                    "--report", str(report_path),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert "HLE SetSyscall: number=0x5b handler=0x80076000" in result.stdout, (
+                result.stdout + result.stderr
+            )
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            assert report["gpr_lo"][8] == 0x80076000, report
+            assert report["gpr_lo"][9] == 0x03e00008, report
+            if invoke:
+                assert "cannot execute RAM handler number=0x5b handler=0x80076000" in result.stderr, (
+                    result.stdout + result.stderr
+                )
+                assert "dynamic guest code not translated" in result.stderr, result.stderr
+                assert report["gpr_lo"][13] == 0, report
+                assert report["cop0_epc"] == 0x0010003c, report
+            else:
+                assert "HLE SetSyscall: number=0x5b handler=0x00000000" in result.stdout, (
+                    result.stdout + result.stderr
+                )
+                assert report["gpr_lo"][13] == 0, report
 
     with tempfile.TemporaryDirectory(prefix="ee-native-registered-callback-") as tmp:
         root = Path(tmp)

@@ -703,13 +703,26 @@ int main(int argc, char** argv)
                 if (!image.read32_at(epc, &opcode) ||
                     (opcode & 0xfc00003fu) != 0x0000000cu ||
                     (cpu.m_cop0[13] & 0x80000000u) != 0u ||
-                    epc > 0xfffffffbu ||
-                    !image.is_executable_address(handler))
+                    epc > 0xfffffffbu)
                 {
                     std::fprintf(stderr,
                         "registered syscall HLE refused invalid context "
                         "number=0x%02x epc=0x%08x handler=0x%08x\n",
                         service, epc, handler);
+                    break;
+                }
+                if (!image.is_executable_address(handler))
+                {
+                    // A SetSyscall handler can point to code copied into
+                    // KSEG0/1 RAM at runtime (SDBZ installs a relocated
+                    // kernel service at 0x80076000). Registration is valid,
+                    // but the ELF-only native dispatcher cannot yet execute
+                    // that relocated code. Report the precise boundary.
+                    std::fprintf(stderr,
+                        "registered syscall HLE cannot execute "
+                        "RAM handler number=0x%02x handler=0x%08x "
+                        "(dynamic guest code not translated)\n",
+                        service, handler);
                     break;
                 }
                 callback_saved_ra = cpu.m_gpr[31];
@@ -942,9 +955,18 @@ int main(int argc, char** argv)
                     const uint32_t table_address =
                         k_kernel_syscall_table_base +
                         syscall_number * sizeof(uint32_t);
+                    // The kernel accepts handlers in direct-mapped EE
+                    // RAM, not only executable ELF segments. SDBZ copies
+                    // 0x740 bytes from 0x00462A70 into 0x80076000,
+                    // flushes the cache and registers that RAM address.
+                    // Zero is also a valid request to clear a registration.
+                    const bool handler_backed =
+                        handler_pc == 0u ||
+                        image.is_executable_address(handler_pc) ||
+                        memory->contains(handler_pc, sizeof(uint32_t));
                     if (syscall_number >= k_kernel_syscall_table_entries ||
                         (handler_pc & 3u) != 0u ||
-                        !image.is_executable_address(handler_pc) ||
+                        !handler_backed ||
                         !memory->contains(table_address, sizeof(uint32_t)))
                     {
                         std::fprintf(stderr,
@@ -957,7 +979,8 @@ int main(int argc, char** argv)
                     // Keep guest-visible lookup and callback dispatch in
                     // sync, with the physical address readable through KSEG0
                     // when --kseg-ram is enabled. Invalid registrations
-                    // above never change either location.
+                    // above never change either location. Registration of
+                    // guest RAM code does not claim it has been translated.
                     memory->write32(table_address, handler_pc);
                     installed_syscall_handlers[syscall_number] = handler_pc;
                     if (trace)
