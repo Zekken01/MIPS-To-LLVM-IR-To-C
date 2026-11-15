@@ -252,6 +252,84 @@ def make_semaphore_elf(path):
     path.write_bytes(image)
 
 
+def make_semaphore_operations_elf(path, blocking_wait=False,
+                                  invalid_status=False):
+    """Exercise the stateful semaphore kernel ABI through guest MIPS syscalls."""
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    image.extend(bytes(max(0, 0x500 - len(image))))
+    # Descriptor at guest 0x00100300, status block at 0x00100320.
+    # The ELF PT_LOAD file offset is 0x100; increase the segment sizes.
+    struct.pack_into("<I", image, 52 + 16, 0x400)
+    struct.pack_into("<I", image, 52 + 20, 0x400)
+    struct.pack_into(
+        "<6I", image, 0x400,
+        0, 2, 0 if blocking_wait else 1, 0, 0x1234, 0x5678,
+    )
+    opcodes = []
+
+    def emit(*words):
+        opcodes.extend(words)
+
+    def li(register, value):
+        if value <= 0x7fff:
+            emit(0x24000000 | (register << 16) | value)
+        else:
+            emit(
+                0x3c000000 | (register << 16) | ((value >> 16) & 0xffff),
+                0x34000000 | (register << 21) | (register << 16) |
+                (value & 0xffff),
+            )
+
+    def syscall(service, register=None):
+        li(3, service)             # v1 selects EE kernel syscall
+        emit(0x0000000c)
+        if register is not None:
+            # addu destination, v0, zero
+            emit((2 << 21) | (register << 11) | 0x21)
+
+    li(4, 0x00100300)
+    syscall(0x40, 8)               # t0 = CreateSema() -> 1
+    li(4, 1)                       # all remaining operations use ID 1
+    syscall(0x44, 9)               # t1 = WaitSema() -> 1
+    if not blocking_wait:
+        syscall(0x45, 10)          # t2 = PollSema() -> -1
+        syscall(0x46, 11)          # t3 = iPollSema() -> -1
+        syscall(0x42, 12)          # t4 = SignalSema() -> 1
+        syscall(0x43, 13)          # t5 = iSignalSema() -> 1
+        syscall(0x42, 14)          # t6 = signal at max -> -1
+        syscall(0x44, 15)          # t7 = WaitSema() -> 1
+        syscall(0x44, 16)          # s0 = WaitSema() -> 1
+        li(5, 0x7ffffffc if invalid_status else 0x00100320)
+        syscall(0x47, 17)          # s1 = ReferSemaStatus() -> 1
+        if not invalid_status:
+            syscall(0x48, 18)      # s2 = iReferSemaStatus() -> 1
+            emit(
+                0x8ca00000 | (19 << 16) | 0,   # lw s3,  0(a1) count
+                0x8ca00000 | (20 << 16) | 4,   # lw s4,  4(a1) max
+                0x8ca00000 | (21 << 16) | 8,   # lw s5,  8(a1) init
+                0x8ca00000 | (22 << 16) | 12,  # lw s6, 12(a1) waiters
+                0x8ca00000 | (23 << 16) | 16,  # lw s7, 16(a1) attr
+                0x8ca00000 | (24 << 16) | 20,  # lw t8, 20(a1) option
+            )
+            syscall(0x41, 25)      # t9 = DeleteSema() -> 1
+            syscall(0x44)          # invalid deleted ID -> -1
+    emit(0x00000008, 0x00000000)  # jr zero; delay-slot nop
+    assert 0x108 + 4 * len(opcodes) < 0x400
+    for index, opcode in enumerate(opcodes):
+        struct.pack_into("<I", image, 0x108 + index * 4, opcode)
+    path.write_bytes(image)
+    # Return the EPC for the intentional blocking/invalid pointer stop.
+    if blocking_wait:
+        # descriptor load: LUI, ORI, service, syscall, move;
+        # id load: addiu, service, syscall.
+        return 0x00100008 + (5 + 1 + 1) * 4
+    if invalid_status:
+        # Trace reports the actual precise faulting EPC for comparison.
+        return None
+    return None
+
+
 def make_set_syscall_elf(path):
     make_elf(path)
     image = bytearray(path.read_bytes())
@@ -1708,6 +1786,82 @@ def main():
         assert state["dispatches"] == 1, state
         assert state["final_pc"] == 0x00100008, state
         assert state["gpr_lo"][8] == 32, state
+
+    for blocking_wait, invalid_status in (
+        (False, False), (True, False), (False, True),
+    ):
+        with tempfile.TemporaryDirectory(prefix="ee-native-sema-ops-") as tmp:
+            root = Path(tmp)
+            elf = root / "semaphore-ops.elf"
+            make_semaphore_operations_elf(
+                elf, blocking_wait=blocking_wait,
+                invalid_status=invalid_status,
+            )
+            report_path = root / "semaphore-ops.json"
+            command = [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf),
+                "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--max-dispatches=64",
+                "--report", str(report_path),
+                "--trace",
+            ]
+            if not blocking_wait and not invalid_status:
+                no_hle = subprocess.run(
+                    command, capture_output=True, text=True, check=False,
+                )
+                assert no_hle.returncode != 0, no_hle.stdout + no_hle.stderr
+                denied = json.loads(report_path.read_text(encoding="utf-8"))
+                assert denied["cop0_epc"] == 0x00100014, denied
+                command.append("--no-recompile")
+
+            result = subprocess.run(
+                command + ["--hle-startup"],
+                capture_output=True, text=True, check=False,
+            )
+            assert result.returncode != 0, result.stdout + result.stderr
+            state = json.loads(report_path.read_text(encoding="utf-8"))
+            regs = state["gpr_lo"]
+            assert state["snapshot_kind"] == "stopped", state
+            assert state["exit_name"] == "EXCEPTION", state
+            assert regs[8] == 1, state
+            assert "HLE CreateSema: id=1" in result.stdout, result.stdout
+            if blocking_wait:
+                assert "WaitSema HLE refused blocking wait:" in result.stderr, (
+                    result.stdout + result.stderr
+                )
+                assert regs[9] == 0, state  # never returned from WaitSema
+                assert state["cop0_epc"] == 0x00100024, state
+                assert "HLE WaitSema:" not in result.stdout
+            else:
+                assert "HLE WaitSema: id=1 old_count=1 new_count=0 result=1" in result.stdout, (
+                    result.stdout + result.stderr
+                )
+                assert regs[9] == 1, state
+                assert regs[10] == 0xffffffffffffffff, state
+                assert regs[11] == 0xffffffffffffffff, state
+                assert regs[12] == 1 and regs[13] == 1, state
+                assert regs[14] == 0xffffffffffffffff, state
+                assert regs[15] == 1 and regs[16] == 1, state
+                if invalid_status:
+                    assert "ReferSemaStatus HLE refused unbacked or unaligned pointer" in result.stderr, (
+                        result.stdout + result.stderr
+                    )
+                    assert regs[17] == 0, state
+                else:
+                    assert regs[17] == 1 and regs[18] == 1, state
+                    assert regs[19] == 0, state   # count
+                    assert regs[20] == 2, state   # max
+                    assert regs[21] == 1, state   # initial count
+                    assert regs[22] == 0, state   # waiters
+                    assert regs[23] == 0x1234, state
+                    assert regs[24] == 0x5678, state
+                    assert regs[25] == 1, state   # delete
+                    assert regs[2] == 0xffffffffffffffff, state
+                    assert "not found, result=-1" in result.stdout, (
+                        result.stdout + result.stderr
+                    )
 
     with tempfile.TemporaryDirectory(prefix="ee-native-timeout-snapshot-") as tmp:
         root = Path(tmp)
