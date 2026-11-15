@@ -9,7 +9,7 @@
 
 namespace ee
 {
-// GS register-state and PSMCT32/24/16/16S plus PSMT8/PSMT4 upload consumer.
+// GS register-state and PSMCT32/24/16/16S plus indexed PSMT uploads.
 // It does not rasterize primitives, present frames or implement GS IRQs.
 // Based on ps2-web-recomp/runtime/src/gs/gs.cpp::write/write_packed.
 struct s_ee_gs_state

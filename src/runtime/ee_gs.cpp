@@ -246,13 +246,25 @@ bool c_ee_gs_state::read_indexed_clut_value(
     {
         slot = m_vram[psmt8_address(bp, bw, x, y)];
     }
+    else if (psm == 0x1bu) // PSMT8H: high byte of PSMCT32 word
+    {
+        const uint32_t address = psmct32_address(bp, bw, x, y);
+        slot = m_vram[address + 3u];
+    }
     else if (psm == 0x14u) // PSMT4
     {
         const uint32_t nibble = psmt4_nibble_address(bp, bw, x, y);
         const uint32_t index = (
             m_vram[nibble / 2u] >> ((nibble & 1u) * 4u)
         ) & 0x0fu;
-        // Same CLUT slot selection as the reference's dump_texture().
+        slot = (csa * 16u + index) & 511u;
+    }
+    else if (psm == 0x24u || psm == 0x2cu) // PSMT4HL / PSMT4HH
+    {
+        const uint32_t address = psmct32_address(bp, bw, x, y);
+        const uint8_t upper = m_vram[address + 3u];
+        const uint32_t index =
+            (upper >> (psm == 0x24u ? 0u : 4u)) & 0x0fu;
         slot = (csa * 16u + index) & 511u;
     }
     else
@@ -308,13 +320,14 @@ bool c_ee_gs_state::load_clut(
     const uint32_t csa = static_cast<uint32_t>((tex0 >> 56u) & 0x1fu);
     // A CLD-triggered load of a different indexed format or unknown
     // palette storage layout cannot yet be executed faithfully.
-    if ((psm != 0x13u && psm != 0x14u) ||
+    if ((psm != 0x13u && psm != 0x14u &&
+         psm != 0x1bu && psm != 0x24u && psm != 0x2cu) ||
         (cpsm != 0u && cpsm != 2u && cpsm != 0x0au))
     {
         return false;
     }
 
-    const bool eight = psm == 0x13u;
+    const bool eight = psm == 0x13u || psm == 0x1bu;
     const uint32_t entries = eight ? 256u : 16u;
     const uint32_t entry_bytes = cpsm == 0u ? 4u : 2u;
     const uint32_t texclut = static_cast<uint32_t>(
@@ -512,7 +525,7 @@ bool c_ee_gs_state::write_register(
         state.m_transfer_pending_size = 0u;
         if ((value & 3u) == 0u)
         {
-            // Only verified PSMCT32/24/16/16S and PSMT8/PSMT4 uploads execute.
+            // Verified PSMCT32/24/16/16S and five indexed formats execute.
             // Unsupported formats and malformed setup reject the batch.
             if (!state.m_written[0x50u] ||
                 !state.m_written[0x51u] ||
@@ -533,7 +546,9 @@ bool c_ee_gs_state::write_register(
             if (dest_width == 0u ||
                 (dest_psm != 0u && dest_psm != 1u &&
                  dest_psm != 2u && dest_psm != 0x0au &&
-                 dest_psm != 0x13u && dest_psm != 0x14u) ||
+                 dest_psm != 0x13u && dest_psm != 0x14u &&
+                 dest_psm != 0x1bu && dest_psm != 0x24u &&
+                 dest_psm != 0x2cu) ||
                 pixel_width == 0u || pixel_height == 0u)
             {
                 return false;
@@ -746,9 +761,9 @@ bool c_ee_gs_state::consume(
             );
             next.m_image_qwc += e.m_qwc;
 
-            // PSMCT32/24 share 64x32 pages, PSMCT16/16S use 64x64
-            // pages, PSMT8 uses 128x64, and PSMT4 uses 128x128
-            // pages with nibble swizzling. Only PSMCT24 needs carry.
+            // PSMCT32/24 and 8H/4HL/4HH share 64x32 pages,
+            // PSMCT16/16S use 64x64, PSMT8 uses 128x64, and
+            // PSMT4 uses 128x128. Only PSMCT24 needs carry.
             const uint64_t buf = next.m_registers[0x50u];
             const uint64_t pos = next.m_registers[0x51u];
             const uint64_t reg_size = next.m_registers[0x52u];
@@ -772,7 +787,8 @@ bool c_ee_gs_state::consume(
             if (width == 0u ||
                 (psm != 0u && psm != 1u && psm != 2u &&
                  psm != 0x0au && psm != 0x13u &&
-                 psm != 0x14u) ||
+                 psm != 0x14u && psm != 0x1bu &&
+                 psm != 0x24u && psm != 0x2cu) ||
                 rrw == 0u || rrh == 0u ||
                 next.m_transfer_pixels_written > total_pixels)
             {
@@ -797,6 +813,14 @@ bool c_ee_gs_state::consume(
                 {
                     address = psmt8_address(base, width, dx, dy);
                 }
+                else if (psm == 0x1bu || psm == 0x24u ||
+                         psm == 0x2cu)
+                {
+                    // The upper byte of a swizzled PSMCT32 word stores
+                    // one 8-bit index or one of two 4-bit index lanes.
+                    address = psmct32_address(base, width, dx, dy) + 3u;
+                    shift = psm == 0x2cu ? 4u : 0u;
+                }
                 else if (psm == 2u || psm == 0x0au)
                 {
                     address = psmct16_address(base, width, dx, dy, psm);
@@ -809,7 +833,7 @@ bool c_ee_gs_state::consume(
                 ++next.m_transfer_pixels_written;
             };
 
-            if (psm == 0x14u)
+            if (psm == 0x14u || psm == 0x24u || psm == 0x2cu)
             {
                 // Packed GIF pixels: first index is the low nibble.
                 // Each 16-byte IMAGE qword carries 32 indices, so
@@ -833,10 +857,11 @@ bool c_ee_gs_state::consume(
                 }
             }
             else if (psm == 0u || psm == 2u ||
-                     psm == 0x0au || psm == 0x13u)
+                     psm == 0x0au || psm == 0x13u || psm == 0x1bu)
             {
                 // 1-, 2- and 4-byte indices/pixels fit GIF qwords.
-                const uint8_t pixel_bytes = psm == 0x13u ? 1u :
+                const uint8_t pixel_bytes =
+                    (psm == 0x13u || psm == 0x1bu) ? 1u :
                     (psm == 2u || psm == 0x0au) ? 2u : 4u;
                 if (next.m_transfer_pending_size != 0u)
                 {
