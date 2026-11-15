@@ -842,6 +842,36 @@ the next concrete boot blocker. Native interrupt delivery
 and guest callback scheduling are not implemented by these
 mask-management services alone.
 
+### EE dormant thread creation (US SDBZ, dispatch 126)
+
+The last captured native US ELF trace reached dispatch **126** after
+enabling INTC cause 11 and creating a third semaphore. At syscall
+EPC 0x00174AA4, V1=0x20 and A0=0x01FFEF60, the guest requested
+`CreateThread`. This is a kernel HLE blocker, not an
+unsupported R5900 instruction.
+
+The reference `ps2-web-recomp/runtime/src/kernel.cpp::create_thread`
+allocates the lowest free ID in [1, 255], creates a *dormant* thread,
+and copies the descriptor's entry (+4), stack (+8), stack size (+12),
+GP (+16), priority (+20), attributes (+28), and options (+32).
+The native runner now reserves ID 1 for the already-running ELF
+main thread, copies these fields from a backed, aligned 36-byte guest
+descriptor, and returns the new ID. Exhausting the ID pool returns
+-1. Invalid guest descriptor memory is rejected rather than
+inventing a thread. No new thread executes at CreateThread time.
+
+A synthetic ELF native execution regression checks both successful
+registrations (IDs 2 and 3), the descriptor fields, and refusal of an
+unaligned pointer, alongside opt-in HLE behavior. Existing
+`StartThread` (0x22), scheduling, and context switching
+remain unsupported: these must be implemented with preserved EE CPU
+and thread state, not by treating new threads as no-ops.
+
+**Next real-game test is user-owned:** after this code passes CI
+and is merged, the user will run the private US ELF locally and
+supply the JSON report and trace. CI contains no proprietary ELF
+and does not claim progress beyond dispatch 126.
+
 ## Validation limits
 
 CTest contains `game_runner_end_to_end` which creates small synthetic MIPS
