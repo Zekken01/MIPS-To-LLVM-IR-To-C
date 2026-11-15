@@ -1,8 +1,14 @@
 #include "ee_memory.h"
 #include "ee_runtime.h"
+#include "ee_decoder.h"
+#include "function_analyzer.h"
+#include "llvm_context.h"
+#include "module_builder.h"
 
 #include <cstdint>
 #include <cstdio>
+#include <map>
+#include <string>
 
 namespace
 {
@@ -192,6 +198,59 @@ int main()
         if (!check_memory(memory, expected, 8))
         {
             return fail("SDR", offset);
+        }
+    }
+
+
+    // In addition to helper semantics, check that the LLVM CFG emitter
+    // actually calls each exact helper instead of its old approximate
+    // aligned LD/SD fallback. This fixture contains no proprietary code.
+    constexpr uint32_t k_entry = 0x00100000u;
+    const uint32_t opcodes[8] = {0x22u, 0x26u, 0x1au, 0x1bu,
+                                 0x2au, 0x2eu, 0x2cu, 0x2du};
+    const char* load_names[4] = {"lwl", "lwr", "ldl", "ldr"};
+    const char* store_names[4] = {"swl", "swr", "sdl", "sdr"};
+    std::map<uint32_t, ee::s_ee_instruction> instructions;
+    for (uint32_t i = 0; i < 8; ++i)
+    {
+        const uint32_t pc = k_entry + i * 4u;
+        const uint32_t word = (opcodes[i] << 26) | (8u << 21) | (9u << 16);
+        const ee::s_ee_instruction ins = ee::decode(pc, word);
+        if (ins.valid != ee::e_ee_valid::VALID)
+        {
+            return fail("decoder marked an unaligned instruction unsupported", i);
+        }
+        instructions.emplace(pc, ins);
+    }
+    const uint32_t jr_pc = k_entry + 8u * 4u;
+    instructions.emplace(jr_pc, ee::decode(jr_pc, 0x03e00008u));
+    instructions.emplace(jr_pc + 4u, ee::decode(jr_pc + 4u, 0u));
+
+    ee::function_analyzer analyzer;
+    const auto functions = analyzer.analyze(instructions, {k_entry});
+    if (functions.size() != 1 || functions[0].blocks.empty())
+    {
+        return fail("synthetic LLVM function discovery", 0);
+    }
+
+    for (int optimization = 0; optimization <= 3; ++optimization)
+    {
+        llvm::llvm_context context("unaligned_memory");
+        llvm::module_builder builder(context, optimization);
+        builder.emit_function_cfg(functions[0], instructions, "guest_unaligned_test");
+        const std::string ir = context.ir();
+        for (uint32_t i = 0; i < 4; ++i)
+        {
+            const std::string load_call =
+                std::string("call i64 @ee_mem_") + load_names[i] + "(";
+            const std::string store_call =
+                std::string("call void @ee_mem_") + store_names[i] + "(";
+            if (ir.find(load_call) == std::string::npos ||
+                ir.find(store_call) == std::string::npos)
+            {
+                return fail("LLVM emitted a missing/approximate memory operation",
+                            static_cast<uint32_t>(optimization));
+            }
         }
     }
 
