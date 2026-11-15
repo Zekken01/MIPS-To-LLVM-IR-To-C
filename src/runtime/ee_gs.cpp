@@ -513,6 +513,229 @@ bool c_ee_gs_state::load_clut(
     return true;
 }
 
+bool c_ee_gs_state::supported_psm(uint32_t psm)
+{
+    switch (psm)
+    {
+    case 0x00u: // PSMCT32
+    case 0x01u: // PSMCT24
+    case 0x02u: // PSMCT16
+    case 0x0au: // PSMCT16S
+    case 0x13u: // PSMT8
+    case 0x14u: // PSMT4
+    case 0x1bu: // PSMT8H
+    case 0x24u: // PSMT4HL
+    case 0x2cu: // PSMT4HH
+    case 0x30u: // PSMZ32
+    case 0x31u: // PSMZ24
+    case 0x32u: // PSMZ16
+    case 0x3au: // PSMZ16S
+        return true;
+    default:
+        return false;
+    }
+}
+
+uint32_t c_ee_gs_state::read_pixel(
+    const std::vector<uint8_t>& vram,
+    uint32_t psm, uint32_t base, uint32_t width,
+    uint32_t x, uint32_t y)
+{
+    if (psm == 0x14u)
+    {
+        const uint32_t nibble =
+            psmt4_nibble_address(base, width, x, y);
+        return (vram[nibble / 2u] >> ((nibble & 1u) * 4u)) & 0x0fu;
+    }
+    if (psm == 0x13u)
+    {
+        return vram[psmt8_address(base, width, x, y)];
+    }
+
+    uint32_t address = 0u;
+    if (psm == 0x30u || psm == 0x31u)
+    {
+        address = psmz32_address(base, width, x, y);
+    }
+    else if (psm == 0x32u || psm == 0x3au)
+    {
+        address = psmz16_address(base, width, x, y, psm);
+    }
+    else if (psm == 0x02u || psm == 0x0au)
+    {
+        address = psmct16_address(base, width, x, y, psm);
+    }
+    else
+    {
+        address = psmct32_address(base, width, x, y);
+    }
+
+    if (psm == 0x1bu)
+    {
+        return vram[address + 3u];
+    }
+    if (psm == 0x24u || psm == 0x2cu)
+    {
+        return (vram[address + 3u] >>
+                (psm == 0x24u ? 0u : 4u)) & 0x0fu;
+    }
+    if (psm == 0x02u || psm == 0x0au ||
+        psm == 0x32u || psm == 0x3au)
+    {
+        return static_cast<uint32_t>(vram[address]) |
+            (static_cast<uint32_t>(vram[address + 1u]) << 8u);
+    }
+
+    const uint32_t value = read_le32(vram.data() + address);
+    return (psm == 0x01u || psm == 0x31u) ?
+        (value & 0x00ffffffu) : value;
+}
+
+c_ee_gs_state::s_vram_write c_ee_gs_state::pixel_write(
+    uint32_t psm, uint32_t base, uint32_t width,
+    uint32_t x, uint32_t y, uint32_t value, uint8_t size)
+{
+    uint32_t address = 0u;
+    uint8_t shift = 0u;
+    if (psm == 0x14u)
+    {
+        const uint32_t nibble =
+            psmt4_nibble_address(base, width, x, y);
+        address = nibble / 2u;
+        shift = (nibble & 1u) ? 4u : 0u;
+    }
+    else if (psm == 0x13u)
+    {
+        address = psmt8_address(base, width, x, y);
+    }
+    else if (psm == 0x1bu || psm == 0x24u || psm == 0x2cu)
+    {
+        address = psmct32_address(base, width, x, y) + 3u;
+        shift = psm == 0x2cu ? 4u : 0u;
+    }
+    else if (psm == 0x30u || psm == 0x31u)
+    {
+        address = psmz32_address(base, width, x, y);
+    }
+    else if (psm == 0x32u || psm == 0x3au)
+    {
+        address = psmz16_address(base, width, x, y, psm);
+    }
+    else if (psm == 0x02u || psm == 0x0au)
+    {
+        address = psmct16_address(base, width, x, y, psm);
+    }
+    else
+    {
+        address = psmct32_address(base, width, x, y);
+    }
+    return {address, value, size, shift};
+}
+
+void c_ee_gs_state::apply_vram_write(
+    std::vector<uint8_t>& vram, const s_vram_write& write)
+{
+    const uint32_t offset = write.m_offset;
+    const uint32_t value = write.m_value;
+    if (write.m_bytes == 0u)
+    {
+        const uint8_t mask =
+            static_cast<uint8_t>(0x0fu << write.m_shift);
+        vram[offset] = static_cast<uint8_t>(
+            (vram[offset] & static_cast<uint8_t>(~mask)) |
+            static_cast<uint8_t>((value & 0x0fu) << write.m_shift)
+        );
+    }
+    else
+    {
+        for (uint32_t b = 0u; b < write.m_bytes; ++b)
+        {
+            const uint32_t at = (offset + b) & (k_vram_bytes - 1u);
+            vram[at] = static_cast<uint8_t>(value >> (8u * b));
+        }
+    }
+}
+
+bool c_ee_gs_state::stage_local_copy(
+    s_ee_gs_state& state, const std::vector<uint8_t>& source_vram,
+    std::vector<s_vram_write>& writes)
+{
+    const uint64_t buf = state.m_registers[0x50u];
+    const uint64_t pos = state.m_registers[0x51u];
+    const uint64_t reg = state.m_registers[0x52u];
+
+    const uint32_t sbp = static_cast<uint32_t>(buf & 0x3fffu);
+    const uint32_t sbw = static_cast<uint32_t>((buf >> 16u) & 0x3fu);
+    const uint32_t spsm = static_cast<uint32_t>((buf >> 24u) & 0x3fu);
+    const uint32_t dbp = static_cast<uint32_t>((buf >> 32u) & 0x3fffu);
+    const uint32_t dbw = static_cast<uint32_t>((buf >> 48u) & 0x3fu);
+    const uint32_t dpsm = static_cast<uint32_t>((buf >> 56u) & 0x3fu);
+
+    const uint32_t ssax = static_cast<uint32_t>(pos & 0x7ffu);
+    const uint32_t ssay = static_cast<uint32_t>((pos >> 16u) & 0x7ffu);
+    const uint32_t dsax = static_cast<uint32_t>((pos >> 32u) & 0x7ffu);
+    const uint32_t dsay = static_cast<uint32_t>((pos >> 48u) & 0x7ffu);
+    const uint32_t dir = static_cast<uint32_t>((pos >> 59u) & 3u);
+    const uint32_t rrw = static_cast<uint32_t>(reg & 0xfffu);
+    const uint32_t rrh = static_cast<uint32_t>((reg >> 32u) & 0xfffu);
+    const uint64_t count = static_cast<uint64_t>(rrw) * rrh;
+    if (sbw == 0u || dbw == 0u ||
+        !supported_psm(spsm) || !supported_psm(dpsm) ||
+        count == 0u || count > k_max_local_copy_pixels ||
+        static_cast<uint64_t>(writes.size()) + count >
+            k_max_local_copy_pixels)
+    {
+        return false;
+    }
+
+    // The reference first reads all source pixels, then writes
+    // destinations. Read directly from the frozen source view and
+    // stage destination writes only: no live/overlapping source reads.
+    // DIR reverses the source X/Y coordinate mapping, not destination
+    // traversal order. Pixel values are copied raw, with destination
+    // formats truncating or preserving lanes exactly like write_pixel().
+    for (uint32_t y = 0u; y < rrh; ++y)
+    {
+        const uint32_t sy = (dir & 2u) != 0u ? rrh - 1u - y : y;
+        for (uint32_t x = 0u; x < rrw; ++x)
+        {
+            const uint32_t sx = (dir & 1u) != 0u ? rrw - 1u - x : x;
+            const uint32_t source_x = (ssax + sx) & 0x7ffu;
+            const uint32_t source_y = (ssay + sy) & 0x7ffu;
+            const uint32_t destination_x = (dsax + x) & 0x7ffu;
+            const uint32_t destination_y = (dsay + y) & 0x7ffu;
+            const uint32_t value = read_pixel(
+                source_vram, spsm, sbp, sbw, source_x, source_y
+            );
+            uint8_t size = 4u;
+            if (dpsm == 0x14u || dpsm == 0x24u || dpsm == 0x2cu)
+            {
+                size = 0u;
+            }
+            else if (dpsm == 0x13u || dpsm == 0x1bu)
+            {
+                size = 1u;
+            }
+            else if (dpsm == 0x02u || dpsm == 0x0au ||
+                     dpsm == 0x32u || dpsm == 0x3au)
+            {
+                size = 2u;
+            }
+            else if (dpsm == 0x01u || dpsm == 0x31u)
+            {
+                size = 3u;
+            }
+            writes.push_back(pixel_write(
+                dpsm, dbp, dbw, destination_x, destination_y,
+                value, size
+            ));
+        }
+    }
+    ++state.m_local_copy_count;
+    state.m_local_copy_pixels += count;
+    return true;
+}
+
 bool c_ee_gs_state::write_register(
     s_ee_gs_state& state, uint32_t reg, uint64_t value)
 {
@@ -592,10 +815,11 @@ bool c_ee_gs_state::write_register(
         state.m_transfer_started = false;
         state.m_transfer_pixels_written = 0u;
         state.m_transfer_pending_size = 0u;
-        if ((value & 3u) == 0u)
+        if ((value & 3u) == 0u || (value & 3u) == 2u)
         {
-            // Verified color, depth and five indexed formats execute.
-            // Unsupported formats and malformed setup reject the batch.
+            // Both host-to-local uploads and local-to-local copies
+            // validate configured pixel formats before committing.
+            // The copy itself executes at the TRXDIR write in consume().
             if (!state.m_written[0x50u] ||
                 !state.m_written[0x51u] ||
                 !state.m_written[0x52u])
@@ -604,6 +828,10 @@ bool c_ee_gs_state::write_register(
             }
             const uint64_t buf = state.m_registers[0x50u];
             const uint64_t reg_size = state.m_registers[0x52u];
+            const uint32_t source_width =
+                static_cast<uint32_t>((buf >> 16u) & 0x3fu);
+            const uint32_t source_psm =
+                static_cast<uint32_t>((buf >> 24u) & 0x3fu);
             const uint32_t dest_width =
                 static_cast<uint32_t>((buf >> 48u) & 0x3fu);
             const uint32_t dest_psm =
@@ -612,21 +840,23 @@ bool c_ee_gs_state::write_register(
                 static_cast<uint32_t>(reg_size & 0xfffu);
             const uint32_t pixel_height =
                 static_cast<uint32_t>((reg_size >> 32u) & 0xfffu);
-            if (dest_width == 0u ||
-                (dest_psm != 0u && dest_psm != 1u &&
-                 dest_psm != 2u && dest_psm != 0x0au &&
-                 dest_psm != 0x13u && dest_psm != 0x14u &&
-                 dest_psm != 0x1bu && dest_psm != 0x24u &&
-                 dest_psm != 0x2cu && dest_psm != 0x30u &&
-                 dest_psm != 0x31u && dest_psm != 0x32u &&
-                 dest_psm != 0x3au) ||
-                pixel_width == 0u || pixel_height == 0u)
+            const bool local_copy = (value & 3u) == 2u;
+            const uint64_t pixels =
+                static_cast<uint64_t>(pixel_width) * pixel_height;
+            if (dest_width == 0u || !supported_psm(dest_psm) ||
+                pixel_width == 0u || pixel_height == 0u ||
+                (local_copy &&
+                 (source_width == 0u || !supported_psm(source_psm) ||
+                  pixels > k_max_local_copy_pixels)))
             {
                 return false;
             }
-            state.m_image_data.clear();
-            state.m_image_qwc = 0u;
-            state.m_transfer_started = true;
+            if (!local_copy)
+            {
+                state.m_image_data.clear();
+                state.m_image_qwc = 0u;
+                state.m_transfer_started = true;
+            }
         }
         break;
     case 0x0eu: // GS ignores direct writes to these unmapped registers
@@ -731,6 +961,25 @@ bool c_ee_gs_state::consume(
     std::vector<s_vram_write> writes;
     const uint64_t bytes = static_cast<uint64_t>(qwc) * 16u;
 
+    // Allocate a frozen VRAM view only for TRXDIR=2. Replay earlier
+    // staged IMAGE/copy writes before each local copy, so multiple
+    // operations within one GIF event batch observe the right order.
+    std::vector<uint8_t> local_source_vram;
+    size_t shadow_applied = 0u;
+    const auto copy_local = [&]() -> bool
+    {
+        if (local_source_vram.empty())
+        {
+            local_source_vram = m_vram;
+        }
+        while (shadow_applied < writes.size())
+        {
+            apply_vram_write(local_source_vram, writes[shadow_applied]);
+            ++shadow_applied;
+        }
+        return stage_local_copy(next, local_source_vram, writes);
+    };
+
     // TEX0 and TEX2 load CLUT entries at the register write, not at
     // the end of the GIF batch or on every subsequent VRAM write.
     const auto refresh_clut = [&](uint32_t reg) -> bool
@@ -786,6 +1035,10 @@ bool c_ee_gs_state::consume(
                 !write_packed(
                     next, e.m_register, e.m_word0, e.m_word1
                 ) ||
+                (e.m_register == 0x0eu &&
+                 (e.m_word1 & 0xffu) == 0x53u &&
+                 (e.m_word0 & 3u) == 2u &&
+                 !copy_local()) ||
                 !refresh_clut(
                     e.m_register == 0x0eu ?
                     static_cast<uint32_t>(e.m_word1 & 0xffu) :
@@ -857,12 +1110,7 @@ bool c_ee_gs_state::consume(
             // A transfer setup may have been rewritten after TRXDIR;
             // reject it rather than applying a guessed pixel layout.
             if (width == 0u ||
-                (psm != 0u && psm != 1u && psm != 2u &&
-                 psm != 0x0au && psm != 0x13u &&
-                 psm != 0x14u && psm != 0x1bu &&
-                 psm != 0x24u && psm != 0x2cu &&
-                 psm != 0x30u && psm != 0x31u &&
-                 psm != 0x32u && psm != 0x3au) ||
+                !supported_psm(psm) ||
                 rrw == 0u || rrh == 0u ||
                 next.m_transfer_pixels_written > total_pixels)
             {
@@ -874,44 +1122,9 @@ bool c_ee_gs_state::consume(
                 const uint32_t pixel = next.m_transfer_pixels_written;
                 const uint32_t dx = (x + pixel % rrw) & 0x7ffu;
                 const uint32_t dy = (y + pixel / rrw) & 0x7ffu;
-                uint32_t address = 0u;
-                uint8_t shift = 0u;
-                if (psm == 0x14u)
-                {
-                    const uint32_t nibble_address =
-                        psmt4_nibble_address(base, width, dx, dy);
-                    address = nibble_address / 2u;
-                    shift = (nibble_address & 1u) ? 4u : 0u;
-                }
-                else if (psm == 0x13u)
-                {
-                    address = psmt8_address(base, width, dx, dy);
-                }
-                else if (psm == 0x1bu || psm == 0x24u ||
-                         psm == 0x2cu)
-                {
-                    // The upper byte of a swizzled PSMCT32 word stores
-                    // one 8-bit index or one of two 4-bit index lanes.
-                    address = psmct32_address(base, width, dx, dy) + 3u;
-                    shift = psm == 0x2cu ? 4u : 0u;
-                }
-                else if (psm == 0x30u || psm == 0x31u)
-                {
-                    address = psmz32_address(base, width, dx, dy);
-                }
-                else if (psm == 0x32u || psm == 0x3au)
-                {
-                    address = psmz16_address(base, width, dx, dy, psm);
-                }
-                else if (psm == 2u || psm == 0x0au)
-                {
-                    address = psmct16_address(base, width, dx, dy, psm);
-                }
-                else
-                {
-                    address = psmct32_address(base, width, dx, dy);
-                }
-                writes.push_back({address, value, size, shift});
+                writes.push_back(pixel_write(
+                    psm, base, width, dx, dy, value, size
+                ));
                 ++next.m_transfer_pixels_written;
             };
 
@@ -1001,37 +1214,12 @@ bool c_ee_gs_state::consume(
         }
     }
 
-    // Commit only after every event has passed validation. Late failures
-    // cannot leave partial VRAM pixels behind even if the GIF DMA rejects.
+    // Commit only after every event has passed validation, including
+    // TRXDIR=2. Reuse the same byte/nibble application as the frozen
+    // local-copy view to keep single-batch ordering deterministic.
     for (const s_vram_write& write : writes)
     {
-        const uint32_t offset = write.m_offset;
-        const uint32_t value = write.m_value;
-        if (write.m_bytes == 0u)
-        {
-            // Apply staged nibble writes in order; multiple indexed
-            // pixels can share the same underlying VRAM byte.
-            const uint8_t mask =
-                static_cast<uint8_t>(0x0fu << write.m_shift);
-            m_vram[offset] = static_cast<uint8_t>(
-                (m_vram[offset] & static_cast<uint8_t>(~mask)) |
-                static_cast<uint8_t>((value & 0x0fu) << write.m_shift)
-            );
-            continue;
-        }
-        m_vram[offset + 0u] = static_cast<uint8_t>(value);
-        if (write.m_bytes >= 2u)
-        {
-            m_vram[offset + 1u] = static_cast<uint8_t>(value >> 8u);
-        }
-        if (write.m_bytes >= 3u)
-        {
-            m_vram[offset + 2u] = static_cast<uint8_t>(value >> 16u);
-        }
-        if (write.m_bytes == 4u)
-        {
-            m_vram[offset + 3u] = static_cast<uint8_t>(value >> 24u);
-        }
+        apply_vram_write(m_vram, write);
     }
     m_state = std::move(next);
     return true;
