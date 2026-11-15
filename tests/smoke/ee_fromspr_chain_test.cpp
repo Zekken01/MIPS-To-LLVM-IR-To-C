@@ -212,14 +212,19 @@ int main()
         return fail("invalid initial QWC partially copied or advanced");
     }
 
-    // toSPR chain mode is a separate operation and remains unsupported.
+    // Channel 9 now supports a preloaded chain payload that terminates
+    // when the existing CHCR tag ID is REFE (zero).
     hardware.reset();
+    put_quad(&runtime, 0x900u, first);
     program(&runtime, k_to_spr, 0x900u, 1u, 0x500u, 0u);
     ee::ee_mem_write32(&runtime, k_to_spr, k_mode_chain | k_str);
-    if ((ee::ee_mem_read32(&runtime, k_to_spr) & k_str) == 0u ||
-        (hardware.dmac().status() & (1u << 9u)) != 0u)
+    if (!same(read_quad(&runtime, k_spr + 0x500u), first) ||
+        ee::ee_mem_read32(&runtime, k_to_spr + 0x10u) != 0x910u ||
+        ee::ee_mem_read32(&runtime, k_to_spr + 0x20u) != 0u ||
+        (ee::ee_mem_read32(&runtime, k_to_spr) & k_str) != 0u ||
+        (hardware.dmac().status() & (1u << 9u)) == 0u)
     {
-        return fail("unsupported toSPR chain mode falsely completed");
+        return fail("toSPR preloaded chain transfer regression");
     }
 
     // Empty scratchpad contains no END tags. The 4096-tag guard must
