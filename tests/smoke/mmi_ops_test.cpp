@@ -140,6 +140,35 @@ int main()
     expect_u128("PSUBUB", ee::mmi_apply(ee::LOP_MMI_SUBU_SAT_B, a, b, 0), expected_lanes(a,b,8,e_lane_op::sub_unsigned_sat));
     for (unsigned shift : {0u,8u,40u,120u})
         expect_u128("QFSRV", ee::mmi_apply(ee::LOP_MMI_QFSRV,a,b,(uint8_t)shift), expected_qfsrv(a,b,shift));
+    const ee::s_ee_u128 copy_a{
+        0x1122334455667788ull, 0x99aabbccddeeff01ull
+    };
+    const ee::s_ee_u128 copy_b{
+        0xfedcba9876543210ull, 0x0123456789abcdefull
+    };
+    expect_u128(
+        "PCPYLD ordered halves",
+        ee::mmi_apply(ee::LOP_MMI_COPY_LOWER_D, copy_a, copy_b, 0),
+        { copy_b.m_lo, copy_a.m_lo }
+    );
+    expect_u128(
+        "PCPYLD same operands",
+        ee::mmi_apply(ee::LOP_MMI_COPY_LOWER_D, copy_a, copy_a, 0),
+        { copy_a.m_lo, copy_a.m_lo }
+    );
+    expect_u128(
+        "PCPYH independent halves",
+        ee::mmi_apply(ee::LOP_MMI_COPY_H, copy_a, copy_b, 0),
+        { 0x3210321032103210ull, 0xcdefcdefcdefcdefull }
+    );
+    expect_u128(
+        "PCPYH all ones",
+        ee::mmi_apply(
+            ee::LOP_MMI_COPY_H, copy_a,
+            { 0xffffffffffffffffull, 0xffffffffffffffffull }, 0
+        ),
+        { 0xffffffffffffffffull, 0xffffffffffffffffull }
+    );
     expect_u128("SLL shift 0", ee::mmi_apply(ee::LOP_MMI_SLL,a,b,0), b);
     expect_u128("SRL shift 0", ee::mmi_apply(ee::LOP_MMI_SRL,a,b,0), b);
     std::printf("mmi_ops_test: %s (%d failures)\n", g_fail == 0 ? "PASS" : "FAIL", g_fail);

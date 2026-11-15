@@ -149,6 +149,12 @@ def run_opt_level(fixture_exe, temp_dir, opt_level, byte_shift, half_shift):
     state.gpr[5].lo, state.gpr[5].hi = split_u128(rhs)
     state.gpr[25].lo = byte_shift // 8
     state.gpr[26].lo = half_shift // 16
+    # Distinct lower and upper doublewords prove PCPYLD operand ordering
+    # and PCPYH's independent halfword broadcast in each doubleword.
+    copy_a = (0x1122334455667788, 0x99AABBCCDDEEFF01)
+    copy_b = (0xFEDCBA9876543210, 0x0123456789ABCDEF)
+    state.gpr[29].lo, state.gpr[29].hi = copy_a
+    state.gpr[30].lo, state.gpr[30].hi = copy_b
 
     result = guest_fn(ctypes.pointer(state), None)
     prefix = f"O{opt_level} MTSAB={byte_shift} MTSAH={half_shift}: "
@@ -179,6 +185,21 @@ def run_opt_level(fixture_exe, temp_dir, opt_level, byte_shift, half_shift):
         4: lane_operation(lhs, rhs, 32, "equal"),
     }
 
+    def broadcast_halfword(value):
+        return (value & 0xFFFF) * 0x0001000100010001
+
+    expected_values.update({
+        25: (copy_b[0] << 64) | 0,  # overridden below with correct half order
+    })
+    # PCPYLD lower64 = rt.lower64; upper64 = rs.lower64.
+    expected_values[25] = (copy_a[0] << 64) | copy_b[0]
+    expected_values[26] = (broadcast_halfword(copy_b[1]) << 64) | broadcast_halfword(copy_b[0])
+    expected_values[27] = (broadcast_halfword(copy_a[1]) << 64) | broadcast_halfword(copy_a[0])
+    expected_values[29] = (copy_a[0] << 64) | copy_b[0]
+    expected_values[28] = (
+        (broadcast_halfword(copy_a[0]) << 64) |
+        broadcast_halfword(copy_b[0])
+    )
     for register, expected in expected_values.items():
         expected_lo, expected_hi = split_u128(expected)
         actual = state.gpr[register]
@@ -215,7 +236,7 @@ def main():
                 modules.append(module)
                 target_machines.append(target_machine)
 
-    print("mmi1_ir_runtime: PASS (O0-O3; PABSW/PABSH; PADSBH; PCEQW/PCEQH/PCEQB; PMINW/PMINH; PADDU*/PSUBU*; PEXTU*/QFSRV; MTSAB/MTSAH; aliasing)")
+    print("mmi1_ir_runtime: PASS (O0-O3; packed MMI1; PCPYH/PCPYLD; 128-bit source halves; aliases; QFSRV)")
 
 
 

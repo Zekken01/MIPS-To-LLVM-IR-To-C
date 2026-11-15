@@ -72,7 +72,12 @@ int main(int argc, char** argv)
         0x00000000u,
         make_regimm(26, 0x19, 0),    // MTSAH $k0, 0
         make_mmi(4, 5, 24, 27, 0x28), // QFSRV $t8, $a0, $a1
-        make_mmi(4, 5, 4,  2, 0x28)  // PCEQW  $a0, $a0, $a1 (rd aliases rs)
+        make_mmi(4, 5, 4,  2, 0x28), // PCEQW $a0, $a0, $a1 (rd aliases rs)
+        make_mmi(29, 30, 25, 0x0e, 0x09), // PCPYLD $t9, $sp, $fp
+        make_mmi(0, 30, 26, 0x1b, 0x29),  // PCPYH $k0, $fp
+        make_mmi(0, 29, 27, 0x1b, 0x29),  // PCPYH $k1, $sp
+        make_mmi(29, 30, 29, 0x0e, 0x09), // PCPYLD $sp, $sp, $fp (aliases rs)
+        make_mmi(0, 29, 28, 0x1b, 0x29)   // PCPYH $gp, $sp (sees latest write)
     };
 
     std::map<uint32_t, ee::s_ee_instruction> insn_map;
@@ -87,6 +92,15 @@ int main(int argc, char** argv)
             return 3;
         }
         insn_map.emplace(pc, ins);
+    }
+
+    // PCPYH is unary and requires its reserved rs field to be zero.
+    const ee::s_ee_instruction bad_pcpyh =
+        ee::decode(entry_pc, make_mmi(4, 5, 6, 0x1b, 0x29));
+    if (bad_pcpyh.valid != ee::e_ee_valid::UNSUPPORTED)
+    {
+        std::fprintf(stderr, "nonzero PCPYH rs unexpectedly accepted\n");
+        return 3;
     }
 
     ee::function_analyzer analyzer;

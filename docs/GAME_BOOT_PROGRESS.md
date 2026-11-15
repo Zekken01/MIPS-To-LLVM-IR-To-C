@@ -647,6 +647,36 @@ are zero, and reads the original kernel table entry and
 the word just beyond its boundary to ensure neither changed.
 A real-game replay is needed to identify the next blocker.
 
+### R5900 MMI vector-fill blocker (US SDBZ, dispatch 88)
+
+With ignored SetSyscall(0x12C) matching the reference kernel,
+the latest real US boot resolves six relocated RAM callbacks,
+installs syscall 0x08 at 0x800766C0, and continues through
+0x0017F670 into 0x0018E408. Auto-expand discovers this
+48-instruction MIPS function but reports two unsupported
+instructions. At dispatch 88, execution halts at 0x0018E434.
+
+Exact US ELF words and R5900 classification:
+- 0x0018E434: 0x70081EE9 = PCPYH, MMI3 function 0x29,
+  sub-op 0x1B. This broadcasts rt's low halfword into
+  each 16-bit lane of the low doubleword, and independently
+  broadcasts rt's upper doubleword's low halfword across
+  the high doubleword. rs must be zero.
+- 0x0018E440: 0x70634389 = PCPYLD, MMI2 function 0x09,
+  sub-op 0x0E. It writes rd.lower64 = rt.lower64 and
+  rd.upper64 = rs.lower64.
+
+The native LLVM builder now emits both 128-bit operations
+exactly, the decoder marks these encodings supported, and
+the pure MMI reference helper and lifter use the same semantics.
+A multi-opt-level LLVM MCJIT regression verifies distinct
+source halves, both operand orders, and rd/rs aliasing.
+The real-game vector-fill routine needs recompilation: existing
+translated DLLs and cached per-function LLVM IR from before
+this fix still contain an UNSUPPORTED exit. A new real-game
+boot trace will establish whether the next obstacle is a
+guest instruction, HLE service, or device dependency.
+
 ## Validation limits
 
 CTest contains `game_runner_end_to_end` which creates small synthetic MIPS
