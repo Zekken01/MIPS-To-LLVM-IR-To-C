@@ -49,11 +49,6 @@ def main():
         not linker.is_msvc_compiler("clang++"),
         "Clang GNU-style command lines must remain unchanged",
     )
-    require(
-        linker.choose_compiler(None, platform="win32", which=lambda name: None)
-        if False else True,
-        "unreachable",
-    )
     try:
         linker.choose_compiler(None, platform="win32", which=lambda name: None)
     except ValueError as exc:
