@@ -157,11 +157,26 @@ or VIF executed anything. The callback must reject an unavailable
 consumer **before** committing side effects; the DMA host cannot undo
 work performed by a callback that returns false.
 
-These callbacks are **transport integration only**, not a VIF command
+The optional **GIF PATH3 parser** (`c_ee_gif_path3`) can now be
+connected to channel 2 through `bind_device_transfer`. Based on
+`ps2-web-recomp/runtime/src/gs/gif.cpp::walk`, it decodes GIFtags
+(NLOOP, EOP, FLG, NREG and REGS), packed 128-bit GS register payloads,
+reglist 64-bit register values (including odd-register padding), and
+image/IMAGE2 quadword runs. PACKED tags with PRE emit a separate PRIM
+register event; NREG=0 represents 16 registers. The parser preserves
+state across separately completed DMA transfers when a GIFtag's payload
+continues in the next transfer. An external consumer receives a single
+ordered batch of raw events per DMA transfer, plus offsets into the
+original input for image payloads, and must accept the **entire** batch
+atomically. On rejection, the parser state stays unchanged and the
+DMAC does not advance or raise completion. It does not infer GS register
+side effects or perform rasterization; there is deliberately **no**
+default event sink and the native game runner still leaves it unbound.
+
+The device DMA transport and optional parser are **not** a VIF command
 interpreter, GIF packet renderer, GS state machine, DMA chain engine
-for channels 0..2, or timed device queue. The native game runner does
-not install a consumer, so nonempty device DMA remains outstanding until
-a real device implementation is connected.
+for channels 0..2, or timed device queue. Nonempty DMA remains
+outstanding until an accepting device consumer is connected.
 
 `fromSPR` channel 8 also supports
 **synchronous chain mode** (CHCR.MOD=1). It copies a preloaded QWC segment

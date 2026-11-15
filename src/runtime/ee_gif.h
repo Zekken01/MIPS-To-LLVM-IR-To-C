@@ -1,0 +1,71 @@
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+
+namespace ee
+{
+// Minimal, transport-level GIF PATH3 event. The parser does not interpret
+// GS register semantics or draw. For image events, m_byte_offset points into
+// the original DMA input buffer, valid only during the event callback.
+enum class e_ee_gif_event_type : uint8_t
+{
+    tag,
+    primitive,
+    packed,
+    reglist,
+    image
+};
+
+struct s_ee_gif_event
+{
+    e_ee_gif_event_type m_type = e_ee_gif_event_type::tag;
+    uint32_t m_register = 0;
+    uint32_t m_byte_offset = 0;
+    uint32_t m_qwc = 0;
+    uint64_t m_word0 = 0;
+    uint64_t m_word1 = 0;
+};
+
+struct s_ee_gif_path3_state
+{
+    uint32_t m_nloop = 0;
+    uint32_t m_loop = 0;
+    uint32_t m_nreg = 0;
+    uint32_t m_reg = 0;
+    uint32_t m_flg = 0;
+    uint64_t m_regs = 0;
+    bool m_active = false;
+    bool m_eop = false;
+};
+
+// Stateful PATH3 parser based on ps2-web-recomp/runtime/src/gs/gif.cpp::walk.
+// The caller owns the event sink and must commit or reject a whole batch
+// atomically. A rejected chunk preserves parser state and (when used through
+// the DMAC callback) leaves channel MADR/QWC/STR unchanged.
+class c_ee_gif_path3
+{
+public:
+    using t_event_callback = bool (*)(
+        void* user, const s_ee_gif_event* events, size_t event_count,
+        const uint8_t* data, uint32_t qwc
+    );
+
+    void bind_event_sink(void* user, t_event_callback callback);
+    void reset();
+    const s_ee_gif_path3_state& state() const;
+
+    bool consume(const uint8_t* data, uint32_t qwc);
+
+    // Compatible with c_ee_dmac::t_device_transfer_callback.
+    // Only channel 2 (GIF PATH3) is accepted.
+    static bool dma_transfer(
+        void* user, uint32_t channel, const uint8_t* data, uint32_t qwc
+    );
+
+private:
+    s_ee_gif_path3_state m_state{};
+    void* m_sink_user = nullptr;
+    t_event_callback m_sink = nullptr;
+};
+} // namespace ee

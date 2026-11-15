@@ -39,6 +39,7 @@ add_library(ee_core STATIC
     src/runtime/ee_unaligned.cpp
     src/runtime/ee_intc.cpp
     src/runtime/ee_dmac.cpp
+    src/runtime/ee_gif.cpp
     src/runtime/ee_exceptions.cpp
     src/runtime/ee_vu0.cpp
 )
@@ -149,6 +150,9 @@ target_link_libraries(ee_tospr_chain_test PRIVATE ee_core)
 add_executable(ee_device_dma_test tests/smoke/ee_device_dma_test.cpp)
 target_link_libraries(ee_device_dma_test PRIVATE ee_core)
 
+add_executable(ee_gif_path3_test tests/smoke/ee_gif_path3_test.cpp)
+target_link_libraries(ee_gif_path3_test PRIVATE ee_core)
+
 add_executable(ee_scratchpad_test tests/smoke/ee_scratchpad_test.cpp)
 target_link_libraries(ee_scratchpad_test PRIVATE ee_core)
 
@@ -237,6 +241,7 @@ add_test(NAME ee_fromspr_chain COMMAND ee_fromspr_chain_test)
 add_test(NAME ee_spr_interleave COMMAND ee_spr_interleave_test)
 add_test(NAME ee_tospr_chain COMMAND ee_tospr_chain_test)
 add_test(NAME ee_device_dma COMMAND ee_device_dma_test)
+add_test(NAME ee_gif_path3 COMMAND ee_gif_path3_test)
 add_test(NAME ee_scratchpad COMMAND ee_scratchpad_test)
 add_test(NAME ee_vu0_memory_map COMMAND ee_vu0_memory_map_test)
 add_test(NAME ee_unaligned_memory COMMAND ee_unaligned_memory_test)
