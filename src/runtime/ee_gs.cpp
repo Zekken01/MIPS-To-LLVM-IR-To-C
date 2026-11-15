@@ -142,6 +142,39 @@ uint32_t c_ee_gs_state::psmt8_address(
     );
 }
 
+uint32_t c_ee_gs_state::psmt4_nibble_address(
+    uint32_t base, uint32_t width, uint32_t x, uint32_t y)
+{
+    // PSMT4 page_address(bp,bw,x,y,128,128) + g_off4[y&127][x&127].
+    // The reference uses the normal PSMCT16 block table, NOT 16S.
+    const uint32_t pages_per_row = std::max(1u, width / 2u);
+    const uint64_t page =
+        (static_cast<uint64_t>(x / 128u) +
+         static_cast<uint64_t>(y / 128u) * pages_per_row) * 8192u;
+    const uint32_t block =
+        k_block16[(y & 127u) / 16u][(x & 127u) / 32u];
+
+    const uint32_t wx = x & 31u;
+    const uint32_t local_y = y & 15u;
+    const uint32_t column = local_y / 4u;
+    const uint32_t wy = local_y & 3u;
+    const uint32_t nibble =
+        ((wx & 0x18u) + ((wy & 2u) << 1u)) / 4u;
+    const uint32_t table =
+        ((wy & 2u) >> 1u) ^ (column & 1u);
+    const uint32_t inner =
+        column * 64u + block * 256u +
+        static_cast<uint32_t>(
+            k_column_word[table][wy & 1u][wx & 7u]) * 4u;
+
+    const uint64_t address =
+        (static_cast<uint64_t>(base) * 256u + page + inner) * 2u +
+        nibble;
+    return static_cast<uint32_t>(
+        address & (2u * k_vram_bytes - 1u)
+    );
+}
+
 const std::vector<uint8_t>& c_ee_gs_state::vram() const
 {
     return m_vram;
@@ -283,7 +316,7 @@ bool c_ee_gs_state::write_register(
         state.m_transfer_pending_size = 0u;
         if ((value & 3u) == 0u)
         {
-            // Only verified PSMCT32/24/16/16S and PSMT8 uploads execute.
+            // Only verified PSMCT32/24/16/16S and PSMT8/PSMT4 uploads execute.
             // Unsupported formats and malformed setup reject the batch.
             if (!state.m_written[0x50u] ||
                 !state.m_written[0x51u] ||
@@ -304,7 +337,7 @@ bool c_ee_gs_state::write_register(
             if (dest_width == 0u ||
                 (dest_psm != 0u && dest_psm != 1u &&
                  dest_psm != 2u && dest_psm != 0x0au &&
-                 dest_psm != 0x13u) ||
+                 dest_psm != 0x13u && dest_psm != 0x14u) ||
                 pixel_width == 0u || pixel_height == 0u)
             {
                 return false;
@@ -492,8 +525,8 @@ bool c_ee_gs_state::consume(
             next.m_image_qwc += e.m_qwc;
 
             // PSMCT32/24 share 64x32 pages, PSMCT16/16S use 64x64
-            // pages, and PSMT8 uses 128x64 pages with byte swizzling.
-            // Only PSMCT24 carries incomplete 3-byte pixels.
+            // pages, PSMT8 uses 128x64, and PSMT4 uses 128x128
+            // pages with nibble swizzling. Only PSMCT24 needs carry.
             const uint64_t buf = next.m_registers[0x50u];
             const uint64_t pos = next.m_registers[0x51u];
             const uint64_t reg_size = next.m_registers[0x52u];
@@ -516,7 +549,8 @@ bool c_ee_gs_state::consume(
             // reject it rather than applying a guessed pixel layout.
             if (width == 0u ||
                 (psm != 0u && psm != 1u && psm != 2u &&
-                 psm != 0x0au && psm != 0x13u) ||
+                 psm != 0x0au && psm != 0x13u &&
+                 psm != 0x14u) ||
                 rrw == 0u || rrh == 0u ||
                 next.m_transfer_pixels_written > total_pixels)
             {
@@ -529,7 +563,15 @@ bool c_ee_gs_state::consume(
                 const uint32_t dx = (x + pixel % rrw) & 0x7ffu;
                 const uint32_t dy = (y + pixel / rrw) & 0x7ffu;
                 uint32_t address = 0u;
-                if (psm == 0x13u)
+                uint8_t shift = 0u;
+                if (psm == 0x14u)
+                {
+                    const uint32_t nibble_address =
+                        psmt4_nibble_address(base, width, dx, dy);
+                    address = nibble_address / 2u;
+                    shift = (nibble_address & 1u) ? 4u : 0u;
+                }
+                else if (psm == 0x13u)
                 {
                     address = psmt8_address(base, width, dx, dy);
                 }
@@ -541,12 +583,35 @@ bool c_ee_gs_state::consume(
                 {
                     address = psmct32_address(base, width, dx, dy);
                 }
-                writes.push_back({address, value, size});
+                writes.push_back({address, value, size, shift});
                 ++next.m_transfer_pixels_written;
             };
 
-            if (psm == 0u || psm == 2u ||
-                psm == 0x0au || psm == 0x13u)
+            if (psm == 0x14u)
+            {
+                // Packed GIF pixels: first index is the low nibble.
+                // Each 16-byte IMAGE qword carries 32 indices, so
+                // no partial nibble is carried between DMA batches.
+                if (next.m_transfer_pending_size != 0u)
+                {
+                    return false;
+                }
+                const uint32_t remaining =
+                    total_pixels - next.m_transfer_pixels_written;
+                const uint32_t pixels = static_cast<uint32_t>(
+                    std::min<uint64_t>(length * 2u, remaining)
+                );
+                for (uint32_t j = 0u; j < pixels; ++j)
+                {
+                    const uint8_t packed =
+                        data[static_cast<size_t>(offset + j / 2u)];
+                    const uint32_t value =
+                        (packed >> ((j & 1u) * 4u)) & 0x0fu;
+                    stage_pixel(value, 0u);
+                }
+            }
+            else if (psm == 0u || psm == 2u ||
+                     psm == 0x0au || psm == 0x13u)
             {
                 // 1-, 2- and 4-byte indices/pixels fit GIF qwords.
                 const uint8_t pixel_bytes = psm == 0x13u ? 1u :
@@ -611,6 +676,18 @@ bool c_ee_gs_state::consume(
     {
         const uint32_t offset = write.m_offset;
         const uint32_t value = write.m_value;
+        if (write.m_bytes == 0u)
+        {
+            // Apply staged nibble writes in order; multiple indexed
+            // pixels can share the same underlying VRAM byte.
+            const uint8_t mask =
+                static_cast<uint8_t>(0x0fu << write.m_shift);
+            m_vram[offset] = static_cast<uint8_t>(
+                (m_vram[offset] & static_cast<uint8_t>(~mask)) |
+                static_cast<uint8_t>((value & 0x0fu) << write.m_shift)
+            );
+            continue;
+        }
         m_vram[offset + 0u] = static_cast<uint8_t>(value);
         if (write.m_bytes >= 2u)
         {

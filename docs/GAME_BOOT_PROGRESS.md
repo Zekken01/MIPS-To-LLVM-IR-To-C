@@ -181,7 +181,7 @@ ADC routing), FOG, TEX0/TEX2 merging, per-context texture, frame,
 scissor, depth, alpha and test setup, and the image-transfer registers
 BITBLTBUF (0x50), TRXPOS (0x51), TRXREG (0x52) and TRXDIR (0x53).
 GS now has its own **4 MiB VRAM**, separate from EE RAM and the EE
-scratchpad. For PSMCT32, PSMCT24, PSMCT16, PSMCT16S and PSMT8 host-to-local transfers
+scratchpad. For PSMCT32, PSMCT24, PSMCT16, PSMCT16S, PSMT8 and PSMT4 host-to-local transfers
 (TRXDIR=0), it decodes BITBLTBUF's 256-byte destination base units
 and 64-pixel buffer width, TRXPOS's 11-bit destination coordinates,
 and TRXREG's transfer rectangle. PSMCT32/24 use 64x32-pixel GS pages;
@@ -190,11 +190,16 @@ reference's shared 16-bit column permutation. PSMCT16S selects a
 different block permutation from PSMCT16. PSMT8 uses 128x64-pixel
 8-KiB pages, 16x16 blocks and the reference's word/byte swizzle;
 its page-row stride is max(1, DBW/2) after integer division.
+PSMT4 uses 128x128-pixel, 8-KiB pages with 32x16 blocks and
+the reference's 4-bit word/nibble permutation, using the same
+minimum page-row stride rule as PSMT8.
 PSMCT32 writes four bytes per pixel; PSMCT24 writes three bytes while
 preserving its GS word's high byte; PSMCT16/16S write two bytes while
 preserving the adjacent halfword. PSMT8 writes one raw 8-bit palette
-index per pixel into its swizzled byte position without converting
-indices to colors or reading a CLUT. Pixel coordinates and byte
+index per pixel into its swizzled byte position; PSMT4 writes
+one raw 4-bit palette index into the selected half-byte,
+preserving the other nibble. Neither format converts indices
+to colors or reads a CLUT. Pixel coordinates and byte
 addresses wrap at their respective 11-bit and
 4-MiB boundaries, matching the reference implementation.
 
@@ -207,14 +212,17 @@ IMAGE quadwords; PSMCT24 retains its 1- or 2-byte incomplete pixel
 between event batches. Neither PSMCT16 nor PSMCT16S requires
 partial-pixel carry because each GIF IMAGE quadword holds eight
 complete 16-bit pixels; PSMT8 has 16 complete one-byte indices per
-quadword. Indexed palette lookup/CLUT decoding, PSMT4 and other
-unsupported formats, host-to-local HWREG, local-to-host downloads,
-and local-to-local copies remain unimplemented.
+quadword, and PSMT4 has 32 complete packed 4-bit indices per quadword
+(low nibble first). Odd-width rows do not introduce per-row padding;
+indices remain packed in raster order across rows. Indexed palette
+lookup/CLUT decoding, PSMT8H and other unsupported formats,
+host-to-local HWREG, local-to-host downloads, and local-to-local
+copies remain unimplemented.
 
 Every event batch is applied to a temporary state copy and its VRAM
 pixel writes are staged until **all** events are supported, input offsets
 are valid and any image payload fits the capture bound. Unsupported
-host-to-local destination formats (including PSMT4/PSMT8H),
+host-to-local destination formats (including PSMT8H/PSMT4HL),
 zero destination buffer width, zero-size transfer rectangles and side
 effects such as GS SIGNAL/FINISH/LABEL, HWREG and TEXFLUSH, or IMAGE
 without proper setup, reject the whole batch. Rejection preserves the
@@ -228,7 +236,7 @@ default, because a working GS renderer is not yet present.
 
 This is **not** a VIF interpreter, a GS primitive rasterizer, GPU
 presentation, device DMA chain engine for channels 0..2, MFIFO, or a
-timed hardware queue. Only PSMCT32, PSMCT24, PSMCT16, PSMCT16S and PSMT8 IMAGE uploads have GS VRAM effects;
+timed hardware queue. Only PSMCT32, PSMCT24, PSMCT16, PSMCT16S, PSMT8 and PSMT4 IMAGE uploads have GS VRAM effects;
 real SDBZ image-stream and PCSX2 differential validation remain needed.
 
 `fromSPR` channel 8 also supports
