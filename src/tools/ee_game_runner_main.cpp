@@ -666,6 +666,7 @@ int main(int argc, char** argv)
         uint32_t m_stack_size = 0u;
         uint32_t m_gp = 0u;
         uint32_t m_priority = 0u;
+        uint32_t m_heap_end = 0u;
         uint32_t m_attr = 0u;
         uint32_t m_option = 0u;
     };
@@ -983,7 +984,7 @@ int main(int argc, char** argv)
                 service == 0x20u ||
                 service == 0x29u || service == 0x2au ||
                 service == 0x2fu ||
-                service == 0x3cu || service == 0x3du ||
+                service == 0x3cu || service == 0x3du || service == 0x3eu ||
                 (service >= 0x40u && service <= 0x48u) ||
                 service == 0x4au || service == 0x4bu ||
                 service == 0x64u ||
@@ -1373,9 +1374,22 @@ int main(int argc, char** argv)
                         std::fprintf(stderr, "SetupHeap HLE refused overlapping heap/stack\n");
                         break;
                     }
-                    // A real kernel records the heap extent in its process
-                    // state. We validate the request here, but do not claim
-                    // malloc/sbrk or a general EE memory manager exists.
+                    // SetupHeap records the current thread's heap boundary
+                    // and returns it. EndOfHeap must query this same value;
+                    // it must not infer the boundary from the caller's A0.
+                    // This does not implement malloc/sbrk.
+                    if (current_thread_id == 0u ||
+                        current_thread_id >= 256u ||
+                        !threads[current_thread_id].m_used)
+                    {
+                        std::fprintf(stderr,
+                            "SetupHeap HLE refused invalid running thread\n");
+                        break;
+                    }
+                    const uint32_t heap_end32 = static_cast<uint32_t>(heap_end);
+                    threads[current_thread_id].m_heap_end = heap_end32;
+                    cpu.m_gpr[2].m_lo = heap_end32;
+                    cpu.m_gpr[2].m_hi = 0u;
                     if (trace)
                     {
                         std::printf(
@@ -1383,6 +1397,29 @@ int main(int argc, char** argv)
                             "size=0x%08x\n",
                             static_cast<uint32_t>(aligned_base),
                             static_cast<uint32_t>(heap_end), request_size
+                        );
+                    }
+                }
+
+                else if (service == 0x3eu)
+                {
+                    if (current_thread_id == 0u ||
+                        current_thread_id >= 256u ||
+                        !threads[current_thread_id].m_used)
+                    {
+                        std::fprintf(stderr,
+                            "EndOfHeap HLE refused invalid running thread\n");
+                        break;
+                    }
+                    const uint32_t heap_end =
+                        threads[current_thread_id].m_heap_end;
+                    cpu.m_gpr[2].m_lo = heap_end;
+                    cpu.m_gpr[2].m_hi = 0u;
+                    if (trace)
+                    {
+                        std::printf(
+                            "HLE EndOfHeap: id=%u end=0x%08x\n",
+                            current_thread_id, heap_end
                         );
                     }
                 }

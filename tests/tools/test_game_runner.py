@@ -91,6 +91,55 @@ def make_create_thread_elf(path):
     path.write_bytes(image)
 
 
+def make_heap_boundary_elf(path):
+    """EndOfHeap reads the same per-thread extent committed by SetupHeap."""
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    image.extend(bytes(max(0, 0x400 - len(image))))
+    struct.pack_into("<I", image, 52 + 16, 0x300)
+    struct.pack_into("<I", image, 52 + 20, 0x300)
+
+    instructions = (
+        0x2403003e,  # EndOfHeap before SetupHeap must return initial 0
+        0x0000000c,  # syscall
+        0x00404021,  # t0 = default end (zero)
+        0x3c040050,  # lui a0,0x0050 (GP)
+        0x34843070,  # ori a0,a0,0x3070
+        0x2405ffff,  # a1 = -1: auto-select initial main stack
+        0x24064000,  # a2 = 16 KiB stack
+        0x2403003c,  # v1 = SetupThread
+        0x0000000c,
+        0x00404821,  # t1 = initialized stack top
+        0x3c040064,  # lui a0,0x0064
+        0x34840380,  # a0 = 0x00640380 (heap base)
+        0x2405ffff,  # a1 = -1: heap extends to stack bottom
+        0x2403003d,  # v1 = SetupHeap
+        0x0000000c,
+        0x00405021,  # t2 = 0x01ffb000, SetupHeap return value
+        0x2403003e,  # v1 = EndOfHeap
+        0x0000000c,
+        0x00405821,  # t3 = 0x01ffb000
+        0x3c040064,  # a0 = 0x00640000
+        0x24052000,  # a1 = explicit heap size 0x2000
+        0x2403003d,  # SetupHeap
+        0x0000000c,
+        0x00406021,  # t4 = 0x00642000
+        0x2403003e,  # EndOfHeap
+        0x0000000c,
+        0x00406821,  # t5 = 0x00642000
+        0x3c041234,  # bogus A0: EndOfHeap has no arguments
+        0x34845678,
+        0x2403003e,
+        0x0000000c,
+        0x00407021,  # t6 = 0x00642000 regardless of A0
+        0x00000008,  # jr zero
+        0x00000000,  # delay-slot nop
+    )
+    for index, word in enumerate(instructions):
+        struct.pack_into("<I", image, 0x108 + index * 4, word)
+    path.write_bytes(image)
+
+
 def make_osd_config_elf(path, invalid_set=False):
     """Get/SetOsdConfigParam use guest pointers to one 32-bit OSD word."""
     make_elf(path)
@@ -1129,6 +1178,59 @@ def main():
             assert registers[12] == 0, state          # second Get result
             assert registers[13] == 0, state          # no fallthrough
             assert state["exit_name"] == "EXCEPTION", state
+
+    with tempfile.TemporaryDirectory(prefix="ee-native-heap-boundary-") as tmp:
+        root = Path(tmp)
+        elf = root / "kernel-heap.elf"
+        make_heap_boundary_elf(elf)
+        report_path = root / "heap.json"
+        command = [
+            sys.executable, str(source / "tools" / "run_game.py"),
+            str(elf),
+            "--build-dir", str(build),
+            "--work-dir", str(root / "out"),
+            "--max-dispatches=32",
+            "--trace",
+            "--report", str(report_path),
+        ]
+
+        without_hle = subprocess.run(
+            command, capture_output=True, text=True, check=False,
+        )
+        assert without_hle.returncode != 0, (
+            without_hle.stdout + without_hle.stderr
+        )
+        refused = json.loads(report_path.read_text(encoding="utf-8"))
+        assert refused["cop0_epc"] == 0x0010000c, refused
+        assert "HLE EndOfHeap:" not in without_hle.stdout
+
+        with_hle = subprocess.run(
+            command + ["--no-recompile", "--hle-startup"],
+            capture_output=True, text=True, check=False,
+        )
+        assert with_hle.returncode == 3, with_hle.stdout + with_hle.stderr
+        for trace_line in (
+            "HLE EndOfHeap: id=1 end=0x00000000",
+            "HLE SetupHeap: base=0x00640380 end=0x01ffb000 size=0xffffffff",
+            "HLE EndOfHeap: id=1 end=0x01ffb000",
+            "HLE SetupHeap: base=0x00640000 end=0x00642000 size=0x00002000",
+            "HLE EndOfHeap: id=1 end=0x00642000",
+        ):
+            assert trace_line in with_hle.stdout, (
+                trace_line, with_hle.stdout, with_hle.stderr
+            )
+        state = json.loads(report_path.read_text(encoding="utf-8"))
+        assert state["snapshot_kind"] == "stopped", state
+        assert state["final_pc"] == 0, state
+        assert state["exit_name"] == "DISPATCH", state
+        regs = state["gpr_lo"]
+        assert regs[8] == 0, state            # initially unconfigured
+        assert regs[9] == 0x01fff000, state   # SetupThread result
+        assert regs[10] == 0x01ffb000, state # SetupHeap(-1) result
+        assert regs[11] == 0x01ffb000, state # EndOfHeap
+        assert regs[12] == 0x00642000, state # SetupHeap(size) result
+        assert regs[13] == 0x00642000, state # EndOfHeap updated
+        assert regs[14] == 0x00642000, state # EndOfHeap ignores A0
 
     with tempfile.TemporaryDirectory(prefix="ee-native-thread-priority-") as tmp:
         root = Path(tmp)

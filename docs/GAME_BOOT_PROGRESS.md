@@ -1163,6 +1163,47 @@ These changes are runner-only; the new 184-function translation
 cache stays valid. The real game must be rerun to confirm the
 next actual bootstrap boundary.
 
+### EE heap-boundary syscall after semaphore progress (US SDBZ, dispatch 5861)
+
+The eighth user-owned US SDBZ run confirms that semaphore ID 1's
+`WaitSema` fast path succeeded at dispatch **5848**, decrementing
+its original count from 1 to 0. Auto-expansion then compiled **five**
+additional guest functions (**184 -> 189**) with no unsupported
+instructions, reaching dispatch **5861**. The new genuine
+SYSCALL stop is `EndOfHeap (0x3E)` at EPC `0x00174C84`
+(A0=0x01000020, but this syscall takes **no arguments**).
+
+The `ps2-web-recomp` EE kernel's `SetupHeap (0x3D)` stores
+the resulting heap-end boundary on the *current thread* and
+returns that same value in V0. `EndOfHeap (0x3E)` returns the
+thread's saved heap end. The native runner previously only
+validated and logged the heap extent during SetupHeap;
+it neither stored it nor updated the result register.
+This discrepancy also meant that the caller's later heap
+queries could not work even with a standalone 0x3E stub.
+
+The runner now saves the successfully validated 32-bit
+heap boundary in `threads[current_thread_id].m_heap_end`,
+sets V0 on both SetupHeap and EndOfHeap, and rejects
+invalid current-thread state instead of inventing a
+boundary. The existing memory-range and stack-overlap
+checks still run *before* committing heap state.
+The initial unconfigured heap end is zero. This is
+kernel bookkeeping only, **not** malloc/sbrk.
+
+Synthetic ELF tests verify the initially unconfigured
+value, SetupThread followed by SetupHeap's special
+size `0xFFFFFFFF` (expected end `0x01FFB000`),
+a later explicit size `0x2000` (expected end
+`0x00642000`), and that EndOfHeap ignores A0 and
+returns the last stored end. Without `--hle-startup`,
+the first EndOfHeap remains an unhandled guest syscall.
+
+Only the EE game runner and synthetic tests/docs change.
+The previously translated **189 game functions remain reusable**
+without invalidating their cache. The next user-run
+is needed to verify the actual subsequent boot path.
+
 ## Validation limits
 
 CTest contains `game_runner_end_to_end` which creates small synthetic MIPS
