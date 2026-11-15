@@ -181,14 +181,15 @@ ADC routing), FOG, TEX0/TEX2 merging, per-context texture, frame,
 scissor, depth, alpha and test setup, and the image-transfer registers
 BITBLTBUF (0x50), TRXPOS (0x51), TRXREG (0x52) and TRXDIR (0x53).
 GS now has its own **4 MiB VRAM**, separate from EE RAM and the EE
-scratchpad. For PSMCT32 and PSMCT24 host-to-local transfers (TRXDIR=0),
-it decodes
-BITBLTBUF's 256-byte destination base units and 64-pixel buffer width,
-TRXPOS's 11-bit destination coordinates, and TRXREG's transfer rectangle.
-It writes pixels in raster order to swizzled 64x32-pixel,
-8-KiB GS pages using the reference's block and column layout.
-PSMCT32 writes all four bytes per pixel; PSMCT24 writes three bytes
-into each 32-bit GS word while preserving its upper byte. Pixel
+scratchpad. For PSMCT32, PSMCT24 and PSMCT16 host-to-local transfers
+(TRXDIR=0), it decodes BITBLTBUF's 256-byte destination base units
+and 64-pixel buffer width, TRXPOS's 11-bit destination coordinates,
+and TRXREG's transfer rectangle. PSMCT32/24 use 64x32-pixel GS pages;
+PSMCT16 uses distinct 64x64-pixel pages with 16x8 blocks and the
+reference's 16-bit column permutation. Every page occupies 8 KiB.
+PSMCT32 writes four bytes per pixel; PSMCT24 writes three bytes while
+preserving its GS word's high byte; PSMCT16 writes two bytes while
+preserving the adjacent halfword. Pixel
 coordinates and byte addresses wrap at their respective 11-bit and
 4-MiB boundaries, matching the reference implementation.
 
@@ -198,13 +199,15 @@ once the rectangle has been filled. The previous bounded 4 MiB raw-image
 capture remains available for diagnostics; this is not a texture
 decoder or rendered frame. PSMCT32 pixels cannot split across 16-byte
 IMAGE quadwords; PSMCT24 retains its 1- or 2-byte incomplete pixel
-between event batches. PSMCT16, indexed formats, host-to-local HWREG,
-local-to-host downloads, and local-to-local copies remain unimplemented.
+between event batches. PSMCT16 requires no partial-pixel carry because
+a GIF IMAGE quadword holds eight complete 16-bit pixels. PSMCT16S,
+indexed formats, host-to-local HWREG, local-to-host downloads, and
+local-to-local copies remain unimplemented.
 
 Every event batch is applied to a temporary state copy and its VRAM
 pixel writes are staged until **all** events are supported, input offsets
 are valid and any image payload fits the capture bound. Unsupported
-host-to-local destination formats (including PSMCT16/PSMT8/PSMT4),
+host-to-local destination formats (including PSMCT16S/PSMT8/PSMT4),
 zero destination buffer width, zero-size transfer rectangles and side
 effects such as GS SIGNAL/FINISH/LABEL, HWREG and TEXFLUSH, or IMAGE
 without proper setup, reject the whole batch. Rejection preserves the
@@ -218,7 +221,7 @@ default, because a working GS renderer is not yet present.
 
 This is **not** a VIF interpreter, a GS primitive rasterizer, GPU
 presentation, device DMA chain engine for channels 0..2, MFIFO, or a
-timed hardware queue. Only PSMCT32 and PSMCT24 image uploads have GS VRAM effects;
+timed hardware queue. Only PSMCT32, PSMCT24 and PSMCT16 image uploads have GS VRAM effects;
 real SDBZ image-stream and PCSX2 differential validation remain needed.
 
 `fromSPR` channel 8 also supports
