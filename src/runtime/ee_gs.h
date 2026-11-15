@@ -9,7 +9,7 @@
 
 namespace ee
 {
-// GS register-state and PSMCT32/24/16 host-to-local transfer consumer.
+// GS register-state and PSMCT32/24/16/16S host-to-local transfer consumer.
 // It does not rasterize primitives, present frames or implement GS IRQs.
 // Based on ps2-web-recomp/runtime/src/gs/gs.cpp::write/write_packed.
 struct s_ee_gs_state
@@ -75,9 +75,11 @@ private:
         uint32_t base, uint32_t width, uint32_t x, uint32_t y
     );
 
-    // PSMCT16 uses 64x64 pages and 16x8 blocks.
+    // PSMCT16 and PSMCT16S use 64x64 pages with different 16x8
+    // block permutations and a shared 16-bit column permutation.
     static uint32_t psmct16_address(
-        uint32_t base, uint32_t width, uint32_t x, uint32_t y
+        uint32_t base, uint32_t width, uint32_t x, uint32_t y,
+        uint32_t psm
     );
 
     static bool write_register(
