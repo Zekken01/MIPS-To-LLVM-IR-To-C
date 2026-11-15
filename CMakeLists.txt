@@ -178,6 +178,9 @@ target_link_libraries(ee_gs_psmt4_test PRIVATE ee_core)
 add_executable(ee_gs_clut_test tests/smoke/ee_gs_clut_test.cpp)
 target_link_libraries(ee_gs_clut_test PRIVATE ee_core)
 
+add_executable(ee_gs_psmt_high_test tests/smoke/ee_gs_psmt_high_test.cpp)
+target_link_libraries(ee_gs_psmt_high_test PRIVATE ee_core)
+
 add_executable(ee_scratchpad_test tests/smoke/ee_scratchpad_test.cpp)
 target_link_libraries(ee_scratchpad_test PRIVATE ee_core)
 
@@ -275,6 +278,7 @@ add_test(NAME ee_gs_psmct16s COMMAND ee_gs_psmct16s_test)
 add_test(NAME ee_gs_psmt8 COMMAND ee_gs_psmt8_test)
 add_test(NAME ee_gs_psmt4 COMMAND ee_gs_psmt4_test)
 add_test(NAME ee_gs_clut COMMAND ee_gs_clut_test)
+add_test(NAME ee_gs_psmt_high COMMAND ee_gs_psmt_high_test)
 add_test(NAME ee_scratchpad COMMAND ee_scratchpad_test)
 add_test(NAME ee_vu0_memory_map COMMAND ee_vu0_memory_map_test)
 add_test(NAME ee_unaligned_memory COMMAND ee_unaligned_memory_test)
