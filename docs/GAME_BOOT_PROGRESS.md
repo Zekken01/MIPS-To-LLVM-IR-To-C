@@ -910,6 +910,35 @@ and is merged, the user will run the private US ELF locally and
 supply the JSON report and trace. CI contains no proprietary ELF
 and does not claim progress beyond dispatch 126.
 
+### EE GetThreadId syscall (US SDBZ, dispatch 133)
+
+The user's local `boot.log` and `first-boot.json` after the
+CreateThread PR confirmed that the runner reached **133 native
+dispatches**. At dispatch 126 the native HLE created a dormant
+thread, ID 2, entry 0x001759A0. At dispatch 133 the guest executed
+SYSCALL at EPC **0x00174B94**, service **0x2F** in V1, which is
+`GetThreadId`; the CPU's A0 register happened to contain thread
+ID 2, but GetThreadId takes *no arguments*. It must report the
+**currently running thread**, which remains main thread ID 1;
+CreateThread does not schedule the dormant thread.
+
+The reference `ps2-web-recomp/runtime/src/kernel.cpp` implements
+`GetThreadId` as a read of `g_current`; `start_main_thread` sets
+`g_current=1`. The native runner now tracks `current_thread_id=1`
+separately from the 256 thread descriptors and returns it from
+HLE service 0x2F without switching context. No StartThread or
+thread scheduling is simulated. A synthetic EE ELF regression calls
+GetThreadId before and after CreateThread, requires results 1 and 1
+while the dormant thread receives ID 2, and confirms the service
+does not consume A0.
+
+**Performance observed in user log:** initial full discovery 10,371.9 ms,
+subsequent cached discovery about 245–250 ms per emitted function;
+per-function LLVM IR emission about 1–5 ms. Cached discovery was
+confirmed in the user's local run. Remaining costs include the
+per-function rebuild/relink/replay cycle. Further native game behavior
+beyond dispatch 133 remains unverified until the user reruns the ELF.
+
 ## Validation limits
 
 CTest contains `game_runner_end_to_end` which creates small synthetic MIPS
