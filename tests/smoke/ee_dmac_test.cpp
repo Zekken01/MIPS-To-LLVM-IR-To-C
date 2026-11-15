@@ -62,6 +62,9 @@ int main()
         return fail("enabling masked pending DMA completion");
     }
 
+    // Direct physical aliases are opt-in; the fixture must enable them
+    // before touching the KSEG1 address.
+    ram.set_kseg_ram_aliases(true);
     ee::ee_mem_write32(&runtime, 0xb000e010u, ch1 << 16u);
     if (hardware.dmac().status() != ch1 ||
         hardware.dmac().pending() != 0 ||
