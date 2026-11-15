@@ -228,9 +228,34 @@ def append_function(recomp, elf, work, metadata_path, address):
     new_pcs = {int(pc, 0) for pc in function["block_pcs"]}
     if address not in new_pcs:
         raise ValueError(f"translation does not cover 0x{address:08x}")
+    # One guest instruction can be entered through multiple native
+    # functions. In particular, a call may land on an instruction inside
+    # an existing basic block (e.g. a syscall wrapper's SYSCALL instruction).
+    # Each separately lifted function can execute its own copy of shared
+    # successor blocks, but the dispatcher must assign *one* native owner
+    # to each guest block PC. Retain ownership for previously compiled
+    # entries and publish only previously uncovered entry PCs.
+    #
+    # Never edit the generated LLVM IR or skip overlapping instructions:
+    # internal branches still execute their independently lifted blocks.
     overlap = new_pcs & covered_pcs(metadata)
     if overlap:
-        raise ValueError(f"new function overlaps a compiled block: {overlap}")
+        function["block_pcs"] = [
+            pc for pc in function["block_pcs"] if int(pc, 0) not in overlap
+        ]
+        if not function["block_pcs"] or address not in {
+            int(pc, 0) for pc in function["block_pcs"]
+        }:
+            raise ValueError(
+                f"new entry 0x{address:08x} is already owned by "
+                "an existing translated function"
+            )
+        print(
+            f"auto-expand: preserving existing ownership of "
+            f"{len(overlap)} overlapping guest block PC(s) "
+            f"while translating entry 0x{address:08x}",
+            flush=True,
+        )
 
     destination = work / "ir" / Path(function["ir_path"]).name
     if destination.exists():

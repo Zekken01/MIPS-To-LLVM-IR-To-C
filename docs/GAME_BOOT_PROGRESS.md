@@ -743,6 +743,40 @@ registration does not yet dispatch guest callbacks on hardware
 interrupts; IRQ acknowledgement/delivery remains incomplete and is
 not silently simulated. No BIOS or callback results are fabricated.
 
+### Alternate entry into an already translated syscall wrapper (US SDBZ, dispatch 97)
+
+The real US ELF replay after the interrupt-handler registration HLE
+successfully executes `AddIntcHandler(11, 0x0017FC10, 0)` at dispatch
+92, returning ID 1. It then traverses `0x0017ED60` (dispatch 95)
+and `0x0017F640` (dispatch 97), reaching the **interior instruction**
+at `0x00174994`. The ELF contains `SYSCALL` (`0x0000000C`) at
+that PC, immediately after a `v1=0x10` instruction at
+`0x00174990` and before `JR $ra` at `0x00174998`.
+
+When compiled independently from `0x00174994`, the native lifter
+correctly includes the shared successor block `0x00174998`.
+The original `0x00174990` translation already owns that return block.
+Previously, `run_game.py` rejected the overlap and stopped
+auto-expansion even though the new entry was valid.
+
+The driver now keeps the existing dispatcher owner of each overlapping
+guest block PC and publishes only the *newly uncovered* entry PCs
+from an additional translation. The actual LLVM function is not
+truncated: all successor instructions remain compiled and executable
+along internal paths. The native dispatcher still exposes exactly one
+owner per guest block entry, while direct branches into different
+entry points retain their CPU/register semantics. This supports
+alternate entries into shared immutable ELF code; it is not a solution
+for mutable guest-generated code or arbitrary overlapping instruction
+sequences.
+
+A synthetic ELF executes a direct `JAL` to a syscall wrapper followed
+by a computed `JALR` into the same wrapper's interior `SYSCALL`
+instruction. Both calls must complete via native LLVM-generated code,
+and the shared successor PC must occur exactly once in dispatcher
+metadata. The real US ELF must be replayed again after this change
+to establish the next blocker beyond dispatch 97.
+
 ## Validation limits
 
 CTest contains `game_runner_end_to_end` which creates small synthetic MIPS
