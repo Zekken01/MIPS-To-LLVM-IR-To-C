@@ -63,13 +63,19 @@ int main()
     memory.write128(base + size - 8u, &quad);
     memory.write16(base + size - 1u, 0xffffu);
     memory.write32(base + size - 2u, 0xffffffffu);
-    if (memory.read128(last_quad, &loaded),
-        loaded.m_lo != quad.m_lo || loaded.m_hi != quad.m_hi ||
+    memory.read128(last_quad, &loaded);
+    if (loaded.m_lo != quad.m_lo || loaded.m_hi != quad.m_hi ||
         memory.read16(base + size - 1u) != 0 ||
         memory.read64(base + size - 4u) != 0 ||
         memory.read32(base + size) != 0)
     {
         return fail("partial or out-of-bounds accesses modified scratchpad");
+    }
+
+    memory.read128(base + size - 8u, &loaded);
+    if (loaded.m_lo != 0 || loaded.m_hi != 0)
+    {
+        return fail("out-of-bounds 128-bit read was not rejected");
     }
 
     ee::s_ee_runtime runtime{};
