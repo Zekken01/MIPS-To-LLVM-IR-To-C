@@ -140,6 +140,9 @@ target_link_libraries(ee_spr_dma_test PRIVATE ee_core)
 add_executable(ee_fromspr_chain_test tests/smoke/ee_fromspr_chain_test.cpp)
 target_link_libraries(ee_fromspr_chain_test PRIVATE ee_core)
 
+add_executable(ee_spr_interleave_test tests/smoke/ee_spr_interleave_test.cpp)
+target_link_libraries(ee_spr_interleave_test PRIVATE ee_core)
+
 add_executable(ee_scratchpad_test tests/smoke/ee_scratchpad_test.cpp)
 target_link_libraries(ee_scratchpad_test PRIVATE ee_core)
 
@@ -225,6 +228,7 @@ add_test(NAME ee_intc COMMAND ee_intc_test)
 add_test(NAME ee_dmac COMMAND ee_dmac_test)
 add_test(NAME ee_spr_dma COMMAND ee_spr_dma_test)
 add_test(NAME ee_fromspr_chain COMMAND ee_fromspr_chain_test)
+add_test(NAME ee_spr_interleave COMMAND ee_spr_interleave_test)
 add_test(NAME ee_scratchpad COMMAND ee_scratchpad_test)
 add_test(NAME ee_vu0_memory_map COMMAND ee_vu0_memory_map_test)
 add_test(NAME ee_unaligned_memory COMMAND ee_unaligned_memory_test)
