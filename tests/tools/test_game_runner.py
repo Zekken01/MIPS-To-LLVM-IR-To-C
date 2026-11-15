@@ -197,7 +197,10 @@ def make_kernel_ram_handler_elf(path, invoke=False):
         0x356b6000,  # ori t3, t3, 0x6000
         0x3c0c03e0,  # lui t4, 0x03e0 (JR RA opcode)
         0x358c0008,  # ori t4, t4, 8
-        0xad6c0000,  # sw t4, 0(t3), writing RAM code
+        0xad6c0000,  # sw t4, 0(t3), writing RAM JR $ra
+        0x3c0c2402,  # lui t4, 0x2402 (ADDIU v0,zero,42 opcode)
+        0x358c002a,  # ori t4, t4, 42
+        0xad6c0004,  # sw t4, 4(t3), JR RA delay slot writes v0=42
         0x2404005b,  # addiu a0, zero, 0x5B
         0x01602821,  # addu a1, t3, zero: 0x80076000
         0x24030074,  # addiu v1, zero, SetSyscall
@@ -208,8 +211,8 @@ def make_kernel_ram_handler_elf(path, invoke=False):
     end = (
         (
             0x2403005b,  # addiu v1, zero, 0x5B
-            0x0000000c,  # syscall: must reject untranslated RAM handler
-            0x240d0001,  # addiu t5, zero, 1: never executed
+            0x0000000c,  # syscall: execute the RAM callback
+            0x00406821,  # addu t5, v0, zero: must observe 42
         ) if invoke else (
             0x2404005b,  # addiu a0, zero, 0x5B
             0x00002821,  # addu a1, zero, zero: unregister
@@ -654,12 +657,14 @@ def main():
             assert report["gpr_lo"][8] & 0xffffffff == 0x80076000, report
             assert report["gpr_lo"][9] == 0x03e00008, report
             if invoke:
-                assert "cannot execute RAM handler number=0x5b handler=0x80076000" in result.stderr, (
+                assert "HLE guest RAM syscall returned: entry=0x80076000" in result.stdout, (
                     result.stdout + result.stderr
                 )
-                assert "dynamic guest code not translated" in result.stderr, result.stderr
-                assert report["gpr_lo"][13] == 0, report
-                assert report["cop0_epc"] == 0x0010003c, report
+                assert report["gpr_lo"][13] == 42, report
+                events = report["syscall_history"]
+                assert len(events) == 1 and events[0]["service"] == 0x5b, report
+                assert events[0]["handler"] == 0x80076000, report
+                assert events[0]["v0"] == 42 and events[0]["returned"], report
             else:
                 assert "HLE SetSyscall: number=0x5b handler=0x00000000" in result.stdout, (
                     result.stdout + result.stderr

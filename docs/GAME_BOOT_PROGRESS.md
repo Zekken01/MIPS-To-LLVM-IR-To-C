@@ -600,13 +600,26 @@ guest-visible table and physical RAM, checks zero unregister,
 and confirms invoking an uncompiled RAM handler produces an
 explicit refusal rather than silently executing invalid code.
 
-**Next real-game milestone:** determine whether and how the
-installed 0x80076000 handler is actually invoked. Its MIPS code
-was copied into RAM at runtime, so registering its pointer is
-correct, but the ELF-only native dispatcher cannot yet translate
-or execute that copy. Correct execution will require dynamic
-guest-code lifting/translation or an independently verified
-equivalent kernel service, not just allowing registration.
+**Next real-game milestone (observed):** US SDBZ immediately
+invokes the registered 0x80076000 handler at dispatch 50,
+service 0x5B, EPC 0x0017F4EC, A0=0xFC. The US ELF's
+0x00462A70 source blob begins with a small lookup routine:
+its six-entry table at relocated 0x80076710 maps 0xFC to
+0x80076440. Do not hardcode the lookup result as an HLE.
+
+The native runner now includes a bounded, fail-closed MIPS
+RAM-instruction interpreter for a registered, backed, non-ELF
+callback. It supports the initial lookup's LUI/ADDIU/LW/BNE/
+SLTIU/DADDU/JR and delay slots, plus a deliberately limited
+set of scalar ALU/memory/branch operations. The host preserves
+the same sentinel-return and V0/memory side-effect semantics
+as compiled callbacks. Unsupported instructions, nested
+delay-slot branches, unbacked memory and infinite loops
+stop with diagnostic PC/opcode/instruction counts. This
+does NOT claim the entire 0x740-byte handler blob can
+execute or that later dynamic code is complete. Running
+the real ELF again is required to establish the next
+unsupported instruction or kernel service.
 
 ## Validation limits
 

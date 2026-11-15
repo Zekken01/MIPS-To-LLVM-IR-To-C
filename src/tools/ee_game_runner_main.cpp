@@ -1,5 +1,6 @@
 #include "ee_runtime.h"
 #include "ee_memory.h"
+#include "ee_ram_interpreter.h"
 #include "ee_hw_bus.h"
 #include "elf_loader.h"
 
@@ -615,6 +616,65 @@ int main(int argc, char** argv)
             last_snapshot_dispatch = dispatched;
             last_snapshot_callback_active = callback_active;
         }
+        if (callback_active && !image.is_executable_address(cpu.m_pc))
+        {
+            // Executable RAM handlers (e.g. SDBZ's relocated
+            // 0x80076000 syscall) cannot be found in the ELF-only
+            // native PC map. Execute an explicitly bounded,
+            // fail-closed MIPS instruction subset instead. Never
+            // manufacture a successful return for unsupported code.
+            constexpr uint32_t k_ram_instruction_budget = 65536u;
+            const uint32_t ram_entry = cpu.m_pc;
+            const ee::s_ee_ram_execution result =
+                ee::ee_execute_ram_callback(
+                    &cpu, memory.get(), ram_entry,
+                    k_callback_return_pc, k_ram_instruction_budget
+                );
+            if (result.m_result != ee::e_ee_ram_result::RETURNED)
+            {
+                std::fprintf(stderr,
+                    "registered syscall HLE RAM execution stopped: "
+                    "entry=0x%08x pc=0x%08x instruction=0x%08x "
+                    "steps=%u reason=%s\n",
+                    ram_entry, result.m_pc, result.m_opcode,
+                    result.m_instructions,
+                    ee::ee_ram_result_name(result.m_result)
+                );
+                reason = static_cast<uint32_t>(
+                    ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED
+                );
+                status = 0u;
+                cpu.m_exit_reason = reason;
+                break;
+            }
+
+            if (report_path != nullptr &&
+                callback_sample_index < syscall_history.size())
+            {
+                syscall_history[callback_sample_index].m_v0 =
+                    static_cast<uint32_t>(cpu.m_gpr[2].m_lo);
+                syscall_history[callback_sample_index].m_returned = true;
+            }
+            cpu.m_gpr[31] = callback_saved_ra;
+            cpu.m_cop0[12] &= ~2u;
+            cpu.m_pc = callback_resume_pc;
+            cpu.m_exit_reason = static_cast<uint32_t>(
+                ee::e_ee_exit_reason::EE_EXIT_DISPATCH
+            );
+            callback_active = false;
+            if (trace)
+            {
+                std::printf(
+                    "HLE guest RAM syscall returned: entry=0x%08x "
+                    "resume=0x%08x v0=0x%08x instructions=%u\n",
+                    ram_entry, cpu.m_pc,
+                    static_cast<uint32_t>(cpu.m_gpr[2].m_lo),
+                    result.m_instructions
+                );
+            }
+            continue;
+        }
+
         const uint32_t from_pc = cpu.m_pc;
         uint32_t count = 0;
         uint32_t out_pc = from_pc;
@@ -711,17 +771,12 @@ int main(int argc, char** argv)
                         service, epc, handler);
                     break;
                 }
-                if (!image.is_executable_address(handler))
+                if (!image.is_executable_address(handler) &&
+                    !memory->contains(handler, sizeof(uint32_t)))
                 {
-                    // A SetSyscall handler can point to code copied into
-                    // KSEG0/1 RAM at runtime (SDBZ installs a relocated
-                    // kernel service at 0x80076000). Registration is valid,
-                    // but the ELF-only native dispatcher cannot yet execute
-                    // that relocated code. Report the precise boundary.
                     std::fprintf(stderr,
-                        "registered syscall HLE cannot execute "
-                        "RAM handler number=0x%02x handler=0x%08x "
-                        "(dynamic guest code not translated)\n",
+                        "registered syscall HLE refused unmapped RAM "
+                        "handler number=0x%02x handler=0x%08x\n",
                         service, handler);
                     break;
                 }

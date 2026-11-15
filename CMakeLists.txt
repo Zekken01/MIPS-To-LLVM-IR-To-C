@@ -36,6 +36,7 @@ add_library(ee_core STATIC
     src/lift/instruction_lifter.cpp
     src/lift/native_codegen.cpp
     src/runtime/ee_memory.cpp
+    src/runtime/ee_ram_interpreter.cpp
     src/runtime/ee_unaligned.cpp
     src/runtime/ee_intc.cpp
     src/runtime/ee_dmac.cpp
@@ -123,6 +124,9 @@ target_link_libraries(ee_recomp PRIVATE ee_core)
 # It loads the original ELF PT_LOAD segments and executes via ee_game_run.
 add_executable(ee_game_runner src/tools/ee_game_runner_main.cpp)
 target_link_libraries(ee_game_runner PRIVATE ee_core ${CMAKE_DL_LIBS})
+
+add_executable(ee_ram_interpreter_test tests/smoke/ee_ram_interpreter_test.cpp)
+target_link_libraries(ee_ram_interpreter_test PRIVATE ee_core)
 
 add_executable(ee_memory_alias_test tests/smoke/ee_memory_alias_test.cpp)
 target_link_libraries(ee_memory_alias_test PRIVATE ee_core)
@@ -303,6 +307,7 @@ add_test(NAME ee_gs_download COMMAND ee_gs_download_test)
 add_test(NAME ee_gs_download_dma COMMAND ee_gs_download_dma_test)
 add_test(NAME ee_gs_hwreg COMMAND ee_gs_hwreg_test)
 add_test(NAME ee_gs_hwreg_gif_dma COMMAND ee_gs_hwreg_gif_dma_test)
+add_test(NAME ee_ram_interpreter COMMAND ee_ram_interpreter_test)
 add_test(NAME ee_scratchpad COMMAND ee_scratchpad_test)
 add_test(NAME ee_vu0_memory_map COMMAND ee_vu0_memory_map_test)
 add_test(NAME ee_unaligned_memory COMMAND ee_unaligned_memory_test)
