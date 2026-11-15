@@ -344,6 +344,132 @@ bool c_ee_gs_state::read_indexed_clut_value(
     return read_clut_entry(slot, value);
 }
 
+bool c_ee_gs_state::read_image(uint8_t* data, uint32_t qwc)
+{
+    if (data == nullptr || qwc == 0u || qwc > 0xffffu ||
+        !m_state.m_written[0x53u] ||
+        (m_state.m_registers[0x53u] & 3u) != 1u)
+    {
+        return false;
+    }
+
+    const uint64_t buf = m_state.m_registers[0x50u];
+    const uint64_t pos = m_state.m_registers[0x51u];
+    const uint64_t reg = m_state.m_registers[0x52u];
+    const uint32_t bp = static_cast<uint32_t>(buf & 0x3fffu);
+    const uint32_t bw = static_cast<uint32_t>((buf >> 16u) & 0x3fu);
+    const uint32_t psm = static_cast<uint32_t>((buf >> 24u) & 0x3fu);
+    const uint32_t sx = static_cast<uint32_t>(pos & 0x7ffu);
+    const uint32_t sy = static_cast<uint32_t>((pos >> 16u) & 0x7ffu);
+    const uint32_t width = static_cast<uint32_t>(reg & 0xfffu);
+    const uint32_t height = static_cast<uint32_t>((reg >> 32u) & 0xfffu);
+    if (bw == 0u || !supported_psm(psm) ||
+        width == 0u || height == 0u)
+    {
+        return false;
+    }
+
+    uint32_t bits = 32u;
+    switch (psm)
+    {
+    case 0x01u: // PSMCT24
+    case 0x31u: // PSMZ24
+        bits = 24u;
+        break;
+    case 0x02u: // PSMCT16
+    case 0x0au: // PSMCT16S
+    case 0x32u: // PSMZ16
+    case 0x3au: // PSMZ16S
+        bits = 16u;
+        break;
+    case 0x13u: // PSMT8
+    case 0x1bu: // PSMT8H
+        bits = 8u;
+        break;
+    case 0x14u: // PSMT4
+    case 0x24u: // PSMT4HL
+    case 0x2cu: // PSMT4HH
+        bits = 4u;
+        break;
+    default:
+        break;
+    }
+
+    const uint64_t total_pixels =
+        static_cast<uint64_t>(width) * height;
+    const uint64_t logical_bytes =
+        (total_pixels * bits + 7u) / 8u;
+    const uint64_t requested_bytes =
+        static_cast<uint64_t>(qwc) * 16u;
+    const uint64_t offset = m_state.m_download_bytes_read;
+    const uint64_t next_offset = offset + requested_bytes;
+
+    // A byte-oriented cursor naturally preserves 24-bit carry across
+    // calls; 4-bit pixels always occupy low/high nibbles of each byte.
+    // After the logical rectangle, all QWC padding bytes read as zero.
+    for (uint64_t i = 0u; i < requested_bytes; ++i)
+    {
+        const uint64_t byte_offset = offset + i;
+        uint8_t result = 0u;
+        if (byte_offset < logical_bytes)
+        {
+            const uint64_t pixel = byte_offset * 8u / bits;
+            const uint32_t x = (sx + static_cast<uint32_t>(
+                pixel % width)) & 0x7ffu;
+            const uint32_t y = (sy + static_cast<uint32_t>(
+                pixel / width)) & 0x7ffu;
+            const uint32_t value =
+                read_pixel(m_vram, psm, bp, bw, x, y);
+            if (bits == 4u)
+            {
+                const uint64_t second = pixel + 1u;
+                uint32_t high = 0u;
+                if (second < total_pixels)
+                {
+                    const uint32_t x2 =
+                        (sx + static_cast<uint32_t>(second % width)) &
+                        0x7ffu;
+                    const uint32_t y2 =
+                        (sy + static_cast<uint32_t>(second / width)) &
+                        0x7ffu;
+                    high = read_pixel(
+                        m_vram, psm, bp, bw, x2, y2
+                    );
+                }
+                result = static_cast<uint8_t>(
+                    (value & 0x0fu) | ((high & 0x0fu) << 4u)
+                );
+            }
+            else
+            {
+                const uint32_t byte_lane =
+                    static_cast<uint32_t>(
+                        byte_offset % (bits / 8u)
+                    );
+                result = static_cast<uint8_t>(
+                    value >> (byte_lane * 8u)
+                );
+            }
+        }
+        data[static_cast<size_t>(i)] = result;
+    }
+
+    m_state.m_download_bytes_read = next_offset;
+    m_state.m_download_qwc += qwc;
+    m_state.m_download_active = next_offset < logical_bytes;
+    return true;
+}
+
+bool c_ee_gs_state::dma_download(
+    void* user, uint32_t channel, uint8_t* data, uint32_t qwc)
+{
+    if (user == nullptr || channel != 1u)
+    {
+        return false;
+    }
+    return static_cast<c_ee_gs_state*>(user)->read_image(data, qwc);
+}
+
 void c_ee_gs_state::reset()
 {
     m_state = {};
@@ -815,11 +941,15 @@ bool c_ee_gs_state::write_register(
         state.m_transfer_started = false;
         state.m_transfer_pixels_written = 0u;
         state.m_transfer_pending_size = 0u;
-        if ((value & 3u) == 0u || (value & 3u) == 2u)
+        state.m_download_active = false;
+        state.m_download_bytes_read = 0u;
+        state.m_download_qwc = 0u;
+        if ((value & 3u) == 0u || (value & 3u) == 2u ||
+            (value & 3u) == 1u)
         {
-            // Both host-to-local uploads and local-to-local copies
-            // validate configured pixel formats before committing.
-            // The copy itself executes at the TRXDIR write in consume().
+            // Validate the source for local-to-host downloads and
+            // the destination for uploads/copies before committing.
+            // A local copy executes immediately within consume().
             if (!state.m_written[0x50u] ||
                 !state.m_written[0x51u] ||
                 !state.m_written[0x52u])
@@ -843,19 +973,25 @@ bool c_ee_gs_state::write_register(
             const bool local_copy = (value & 3u) == 2u;
             const uint64_t pixels =
                 static_cast<uint64_t>(pixel_width) * pixel_height;
-            if (dest_width == 0u || !supported_psm(dest_psm) ||
-                pixel_width == 0u || pixel_height == 0u ||
-                (local_copy &&
-                 (source_width == 0u || !supported_psm(source_psm) ||
-                  pixels > k_max_local_copy_pixels)))
+            const bool download = (value & 3u) == 1u;
+            if (pixel_width == 0u || pixel_height == 0u ||
+                (!download &&
+                 (dest_width == 0u || !supported_psm(dest_psm))) ||
+                ((local_copy || download) &&
+                 (source_width == 0u || !supported_psm(source_psm))) ||
+                (local_copy && pixels > k_max_local_copy_pixels))
             {
                 return false;
             }
-            if (!local_copy)
+            if ((value & 3u) == 0u)
             {
                 state.m_image_data.clear();
                 state.m_image_qwc = 0u;
                 state.m_transfer_started = true;
+            }
+            else if (download)
+            {
+                state.m_download_active = true;
             }
         }
         break;

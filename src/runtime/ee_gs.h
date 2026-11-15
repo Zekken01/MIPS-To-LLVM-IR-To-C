@@ -28,6 +28,12 @@ struct s_ee_gs_state
     uint64_t m_local_copy_count = 0; // executed TRXDIR=2 operations
     uint64_t m_local_copy_pixels = 0; // copied pixels, including overlaps
 
+    // Local-to-host transfer is read on demand by GIF/VIF1 reverse DMA.
+    // Byte offset permits 24-bit partial pixels across 16-byte chunks.
+    bool m_download_active = false;
+    uint64_t m_download_bytes_read = 0u;
+    uint64_t m_download_qwc = 0u;
+
     // Snapshot of the GS internal CLUT, not a view of current VRAM.
     // TEX0/TEX2 CLD controls when entries are reloaded from GS memory.
     std::array<uint32_t, 512> m_clut{};
@@ -54,6 +60,17 @@ public:
     // Returns false for out-of-range raw VRAM accesses.
     bool read_vram16(uint32_t offset, uint16_t& value) const;
     bool read_vram32(uint32_t offset, uint32_t& value) const;
+
+    // Produce 16*qwc bytes from TRXDIR=1 into caller-owned memory.
+    // Source pixels are swizzled as on GS, serialized little-endian
+    // (4-bit low nibble first) and final qword padding is zero.
+    // The download cursor commits only on a valid, complete read.
+    bool read_image(uint8_t* data, uint32_t qwc);
+
+    // Bind as c_ee_dmac::t_device_download_callback (channel 1/VIF1).
+    static bool dma_download(
+        void* user, uint32_t channel, uint8_t* data, uint32_t qwc
+    );
 
     // Return raw 32-bit or 16-bit CPSM palette words without RGBA
     // expansion, alpha conversion, filtering, or texture rasterization.
