@@ -89,6 +89,14 @@ translation-cache provenance updated. Parallelism speeds up emission; a
 single newly discovered function still requires a new link and game replay.
 Run `run_sdbz_native.bat` on your Windows machine to update, build and
 execute the local ELF and pause before the console closes.
+The launcher now probes `--no-recompile --link-only` when a previous
+`translation-cache.json` exists. If its complete source/ELF/binary provenance
+is valid, it resumes the already translated library and only auto-expands
+newly reached functions; if stale or absent, it performs the normal fresh
+translation. This avoids repeating every old compile/link/replay iteration
+when only the native runner's kernel HLE changes. The local ELF is always
+executed only by the user on their Windows machine.
+
 The batch launcher locates Visual Studio's `VsDevCmd.bat` (via `vswhere`
 when installed), sets up the MSVC x64 headers/libraries/SDK environment,
 and checks that `<cstdint>` is present before invoking CMake. This also
