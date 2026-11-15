@@ -977,6 +977,33 @@ and continued execution of main thread 1.
 Only the user runs the proprietary US game ELF; native CI runs
 synthetic fixtures and does not assert progress past dispatch 136.
 
+### EE OSD configuration syscalls (US SDBZ, dispatch 142)
+
+The next user-owned SDBZ log (`boot(3).log`) reused 33 cached
+functions, then incrementally compiled `sub_0x17F140` as function 34.
+After `ChangeThreadPriority` updated the main thread's priority
+from 0 to 1, execution reached **dispatch 142** with syscall
+`V1=0x4B` (`GetOsdConfigParam`) at EPC `0x00174D54`.
+`A0=0x01FFEF80` points into backed guest RAM.
+
+The reference `ps2-web-recomp/runtime/src/kernel.cpp` implements
+`SetOsdConfigParam (0x4A)` as a 32-bit read from the guest pointer
+and `GetOsdConfigParam (0x4B)` as a 32-bit write to the guest pointer,
+both returning zero. A default 0 OSD word represents the neutral
+configuration in this runner, which has no widescreen host option
+yet. The native runner now holds this configuration word and uses
+the existing guest-memory abstraction for all reads/writes.
+Invalid or unaligned guest pointers are refused rather than
+silently succeeding or changing kernel state.
+
+A synthetic MIPS ELF regression verifies the default word, a
+Set-to-Get round trip with `0x12345678`, zero return values,
+unmapped GET and unaligned SET pointer rejection, and the
+existing opt-in `--hle-startup` boundary.
+
+Only the user executes the private US game ELF. Progress
+beyond dispatch 142 is unverified until another local test.
+
 ## Validation limits
 
 CTest contains `game_runner_end_to_end` which creates small synthetic MIPS

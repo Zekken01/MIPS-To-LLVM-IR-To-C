@@ -91,6 +91,54 @@ def make_create_thread_elf(path):
     path.write_bytes(image)
 
 
+def make_osd_config_elf(path, invalid_set=False):
+    """Get/SetOsdConfigParam use guest pointers to one 32-bit OSD word."""
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    image.extend(bytes(max(0, 0x400 - len(image))))
+    # Preserve the test code and three OSD words inside the PT_LOAD
+    # segment, which begins at image offset 0x100.
+    struct.pack_into("<I", image, 52 + 16, 0x300)
+    struct.pack_into("<I", image, 52 + 20, 0x300)
+
+    # Guest OSD pointers: 0x00100200 (default GET),
+    # 0x00100210 (SET input), 0x00100220 (persisted GET).
+    instructions = (
+        0x3c040010,  # lui a0,0x0010
+        0x34840200,  # ori a0,a0,0x0200
+        0x2403004b,  # v1 = GetOsdConfigParam
+        0x0000000c,  # syscall
+        0x8c880000,  # lw t0,0(a0): default configuration 0
+        0x00404821,  # addu t1,v0,zero: success = 0
+        0x3c040010,
+        0x34840210,  # a0 = 0x00100210
+        0x2403004a,  # v1 = SetOsdConfigParam
+        0x0000000c,
+        0x00405021,  # t2 = setter return 0
+        0x3c040010,
+        0x34840220,  # a0 = 0x00100220
+        0x2403004b,  # v1 = GetOsdConfigParam
+        0x0000000c,
+        0x8c8b0000,  # lw t3,0(a0): configured word
+        0x00406021,  # t4 = getter return 0
+        0x3c040010 if invalid_set else 0x3c047fff,
+        0x34840221 if invalid_set else 0x3484fffc,
+                     # invalid SET: unaligned 0x00100221
+                     # invalid GET: unmapped 0x7ffffffc
+        0x2403004a if invalid_set else 0x2403004b,
+        0x0000000c,  # must refuse invalid pointer, no write
+        0x240d0001,  # unreachable after rejected syscall
+        0x00000008,  # jr zero
+        0x00000000,
+    )
+    for index, word in enumerate(instructions):
+        struct.pack_into("<I", image, 0x108 + index * 4, word)
+    struct.pack_into("<I", image, 0x300, 0xcafebabe)
+    struct.pack_into("<I", image, 0x310, 0x12345678)
+    struct.pack_into("<I", image, 0x320, 0xfeedbabe)
+    path.write_bytes(image)
+
+
 def make_thread_priority_elf(path):
     """Exercise EE thread-priority return values and per-thread state."""
     make_elf(path)
@@ -932,6 +980,67 @@ def main():
         assert "ee_recomp: loading" in resumed.stdout, resumed.stdout
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         assert metadata["function_count"] == 2, metadata
+
+    for invalid_set in (False, True):
+        with tempfile.TemporaryDirectory(prefix="ee-native-osd-config-") as tmp:
+            root = Path(tmp)
+            elf = root / "kernel-osd-config.elf"
+            make_osd_config_elf(elf, invalid_set=invalid_set)
+            report_path = root / "osd-config.json"
+            command = [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf),
+                "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--max-dispatches=16",
+                "--trace",
+                "--report", str(report_path),
+            ]
+
+            # The kernel must never be silently enabled without HLE.
+            if not invalid_set:
+                without_hle = subprocess.run(
+                    command, capture_output=True, text=True, check=False,
+                )
+                assert without_hle.returncode != 0, (
+                    without_hle.stdout + without_hle.stderr
+                )
+                refused = json.loads(report_path.read_text(encoding="utf-8"))
+                assert refused["cop0_epc"] == 0x00100014, refused
+                assert "HLE GetOsdConfigParam:" not in without_hle.stdout
+                command.append("--no-recompile")
+
+            with_hle = subprocess.run(
+                command + ["--hle-startup"],
+                capture_output=True, text=True, check=False,
+            )
+            assert with_hle.returncode != 0, with_hle.stdout + with_hle.stderr
+            assert "HLE GetOsdConfigParam: pointer=0x00100200 value=0x00000000 result=0" in with_hle.stdout, (
+                with_hle.stdout + with_hle.stderr
+            )
+            assert "HLE SetOsdConfigParam: pointer=0x00100210 value=0x12345678 result=0" in with_hle.stdout, (
+                with_hle.stdout + with_hle.stderr
+            )
+            assert "HLE GetOsdConfigParam: pointer=0x00100220 value=0x12345678 result=0" in with_hle.stdout, (
+                with_hle.stdout + with_hle.stderr
+            )
+            denied_service = "Set" if invalid_set else "Get"
+            denied_address = 0x00100221 if invalid_set else 0x7ffffffc
+            assert (
+                f"{denied_service}OsdConfigParam HLE refused unbacked or "
+                f"unaligned pointer 0x{denied_address:08x}"
+            ) in with_hle.stderr, with_hle.stdout + with_hle.stderr
+
+            state = json.loads(report_path.read_text(encoding="utf-8"))
+            assert state["cop0_epc"] == 0x00100058, state
+            registers = state["gpr_lo"]
+            assert registers[8] == 0, state           # initially zero
+            assert registers[9] == 0, state           # Get returns zero
+            assert registers[10] == 0, state          # Set returns zero
+            assert registers[11] == 0x12345678, state # Set persisted
+            assert registers[12] == 0, state          # second Get result
+            assert registers[13] == 0, state          # no fallthrough
+            assert state["exit_name"] == "EXCEPTION", state
 
     with tempfile.TemporaryDirectory(prefix="ee-native-thread-priority-") as tmp:
         root = Path(tmp)

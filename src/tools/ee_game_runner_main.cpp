@@ -667,6 +667,9 @@ int main(int argc, char** argv)
     // No guest scheduler is installed yet: the ELF main thread is running.
     // Do not confuse a newly created dormant thread with the current one.
     uint32_t current_thread_id = 1u;
+    // EE kernel OSD configuration word. Defaults to the normal 4:3
+    // console configuration until an explicit guest SetOsdConfigParam.
+    uint32_t osd_config = 0u;
     uint32_t installed_syscall_handlers[k_kernel_syscall_table_entries]{};
     std::vector<s_kernel_interrupt_handler> intc_handlers;
     std::vector<s_kernel_interrupt_handler> dmac_handlers;
@@ -917,7 +920,9 @@ int main(int argc, char** argv)
                 service == 0x29u || service == 0x2au ||
                 service == 0x2fu ||
                 service == 0x3cu || service == 0x3du ||
-                service == 0x40u || service == 0x64u ||
+                service == 0x40u ||
+                service == 0x4au || service == 0x4bu ||
+                service == 0x64u ||
                 service == 0x68u || service == 0x74u)
             {
                 const uint32_t epc = cpu.m_cop0[14];
@@ -1377,6 +1382,47 @@ int main(int argc, char** argv)
                             "option=0x%08x parameters=0x%08x\n",
                             id, init_count, max_count, attr, option,
                             parameter_address
+                        );
+                    }
+                }
+
+                else if (service == 0x4au || service == 0x4bu)
+                {
+                    // SetOsdConfigParam/GetOsdConfigParam share one
+                    // guest-visible 32-bit OSD configuration word.
+                    // Both services take a pointer in A0, not the word
+                    // itself. Invalid pointers must not mutate state.
+                    const uint32_t parameter_address =
+                        static_cast<uint32_t>(cpu.m_gpr[4].m_lo);
+                    if ((parameter_address & 3u) != 0u ||
+                        !memory->contains(parameter_address, sizeof(uint32_t)))
+                    {
+                        std::fprintf(stderr,
+                            "%sOsdConfigParam HLE refused unbacked or "
+                            "unaligned pointer 0x%08x\\n",
+                            service == 0x4au ? "Set" : "Get",
+                            parameter_address
+                        );
+                        break;
+                    }
+
+                    if (service == 0x4au)
+                    {
+                        osd_config = memory->read32(parameter_address);
+                    }
+                    else
+                    {
+                        memory->write32(parameter_address, osd_config);
+                    }
+                    cpu.m_gpr[2].m_lo = 0u;
+                    cpu.m_gpr[2].m_hi = 0u;
+                    if (trace)
+                    {
+                        std::printf(
+                            "HLE %sOsdConfigParam: pointer=0x%08x "
+                            "value=0x%08x result=0\\n",
+                            service == 0x4au ? "Set" : "Get",
+                            parameter_address, osd_config
                         );
                     }
                 }
