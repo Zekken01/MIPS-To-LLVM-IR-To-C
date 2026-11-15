@@ -9,7 +9,7 @@
 
 namespace ee
 {
-// GS register-state and PSMCT32/24/16/16S host-to-local transfer consumer.
+// GS register-state and PSMCT32/24/16/16S plus PSMT8 upload consumer.
 // It does not rasterize primitives, present frames or implement GS IRQs.
 // Based on ps2-web-recomp/runtime/src/gs/gs.cpp::write/write_packed.
 struct s_ee_gs_state
@@ -38,6 +38,7 @@ public:
 
     // GS VRAM is a separate 4 MiB allocation, not EE RAM.
     const std::vector<uint8_t>& vram() const;
+    bool read_vram8(uint32_t offset, uint8_t& value) const;
     // Returns false for out-of-range raw VRAM accesses.
     bool read_vram16(uint32_t offset, uint16_t& value) const;
     bool read_vram32(uint32_t offset, uint32_t& value) const;
@@ -66,7 +67,7 @@ private:
     {
         uint32_t m_offset = 0;
         uint32_t m_value = 0;
-        uint8_t m_bytes = 4u; // write 2, 3 or 4 bytes
+        uint8_t m_bytes = 4u; // write 1, 2, 3 or 4 bytes
     };
 
     // GS PSMCT32/24: 64x32 pages, 8 KiB per page, 256-byte blocks.
@@ -80,6 +81,12 @@ private:
     static uint32_t psmct16_address(
         uint32_t base, uint32_t width, uint32_t x, uint32_t y,
         uint32_t psm
+    );
+
+    // PSMT8: 128x64 pages, 16x16 blocks and byte-lane swizzling.
+    // DBW is still measured in units of 64 pixels.
+    static uint32_t psmt8_address(
+        uint32_t base, uint32_t width, uint32_t x, uint32_t y
     );
 
     static bool write_register(

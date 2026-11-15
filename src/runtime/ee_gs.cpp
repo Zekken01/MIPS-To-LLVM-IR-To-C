@@ -52,6 +52,20 @@ constexpr uint8_t k_column16[2][16] =
     {4, 6, 12, 14, 20, 22, 28, 30, 5, 7, 13, 15, 21, 23, 29, 31}
 };
 
+// PSMT8 uses the reference's word-column permutation; each index
+// selects a single byte lane within the corresponding 32-bit word.
+constexpr uint8_t k_column_word[2][2][8] =
+{
+    {
+        {0, 1, 4, 5, 8, 9, 12, 13},
+        {2, 3, 6, 7, 10, 11, 14, 15}
+    },
+    {
+        {8, 9, 12, 13, 0, 1, 4, 5},
+        {10, 11, 14, 15, 2, 3, 6, 7}
+    }
+};
+
 uint32_t read_le32(const uint8_t* data)
 {
     return static_cast<uint32_t>(data[0]) |
@@ -96,9 +110,51 @@ uint32_t c_ee_gs_state::psmct16_address(
     );
 }
 
+uint32_t c_ee_gs_state::psmt8_address(
+    uint32_t base, uint32_t width, uint32_t x, uint32_t y)
+{
+    // Same 128x64 page, block, word and byte layout as the reference's
+    // build_tables() / page_address() / write_pixel(PSMT8) path.
+    // Its page stride truncates DBW*64/128, with a minimum of one page.
+    const uint32_t pages_per_row = std::max(1u, width / 2u);
+    const uint64_t page =
+        (static_cast<uint64_t>(x / 128u) +
+         static_cast<uint64_t>(y / 64u) * pages_per_row) * 8192u;
+
+    const uint32_t block =
+        k_block32[(y & 63u) / 16u][(x & 127u) / 16u];
+    const uint32_t wx = x & 15u;
+    const uint32_t inner_y = y & 15u;
+    const uint32_t column = inner_y / 4u;
+    const uint32_t wy = inner_y & 3u;
+    const uint32_t table =
+        ((wy & 2u) >> 1u) ^ ((y / 4u) & 1u);
+    const uint32_t lane =
+        ((wx & 8u) >> 2u) + ((wy & 2u) >> 1u);
+    const uint32_t in_page =
+        block * 256u + column * 64u +
+        static_cast<uint32_t>(
+            k_column_word[table][wy & 1u][wx & 7u]) * 4u + lane;
+
+    return static_cast<uint32_t>(
+        (static_cast<uint64_t>(base) * 256u + page + in_page) &
+        (k_vram_bytes - 1u)
+    );
+}
+
 const std::vector<uint8_t>& c_ee_gs_state::vram() const
 {
     return m_vram;
+}
+
+bool c_ee_gs_state::read_vram8(uint32_t offset, uint8_t& value) const
+{
+    if (offset >= k_vram_bytes)
+    {
+        return false;
+    }
+    value = m_vram[offset];
+    return true;
 }
 
 bool c_ee_gs_state::read_vram16(uint32_t offset, uint16_t& value) const
@@ -227,7 +283,7 @@ bool c_ee_gs_state::write_register(
         state.m_transfer_pending_size = 0u;
         if ((value & 3u) == 0u)
         {
-            // Only verified PSMCT32, PSMCT24, PSMCT16 and PSMCT16S execute.
+            // Only verified PSMCT32/24/16/16S and PSMT8 uploads execute.
             // Unsupported formats and malformed setup reject the batch.
             if (!state.m_written[0x50u] ||
                 !state.m_written[0x51u] ||
@@ -247,7 +303,8 @@ bool c_ee_gs_state::write_register(
                 static_cast<uint32_t>((reg_size >> 32u) & 0xfffu);
             if (dest_width == 0u ||
                 (dest_psm != 0u && dest_psm != 1u &&
-                 dest_psm != 2u && dest_psm != 0x0au) ||
+                 dest_psm != 2u && dest_psm != 0x0au &&
+                 dest_psm != 0x13u) ||
                 pixel_width == 0u || pixel_height == 0u)
             {
                 return false;
@@ -434,8 +491,8 @@ bool c_ee_gs_state::consume(
             );
             next.m_image_qwc += e.m_qwc;
 
-            // PSMCT32/24 share 64x32 pages. PSMCT16 and PSMCT16S
-            // use 64x64 pages but different block permutations.
+            // PSMCT32/24 share 64x32 pages, PSMCT16/16S use 64x64
+            // pages, and PSMT8 uses 128x64 pages with byte swizzling.
             // Only PSMCT24 carries incomplete 3-byte pixels.
             const uint64_t buf = next.m_registers[0x50u];
             const uint64_t pos = next.m_registers[0x51u];
@@ -459,7 +516,7 @@ bool c_ee_gs_state::consume(
             // reject it rather than applying a guessed pixel layout.
             if (width == 0u ||
                 (psm != 0u && psm != 1u && psm != 2u &&
-                 psm != 0x0au) ||
+                 psm != 0x0au && psm != 0x13u) ||
                 rrw == 0u || rrh == 0u ||
                 next.m_transfer_pixels_written > total_pixels)
             {
@@ -471,18 +528,28 @@ bool c_ee_gs_state::consume(
                 const uint32_t pixel = next.m_transfer_pixels_written;
                 const uint32_t dx = (x + pixel % rrw) & 0x7ffu;
                 const uint32_t dy = (y + pixel / rrw) & 0x7ffu;
-                const uint32_t address =
-                    (psm == 2u || psm == 0x0au) ?
-                    psmct16_address(base, width, dx, dy, psm) :
-                    psmct32_address(base, width, dx, dy);
+                uint32_t address = 0u;
+                if (psm == 0x13u)
+                {
+                    address = psmt8_address(base, width, dx, dy);
+                }
+                else if (psm == 2u || psm == 0x0au)
+                {
+                    address = psmct16_address(base, width, dx, dy, psm);
+                }
+                else
+                {
+                    address = psmct32_address(base, width, dx, dy);
+                }
                 writes.push_back({address, value, size});
                 ++next.m_transfer_pixels_written;
             };
 
-            if (psm == 0u || psm == 2u || psm == 0x0au)
+            if (psm == 0u || psm == 2u ||
+                psm == 0x0au || psm == 0x13u)
             {
-                // 2-byte and 4-byte pixels cannot straddle GIF qwords.
-                const uint8_t pixel_bytes =
+                // 1-, 2- and 4-byte indices/pixels fit GIF qwords.
+                const uint8_t pixel_bytes = psm == 0x13u ? 1u :
                     (psm == 2u || psm == 0x0au) ? 2u : 4u;
                 if (next.m_transfer_pending_size != 0u)
                 {
@@ -498,10 +565,16 @@ bool c_ee_gs_state::consume(
                     const size_t data_offset =
                         static_cast<size_t>(offset) +
                         static_cast<size_t>(j) * pixel_bytes;
-                    const uint32_t value = pixel_bytes == 2u ?
-                        static_cast<uint32_t>(data[data_offset]) |
-                        (static_cast<uint32_t>(data[data_offset + 1u]) << 8u) :
-                        read_le32(data + data_offset);
+                    uint32_t value = data[data_offset];
+                    if (pixel_bytes == 2u)
+                    {
+                        value |= static_cast<uint32_t>(
+                            data[data_offset + 1u]) << 8u;
+                    }
+                    else if (pixel_bytes == 4u)
+                    {
+                        value = read_le32(data + data_offset);
+                    }
                     stage_pixel(value, pixel_bytes);
                 }
             }
@@ -539,7 +612,10 @@ bool c_ee_gs_state::consume(
         const uint32_t offset = write.m_offset;
         const uint32_t value = write.m_value;
         m_vram[offset + 0u] = static_cast<uint8_t>(value);
-        m_vram[offset + 1u] = static_cast<uint8_t>(value >> 8u);
+        if (write.m_bytes >= 2u)
+        {
+            m_vram[offset + 1u] = static_cast<uint8_t>(value >> 8u);
+        }
         if (write.m_bytes >= 3u)
         {
             m_vram[offset + 2u] = static_cast<uint8_t>(value >> 16u);
