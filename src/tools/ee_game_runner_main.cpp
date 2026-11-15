@@ -1007,45 +1007,60 @@ int main(int argc, char** argv)
                         static_cast<uint32_t>(cpu.m_gpr[4].m_lo);
                     const uint32_t handler_pc =
                         static_cast<uint32_t>(cpu.m_gpr[5].m_lo);
-                    const uint32_t table_address =
-                        k_kernel_syscall_table_base +
-                        syscall_number * sizeof(uint32_t);
-                    // The kernel accepts handlers in direct-mapped EE
-                    // RAM, not only executable ELF segments. SDBZ copies
-                    // 0x740 bytes from 0x00462A70 into 0x80076000,
-                    // flushes the cache and registers that RAM address.
-                    // Zero is also a valid request to clear a registration.
-                    const bool handler_backed =
-                        handler_pc == 0u ||
-                        image.is_executable_address(handler_pc) ||
-                        memory->contains(handler_pc, sizeof(uint32_t));
-                    if (syscall_number >= k_kernel_syscall_table_entries ||
-                        (handler_pc & 3u) != 0u ||
-                        !handler_backed ||
-                        !memory->contains(table_address, sizeof(uint32_t)))
+                    // ps2-web-recomp's SetSyscall(0x74) accepts only
+                    // indices 0..255. Out-of-range requests are reported
+                    // but complete with V0=0, without modifying RAM or
+                    // the installed handler table. SDBZ requests 0x12C
+                    // after setting up its relocated kernel handlers.
+                    if (syscall_number >= k_kernel_syscall_table_entries)
                     {
                         std::fprintf(stderr,
-                            "SetSyscall HLE refused invalid handler "
-                            "number=0x%08x pc=0x%08x\n",
+                            "HLE SetSyscall: unsupported number=0x%08x "
+                            "handler=0x%08x (ignored)\n",
                             syscall_number, handler_pc
                         );
-                        break;
                     }
-                    // Keep guest-visible lookup and callback dispatch in
-                    // sync, with the physical address readable through KSEG0
-                    // when --kseg-ram is enabled. Invalid registrations
-                    // above never change either location. Registration of
-                    // guest RAM code does not claim it has been translated.
-                    memory->write32(table_address, handler_pc);
-                    installed_syscall_handlers[syscall_number] = handler_pc;
-                    if (trace)
+                    else
                     {
-                        std::printf(
-                            "HLE SetSyscall: number=0x%02x "
-                            "handler=0x%08x\n",
-                            syscall_number, handler_pc
-                        );
+                        const uint32_t table_address =
+                            k_kernel_syscall_table_base +
+                            syscall_number * sizeof(uint32_t);
+                        // The kernel accepts handlers in direct-mapped EE
+                        // RAM, not only executable ELF segments. Zero
+                        // clears the registration.
+                        const bool handler_backed =
+                            handler_pc == 0u ||
+                            image.is_executable_address(handler_pc) ||
+                            memory->contains(handler_pc, sizeof(uint32_t));
+                        if ((handler_pc & 3u) != 0u ||
+                            !handler_backed ||
+                            !memory->contains(table_address, sizeof(uint32_t)))
+                        {
+                            std::fprintf(stderr,
+                                "SetSyscall HLE refused invalid handler "
+                                "number=0x%08x pc=0x%08x\n",
+                                syscall_number, handler_pc
+                            );
+                            break;
+                        }
+                        // Keep guest-visible lookup and native dispatch in
+                        // sync. Invalid in-range registrations still fail
+                        // closed without changing either location.
+                        memory->write32(table_address, handler_pc);
+                        installed_syscall_handlers[syscall_number] = handler_pc;
+                        if (trace)
+                        {
+                            std::printf(
+                                "HLE SetSyscall: number=0x%02x "
+                                "handler=0x%08x\n",
+                                syscall_number, handler_pc
+                            );
+                        }
                     }
+                    // The reference kernel returns zero from SetSyscall,
+                    // including for unsupported out-of-range indices.
+                    cpu.m_gpr[2].m_lo = 0u;
+                    cpu.m_gpr[2].m_hi = 0u;
                 }
 
                 cpu.m_cop0[12] &= ~2u; // Clear COP0.Status.EXL.
