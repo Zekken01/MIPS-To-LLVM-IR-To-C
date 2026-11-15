@@ -220,10 +220,10 @@ e_ee_vu0_sync_mode ee_vu0_transfer_sync_mode(
 extern "C" {
 #endif
 
-// Guest memory access helpers. These preserve guest address translation,
-// alignment, address errors and MMIO/device side effects. Implementations live
-// in the runtime (src/runtime/ee_memory.cpp). The lifter calls these rather
-// than dereferencing host pointers directly.
+// Guest memory access helpers. The prototype currently maps bounded EE RAM,
+// scratchpad, and two VU0 windows (when m_vu0_state is installed). Full
+// address translation, alignment exceptions, general MMIO and VU1 are NOT
+// implemented. The lifter calls these rather than dereferencing host pointers.
 uint8_t  ee_mem_read8 (s_ee_runtime* rt, uint32_t addr);
 uint16_t ee_mem_read16(s_ee_runtime* rt, uint32_t addr);
 uint32_t ee_mem_read32(s_ee_runtime* rt, uint32_t addr);
