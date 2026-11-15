@@ -947,6 +947,36 @@ confirmed in the user's local run. Remaining costs include the
 per-function rebuild/relink/replay cycle. Further native game behavior
 beyond dispatch 133 remains unverified until the user reruns the ELF.
 
+### EE ChangeThreadPriority (US SDBZ, dispatch 136)
+
+In the user's next local US SDBZ run the native translation cache was
+successfully reused without additional compilation. The game reached
+**dispatch 136**: at EPC `0x00174B34` it executed SYSCALL service
+`V1=0x29`, with `A0=1` (main thread ID) and `A1=1` (requested
+priority). The previous `GetThreadId` service at dispatch 133 returned
+main thread ID 1 as expected.
+
+The reference `ps2-web-recomp/runtime/src/kernel.cpp` handles
+`ChangeThreadPriority (0x29)` and `iChangeThreadPriority (0x2A)`
+with the same priority bookkeeping: thread ID zero aliases the
+current thread; unknown IDs return -1; the call returns the thread's
+**old** priority; and the new priority is masked to 7 bits (0..127).
+The native runner now implements these metadata and return semantics.
+The initial main thread has priority 0; this observed call returns
+0 and updates the main thread's priority to 1.
+
+**Scheduling remains deliberately unsupported.** A priority change
+cannot activate dormant threads. The reference kernel may trigger
+rescheduling when multiple runnable threads exist; implementing that
+requires real CPU-context switching and scheduler behavior rather than
+fabricating a successful thread switch. Native synthetic tests cover
+old/new priority bookkeeping, ID 0 aliasing, a dormant thread's
+priority, the interrupt-safe variant, 7-bit masking, invalid IDs,
+and continued execution of main thread 1.
+
+Only the user runs the proprietary US game ELF; native CI runs
+synthetic fixtures and does not assert progress past dispatch 136.
+
 ## Validation limits
 
 CTest contains `game_runner_end_to_end` which creates small synthetic MIPS
