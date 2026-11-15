@@ -1017,7 +1017,9 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "invalid native dispatch metadata/entry table\n");
         return 3;
     }
-    if (dispatched == 0)
+    if (dispatched == 0 &&
+        reason != static_cast<uint32_t>(
+            ee::e_ee_exit_reason::EE_EXIT_EXCEPTION))
     {
         std::fprintf(stderr, "ELF entry has no translated host block; emit the entry function\n");
         return 3;
