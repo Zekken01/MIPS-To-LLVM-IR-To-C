@@ -135,7 +135,7 @@ bool mmi_lowered_exactly(uint32_t funct, uint32_t sa, uint32_t rs)
         {
             return rs == 0;
         }
-        return sa == 0x12 || sa == 0x13;                // por pnor
+        return sa == 0x0e || sa == 0x12 || sa == 0x13; // pcpyud por pnor
     default:
         return false;
     }
