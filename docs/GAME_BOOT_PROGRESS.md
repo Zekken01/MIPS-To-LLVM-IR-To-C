@@ -86,9 +86,14 @@ dispatch and PC if the report is readable. `--kseg-ram` opts into mapping the EE
 onto physical RAM; it does not implement TLB, PS2 hardware MMIO, or device
 side effects.
 
-The runner initializes 32 MiB of EE RAM, copies PT_LOAD segments, initializes
+The runner initializes 32 MiB of EE RAM and a separate 16 KiB EE
+scratchpad at `0x70000000..0x70003fff`, copies PT_LOAD segments, initializes
 PC and SP and stops on exceptions, uncompiled PCs, exhaustion, or unsupported
-host services. `--hle-startup` is opt-in and only covers explicitly
+host services. The scratchpad mapping follows the region boundaries in
+`ps2-web-recomp/runtime/include/ps2/memory.hpp` and its memory resolver.
+It supports bounded 8/16/32/64/128-bit loads and stores through the existing
+generated-code memory helper ABI. This does **not** implement scratchpad DMA,
+TLB translations, MMIO devices, or exception behavior for invalid accesses. `--hle-startup` is opt-in and only covers explicitly
 recognized kernel calls; it does not implement BIOS, IOP, GS, SIF or DMA.
 
 ## Confirmed real-ELF checkpoints
