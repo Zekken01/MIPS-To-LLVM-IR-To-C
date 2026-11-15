@@ -746,7 +746,8 @@ int main(int argc, char** argv)
                 continue;
             }
             if (service == 0x3cu || service == 0x3du ||
-                service == 0x40u || service == 0x74u)
+                service == 0x40u || service == 0x64u ||
+                service == 0x68u || service == 0x74u)
             {
                 const uint32_t epc = cpu.m_cop0[14];
                 uint32_t opcode = 0;
@@ -904,6 +905,26 @@ int main(int argc, char** argv)
                             "option=0x%08x parameters=0x%08x\n",
                             id, init_count, max_count, attr, option,
                             parameter_address
+                        );
+                    }
+                }
+
+                else if (service == 0x64u || service == 0x68u)
+                {
+                    // FlushCache / iFlushCache: ps2-web-recomp's EE
+                    // kernel HLE returns zero for both services. The
+                    // translated code and ELF segments are currently
+                    // immutable, so there is no host instruction cache
+                    // to invalidate. Dynamic guest code writes remain
+                    // outside the static runner's supported behavior.
+                    cpu.m_gpr[2].m_lo = 0u;
+                    cpu.m_gpr[2].m_hi = 0u;
+                    if (trace)
+                    {
+                        std::printf(
+                            "HLE %s: mode=0x%08x result=0\n",
+                            service == 0x64u ? "FlushCache" : "iFlushCache",
+                            static_cast<uint32_t>(cpu.m_gpr[4].m_lo)
                         );
                     }
                 }
