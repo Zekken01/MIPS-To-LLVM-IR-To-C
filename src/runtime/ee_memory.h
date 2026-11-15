@@ -5,11 +5,14 @@
 
 namespace ee {
 
-// Minimal in-memory guest RAM backing the memory helper ABI for the smoke
-// test. The real runtime implements translation, MMIO, address errors, etc.
+// Bounded EE RAM and 16 KiB scratchpad backing the guest memory helper ABI.
+// This remains a prototype: TLB, MMIO, and address exceptions are not modelled.
 class ee_memory
 {
 public:
+    static constexpr uint32_t k_scratchpad_base = 0x70000000u;
+    static constexpr size_t k_scratchpad_size = 16u * 1024u;
+
     explicit ee_memory(size_t size);
     ~ee_memory();
 
@@ -46,6 +49,7 @@ public:
 private:
     uint8_t* m_data = nullptr;
     size_t m_size = 0;
+    alignas(16) uint8_t m_scratchpad[k_scratchpad_size]{};
     uint32_t m_ram_base = 0;
     uint32_t m_ram_size = 0;
     bool m_ram_configured = false;
@@ -53,6 +57,8 @@ private:
 
     bool in_ram_range(uint32_t addr, size_t len) const;
     uint32_t normalize_ram_address(uint32_t addr) const;
+    const uint8_t* map_address(uint32_t addr, size_t len) const;
+    uint8_t* map_address(uint32_t addr, size_t len);
 };
 
 } // namespace ee
