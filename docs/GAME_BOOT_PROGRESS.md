@@ -235,8 +235,7 @@ PSMT4HL/PSMT4HH each have 32 packed 4-bit indices per quadword
 (low nibble first). Odd-width rows do not introduce per-row padding;
 indices remain packed in raster order across rows. Final RGBA
 conversion and texture filtering, other unsupported PSM formats,
-host-to-local HWREG, local-to-host downloads, and local-to-local
-copies remain unimplemented.
+host-to-local HWREG and local-to-host downloads remain unimplemented.
 
 Every event batch is applied to a temporary state copy and its VRAM
 pixel writes are staged until **all** events are supported, input offsets
@@ -261,6 +260,39 @@ PSMZ32, PSMZ24, PSMZ16 and PSMZ16S IMAGE uploads have
 GS VRAM effects;
 real SDBZ image-stream and PCSX2 differential validation remain needed.
 
+
+### GS local-to-local VRAM copies (TRXDIR=2)
+
+The state-only GS consumer also executes **TRXDIR=2** at the GS
+register write, after decoding BITBLTBUF source and destination
+base/width/PSM, TRXPOS source/destination 11-bit coordinates and
+DIR (bits 59..60), and TRXREG width/height. It supports all 13
+verified PSMCT, PSMZ and indexed PSMT formats on both sides,
+including unlike source/destination formats, with raw numerical
+pixel values converted by the destination's existing write rules.
+PSMCT24/PSMZ24 preserve destination high bytes, 16-bit formats
+preserve adjacent halfwords, and indexed 4-bit/8-bit formats
+preserve neighboring nibbles and high-byte lanes.
+
+Like the `ps2-web-recomp` reference's `local_copy()`, the copy
+reads every source pixel from a **frozen source snapshot** before
+applying destination writes. Thus overlapping source/destination
+regions behave deterministically. DIR bit 0 reverses the *source*
+horizontal pixel selection; DIR bit 1 reverses its vertical selection.
+Both source and destination coordinates wrap at 2048. GIF event-batch
+ordering is preserved: earlier IMAGE uploads and earlier local copies
+in the same batch are visible at a subsequent TRXDIR=2, but later
+writes are not. All local-copy writes are staged and either
+committed with the entire batch or fully rolled back if a later
+event fails, including the copy counters and GS register state.
+A safety bound of `k_max_local_copy_pixels` (4 Mi pixels
+total staged per GIF batch) rejects oversized copies rather than
+allocating unbounded temporary storage. TRXDIR=2 does not consume
+GIF IMAGE payload and does not reload an existing CLUT snapshot.
+
+Host-to-local uploads still use TRXDIR=0; local-to-host
+TRXDIR=1, HWREG, device rendering, other GS GPU behavior and
+real SDBZ/PCSX2 differential validation remain outstanding.
 
 ### Indexed CLUT snapshots (CSM1 and CSM2)
 
