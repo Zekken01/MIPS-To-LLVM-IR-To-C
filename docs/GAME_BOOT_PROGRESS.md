@@ -235,7 +235,8 @@ PSMT4HL/PSMT4HH each have 32 packed 4-bit indices per quadword
 (low nibble first). Odd-width rows do not introduce per-row padding;
 indices remain packed in raster order across rows. Final RGBA
 conversion and texture filtering, other unsupported PSM formats,
-host-to-local HWREG and local-to-host downloads remain unimplemented.
+host-to-local HWREG remains unimplemented. GS local-to-host
+(TRXDIR=1) is supported through read_image and VIF1 reverse DMA.
 
 Every event batch is applied to a temporary state copy and its VRAM
 pixel writes are staged until **all** events are supported, input offsets
@@ -260,6 +261,34 @@ PSMZ32, PSMZ24, PSMZ16 and PSMZ16S IMAGE uploads have
 GS VRAM effects;
 real SDBZ image-stream and PCSX2 differential validation remain needed.
 
+
+### GS local-to-host downloads (TRXDIR=1)
+
+The GS consumer now supports **TRXDIR=1** local-to-host image readback
+from all 13 verified GS pixel formats. The source is selected using
+BITBLTBUF.SBP/SBW/SPSM, TRXPOS.SSAX/SSAY and TRXREG.RRW/RRH.
+`c_ee_gs_state::read_image(data,qwc)` returns 16*qwc bytes in GS
+raster order, unswizzling the stored pixels. 32/24/16/8-bit values
+are packed little-endian, and all 4-bit formats are low-nibble first.
+PSMCT24/PSMZ24 readback retains partial pixel bytes across separate
+DMA reads (a byte-oriented cursor), and a final, partial quadword is
+zero-padded. Extra read requests after the rectangle complete also
+return zeros, matching the reference's `render_read_image()` behavior.
+Pixels and GS VRAM addresses wrap as with GS uploads; the download
+does not alter the internal CLUT.
+
+`c_ee_dmac::bind_device_download` connects an optional GS producer
+to **VIF1 channel 1 reverse DMA (CHCR.DIR=0)**. The DMAC prevalidates
+the entire EE RAM destination range, requests 16*qwc bytes from the
+producer and writes them back to EE RAM only after the full request
+succeeds. On missing/refusing producer or invalid RAM, MADR/QWC/STR,
+the interrupt status and RAM remain unchanged. VIF1 DIR=1 still
+uses the existing forward device consumer. Neither direction
+implements VIF commands, FIFOs or cycle-accurate DMA scheduling.
+The GS readback cursor advances only on successful reads. Host
+applications can bind `c_ee_gs_state::dma_download` through
+`c_ee_hw_bus::bind_device_download`; no default GS binding is added
+to the native runner.
 
 ### GS local-to-local VRAM copies (TRXDIR=2)
 
@@ -290,9 +319,9 @@ total staged per GIF batch) rejects oversized copies rather than
 allocating unbounded temporary storage. TRXDIR=2 does not consume
 GIF IMAGE payload and does not reload an existing CLUT snapshot.
 
-Host-to-local uploads still use TRXDIR=0; local-to-host
-TRXDIR=1, HWREG, device rendering, other GS GPU behavior and
-real SDBZ/PCSX2 differential validation remain outstanding.
+Host-to-local uploads still use TRXDIR=0; HWREG, device rendering,
+other GS GPU behavior, and real SDBZ/PCSX2 differential validation
+remain outstanding.
 
 ### Indexed CLUT snapshots (CSM1 and CSM2)
 

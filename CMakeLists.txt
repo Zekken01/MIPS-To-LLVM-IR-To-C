@@ -187,6 +187,12 @@ target_link_libraries(ee_gs_depth_test PRIVATE ee_core)
 add_executable(ee_gs_local_copy_test tests/smoke/ee_gs_local_copy_test.cpp)
 target_link_libraries(ee_gs_local_copy_test PRIVATE ee_core)
 
+add_executable(ee_gs_download_test tests/smoke/ee_gs_download_test.cpp)
+target_link_libraries(ee_gs_download_test PRIVATE ee_core)
+
+add_executable(ee_gs_download_dma_test tests/smoke/ee_gs_download_dma_test.cpp)
+target_link_libraries(ee_gs_download_dma_test PRIVATE ee_core)
+
 add_executable(ee_scratchpad_test tests/smoke/ee_scratchpad_test.cpp)
 target_link_libraries(ee_scratchpad_test PRIVATE ee_core)
 
@@ -287,6 +293,8 @@ add_test(NAME ee_gs_clut COMMAND ee_gs_clut_test)
 add_test(NAME ee_gs_psmt_high COMMAND ee_gs_psmt_high_test)
 add_test(NAME ee_gs_depth COMMAND ee_gs_depth_test)
 add_test(NAME ee_gs_local_copy COMMAND ee_gs_local_copy_test)
+add_test(NAME ee_gs_download COMMAND ee_gs_download_test)
+add_test(NAME ee_gs_download_dma COMMAND ee_gs_download_dma_test)
 add_test(NAME ee_scratchpad COMMAND ee_scratchpad_test)
 add_test(NAME ee_vu0_memory_map COMMAND ee_vu0_memory_map_test)
 add_test(NAME ee_unaligned_memory COMMAND ee_unaligned_memory_test)
