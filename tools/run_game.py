@@ -271,13 +271,15 @@ def append_function(recomp, elf, work, metadata_path, address):
 
 
 def build_linked_library(source_root, work, metadata_path, object_dir, library,
-                         emit_opt, pdb=False, reuse_objects=False):
+                         emit_opt, pdb=False, reuse_objects=False, emit_jobs=2):
     if not reuse_objects:
         run([
         sys.executable, source_root / "tools" / "verify_ir.py",
         str(work / "ir" / "*.ll"),
         f"--emit-dir={object_dir}",
         f"--emit-opt={emit_opt}",
+        "--incremental",
+        f"--jobs={emit_jobs}",
         ])
     command = [
         sys.executable, source_root / "tools" / "link_native_objects.py",
@@ -313,6 +315,8 @@ def main(argv=None):
     parser.add_argument("--emit-opt", type=int, choices=range(4), default=0,
                         metavar="{0,1,2,3}",
                         help="LLVM native object optimization level (default: 0)")
+    parser.add_argument("--emit-jobs", type=int, default=2,
+                        help="parallel LLVM object-emission processes (default: 2)")
     parser.add_argument("--max-dispatches", type=int, default=10000)
     parser.add_argument(
         "--timeout-seconds", type=int, default=10,
@@ -335,6 +339,8 @@ def main(argv=None):
                         help="Stop after generating/linking the native DLL (and PDB if requested)")
     args = parser.parse_args(argv)
 
+    if not 1 <= args.emit_jobs <= 32:
+        parser.error("--emit-jobs must be between 1 and 32")
     if args.max_dispatches <= 0 or args.max_dispatches > 0xFFFFFFFF:
         parser.error("--max-dispatches must fit a positive uint32")
     if args.timeout_seconds < 1 or args.timeout_seconds > 3600:
@@ -403,7 +409,7 @@ def main(argv=None):
                 append_function(recomp, elf, work, metadata_path, address)
             build_linked_library(
                 source_root, work, metadata_path, object_dir, library,
-                args.emit_opt, pdb=args.pdb
+                args.emit_opt, pdb=args.pdb, emit_jobs=args.emit_jobs
             )
             write_translation_cache(cache_path, inputs, args.emit_opt,
                                     metadata_path, library)
@@ -429,7 +435,7 @@ def main(argv=None):
             if args.pdb:
                 build_linked_library(
                     source_root, work, metadata_path, object_dir, library,
-                    args.emit_opt, pdb=True, reuse_objects=True
+                    args.emit_opt, pdb=True, reuse_objects=True, emit_jobs=args.emit_jobs
                 )
                 write_translation_cache(cache_path, inputs, args.emit_opt,
                                         metadata_path, library)
@@ -566,7 +572,7 @@ def main(argv=None):
                 return result.returncode
             build_linked_library(
                 source_root, work, metadata_path, object_dir, library,
-                args.emit_opt, pdb=args.pdb
+                args.emit_opt, pdb=args.pdb, emit_jobs=args.emit_jobs
             )
             write_translation_cache(cache_path, inputs, args.emit_opt,
                                     metadata_path, library)
