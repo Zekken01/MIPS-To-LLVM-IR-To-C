@@ -236,6 +236,21 @@ void     ee_mem_write32(s_ee_runtime* rt, uint32_t addr, uint32_t v);
 void     ee_mem_write64(s_ee_runtime* rt, uint32_t addr, uint64_t v);
 void     ee_mem_write128(s_ee_runtime* rt, uint32_t addr, const s_ee_u128* v);
 
+// R5900 partial-word / partial-doubleword memory operations.
+// The load helpers merge into the existing GPR low 64 bits and return the
+// resulting low 64 bits; the caller preserves the upper 64 bits of the GPR.
+// Address is the original effective address, not the aligned word address.
+// These merge semantics are independent of host memory layout and use the
+// ordinary ee_mem_* callbacks so device/bounds handling remains centralized.
+uint64_t ee_mem_lwl(s_ee_runtime* rt, uint32_t addr, uint64_t old_value);
+uint64_t ee_mem_lwr(s_ee_runtime* rt, uint32_t addr, uint64_t old_value);
+uint64_t ee_mem_ldl(s_ee_runtime* rt, uint32_t addr, uint64_t old_value);
+uint64_t ee_mem_ldr(s_ee_runtime* rt, uint32_t addr, uint64_t old_value);
+void ee_mem_swl(s_ee_runtime* rt, uint32_t addr, uint64_t source);
+void ee_mem_swr(s_ee_runtime* rt, uint32_t addr, uint64_t source);
+void ee_mem_sdl(s_ee_runtime* rt, uint32_t addr, uint64_t source);
+void ee_mem_sdr(s_ee_runtime* rt, uint32_t addr, uint64_t source);
+
 // VU0 synchronization and VI register access (ee_vu0.cpp).
 uint32_t ee_vu0_sync(s_ee_cpu_state* cpu, s_ee_runtime* rt,
                      uint32_t mode, uint32_t pc);
