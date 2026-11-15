@@ -9,6 +9,7 @@ namespace ee
 {
 // EE DMA registers, normal/interleave SPR DMA, bounded SPR chains,
 // and normal DMA for VIF0/VIF1/GIF through an optional host consumer.
+// Includes VIF1 reverse GS image downloads (CHCR.DIR=0).
 // Reference: ps2-web-recomp/runtime/src/dmac.cpp and hw.cpp.
 // Transfers execute synchronously, prevalidating physical RAM ranges.
 // MFIFO, general device emulation, chain DMA for channels 0..2,
@@ -30,7 +31,7 @@ public:
     void bind_memory(ee_memory* memory);
 
     // A host-owned, synchronous data consumer. channel is 0=VIF0,
-    // 1=VIF1 (RAM-to-device only), 2=GIF PATH3. data is a contiguous,
+    // 1=VIF1 (RAM-to-device), 2=GIF PATH3. data is a contiguous,
     // little-endian array of 16*qwc bytes valid only during the call.
     // Return true only after consuming the ENTIRE transfer. A false
     // return means the host rejected it without side effects; the DMA
@@ -39,6 +40,17 @@ public:
         void* user, uint32_t channel, const uint8_t* data, uint32_t qwc
     );
     void bind_device_transfer(void* user, t_device_transfer_callback callback);
+
+    // VIF1 channel 1, CHCR.DIR=0: device-to-EE-RAM DMA.
+    // The producer fills all 16*qwc bytes or rejects the entire
+    // transfer without changing its internal state. On rejection,
+    // DMAC leaves EE RAM, MADR, QWC, STR and D_STAT unchanged.
+    using t_device_download_callback = bool (*)(
+        void* user, uint32_t channel, uint8_t* data, uint32_t qwc
+    );
+    void bind_device_download(
+        void* user, t_device_download_callback callback
+    );
 
     void reset();
     bool raise(uint32_t channel);
@@ -80,6 +92,8 @@ private:
     ee_memory* m_memory = nullptr;
     void* m_device_user = nullptr;
     t_device_transfer_callback m_device_transfer = nullptr;
+    void* m_download_user = nullptr;
+    t_device_download_callback m_device_download = nullptr;
     uint32_t m_status = 0;
     uint32_t m_sqwc = 0;
     s_spr_channel m_device_channels[3]{}; // VIF0, VIF1, GIF PATH3

@@ -27,6 +27,12 @@ public:
         m_dmac.bind_device_transfer(user, callback);
     }
 
+    void bind_device_download(
+        void* user, c_ee_dmac::t_device_download_callback callback)
+    {
+        m_dmac.bind_device_download(user, callback);
+    }
+
     void reset()
     {
         m_intc.reset();
