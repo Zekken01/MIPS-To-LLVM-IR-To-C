@@ -112,7 +112,16 @@ the dispatcher supplies the **physical address**, exact access width
 (1/2/4/8/16 bytes), and 128-bit value. A 16-byte FIFO access is a
 single callback, not two 8-byte callbacks. VU0 memory has priority.
 Unimplemented devices return zero on reads and ignore writes by default.
-No actual registers or DMA engines are modeled by these hooks.
+The host can install device implementations through these hooks; the
+native game runner now installs a minimal EE **INTC** model for
+`INTC_STAT=0x1000f000` and `INTC_MASK=0x1000f010`. Its 32-bit writes
+acknowledge status bits (write-one-to-clear) and toggle enabled-mask bits
+(write-one-to-toggle), matching `ps2-web-recomp/runtime/src/hw.cpp`.
+It raises/clears COP0 Cause.IP2 whenever a masked interrupt is pending.
+Device events must explicitly call `c_ee_intc::raise(cause)`, and the
+host does not yet provide a device-event scheduler or guest exception-entry
+timing. Other registers still remain unimplemented; no general GS, DMA,
+SIF, GIF, or VIF device behavior is implied.
 
 This still does **not** implement scratchpad DMA, TLB translation,
 VU1, guest address/alignment exceptions, or hardware-specific device
@@ -203,8 +212,8 @@ ELFs, translates and links them to native host code and verifies that
 dispatch and selected kernel calls resume correctly. The real-game observations
 above were captured locally from the user's privately supplied ELF, not in CI.
 
-The legacy `ee_memory` host is flat RAM backing with optional KSEG0/KSEG1
-RAM-only aliases, but no general TLB,
-MMIO, BIOS, device or interrupt emulation. The syscall handling is deliberately
+The native host has bounded EE RAM, opt-in direct aliases, scratchpad,
+VU0 apertures, a host MMIO bus, and a narrow INTC register model, but still
+no general TLB, BIOS, DMA, device scheduling, or full interrupt emulation. The syscall handling is deliberately
 opt-in, experimental, and incomplete. Reaching the PCs above is not evidence
 of full console initialization, correct kernel behaviour or graphical output.
