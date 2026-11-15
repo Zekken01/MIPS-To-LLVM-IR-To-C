@@ -138,9 +138,8 @@ The transfer behavior is based on
 `ps2-web-recomp/runtime/src/dmac.cpp::run_normal`.
 Unlike the reference's fast RAM mirroring, this experimental backend
 rejects unaligned/unbacked RAM transfers atomically instead of copying
-partially or pretending to complete. It does **not** implement
-chain/interleave DMA, GIF/VIF/IPU transfers, MFIFO, channels 0..7, or
-cycle-based DMA completion. `fromSPR` channel 8 also supports
+partially or pretending to complete. Other devices (GIF/VIF/IPU),
+MFIFO, channels 0..7 and cycle-based DMA completion are not implemented. `fromSPR` channel 8 also supports
 **synchronous chain mode** (CHCR.MOD=1). It copies a preloaded QWC segment
 when present, then consumes 16-byte DMA tags from scratchpad, selecting
 the tag's upper-32-bit MADR and low-16-bit QWC. It updates CHCR tag bits,
@@ -152,7 +151,24 @@ preflights the **entire** chain's physical RAM destinations before any
 copy. Invalid spans or an unterminated cycle (limited to 4096 tags)
 leave STR set, preserve channel registers, and do not partially copy
 RAM or raise a false completion interrupt. toSPR chain mode, MFIFO,
-DMA interleave, and timed completion are still unsupported.
+and timed completion are still unsupported.
+
+The EE DMA control register `D_SQWC=0x1000e030` is now backed by the
+shared hardware bus. For SPR channels 8 and 9 in `CHCR.MOD=2` when
+`D_SQWC.TQWC=(D_SQWC >> 16) & 0xff` is nonzero, **interleave mode**
+copies one quadword per RAM slot, skips `D_SQWC.SQWC=D_SQWC & 0xff`
+RAM quadwords after each group of TQWC transfers, and always consumes
+scratchpad source/destination quadwords contiguously, wrapping at 16 KiB.
+The final group's skip is also included in the resulting MADR.
+Both directions update MADR, SADR and QWC, clear CHCR.STR, and latch
+channel completion via D_STAT/IP3. When TQWC is zero, the reference
+falls back to ordinary contiguous normal DMA even if MOD=2.
+As with normal DMA and fromSPR chains, **every RAM qword is
+prevalidated** before any writes; an invalid sparse transfer leaves
+data/registers intact and does not generate a false completion.
+These synchronous rules follow
+`ps2-web-recomp/runtime/src/dmac.cpp::run_interleave`; hardware
+cycle timing remains unimplemented.
 A translated native dispatch now samples pending, enabled EE COP0
 interrupts **at mapped function-entry boundaries**. When an interrupt is
 pending and IE/EIE/IM permit it, the existing exception helper sets
@@ -170,7 +186,7 @@ interrupts within such code requires instrumentation and a timed scheduler.
 The host does not yet provide device event timing, complete guest BIOS
 interrupt handlers, or general GS/SIF/GIF/VIF behavior.
 
-This still does **not** implement toSPR chains, DMA interleave,
+This still does **not** implement toSPR chains, MFIFO,
 TLB translation, VU1, guest address/alignment exceptions, or comprehensive
 hardware-specific device semantics. VU0 code writes are visible to the current interpreter fetch;
 future compiled microcode engines will need explicit invalidation if
@@ -261,7 +277,8 @@ above were captured locally from the user's privately supplied ELF, not in CI.
 
 The native host has bounded EE RAM, opt-in direct aliases, scratchpad,
 VU0 apertures, a host MMIO bus, INTC and D_STAT register models, and bounded
-normal-mode SPR DMA channels 8/9 and channel-8 chains, but still no general TLB, BIOS, other DMA channels,
+normal/interleave SPR DMA channels 8/9 and channel-8 chains, but still
+no general TLB, BIOS, other DMA channels,
 device scheduling, or full interrupt emulation. The syscall handling is deliberately
 opt-in, experimental, and incomplete. Reaching the PCs above is not evidence
 of full console initialization, correct kernel behaviour or graphical output.
