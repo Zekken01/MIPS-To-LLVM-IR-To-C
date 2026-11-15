@@ -1816,7 +1816,7 @@ def main():
             regs = state["gpr_lo"]
             assert state["snapshot_kind"] == "stopped", state
             assert state["exit_name"] == (
-                "EXCEPTION" if blocking_wait or invalid_status else "RETURN"
+                "EXCEPTION" if blocking_wait or invalid_status else "DISPATCH"
             ), state
             assert regs[8] == 1, state
             assert "HLE CreateSema: id=1" in result.stdout, result.stdout
