@@ -1,12 +1,70 @@
 #include "ee_gs.h"
 
+#include <algorithm>
 #include <utility>
 
 namespace ee
 {
+namespace
+{
+constexpr uint8_t k_block32[4][8] =
+{
+    {0, 1, 4, 5, 16, 17, 20, 21},
+    {2, 3, 6, 7, 18, 19, 22, 23},
+    {8, 9, 12, 13, 24, 25, 28, 29},
+    {10, 11, 14, 15, 26, 27, 30, 31}
+};
+
+constexpr uint8_t k_column32[2][8] =
+{
+    {0, 1, 4, 5, 8, 9, 12, 13},
+    {2, 3, 6, 7, 10, 11, 14, 15}
+};
+
+uint32_t read_le32(const uint8_t* data)
+{
+    return static_cast<uint32_t>(data[0]) |
+        (static_cast<uint32_t>(data[1]) << 8u) |
+        (static_cast<uint32_t>(data[2]) << 16u) |
+        (static_cast<uint32_t>(data[3]) << 24u);
+}
+} // namespace
+
+uint32_t c_ee_gs_state::psmct32_address(
+    uint32_t base, uint32_t width, uint32_t x, uint32_t y)
+{
+    // The reference maps PSMCT32 at 64x32 pixels per 8192-byte page.
+    const uint64_t page =
+        (static_cast<uint64_t>(x / 64u) +
+         static_cast<uint64_t>(y / 32u) * width) * 8192u;
+    const uint32_t block = k_block32[(y & 31u) / 8u][(x & 63u) / 8u];
+    const uint32_t column = ((y & 7u) / 2u) * 64u +
+        static_cast<uint32_t>(k_column32[y & 1u][x & 7u]) * 4u;
+    return static_cast<uint32_t>(
+        (static_cast<uint64_t>(base) * 256u + page +
+         block * 256u + column) & (k_vram_bytes - 1u)
+    );
+}
+
+const std::vector<uint8_t>& c_ee_gs_state::vram() const
+{
+    return m_vram;
+}
+
+bool c_ee_gs_state::read_vram32(uint32_t offset, uint32_t& value) const
+{
+    if (offset > k_vram_bytes - 4u)
+    {
+        return false;
+    }
+    value = read_le32(m_vram.data() + offset);
+    return true;
+}
+
 void c_ee_gs_state::reset()
 {
     m_state = {};
+    std::fill(m_vram.begin(), m_vram.end(), 0u);
 }
 
 const s_ee_gs_state& c_ee_gs_state::state() const
@@ -101,12 +159,36 @@ bool c_ee_gs_state::write_register(
         break;
     }
     case 0x53u: // TRXDIR
+        state.m_transfer_started = false;
+        state.m_transfer_pixels_written = 0u;
         if ((value & 3u) == 0u)
         {
-            // Start a new host-to-local transfer capture. This stores
-            // raw IMAGE bytes but does not touch GS VRAM.
+            // This milestone executes only PSMCT32 host-to-local uploads.
+            // Unsupported formats and malformed setup reject the batch.
+            if (!state.m_written[0x50u] ||
+                !state.m_written[0x51u] ||
+                !state.m_written[0x52u])
+            {
+                return false;
+            }
+            const uint64_t buf = state.m_registers[0x50u];
+            const uint64_t reg_size = state.m_registers[0x52u];
+            const uint32_t dest_width =
+                static_cast<uint32_t>((buf >> 48u) & 0x3fu);
+            const uint32_t dest_psm =
+                static_cast<uint32_t>((buf >> 56u) & 0x3fu);
+            const uint32_t pixel_width =
+                static_cast<uint32_t>(reg_size & 0xfffu);
+            const uint32_t pixel_height =
+                static_cast<uint32_t>((reg_size >> 32u) & 0xfffu);
+            if (dest_width == 0u || dest_psm != 0u ||
+                pixel_width == 0u || pixel_height == 0u)
+            {
+                return false;
+            }
             state.m_image_data.clear();
             state.m_image_qwc = 0u;
+            state.m_transfer_started = true;
         }
         break;
     case 0x0eu: // GS ignores direct writes to these unmapped registers
@@ -208,6 +290,7 @@ bool c_ee_gs_state::consume(
 
     // A local snapshot makes every accepted DMA event batch atomic.
     s_ee_gs_state next = m_state;
+    std::vector<s_vram_write> writes;
     const uint64_t bytes = static_cast<uint64_t>(qwc) * 16u;
 
     for (size_t i = 0; i < count; ++i)
@@ -272,6 +355,7 @@ bool c_ee_gs_state::consume(
                 !next.m_written[0x52u] ||
                 !next.m_written[0x53u] ||
                 (next.m_registers[0x53u] & 3u) != 0u ||
+                !next.m_transfer_started ||
                 length > k_max_image_bytes -
                     next.m_image_data.size())
             {
@@ -283,6 +367,46 @@ bool c_ee_gs_state::consume(
                 data + static_cast<size_t>(offset + length)
             );
             next.m_image_qwc += e.m_qwc;
+
+            // IMAGE and IMAGE2 contain complete 16-byte quadwords.
+            // PSMCT32 has four bytes per pixel, so no partial-pixel
+            // accumulator is needed, even across separate DMA starts.
+            const uint64_t buf = next.m_registers[0x50u];
+            const uint64_t pos = next.m_registers[0x51u];
+            const uint64_t reg_size = next.m_registers[0x52u];
+            const uint32_t base =
+                static_cast<uint32_t>((buf >> 32u) & 0x3fffu);
+            const uint32_t width =
+                static_cast<uint32_t>((buf >> 48u) & 0x3fu);
+            const uint32_t x =
+                static_cast<uint32_t>((pos >> 32u) & 0x7ffu);
+            const uint32_t y =
+                static_cast<uint32_t>((pos >> 48u) & 0x7ffu);
+            const uint32_t rrw = static_cast<uint32_t>(reg_size & 0xfffu);
+            const uint32_t rrh =
+                static_cast<uint32_t>((reg_size >> 32u) & 0xfffu);
+            const uint32_t total_pixels = rrw * rrh;
+            const uint32_t remaining =
+                total_pixels - next.m_transfer_pixels_written;
+            const uint32_t pixels = static_cast<uint32_t>(
+                std::min<uint64_t>(length / 4u, remaining)
+            );
+
+            for (uint32_t j = 0u; j < pixels; ++j)
+            {
+                const uint32_t pixel =
+                    next.m_transfer_pixels_written + j;
+                const uint32_t dx = (x + pixel % rrw) & 0x7ffu;
+                const uint32_t dy = (y + pixel / rrw) & 0x7ffu;
+                const size_t data_offset =
+                    static_cast<size_t>(offset) + static_cast<size_t>(j) * 4u;
+                writes.push_back({
+                    psmct32_address(base, width, dx, dy),
+                    read_le32(data + data_offset)
+                });
+            }
+            next.m_transfer_pixels_written += pixels;
+            // Padding after the final pixel is captured but not written.
             break;
         }
         default:
@@ -290,6 +414,17 @@ bool c_ee_gs_state::consume(
         }
     }
 
+    // Commit only after every event has passed validation. Late failures
+    // cannot leave partial VRAM pixels behind even if the GIF DMA rejects.
+    for (const s_vram_write& write : writes)
+    {
+        const uint32_t offset = write.m_offset;
+        const uint32_t value = write.m_value;
+        m_vram[offset + 0u] = static_cast<uint8_t>(value);
+        m_vram[offset + 1u] = static_cast<uint8_t>(value >> 8u);
+        m_vram[offset + 2u] = static_cast<uint8_t>(value >> 16u);
+        m_vram[offset + 3u] = static_cast<uint8_t>(value >> 24u);
+    }
     m_state = std::move(next);
     return true;
 }

@@ -136,9 +136,11 @@ int main()
     }
 
     // A+D register writes configure a host-to-local transfer. The GS
-    // consumer retains the entire image stream, not a simulated VRAM.
+    // consumer retains IMAGE bytes and commits PSMCT32 swizzled VRAM.
     tag(&runtime, 0x200u, 4u, 0u, 1u, 0xeull);
-    ad(&runtime, 0x210u, 0x50u, 0x1122334455667788ull);
+    const uint64_t transfer_bitblt =
+        (uint64_t{0x20} << 32u) | (uint64_t{1} << 48u);
+    ad(&runtime, 0x210u, 0x50u, transfer_bitblt);
     ad(&runtime, 0x220u, 0x51u, 0x00000000aabbccdduLL);
     ad(&runtime, 0x230u, 0x52u, uint64_t{4} | (uint64_t{3} << 32u));
     ad(&runtime, 0x240u, 0x53u, 0u);
@@ -156,7 +158,7 @@ int main()
         !gs.was_written(0x51u) ||
         !gs.was_written(0x52u) ||
         !gs.was_written(0x53u) ||
-        gs.register_value(0x50u) != 0x1122334455667788ull ||
+        gs.register_value(0x50u) != transfer_bitblt ||
         gs.register_value(0x51u) != 0xaabbccddu ||
         gs.register_value(0x52u) != (uint64_t{4} | (uint64_t{3} << 32u)) ||
         gs.register_value(0x53u) != 0u ||
@@ -187,6 +189,15 @@ int main()
         {
             return fail("image data byte order and transfer aggregation");
         }
+    }
+
+    // All three IMAGE packets wrote the first 12 pixels, in raster order.
+    uint32_t pixel = 0u;
+    if (!gs.read_vram32(0x20u * 256u, pixel) ||
+        pixel != 0x03020100u ||
+        gs.state().m_transfer_pixels_written != 12u)
+    {
+        return fail("PSMCT32 VRAM upload from continued IMAGE data");
     }
 
     // TEX2 writes merge selected bitfields into TEX0, preserving its
@@ -307,7 +318,9 @@ int main()
         gs.state().m_tag_count != 0u ||
         gs.was_written(0x50u) ||
         gs.state().m_vertex_count != 0u ||
-        !gs.state().m_image_data.empty())
+        !gs.state().m_image_data.empty() ||
+        gs.state().m_transfer_started ||
+        gs.state().m_transfer_pixels_written != 0u)
     {
         return fail("GS state reset did not release captured registers/data");
     }
