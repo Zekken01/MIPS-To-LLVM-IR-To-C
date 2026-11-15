@@ -427,6 +427,82 @@ def main():
         assert "native library ready:" in link_only.stdout, link_only.stdout
         assert "EE stopped:" not in link_only.stdout, link_only.stdout
 
+        # A replay must reject old native code when the same ELF path
+        # changes, even if its entry and translated function map do not.
+        cache_path = root / "out" / "translation-cache.json"
+        provenance = json.loads(cache_path.read_text(encoding="utf-8"))
+        assert provenance["schema"] == "ee-translation-cache-v1", provenance
+        cached_command = [
+            sys.executable, str(source / "tools" / "run_game.py"),
+            str(elf), "--build-dir", str(build),
+            "--work-dir", str(root / "out"),
+            "--no-recompile", "--link-only",
+        ]
+        original_elf = elf.read_bytes()
+        altered_elf = bytearray(original_elf)
+        altered_elf[-1] ^= 1
+        elf.write_bytes(altered_elf)
+        changed_elf = subprocess.run(
+            cached_command, capture_output=True, text=True, check=False,
+        )
+        assert changed_elf.returncode != 0, changed_elf
+        assert "ELF changed" in changed_elf.stderr, changed_elf.stderr
+        elf.write_bytes(original_elf)
+
+        # An unchanged ELF still cannot reuse code from a different
+        # recompiler build or a different LLVM object optimization mode.
+        changed_compiler = dict(provenance)
+        changed_compiler["inputs"] = dict(provenance["inputs"])
+        changed_compiler["inputs"]["ee_recomp"] = "0" * 64
+        cache_path.write_text(
+            json.dumps(changed_compiler) + "\n", encoding="utf-8",
+        )
+        mismatched_compiler = subprocess.run(
+            cached_command, capture_output=True, text=True, check=False,
+        )
+        assert mismatched_compiler.returncode != 0, mismatched_compiler
+        assert "ee_recomp changed" in mismatched_compiler.stderr, (
+            mismatched_compiler.stderr
+        )
+        cache_path.write_text(
+            json.dumps(provenance) + "\n", encoding="utf-8",
+        )
+        wrong_optimization = subprocess.run(
+            cached_command + ["--emit-opt=2"],
+            capture_output=True, text=True, check=False,
+        )
+        assert wrong_optimization.returncode != 0, wrong_optimization
+        assert "different --emit-opt" in wrong_optimization.stderr, (
+            wrong_optimization.stderr
+        )
+
+        library_name = (
+            "game-translated.dll" if sys.platform == "win32" else
+            "libgame-translated.dylib" if sys.platform == "darwin" else
+            "libgame-translated.so"
+        )
+        library = root / "out" / library_name
+        original_library = library.read_bytes()
+        altered_library = bytearray(original_library)
+        altered_library[-1] ^= 1
+        library.write_bytes(altered_library)
+        changed_library = subprocess.run(
+            cached_command, capture_output=True, text=True, check=False,
+        )
+        assert changed_library.returncode != 0, changed_library
+        assert f"{library_name} changed" in changed_library.stderr, (
+            changed_library.stderr
+        )
+        library.write_bytes(original_library)
+
+        # Confirm a completely unchanged translation is still reusable.
+        valid_cached = subprocess.run(
+            cached_command, capture_output=True, text=True, check=False,
+        )
+        assert valid_cached.returncode == 0, (
+            valid_cached.stdout + valid_cached.stderr
+        )
+
         # Compare unoptimized and optimized native EE output for the same
         # guest instructions. Optimizing host code must not change EE state.
         optimized_report = root / "optimized.json"
