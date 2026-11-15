@@ -1,5 +1,7 @@
 #include "ee_gs.h"
 
+#include <utility>
+
 namespace ee
 {
 void c_ee_gs_state::reset()
