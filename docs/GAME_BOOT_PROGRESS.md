@@ -92,8 +92,17 @@ PC and SP and stops on exceptions, uncompiled PCs, exhaustion, or unsupported
 host services. The scratchpad mapping follows the region boundaries in
 `ps2-web-recomp/runtime/include/ps2/memory.hpp` and its memory resolver.
 It supports bounded 8/16/32/64/128-bit loads and stores through the existing
-generated-code memory helper ABI. This does **not** implement scratchpad DMA,
-TLB translations, MMIO devices, or exception behavior for invalid accesses. `--hle-startup` is opt-in and only covers explicitly
+generated-code memory helper ABI. The EE's VU0 physical memory apertures are
+also mapped when the runtime has an `m_vu0_state`:
+`0x11000000..0x11000fff` for VU0 micro-program memory and
+`0x11004000..0x11004fff` for VU0 data memory. These addresses match
+`ps2-web-recomp/runtime/src/memory.cpp`; the mapped micro-program array is
+the same one used by `ee_vu0_fetch_micro_instruction`.
+The map rejects cross-boundary reads/writes without silently wrapping,
+but this does **not** implement scratchpad DMA, TLB translations, VU1,
+hardware MMIO, or address exceptions on invalid accesses. VU0 code writes
+are visible to the current interpreter fetch; future compiled microcode
+engines will need explicit invalidation if they cache decoded programs. `--hle-startup` is opt-in and only covers explicitly
 recognized kernel calls; it does not implement BIOS, IOP, GS, SIF or DMA.
 
 ## Confirmed real-ELF checkpoints
