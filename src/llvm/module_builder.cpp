@@ -68,6 +68,14 @@ void module_builder::declare_memory_helpers()
     m_out += "declare void @ee_mem_write32(ptr, i32, i32)\n";
     m_out += "declare void @ee_mem_write64(ptr, i32, i64)\n";
     m_out += "declare void @ee_mem_write128(ptr, i32, ptr)\n";
+    m_out += "declare i64 @ee_mem_lwl(ptr, i32, i64)\n";
+    m_out += "declare i64 @ee_mem_lwr(ptr, i32, i64)\n";
+    m_out += "declare i64 @ee_mem_ldl(ptr, i32, i64)\n";
+    m_out += "declare i64 @ee_mem_ldr(ptr, i32, i64)\n";
+    m_out += "declare void @ee_mem_swl(ptr, i32, i64)\n";
+    m_out += "declare void @ee_mem_swr(ptr, i32, i64)\n";
+    m_out += "declare void @ee_mem_sdl(ptr, i32, i64)\n";
+    m_out += "declare void @ee_mem_sdr(ptr, i32, i64)\n";
     m_out += "declare float @llvm.sqrt.f32(float)\n";
     m_out += "declare float @llvm.fabs.f32(float)\n";
     m_out += "declare i32 @ee_raise_exception(ptr, ptr, i32, i32, i32, i32)\n";
@@ -337,6 +345,8 @@ static std::set<uint8_t> block_written(const std::vector<ee::s_ee_instruction>& 
         case ee::e_ee_opcode::OP_LD:
         case ee::e_ee_opcode::OP_LWL:
         case ee::e_ee_opcode::OP_LWR:
+        case ee::e_ee_opcode::OP_LDL:
+        case ee::e_ee_opcode::OP_LDR:
             if (ins.rt != 0) w.insert(ins.rt);
             break;
         case e_ee_opcode::OP_SPECIAL:
@@ -446,8 +456,21 @@ static std::set<uint8_t> block_read_before_write(const std::vector<ee::s_ee_inst
         case e_ee_opcode::OP_LD:
         case e_ee_opcode::OP_LWL:
         case e_ee_opcode::OP_LWR:
+        case e_ee_opcode::OP_LDL:
+        case e_ee_opcode::OP_LDR:
             consider_read(ins.rs);
-            if (ins.rt != 0) written_so_far.insert(ins.rt);
+            if (ins.rt != 0)
+            {
+                // A partial load must merge with the current destination.
+                if (ins.opcode == e_ee_opcode::OP_LWL ||
+                    ins.opcode == e_ee_opcode::OP_LWR ||
+                    ins.opcode == e_ee_opcode::OP_LDL ||
+                    ins.opcode == e_ee_opcode::OP_LDR)
+                {
+                    consider_read(ins.rt);
+                }
+                written_so_far.insert(ins.rt);
+            }
             break;
         case e_ee_opcode::OP_SW:
         case e_ee_opcode::OP_SB:
@@ -455,6 +478,8 @@ static std::set<uint8_t> block_read_before_write(const std::vector<ee::s_ee_inst
         case e_ee_opcode::OP_SD:
         case e_ee_opcode::OP_SWL:
         case e_ee_opcode::OP_SDL:
+        case e_ee_opcode::OP_SWR:
+        case e_ee_opcode::OP_SDR:
             consider_read(ins.rs);
             consider_read(ins.rt);
             break;
@@ -790,40 +815,47 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
                  src_hi(ins.rt) + ")\n";
         break;
     }
+    case ee::e_ee_opcode::OP_LWL:
+    case ee::e_ee_opcode::OP_LWR:
     case ee::e_ee_opcode::OP_LDL:
     case ee::e_ee_opcode::OP_LDR:
     {
-        // Unaligned 64-bit load partials — approximate with aligned LD of lo64.
+        // Exact R5900 partial-load merge: the low GPR word/doubleword
+        // retains the unaffected lanes. Upper GPR 64 bits are preserved.
+        const char* name =
+            ins.opcode == ee::e_ee_opcode::OP_LWL ? "lwl" :
+            ins.opcode == ee::e_ee_opcode::OP_LWR ? "lwr" :
+            ins.opcode == ee::e_ee_opcode::OP_LDL ? "ldl" : "ldr";
         char imm[32];
         std::snprintf(imm, sizeof(imm), "%d", ins.immediate);
         std::string sum = newtemp();
         std::string addr = newtemp();
-        std::string d = newtemp();
+        std::string merged = newtemp();
         m_out += "  " + sum + " = add i64 " + src_lo(ins.rs) + ", " + imm + "\n";
         m_out += "  " + addr + " = trunc i64 " + sum + " to i32\n";
-        m_out += "  " + d + " = call i64 @ee_mem_read64(ptr %rt, i32 " + addr + ")\n";
-        set_gpr_lo64(ins.rt, d);
+        m_out += "  " + merged + " = call i64 @ee_mem_" + name +
+                 "(ptr %rt, i32 " + addr + ", i64 " + src_lo(ins.rt) + ")\n";
+        set_gpr_lo64(ins.rt, merged);
         break;
     }
+    case ee::e_ee_opcode::OP_SWL:
+    case ee::e_ee_opcode::OP_SWR:
     case ee::e_ee_opcode::OP_SDL:
     case ee::e_ee_opcode::OP_SDR:
-    case ee::e_ee_opcode::OP_SWR:
     {
-        // Unaligned stores — approximate with aligned SD/SW of available data.
+        // Read-modify-write at the aligned containing word/doubleword.
+        const char* name =
+            ins.opcode == ee::e_ee_opcode::OP_SWL ? "swl" :
+            ins.opcode == ee::e_ee_opcode::OP_SWR ? "swr" :
+            ins.opcode == ee::e_ee_opcode::OP_SDL ? "sdl" : "sdr";
         char imm[32];
         std::snprintf(imm, sizeof(imm), "%d", ins.immediate);
         std::string sum = newtemp();
         std::string addr = newtemp();
         m_out += "  " + sum + " = add i64 " + src_lo(ins.rs) + ", " + imm + "\n";
         m_out += "  " + addr + " = trunc i64 " + sum + " to i32\n";
-        if (ins.opcode == ee::e_ee_opcode::OP_SWR) {
-            std::string v = newtemp();
-            m_out += "  " + v + " = trunc i64 " + src_lo(ins.rt) + " to i32\n";
-            m_out += "  call void @ee_mem_write32(ptr %rt, i32 " + addr + ", i32 " + v + ")\n";
-        } else {
-            m_out += "  call void @ee_mem_write64(ptr %rt, i32 " + addr + ", i64 " +
-                     src_lo(ins.rt) + ")\n";
-        }
+        m_out += "  call void @ee_mem_" + name + "(ptr %rt, i32 " + addr +
+                 ", i64 " + src_lo(ins.rt) + ")\n";
         break;
     }
     case ee::e_ee_opcode::OP_LQC2:
@@ -2587,6 +2619,8 @@ void module_builder::emit_function(const std::vector<ee::s_ee_instruction>& insn
         case e_ee_opcode::OP_LD:
         case e_ee_opcode::OP_LWL:
         case e_ee_opcode::OP_LWR:
+        case e_ee_opcode::OP_LDL:
+        case e_ee_opcode::OP_LDR:
             touched.insert(ins.rt);
             if (ins.rs != 0) touched.insert(ins.rs);
             break;
@@ -2596,6 +2630,8 @@ void module_builder::emit_function(const std::vector<ee::s_ee_instruction>& insn
         case e_ee_opcode::OP_SD:
         case e_ee_opcode::OP_SWL:
         case e_ee_opcode::OP_SDL:
+        case e_ee_opcode::OP_SWR:
+        case e_ee_opcode::OP_SDR:
             if (ins.rs != 0) touched.insert(ins.rs);
             touched.insert(ins.rt);
             break;
