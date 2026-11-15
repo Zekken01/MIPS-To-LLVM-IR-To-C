@@ -22,8 +22,18 @@ To continue with existing translations instead of rebuilding the initial
 function set, use `--no-recompile --auto-expand=N`. This reuses the
 existing linked library and metadata from the same ELF, and only compiles and
 relinks if execution reaches a new guest function PC. The ELF path and entry
-are validated against the saved metadata. Do not use this after changing the
-ELF or compiler/lifter semantics without a clean recompilation.
+are validated against saved metadata. A `translation-cache.json` provenance
+record also stores SHA-256 fingerprints for the full ELF, built `ee_recomp`,
+the translation/emission/link scripts, linked runtime sources and headers,
+the function metadata, and the resulting shared library. This record is
+written only after a successful link and refreshed after auto-expansion
+or an explicit PDB relink. `--no-recompile` rejects absent/mismatched
+provenance or a different `--emit-opt`, instead of silently running old
+generated IR or a stale DLL. After updating the lifter or runtime,
+build `ee_recomp` and run once **without** `--no-recompile`; older
+work directories without a provenance record cannot be reused safely.
+This is a local consistency guard, not a cryptographic authenticity
+mechanism or a replacement for testing native instruction semantics.
 
 `tools/run_game.py` invokes `ee_recomp`, verifies each LLVM IR module,
 emits native objects, links a guest-PC dispatcher library, and starts
@@ -59,7 +69,8 @@ register state and exit behavior agree. For game comparisons, prefer
 a separate `--work-dir` per optimization level to avoid overwriting
 previously linked objects and to keep benchmark results reproducible.
 When auto-expanding an existing work directory via `--no-recompile`,
-the chosen optimization level is applied on the next relink.
+the cached optimization level must be preserved; use a fresh translation
+to change `--emit-opt`.
 
 `--report=FILE` produces a JSON report with the stop reason, COP0 exception
 fields, all 32 low GPR halves, the instruction at EPC when available, and the
@@ -673,9 +684,26 @@ A multi-opt-level LLVM MCJIT regression verifies distinct
 source halves, both operand orders, and rd/rs aliasing.
 The real-game vector-fill routine needs recompilation: existing
 translated DLLs and cached per-function LLVM IR from before
-this fix still contain an UNSUPPORTED exit. A new real-game
-boot trace will establish whether the next obstacle is a
-guest instruction, HLE service, or device dependency.
+this fix still contain an UNSUPPORTED exit. The runner now guards
+`--no-recompile` with input and binary fingerprints so subsequent
+compiler/runtime changes cannot silently reuse such stale code.
+This is **not** a new real-game boot milestone: a fresh translation
+of the US ELF after PR #32 is still needed to establish whether
+the next obstacle is a guest instruction, HLE service, or device dependency.
+
+On Windows, use the Visual Studio Developer Command Prompt (x64):
+
+```bat
+cd /d C:\Dev\MIPS-To-LLVM-IR-To-C
+git pull --ff-only
+cmake --build build --parallel 2
+set "CXX=C:\Program Files\LLVM\bin\clang++.exe"
+python tools/run_game.py "PS2_GAME\SLUS_214.42" --build-dir build --work-dir build\sdbz-mmi --hle-startup --kseg-ram --auto-expand=32 --max-dispatches=100000 --timeout-seconds=120 --trace --report build\sdbz-mmi\first-boot.json
+```
+
+Do **not** add `--no-recompile` on the first replay after the fix.
+No new US ELF progress beyond dispatch 88 is claimed until this
+local replay is captured.
 
 ## Validation limits
 
