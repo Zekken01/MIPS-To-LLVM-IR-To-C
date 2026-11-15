@@ -30,6 +30,10 @@ constexpr uint32_t k_default_stack = 0x01fff000u;
 constexpr uint32_t k_default_dispatch_budget = 10000u;
 constexpr uint32_t k_report_history_limit = 64u;
 constexpr uint32_t k_kernel_ram_snapshot_size = 0x80000u;
+// ps2-web-recomp runtime/src/kernel.cpp uses this guest-visible HLE
+// syscall table. Kernel addresses 0x80001800..0x80001BFF alias it.
+constexpr uint32_t k_kernel_syscall_table_base = 0x00001800u;
+constexpr uint32_t k_kernel_syscall_table_entries = 0x100u;
 
 using t_game_run = uint32_t (*)(
     ee::s_ee_cpu_state*,
@@ -567,7 +571,7 @@ int main(int argc, char** argv)
         uint32_t m_option = 0;
     };
     s_kernel_semaphore semaphores[64]{};
-    uint32_t installed_syscall_handlers[256]{};
+    uint32_t installed_syscall_handlers[k_kernel_syscall_table_entries]{};
 
     // A registered guest callback must return through this host-only
     // sentinel. Any other stop is propagated without claiming success.
@@ -907,15 +911,20 @@ int main(int argc, char** argv)
                 else
                 {
                     // SetSyscall(number, handler) installs an EE kernel
-                    // callback. Store it for future dispatch, but do not
-                    // silently emulate an invocation of that callback.
+                    // callback in the native dispatcher AND in guest RAM.
+                    // The game searches the kernel syscall table directly.
+                    // Neither registration nor this HLE path invokes it.
                     const uint32_t syscall_number =
                         static_cast<uint32_t>(cpu.m_gpr[4].m_lo);
                     const uint32_t handler_pc =
                         static_cast<uint32_t>(cpu.m_gpr[5].m_lo);
-                    if (syscall_number >= 256u ||
+                    const uint32_t table_address =
+                        k_kernel_syscall_table_base +
+                        syscall_number * sizeof(uint32_t);
+                    if (syscall_number >= k_kernel_syscall_table_entries ||
                         (handler_pc & 3u) != 0u ||
-                        !image.is_executable_address(handler_pc))
+                        !image.is_executable_address(handler_pc) ||
+                        !memory->contains(table_address, sizeof(uint32_t)))
                     {
                         std::fprintf(stderr,
                             "SetSyscall HLE refused invalid handler "
@@ -924,6 +933,11 @@ int main(int argc, char** argv)
                         );
                         break;
                     }
+                    // Keep guest-visible lookup and callback dispatch in
+                    // sync, with the physical address readable through KSEG0
+                    // when --kseg-ram is enabled. Invalid registrations
+                    // above never change either location.
+                    memory->write32(table_address, handler_pc);
                     installed_syscall_handlers[syscall_number] = handler_pc;
                     if (trace)
                     {
