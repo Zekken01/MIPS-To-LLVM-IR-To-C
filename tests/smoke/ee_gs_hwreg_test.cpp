@@ -110,8 +110,9 @@ bool test_all_formats()
             gs.state().m_transfer_pixels_written != pixels ||
             gs.state().m_image_qwc != 0u ||
             !gs.state().m_image_data.empty() ||
-            gs.state().m_transfer_pending_size !=
-                (f.bits == 24u ? 2u : 0u) ||
+            // 24-bit writes stop at the completed two-pixel
+            // rectangle; its unused final HWREG bytes are padding.
+            gs.state().m_transfer_pending_size != 0u ||
             !gs.was_written(0x54u) ||
             gs.register_value(0x54u) != word64(data))
         {

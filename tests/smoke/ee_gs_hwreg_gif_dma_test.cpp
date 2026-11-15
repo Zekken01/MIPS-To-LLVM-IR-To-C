@@ -227,8 +227,8 @@ int main()
     }
 
     // Fix only the trailing offending A+D register and retry from
-    // unchanged DMA address. Two 24-bit pixels commit, one 2-byte
-    // carry remains, and the HWREG counter increments exactly once.
+    // unchanged DMA address. Two 24-bit pixels complete the 2x1
+    // rectangle; the final two HWREG bytes are ignored as padding.
     ad(&runtime, 0x520u, 0x4cu, 0xabcdefull);
     ee::ee_mem_write32(&runtime, k_gif, 0u);
     dma(&runtime, 0x500u, 3u);
@@ -236,7 +236,7 @@ int main()
         (mmio(&runtime, 0u) & k_str) != 0u ||
         gs.state().m_hwreg_write_count != previous_hwreg + 1u ||
         gs.state().m_transfer_pixels_written != 2u ||
-        gs.state().m_transfer_pending_size != 2u ||
+        gs.state().m_transfer_pending_size != 0u ||
         !read32(gs, base, 0x00030201u) ||
         !read32(gs, base + 4u, 0x00060504u) ||
         gs.register_value(0x4cu) != 0xabcdefull ||
