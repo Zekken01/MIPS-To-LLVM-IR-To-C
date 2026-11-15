@@ -60,6 +60,22 @@ source lines; it primarily makes native symbols and compiled runtime
 information available to Windows debuggers. If you change the
 `--emit-opt` setting, perform a fresh compilation first.
 
+Native host-object generation now supports verified incremental reuse. In
+`run_game.py`, `--emit-jobs=N` (default 2; use 4 or 8 if RAM permits)
+processes LLVM IR modules in parallel when more than one object needs
+recompilation. Once an `objects.json` manifest has been written by the
+updated emitter, subsequent auto-expansions reuse unchanged native objects
+and emit just the newly discovered function, instead of rebuilding all
+functions on every replay. Source IR, native object bytes, LLVM version,
+host target triple and optimization level are checked before reuse.
+Previously generated manifests have no IR hash and therefore receive a
+one-time full rebuild. Only after complete linking is the higher-level
+translation-cache provenance updated. Parallelism speeds up emission; a
+single newly discovered function still requires a new link and game replay.
+Run `run_sdbz_native.bat` on your Windows machine to update, build and
+execute the local ELF and pause before the console closes. The ELF is never
+included in CI.
+
 Native host-object generation defaults to `--emit-opt=0` for fast iteration.
 To compare LLVM backend optimization, run with `--emit-opt=2` (supported
 levels 0–3). This option changes **host machine-code optimization**;
