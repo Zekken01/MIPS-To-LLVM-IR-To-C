@@ -153,7 +153,7 @@ int main()
         !read32(gs, k_base + 23552u, 0x70000051u) ||
         !read32(gs, k_base + 18432u, 0x70000061u) ||
         !read32(gs, k_base + 30720u, 0x70000081u) ||
-        !read32(gs, k_base + 22544u, 0u))
+        !read32(gs, k_base + 32768u, 0u))
     {
         return fail("PSMZ32 split DMA or X/Y page crossings");
     }

@@ -153,8 +153,8 @@ int main()
     constexpr uint32_t k_bp = 0x140u;
     constexpr uint32_t k_base = k_bp * 256u;
 
-    // Depth-buffer swizzling remains unsupported: reject rather than
-    // silently interpreting reserved PSM 0x03 (0x30) as a 32-bit color layout.
+    // A reserved pixel-storage format must be rejected rather than
+    // silently using an unrelated 32-bit color layout.
     if (!reg(gs, 0x50u, bitblt(k_bp, 2u, 0x03u)) ||
         !reg(gs, 0x51u, trxpos(0u, 31u)) ||
         !reg(gs, 0x52u, trxreg(65u, 2u)) ||
