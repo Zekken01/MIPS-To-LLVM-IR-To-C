@@ -120,6 +120,7 @@ python tools\run_boot_session.py "%ELF%" ^
     --emit-jobs=%EMIT_JOBS% ^
     --emit-opt=0 ^
     --max-dispatches=100000 ^
+    --loop-budget=1000000 ^
     --timeout-seconds=120 ^
     --report "%WORK_DIR%\first-boot.json" %REUSE_FLAG%
 
