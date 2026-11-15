@@ -362,7 +362,9 @@ s_ee_ram_execution ee_execute_ram_callback(
     }
     result.m_pc = pc;
     cpu->m_pc = pc;
-    result.m_result = e_ee_ram_result::INSTRUCTION_BUDGET;
+    result.m_result = (!delay_slot && pc == return_pc)
+        ? e_ee_ram_result::RETURNED
+        : e_ee_ram_result::INSTRUCTION_BUDGET;
     return result;
 }
 

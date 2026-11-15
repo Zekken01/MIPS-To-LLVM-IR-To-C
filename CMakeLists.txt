@@ -36,6 +36,7 @@ add_library(ee_core STATIC
     src/lift/instruction_lifter.cpp
     src/lift/native_codegen.cpp
     src/runtime/ee_memory.cpp
+    src/runtime/ee_ram_interpreter.cpp
     src/runtime/ee_unaligned.cpp
     src/runtime/ee_intc.cpp
     src/runtime/ee_dmac.cpp
