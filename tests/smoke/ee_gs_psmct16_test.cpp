@@ -84,16 +84,16 @@ int main()
     constexpr uint32_t k_bp = 0x200u;
     constexpr uint32_t k_base = k_bp * 256u;
 
-    // PSMZ32 uses depth swizzling and remains unsupported.
+    // reserved PSM 0x03 uses depth swizzling and remains unsupported.
     // Rejection must not commit TRXDIR or start an upload.
-    if (!reg(gs, 0x50u, bitblt(k_bp, 2u, 0x30u)) ||
+    if (!reg(gs, 0x50u, bitblt(k_bp, 2u, 0x03u)) ||
         !reg(gs, 0x51u, trxpos(0u, 63u)) ||
         !reg(gs, 0x52u, trxreg(65u, 2u)) ||
         reg(gs, 0x53u, 0u) ||
         gs.was_written(0x53u) ||
         gs.state().m_transfer_started)
     {
-        return fail("unsupported PSMZ32 was incorrectly treated as PSMCT16");
+        return fail("unsupported reserved PSM 0x03 was incorrectly treated as PSMCT16");
     }
 
     // Width 65 crosses the X page boundary; Y=63 crosses the Y page
