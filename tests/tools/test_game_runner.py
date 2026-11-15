@@ -487,7 +487,7 @@ def main():
         )
         assert without_hle.returncode != 0, without_hle.stdout + without_hle.stderr
         initial = json.loads(report.read_text(encoding="utf-8"))
-        assert initial["epc"] == 0x00100010, initial
+        assert initial["cop0_epc"] == 0x00100010, initial
         assert initial["gpr_lo"][2] == 123, initial
         assert "HLE FlushCache" not in without_hle.stdout, without_hle.stdout
 
@@ -505,7 +505,7 @@ def main():
             with_hle.stdout + with_hle.stderr
         )
         stopped = json.loads(report.read_text(encoding="utf-8"))
-        assert stopped["epc"] == 0x0010002c, stopped
+        assert stopped["cop0_epc"] == 0x0010002c, stopped
         assert stopped["gpr_lo"][8] == 0, stopped  # first service return
         assert stopped["gpr_lo"][9] == 0, stopped  # second service return
         assert stopped["gpr_lo"][10] == 0, stopped  # unknown call never returns
