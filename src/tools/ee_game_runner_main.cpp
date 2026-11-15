@@ -4,6 +4,7 @@
 #include "ee_hw_bus.h"
 #include "elf_loader.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdint>
 #include <cstdio>
@@ -152,6 +153,77 @@ const char* exit_name(uint32_t reason)
     case ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED: return "UNSUPPORTED";
     default: return "UNKNOWN";
     }
+}
+
+struct s_kernel_interrupt_handler
+{
+    uint32_t m_id = 0;
+    uint32_t m_cause = 0;
+    uint32_t m_address = 0;
+    uint32_t m_arg = 0;
+    uint32_t m_gp = 0;
+};
+
+// ps2-web-recomp/runtime/src/kernel.cpp::add_handler:
+// all INTC and DMAC registrations share one monotonically increasing ID.
+// next=0 inserts at the front, next=-1 appends, and another handler ID
+// inserts before that handler (or appends if the ID is not present).
+uint32_t kernel_add_interrupt_handler(
+    std::vector<s_kernel_interrupt_handler>& handlers,
+    uint32_t& next_handler_id,
+    uint32_t cause,
+    uint32_t address,
+    uint32_t next,
+    uint32_t argument,
+    uint32_t gp)
+{
+    const s_kernel_interrupt_handler handler{
+        next_handler_id++, cause, address, argument, gp
+    };
+
+    auto insertion = handlers.end();
+    if (next == 0u)
+    {
+        insertion = handlers.begin();
+    }
+    else if (next != 0xffffffffu)
+    {
+        insertion = std::find_if(
+            handlers.begin(), handlers.end(),
+            [next](const s_kernel_interrupt_handler& existing)
+            {
+                return existing.m_id == next;
+            }
+        );
+    }
+    handlers.insert(insertion, handler);
+    return handler.m_id;
+}
+
+// Reference RemoveIntcHandler/RemoveDmacHandler returns the number of
+// handlers still installed for the requested cause, not a success boolean.
+uint32_t kernel_remove_interrupt_handler(
+    std::vector<s_kernel_interrupt_handler>& handlers,
+    uint32_t cause,
+    uint32_t id)
+{
+    handlers.erase(
+        std::remove_if(
+            handlers.begin(), handlers.end(),
+            [id](const s_kernel_interrupt_handler& handler)
+            {
+                return handler.m_id == id;
+            }
+        ),
+        handlers.end()
+    );
+    return static_cast<uint32_t>(std::count_if(
+        handlers.begin(), handlers.end(),
+        [cause](const s_kernel_interrupt_handler& handler)
+        {
+            return handler.m_cause == cause;
+        }
+    ));
 }
 
 struct s_syscall_sample
@@ -573,6 +645,9 @@ int main(int argc, char** argv)
     };
     s_kernel_semaphore semaphores[64]{};
     uint32_t installed_syscall_handlers[k_kernel_syscall_table_entries]{};
+    std::vector<s_kernel_interrupt_handler> intc_handlers;
+    std::vector<s_kernel_interrupt_handler> dmac_handlers;
+    uint32_t next_interrupt_handler_id = 1u;
 
     // A registered guest callback must return through this host-only
     // sentinel. Any other stop is propagated without claiming success.
@@ -813,7 +888,8 @@ int main(int argc, char** argv)
                 }
                 continue;
             }
-            if (service == 0x3cu || service == 0x3du ||
+            if ((service >= 0x10u && service <= 0x13u) ||
+                service == 0x3cu || service == 0x3du ||
                 service == 0x40u || service == 0x64u ||
                 service == 0x68u || service == 0x74u)
             {
@@ -829,7 +905,66 @@ int main(int argc, char** argv)
                     break;
                 }
 
-                if (service == 0x3cu)
+                if (service >= 0x10u && service <= 0x13u)
+                {
+                    const bool intc = service == 0x10u || service == 0x11u;
+                    std::vector<s_kernel_interrupt_handler>& handlers =
+                        intc ? intc_handlers : dmac_handlers;
+                    const uint32_t cause =
+                        static_cast<uint32_t>(cpu.m_gpr[4].m_lo);
+                    const uint32_t address_or_id =
+                        static_cast<uint32_t>(cpu.m_gpr[5].m_lo);
+                    const bool add = service == 0x10u || service == 0x12u;
+
+                    if (add)
+                    {
+                        const uint32_t next =
+                            static_cast<uint32_t>(cpu.m_gpr[6].m_lo);
+                        const uint32_t argument =
+                            static_cast<uint32_t>(cpu.m_gpr[7].m_lo);
+                        const uint32_t gp =
+                            static_cast<uint32_t>(cpu.m_gpr[28].m_lo);
+                        const uint32_t id = kernel_add_interrupt_handler(
+                            handlers, next_interrupt_handler_id, cause,
+                            address_or_id, next, argument, gp
+                        );
+                        cpu.m_gpr[2].m_lo = id;
+                        cpu.m_gpr[2].m_hi = 0u;
+                        if (trace)
+                        {
+                            std::printf(
+                                "HLE Add%sHandler: id=%u cause=%u "
+                                "handler=0x%08x next=0x%08x "
+                                "arg=0x%08x gp=0x%08x\n",
+                                intc ? "Intc" : "Dmac", id, cause,
+                                address_or_id, next, argument, gp
+                            );
+                        }
+                    }
+                    else
+                    {
+                        const uint32_t remaining =
+                            kernel_remove_interrupt_handler(
+                                handlers, cause, address_or_id
+                            );
+                        cpu.m_gpr[2].m_lo = remaining;
+                        cpu.m_gpr[2].m_hi = 0u;
+                        if (trace)
+                        {
+                            std::printf(
+                                "HLE Remove%sHandler: cause=%u "
+                                "id=%u remaining=%u\n",
+                                intc ? "Intc" : "Dmac",
+                                cause, address_or_id, remaining
+                            );
+                        }
+                    }
+                    // No interrupt callback is executed on registration.
+                    // Hardware IRQ delivery to guest handlers is not yet
+                    // implemented by this bounded native runner.
+                }
+
+                else if (service == 0x3cu)
                 {
                     const uint32_t stack_arg =
                         static_cast<uint32_t>(cpu.m_gpr[5].m_lo);

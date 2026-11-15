@@ -705,6 +705,44 @@ Do **not** add `--no-recompile` on the first replay after the fix.
 No new US ELF progress beyond dispatch 88 is claimed until this
 local replay is captured.
 
+### EE interrupt-handler registration (US SDBZ, dispatch 92)
+
+A **fresh** Linux replay using the user's privately supplied US ELF
+(SHA-256 `1b213a85a2c305dc0f893c007a502c93e0851d1bb7db6164f9e0b72adb074a16`)
+and the CI-built translator after PR #32 verifies the previous vector-fill
+blocker is cleared. The function at 0x0018E408 has all 48 instructions
+supported, returns through dispatch 88 to 0x0017F6CC, then the game
+calls 0x00180940 (dispatch 89) and enters 0x00174990 (dispatch 91).
+
+The first new real-game stop is **dispatch 92**, at an ordinary MIPS
+SYSCALL instruction 0x0000000C (EPC 0x00174994, exception code 8,
+Cause 0x00000020, Status 0x00000002). The guest requests service
+V1=0x10, A0=11, A1=0x0017FC10, A2=0, A3=0, with a GP register of
+0x00503070. This is **AddIntcHandler**, confirmed by
+`ps2-web-recomp/runtime/src/kernel.cpp::handle_syscall/add_handler`,
+not a CPU instruction or missing ELF translation. The current
+runner fails closed rather than inventing an HLE result.
+
+The new INTC/DMAC kernel HLE implements AddIntcHandler (0x10),
+RemoveIntcHandler (0x11), AddDmacHandler (0x12) and
+RemoveDmacHandler (0x13) according to the reference. Both handler
+lists share a monotonically assigned ID sequence beginning at 1.
+Add preserves cause, address, A3 argument, and guest GP; A2=0
+inserts at the front, A2=-1 appends, and any other A2 ID inserts
+before that ID (or appends when not found). Remove deletes matching
+IDs and returns the number of *remaining* handlers for the requested
+cause, rather than a success flag. This HLE is opt-in under
+`--hle-startup`. A synthetic MIPS ELF executes these
+kernel services and checks return registers and traces across
+both lists, without relying only on decoder classification.
+
+**Unverified after this change:** the real US ELF must be replayed
+to establish whether AddIntcHandler registration succeeds and which
+instruction, kernel service, or hardware action comes next. Handler
+registration does not yet dispatch guest callbacks on hardware
+interrupts; IRQ acknowledgement/delivery remains incomplete and is
+not silently simulated. No BIOS or callback results are fabricated.
+
 ## Validation limits
 
 CTest contains `game_runner_end_to_end` which creates small synthetic MIPS

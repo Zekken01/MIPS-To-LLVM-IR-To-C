@@ -82,6 +82,70 @@ def make_set_syscall_elf(path):
     path.write_bytes(image)
 
 
+def make_interrupt_handlers_elf(path):
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    image.extend(bytes(max(0, 0x200 - len(image))))
+    struct.pack_into("<I", image, 52 + 16, 0x100)
+    struct.pack_into("<I", image, 52 + 20, 0x100)
+
+    # Registers: t0/t1/t2 receive global IDs 1/2/3; t3/t4/t5
+    # receive remaining-handler counts. s0 checks remove-missing.
+    # Exercise the guest syscall trap and resume, not just a decoder.
+    instructions = (
+        0x3c1c1234,  # lui gp,0x1234
+        0x2404000b,  # a0 = INTC cause 11
+        0x3c050010,  # a1 = 0x00100090
+        0x34a50090,
+        0x2406ffff,  # a2 = -1 (append)
+        0x24070066,  # a3 = callback argument
+        0x24030010,  # AddIntcHandler
+        0x0000000c,
+        0x00404021,  # t0 = handler ID 1
+        0x2404000b,
+        0x3c050010,
+        0x34a500a0,  # a1 = 0x001000a0
+        0x24060000,  # a2 = 0 (insert before first)
+        0x24070077,
+        0x24030010,  # AddIntcHandler
+        0x0000000c,
+        0x00404821,  # t1 = handler ID 2
+        0x24040002,  # a0 = DMAC channel 2
+        0x3c050010,
+        0x34a500b0,  # a1 = 0x001000b0
+        0x2406ffff,
+        0x24070088,
+        0x24030012,  # AddDmacHandler (shared global IDs)
+        0x0000000c,
+        0x00405021,  # t2 = handler ID 3
+        0x2404000b,
+        0x01202821,  # a1 = t1 (ID 2)
+        0x24030011,  # RemoveIntcHandler
+        0x0000000c,
+        0x00405821,  # t3 = remaining 1
+        0x2404000b,
+        0x24050063,  # remove unknown ID 99
+        0x24030011,
+        0x0000000c,
+        0x00408021,  # s0 = remaining 1, not success/failure
+        0x2404000b,
+        0x01002821,  # a1 = t0 (ID 1)
+        0x24030011,
+        0x0000000c,
+        0x00406021,  # t4 = remaining 0
+        0x24040002,
+        0x01402821,  # a1 = t2 (ID 3)
+        0x24030013,  # RemoveDmacHandler
+        0x0000000c,
+        0x00406821,  # t5 = remaining 0
+        0x00000008,  # jr zero: finish through native dispatcher
+        0x00000000,
+    )
+    for index, opcode in enumerate(instructions):
+        struct.pack_into("<I", image, 0x108 + index * 4, opcode)
+    path.write_bytes(image)
+
+
 def make_out_of_range_set_syscall_elf(path):
     make_elf(path)
     image = bytearray(path.read_bytes())
@@ -702,6 +766,45 @@ def main():
         assert "EE stopped: dispatched=2" in result.stdout, (
             result.stdout + result.stderr
         )
+
+    with tempfile.TemporaryDirectory(prefix="ee-native-interrupt-handlers-") as tmp:
+        root = Path(tmp)
+        elf = root / "kernel-interrupt-handlers.elf"
+        make_interrupt_handlers_elf(elf)
+        report_path = root / "handlers.json"
+        result = subprocess.run(
+            [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf),
+                "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--max-dispatches=32",
+                "--hle-startup",
+                "--trace",
+                "--report", str(report_path),
+            ],
+            capture_output=True, text=True, check=False,
+        )
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert "EE stopped: dispatched=" in result.stdout, (
+            result.stdout + result.stderr
+        )
+        for item in (
+            "HLE AddIntcHandler: id=1 cause=11 handler=0x00100090 "
+            "next=0xffffffff arg=0x00000066 gp=0x12340000",
+            "HLE AddIntcHandler: id=2 cause=11 handler=0x001000a0 "
+            "next=0x00000000 arg=0x00000077 gp=0x12340000",
+            "HLE AddDmacHandler: id=3 cause=2 handler=0x001000b0 "
+            "next=0xffffffff arg=0x00000088 gp=0x12340000",
+            "HLE RemoveIntcHandler: cause=11 id=2 remaining=1",
+            "HLE RemoveIntcHandler: cause=11 id=99 remaining=1",
+            "HLE RemoveIntcHandler: cause=11 id=1 remaining=0",
+            "HLE RemoveDmacHandler: cause=2 id=3 remaining=0",
+        ):
+            assert item in result.stdout, (item, result.stdout + result.stderr)
+        registers = json.loads(report_path.read_text(encoding="utf-8"))["gpr_lo"]
+        assert registers[8:14] == [1, 2, 3, 1, 0, 0], registers
+        assert registers[16] == 1, registers
 
     with tempfile.TemporaryDirectory(prefix="ee-native-syscall-out-of-range-") as tmp:
         root = Path(tmp)
