@@ -91,6 +91,65 @@ def make_create_thread_elf(path):
     path.write_bytes(image)
 
 
+def make_thread_priority_elf(path):
+    """Exercise EE thread-priority return values and per-thread state."""
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    image.extend(bytes(max(0, 0x400 - len(image))))
+    # PT_LOAD descriptor at guest VA 0x00100200.
+    struct.pack_into("<I", image, 52 + 16, 0x300)
+    struct.pack_into("<I", image, 52 + 20, 0x300)
+
+    instructions = (
+        0x2403002f,  # GetThreadId
+        0x0000000c,
+        0x00404021,  # t0 = running ID 1
+        0x24040001,  # a0 = main thread ID 1
+        0x24050001,  # a1 = priority 1
+        0x24030029,  # ChangeThreadPriority
+        0x0000000c,
+        0x00404821,  # t1 = previous priority 0
+        0x24040000,  # a0 = current thread alias 0
+        0x24050005,  # a1 = priority 5
+        0x24030029,
+        0x0000000c,
+        0x00405021,  # t2 = previous priority 1
+        0x3c040010,  # a0 = 0x00100200
+        0x34840200,
+        0x24030020,  # CreateThread from priority-64 descriptor
+        0x0000000c,
+        0x00405821,  # t3 = new dormant ID 2
+        0x24040002,  # a0 = dormant thread ID 2
+        0x24050082,  # a1 = 130, masked to 2
+        0x2403002a,  # iChangeThreadPriority
+        0x0000000c,
+        0x00406021,  # t4 = old dormant priority 64
+        0x24040002,
+        0x24050007,  # new priority 7
+        0x24030029,
+        0x0000000c,
+        0x00406821,  # t5 = old priority 2, proves write occurred
+        0x24040063,  # a0 = invalid thread ID 99
+        0x24050003,
+        0x24030029,
+        0x0000000c,
+        0x00407021,  # t6 = -1
+        0x2403002f,  # GetThreadId again, without scheduling child
+        0x0000000c,
+        0x00407821,  # t7 = running ID 1
+        0x00000008,  # JR zero: synthetic exit
+        0x00000000,
+    )
+    for index, word in enumerate(instructions):
+        struct.pack_into("<I", image, 0x108 + 4 * index, word)
+    struct.pack_into(
+        "<9I", image, 0x300,
+        0, 0x001000f0, 0x00102000, 0x800,
+        0x0010f000, 64, 0, 0, 0
+    )
+    path.write_bytes(image)
+
+
 def make_get_thread_id_elf(path):
     """GetThreadId must return the running main thread, not a dormant child."""
     make_elf(path)
@@ -873,6 +932,62 @@ def main():
         assert "ee_recomp: loading" in resumed.stdout, resumed.stdout
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         assert metadata["function_count"] == 2, metadata
+
+    with tempfile.TemporaryDirectory(prefix="ee-native-thread-priority-") as tmp:
+        root = Path(tmp)
+        elf = root / "kernel-thread-priority.elf"
+        make_thread_priority_elf(elf)
+        report_path = root / "thread-priority.json"
+        command = [
+            sys.executable, str(source / "tools" / "run_game.py"),
+            str(elf),
+            "--build-dir", str(build),
+            "--work-dir", str(root / "out"),
+            "--max-dispatches=32",
+            "--trace",
+            "--report", str(report_path),
+        ]
+
+        without_hle = subprocess.run(
+            command, capture_output=True, text=True, check=False,
+        )
+        assert without_hle.returncode != 0, (
+            without_hle.stdout + without_hle.stderr
+        )
+        refused = json.loads(report_path.read_text(encoding="utf-8"))
+        assert refused["cop0_epc"] == 0x0010000c, refused
+        assert "HLE ChangeThreadPriority:" not in without_hle.stdout
+
+        with_hle = subprocess.run(
+            command + ["--no-recompile", "--hle-startup"],
+            capture_output=True, text=True, check=False,
+        )
+        assert "HLE ChangeThreadPriority: id=1 old=0 new=1" in with_hle.stdout, (
+            with_hle.stdout + with_hle.stderr
+        )
+        assert "HLE ChangeThreadPriority: id=1 old=1 new=5" in with_hle.stdout, (
+            with_hle.stdout + with_hle.stderr
+        )
+        assert "HLE iChangeThreadPriority: id=2 old=64 new=2" in with_hle.stdout, (
+            with_hle.stdout + with_hle.stderr
+        )
+        assert "HLE ChangeThreadPriority: id=2 old=2 new=7" in with_hle.stdout, (
+            with_hle.stdout + with_hle.stderr
+        )
+        assert "HLE ChangeThreadPriority: id=99 not found, result=-1" in with_hle.stdout, (
+            with_hle.stdout + with_hle.stderr
+        )
+        state = json.loads(report_path.read_text(encoding="utf-8"))
+        registers = state["gpr_lo"]
+        assert registers[8] == 1, state   # GetThreadId before changes
+        assert registers[9] == 0, state   # old main priority
+        assert registers[10] == 1, state  # old priority using ID alias 0
+        assert registers[11] == 2, state  # dormant CreateThread result
+        assert registers[12] == 64, state # old dormant priority
+        assert registers[13] == 2, state  # masked priority persisted
+        assert registers[14] == 0xFFFFFFFFFFFFFFFF, state  # invalid thread
+        assert registers[15] == 1, state  # GetThreadId remains main
+        assert state["final_pc"] != 0x001000f0, state # no child ran
 
     with tempfile.TemporaryDirectory(prefix="ee-native-get-thread-id-") as tmp:
         root = Path(tmp)
