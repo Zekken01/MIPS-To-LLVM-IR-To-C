@@ -82,6 +82,43 @@ def make_set_syscall_elf(path):
     path.write_bytes(image)
 
 
+def make_overlapping_entry_elf(path):
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    image.extend(bytes(max(0, 0x200 - len(image))))
+    struct.pack_into("<I", image, 52 + 16, 0x100)
+    struct.pack_into("<I", image, 52 + 20, 0x100)
+
+    # Call at 0x00100050 first: its translated SYSCALL block is
+    # followed by a return block owned at 0x00100058. Then compute a
+    # runtime JALR target of 0x00100054, the *interior* SYSCALL PC.
+    # Translating that entry must retain the existing owner of 0x100058,
+    # and both calls must execute genuine native MIPS/SYSCALL behavior.
+    # Including the syscall return in the target computation prevents
+    # static call-target discovery from splitting the first function.
+    instructions = (
+        (0x108, 0x0c040014),  # jal 0x00100050
+        (0x10c, 0x00000000),  # delay slot
+        (0x110, 0x00408021),  # addu s0, v0, zero
+        (0x114, 0x24030064),  # addiu v1, zero, FlushCache
+        (0x118, 0x3c080010),  # lui t0, 0x0010
+        (0x11c, 0x25080054),  # addiu t0, t0, 0x54
+        (0x120, 0x01024021),  # addu t0, t0, v0
+        (0x124, 0x0100f809),  # jalr ra, t0
+        (0x128, 0x00000000),  # delay slot
+        (0x12c, 0x00404821),  # addu t1, v0, zero
+        (0x130, 0x00000008),  # jr zero (known stop)
+        (0x134, 0x00000000),  # delay slot
+        (0x150, 0x24030064),  # addiu v1, zero, FlushCache
+        (0x154, 0x0000000c),  # SYSCALL (second entry)
+        (0x158, 0x03e00008),  # jr ra (shared return block)
+        (0x15c, 0x00000000),  # delay slot
+    )
+    for offset, opcode in instructions:
+        struct.pack_into("<I", image, offset, opcode)
+    path.write_bytes(image)
+
+
 def make_interrupt_handlers_elf(path):
     make_elf(path)
     image = bytearray(path.read_bytes())
@@ -766,6 +803,57 @@ def main():
         assert "EE stopped: dispatched=2" in result.stdout, (
             result.stdout + result.stderr
         )
+
+    with tempfile.TemporaryDirectory(prefix="ee-native-overlapping-entry-") as tmp:
+        root = Path(tmp)
+        elf = root / "shared-successor.elf"
+        make_overlapping_entry_elf(elf)
+        report_path = root / "shared-successor.json"
+        result = subprocess.run(
+            [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf),
+                "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--max-dispatches=64",
+                "--auto-expand=2",
+                "--hle-startup",
+                "--trace",
+                "--report", str(report_path),
+            ],
+            capture_output=True, text=True, check=False,
+        )
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert "auto-expand: compiling reachable PC 0x00100050" in result.stdout, (
+            result.stdout + result.stderr
+        )
+        assert "auto-expand: compiling reachable PC 0x00100054" in result.stdout, (
+            result.stdout + result.stderr
+        )
+        assert ("auto-expand: preserving existing ownership of 1 "
+                "overlapping guest block PC(s)") in result.stdout, (
+            result.stdout + result.stderr
+        )
+        assert result.stdout.count("HLE FlushCache: mode=0x00000000 result=0") >= 2, (
+            result.stdout + result.stderr
+        )
+
+        metadata = json.loads(
+            (root / "out" / "ir" / "ee_functions.json").read_text(encoding="utf-8")
+        )
+        owners = [
+            int(pc, 0) for function in metadata["functions"]
+            for pc in function["block_pcs"]
+        ]
+        assert len(owners) == len(set(owners)), metadata
+        assert owners.count(0x00100050) == 1, metadata
+        assert owners.count(0x00100054) == 1, metadata
+        assert owners.count(0x00100058) == 1, metadata
+        state = json.loads(report_path.read_text(encoding="utf-8"))
+        assert state["dispatches"] >= 7, state
+        assert state["final_pc"] == 0, state
+        assert state["gpr_lo"][9] == 0, state  # second real syscall return
+        assert state["gpr_lo"][16] == 0, state  # first real syscall return
 
     with tempfile.TemporaryDirectory(prefix="ee-native-interrupt-handlers-") as tmp:
         root = Path(tmp)
