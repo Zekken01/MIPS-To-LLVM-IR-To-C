@@ -1079,6 +1079,51 @@ Windows run is needed to measure the new timing counters and
 determine whether the slowdown is a native loop, a long
 game initialization, or report/dispatch overhead.
 
+### Translated guest-loop safepoints after replay-0 timeout (US SDBZ)
+
+The sixth Windows run confirms that the previously observed stall is
+**not** an ordinary 120-second startup: the runner processed **5,376
+native dispatches in 299.7 ms**, of which 4.4 ms were native function
+calls and 294.6 ms were durable report-writing. It then stopped
+returning to the host dispatcher and timed out at 120 seconds.
+The last guest return PC was `0x0030BBB4`; the guest-visible
+snapshot is the last *completed* dispatch, not the actual instruction
+currently executing inside the stalled native function.
+
+A guest CFG can loop forever *within one generated LLVM function*,
+bypassing both `--max-dispatches` and the host's durable progress
+snapshots. To make these failures diagnosable without killing a
+stalled process, the CFG lifter now instruments **backedge destination
+headers only** with an opt-in visit budget. The budget is stored in
+two appended `s_ee_runtime` fields. At every translated guest
+function entry, the host resets the remaining count. Upon exhausting
+the configured number of header visits, the generated code exits
+with `EE_EXIT_LOOP_BUDGET (5)` and writes the *exact header guest PC*
+to `cpu.m_pc`. This is a deliberate diagnostic stop, **not** a
+PS2 architectural exception or a successful boot. Before the guard
+can exit, backwards dataflow liveness forces predecessor blocks
+to flush all architectural GPR changes; this prevents a watchdog
+exit from returning stale register values.
+
+The direct native runner has a new `--loop-budget=N` option
+(default 0, disabled). The Windows batch selects 1,000,000
+loop-header visits so a sustained non-yielding guest loop stops
+cleanly long before the OS-level timeout. Non-branch CFG paths
+and guest programs using a null `s_ee_runtime*` are unaffected.
+A synthetic counting-loop ELF regression checks a 32-iteration
+budget, unchanged architectural t0 value, precise loop-header PC,
+and a stopped JSON snapshot.
+
+**Translation cache caveat:** Unlike runner-only fixes, these
+safepoints change the emitted machine code and require rebuilding
+translated guest functions. The provenance check intentionally
+rejects an old native library, to avoid running unguarded guest
+objects. It does not delete the work directory, but the new run
+re-emits objects and discovery data using the updated recompiler.
+Once the next trace returns a precise loop-header PC, investigate
+the guest arithmetic/branch or relevant device state before
+raising the loop limit.
+
 ## Validation limits
 
 CTest contains `game_runner_end_to_end` which creates small synthetic MIPS
