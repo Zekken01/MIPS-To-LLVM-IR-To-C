@@ -88,8 +88,10 @@ int main()
         return fail("scalar/quadword map, byte order, or bounds");
     }
 
+    ee::ee_mem_write32(&runtime, k_vu0_data + 0x30u, 0xaabbccddu);
     if (ram.read32(0x20u) != 0xabcdef12u ||
-        vu0.m_micro_memory[0] == vu0.m_data_memory[0] + 1u ||
+        ee::ee_mem_read32(&runtime, k_vu0_data + 0x30u) != 0xaabbccddu ||
+        ee::ee_mem_read32(&runtime, k_vu0_code + 0x30u) != 0u ||
         ee::ee_mem_read32(&runtime, 0x11001000u) != 0u ||
         ee::ee_mem_read32(&runtime, 0x11003000u) != 0u ||
         ee::ee_mem_read32(&runtime, 0x11005000u) != 0u)
