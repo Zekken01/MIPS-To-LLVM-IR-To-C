@@ -88,7 +88,14 @@ one-time full rebuild. Only after complete linking is the higher-level
 translation-cache provenance updated. Parallelism speeds up emission; a
 single newly discovered function still requires a new link and game replay.
 Run `run_sdbz_native.bat` on your Windows machine to update, build and
-execute the local ELF and pause before the console closes. The ELF is never
+execute the local ELF and pause before the console closes.
+The batch launcher locates Visual Studio's `VsDevCmd.bat` (via `vswhere`
+when installed), sets up the MSVC x64 headers/libraries/SDK environment,
+and checks that `<cstdint>` is present before invoking CMake. This also
+works when the `.bat` file is double-clicked from an ordinary Explorer shell;
+if the C++ headers are missing, install the Visual Studio **Desktop
+development with C++** workload.
+ The ELF is never
 included in CI.
 
 Native host-object generation defaults to `--emit-opt=0` for fast iteration.

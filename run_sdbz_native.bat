@@ -23,6 +23,51 @@ if errorlevel 1 goto :failed
 git pull --ff-only
 if errorlevel 1 goto :failed
 
+rem CMake may have cached cl.exe even if the batch was opened in a
+rem regular console with no MSVC C++ headers configured. Explicitly load
+rem the VS x64 developer environment before compiling.
+echo === Initializing Visual Studio x64 build environment ===
+set "VS_DEV_CMD="
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+if exist "%VSWHERE%" (
+    for /f "usebackq delims=" %%I in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do (
+        if exist "%%I\Common7\Tools\VsDevCmd.bat" (
+            set "VS_DEV_CMD=%%I\Common7\Tools\VsDevCmd.bat"
+        )
+    )
+)
+
+rem Fallback for machines without vswhere.
+if not defined VS_DEV_CMD (
+    for %%V in (18 2026 2022 2019) do (
+        for %%E in (Community Professional Enterprise BuildTools) do (
+            if not defined VS_DEV_CMD (
+                if exist "%ProgramFiles%\Microsoft Visual Studio\%%V\%%E\Common7\Tools\VsDevCmd.bat" (
+                    set "VS_DEV_CMD=%ProgramFiles%\Microsoft Visual Studio\%%V\%%E\Common7\Tools\VsDevCmd.bat"
+                )
+            )
+        )
+    )
+)
+
+if not defined VS_DEV_CMD (
+    echo ERROR: Visual Studio C++ build tools were not found.
+    echo Install the "Desktop development with C++" workload in Visual Studio Installer.
+    goto :failed
+)
+call "%VS_DEV_CMD%" -arch=amd64 -host_arch=amd64 -no_logo
+if errorlevel 1 goto :failed
+
+if not defined VCToolsInstallDir (
+    echo ERROR: The MSVC developer environment was not initialized.
+    goto :failed
+)
+if not exist "%VCToolsInstallDir%include\cstdint" (
+    echo ERROR: MSVC C++ headers are missing: "%VCToolsInstallDir%include\cstdint"
+    echo Install the MSVC x64 compiler and C++ libraries in Visual Studio Installer.
+    goto :failed
+)
+
 echo === Building native tools ===
 cmake --build build --config Release --parallel 8 --target ee_recomp ee_game_runner
 if errorlevel 1 goto :failed
