@@ -1,5 +1,6 @@
 #include "ee_runtime.h"
 #include "ee_memory.h"
+#include "ee_intc.h"
 #include "elf_loader.h"
 
 #include <cerrno>
@@ -533,14 +534,19 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    // PS2 hardware devices, syscalls, BIOS and interrupt scheduling
-    // are not yet present. This host passes RAM to generated code and
-    // reports exits without fabricating a successful guest boot.
+    // Keep the native host deliberately minimal. INTC status/mask
+    // register side effects are modelled, but the host still has no
+    // general device scheduler, BIOS, DMA or full exception lifecycle.
     ee::s_ee_cpu_state cpu{};
     ee::s_ee_vu0_state vu0{};
+    ee::c_ee_intc intc;
+    intc.bind_cpu(&cpu);
     ee::s_ee_runtime runtime{};
     runtime.m_user = memory.get();
     runtime.m_vu0_state = &vu0;
+    runtime.m_mmio_user = &intc;
+    runtime.m_mmio_read = &ee::c_ee_intc::mmio_read;
+    runtime.m_mmio_write = &ee::c_ee_intc::mmio_write;
     cpu.m_pc = entry;
     cpu.m_gpr[29].m_lo = stack;
     cpu.m_exit_reason = static_cast<uint32_t>(
