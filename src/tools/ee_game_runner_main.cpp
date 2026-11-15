@@ -664,6 +664,9 @@ int main(int argc, char** argv)
     threads[1].m_used = true;
     threads[1].m_entry = entry;
     threads[1].m_stack = stack;
+    // No guest scheduler is installed yet: the ELF main thread is running.
+    // Do not confuse a newly created dormant thread with the current one.
+    uint32_t current_thread_id = 1u;
     uint32_t installed_syscall_handlers[k_kernel_syscall_table_entries]{};
     std::vector<s_kernel_interrupt_handler> intc_handlers;
     std::vector<s_kernel_interrupt_handler> dmac_handlers;
@@ -910,7 +913,7 @@ int main(int argc, char** argv)
             }
             if ((service >= 0x10u && service <= 0x17u) ||
                 (service >= 0x1au && service <= 0x1du) ||
-                service == 0x20u ||
+                service == 0x20u || service == 0x2fu ||
                 service == 0x3cu || service == 0x3du ||
                 service == 0x40u || service == 0x64u ||
                 service == 0x68u || service == 0x74u)
@@ -1150,6 +1153,29 @@ int main(int argc, char** argv)
                                 thread.m_option, parameter_address
                             );
                         }
+                    }
+                }
+
+                else if (service == 0x2fu)
+                {
+                    // GetThreadId has no arguments. Creation of a dormant
+                    // thread does not switch the CPU's running thread.
+                    // Match ps2-web-recomp's current_thread()/GetThreadId.
+                    if (current_thread_id == 0u ||
+                        current_thread_id >= 256u ||
+                        !threads[current_thread_id].m_used)
+                    {
+                        std::fprintf(stderr,
+                            "GetThreadId HLE refused invalid running thread\n");
+                        break;
+                    }
+                    cpu.m_gpr[2].m_lo = current_thread_id;
+                    cpu.m_gpr[2].m_hi = 0u;
+                    if (trace)
+                    {
+                        std::printf(
+                            "HLE GetThreadId: id=%u\n", current_thread_id
+                        );
                     }
                 }
 
