@@ -78,8 +78,8 @@ int main()
         return fail("4 MiB GS VRAM not initialized independently");
     }
 
-    // The transfer must reject an absent/zero DBW and any non-PSMCT32
-    // pixel format before accepting IMAGE payloads.
+    // The transfer rejects absent/zero DBW and still-unsupported
+    // pixel formats before accepting IMAGE payloads.
     if (!write_register(gs, 0x50u, bitblt(k_bp, 0u, 0u)) ||
         !write_register(gs, 0x51u, 0u) ||
         !write_register(gs, 0x52u, trxreg(1u, 1u)) ||

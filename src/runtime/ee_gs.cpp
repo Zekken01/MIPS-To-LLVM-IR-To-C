@@ -161,9 +161,10 @@ bool c_ee_gs_state::write_register(
     case 0x53u: // TRXDIR
         state.m_transfer_started = false;
         state.m_transfer_pixels_written = 0u;
+        state.m_transfer_pending_size = 0u;
         if ((value & 3u) == 0u)
         {
-            // This milestone executes only PSMCT32 host-to-local uploads.
+            // Only verified PSMCT32 and PSMCT24 uploads are executable.
             // Unsupported formats and malformed setup reject the batch.
             if (!state.m_written[0x50u] ||
                 !state.m_written[0x51u] ||
@@ -181,7 +182,8 @@ bool c_ee_gs_state::write_register(
                 static_cast<uint32_t>(reg_size & 0xfffu);
             const uint32_t pixel_height =
                 static_cast<uint32_t>((reg_size >> 32u) & 0xfffu);
-            if (dest_width == 0u || dest_psm != 0u ||
+            if (dest_width == 0u ||
+                (dest_psm != 0u && dest_psm != 1u) ||
                 pixel_width == 0u || pixel_height == 0u)
             {
                 return false;
@@ -368,9 +370,9 @@ bool c_ee_gs_state::consume(
             );
             next.m_image_qwc += e.m_qwc;
 
-            // IMAGE and IMAGE2 contain complete 16-byte quadwords.
-            // PSMCT32 has four bytes per pixel, so no partial-pixel
-            // accumulator is needed, even across separate DMA starts.
+            // PSMCT32 stores 4 bytes in each swizzled GS word; PSMCT24
+            // uses the same addressing, preserving the word's high byte.
+            // A 16-byte GIF IMAGE boundary can split a 3-byte pixel.
             const uint64_t buf = next.m_registers[0x50u];
             const uint64_t pos = next.m_registers[0x51u];
             const uint64_t reg_size = next.m_registers[0x52u];
@@ -378,6 +380,8 @@ bool c_ee_gs_state::consume(
                 static_cast<uint32_t>((buf >> 32u) & 0x3fffu);
             const uint32_t width =
                 static_cast<uint32_t>((buf >> 48u) & 0x3fu);
+            const uint32_t psm =
+                static_cast<uint32_t>((buf >> 56u) & 0x3fu);
             const uint32_t x =
                 static_cast<uint32_t>((pos >> 32u) & 0x7ffu);
             const uint32_t y =
@@ -386,26 +390,66 @@ bool c_ee_gs_state::consume(
             const uint32_t rrh =
                 static_cast<uint32_t>((reg_size >> 32u) & 0xfffu);
             const uint32_t total_pixels = rrw * rrh;
-            const uint32_t remaining =
-                total_pixels - next.m_transfer_pixels_written;
-            const uint32_t pixels = static_cast<uint32_t>(
-                std::min<uint64_t>(length / 4u, remaining)
-            );
 
-            for (uint32_t j = 0u; j < pixels; ++j)
+            // A transfer setup may have been rewritten after TRXDIR;
+            // reject it rather than applying a guessed pixel layout.
+            if (width == 0u || (psm != 0u && psm != 1u) ||
+                rrw == 0u || rrh == 0u ||
+                next.m_transfer_pixels_written > total_pixels)
             {
-                const uint32_t pixel =
-                    next.m_transfer_pixels_written + j;
+                return false;
+            }
+
+            const auto stage_pixel = [&](uint32_t value, uint8_t size)
+            {
+                const uint32_t pixel = next.m_transfer_pixels_written;
                 const uint32_t dx = (x + pixel % rrw) & 0x7ffu;
                 const uint32_t dy = (y + pixel / rrw) & 0x7ffu;
-                const size_t data_offset =
-                    static_cast<size_t>(offset) + static_cast<size_t>(j) * 4u;
                 writes.push_back({
                     psmct32_address(base, width, dx, dy),
-                    read_le32(data + data_offset)
+                    value, size
                 });
+                ++next.m_transfer_pixels_written;
+            };
+
+            if (psm == 0u)
+            {
+                if (next.m_transfer_pending_size != 0u)
+                {
+                    return false;
+                }
+                const uint32_t remaining =
+                    total_pixels - next.m_transfer_pixels_written;
+                const uint32_t pixels = static_cast<uint32_t>(
+                    std::min<uint64_t>(length / 4u, remaining)
+                );
+                for (uint32_t j = 0u; j < pixels; ++j)
+                {
+                    const size_t data_offset =
+                        static_cast<size_t>(offset) +
+                        static_cast<size_t>(j) * 4u;
+                    stage_pixel(read_le32(data + data_offset), 4u);
+                }
             }
-            next.m_transfer_pixels_written += pixels;
+            else
+            {
+                for (uint64_t j = 0u;
+                     j < length &&
+                     next.m_transfer_pixels_written < total_pixels; ++j)
+                {
+                    next.m_transfer_pending[next.m_transfer_pending_size++] =
+                        data[static_cast<size_t>(offset + j)];
+                    if (next.m_transfer_pending_size == 3u)
+                    {
+                        const uint32_t pixel =
+                            static_cast<uint32_t>(next.m_transfer_pending[0]) |
+                            (static_cast<uint32_t>(next.m_transfer_pending[1]) << 8u) |
+                            (static_cast<uint32_t>(next.m_transfer_pending[2]) << 16u);
+                        stage_pixel(pixel, 3u);
+                        next.m_transfer_pending_size = 0u;
+                    }
+                }
+            }
             // Padding after the final pixel is captured but not written.
             break;
         }
@@ -423,7 +467,10 @@ bool c_ee_gs_state::consume(
         m_vram[offset + 0u] = static_cast<uint8_t>(value);
         m_vram[offset + 1u] = static_cast<uint8_t>(value >> 8u);
         m_vram[offset + 2u] = static_cast<uint8_t>(value >> 16u);
-        m_vram[offset + 3u] = static_cast<uint8_t>(value >> 24u);
+        if (write.m_bytes == 4u)
+        {
+            m_vram[offset + 3u] = static_cast<uint8_t>(value >> 24u);
+        }
     }
     m_state = std::move(next);
     return true;
