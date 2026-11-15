@@ -107,6 +107,16 @@ inline s_ee_u128 mmi_apply(e_lift_op_kind kind, const s_ee_u128& a, const s_ee_u
         return { a.m_lo ^ b.m_lo, a.m_hi ^ b.m_hi };
     case LOP_MMI_NOR:
         return { ~(a.m_lo | b.m_lo), ~(a.m_hi | b.m_hi) };
+    case LOP_MMI_COPY_H:
+        // PCPYH is unary: replicate the bottom halfword of each
+        // source doubleword independently across that doubleword.
+        return {
+            (b.m_lo & 0xffffull) * 0x0001000100010001ull,
+            (b.m_hi & 0xffffull) * 0x0001000100010001ull
+        };
+    case LOP_MMI_COPY_LOWER_D:
+        // PCPYLD: low64 = rt.low64; high64 = rs.low64.
+        return { b.m_lo, a.m_lo };
     case LOP_MMI_SLL:
         return mmi_shl128(b, (int)sa);
     case LOP_MMI_SRL:

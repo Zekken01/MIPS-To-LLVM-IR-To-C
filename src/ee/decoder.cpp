@@ -129,8 +129,12 @@ bool mmi_lowered_exactly(uint32_t funct, uint32_t sa, uint32_t rs)
             return false;
         }
     case 0x09:                                          // MMI2
-        return sa == 0x12 || sa == 0x13;                // pand pxor
+        return sa == 0x0e || sa == 0x12 || sa == 0x13;  // pcpyld pand pxor
     case 0x29:                                          // MMI3
+        if (sa == 0x1b)                                 // pcpyh uses rt only
+        {
+            return rs == 0;
+        }
         return sa == 0x12 || sa == 0x13;                // por pnor
     default:
         return false;
