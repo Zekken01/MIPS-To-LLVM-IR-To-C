@@ -82,6 +82,51 @@ def make_set_syscall_elf(path):
     path.write_bytes(image)
 
 
+def make_guest_syscall_table_elf(path):
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    # Keep the complete synthetic program and both handler addresses
+    # inside the single executable PT_LOAD region.
+    image.extend(bytes(max(0, 0x1a0 - len(image))))
+    struct.pack_into("<I", image, 52 + 16, 0xa0)
+    struct.pack_into("<I", image, 52 + 20, 0xa0)
+
+    # The HLE syscall table lives in physical RAM at 0x1800, and the
+    # KSEG0 mirror begins at 0x80001800. Register 0x83 then 0x5A,
+    # verify that their entries occupy separate 32-bit slots, replace
+    # 0x83, and check that the adjacent, unwritten slot remains zero.
+    instructions = (
+        0x3c0a8000,  # lui t2, 0x8000 (KSEG0 base)
+        0x8d481a0c,  # lw t0, 0x1A0C(t2): initially zero
+        0x24040083,  # addiu a0, zero, 0x83
+        0x3c050010,  # lui a1, 0x0010
+        0x34a50050,  # ori a1, a1, 0x0050
+        0x24030074,  # addiu v1, zero, SetSyscall
+        0x0000000c,  # syscall
+        0x8d491a0c,  # lw t1, 0x1A0C(t2): 0x00100050
+        0x8c0b1a0c,  # lw t3, 0x1A0C(zero): physical alias
+        0x2404005a,  # addiu a0, zero, 0x5A
+        0x3c050010,  # lui a1, 0x0010
+        0x34a50030,  # ori a1, a1, 0x0030
+        0x24030074,  # addiu v1, zero, SetSyscall
+        0x0000000c,  # syscall
+        0x8d4c1968,  # lw t4, 0x1968(t2): 0x00100030
+        0x8d4d1a0c,  # lw t5, 0x1A0C(t2): 0x00100050
+        0x24040083,  # addiu a0, zero, 0x83
+        0x3c050010,  # lui a1, 0x0010
+        0x34a50030,  # ori a1, a1, 0x0030
+        0x24030074,  # addiu v1, zero, SetSyscall
+        0x0000000c,  # syscall
+        0x8d4e1a0c,  # lw t6, 0x1A0C(t2): overwritten 0x00100030
+        0x8d4f1a10,  # lw t7, 0x1A10(t2): unwritten 0x84, zero
+        0x00000008,  # jr zero: stop after returning to caller
+        0x00000000,  # nop (delay slot)
+    )
+    for index, opcode in enumerate(instructions):
+        struct.pack_into("<I", image, 0x108 + index * 4, opcode)
+    path.write_bytes(image)
+
+
 def make_registered_callback_elf(path):
     make_elf(path)
     image = bytearray(path.read_bytes())
@@ -418,6 +463,49 @@ def main():
         assert "EE stopped: dispatched=2" in result.stdout, (
             result.stdout + result.stderr
         )
+
+    with tempfile.TemporaryDirectory(prefix="ee-native-syscall-table-") as tmp:
+        root = Path(tmp)
+        elf = root / "guest-syscall-table.elf"
+        make_guest_syscall_table_elf(elf)
+        report_path = root / "kernel-table.json"
+        result = subprocess.run(
+            [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf),
+                "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--max-dispatches=24",
+                "--hle-startup",
+                "--kseg-ram",
+                "--trace",
+                "--report", str(report_path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert "HLE SetSyscall: number=0x83 handler=0x00100050" in result.stdout, (
+            result.stdout + result.stderr
+        )
+        assert "HLE SetSyscall: number=0x5a handler=0x00100030" in result.stdout, (
+            result.stdout + result.stderr
+        )
+        assert "HLE SetSyscall: number=0x83 handler=0x00100030" in result.stdout, (
+            result.stdout + result.stderr
+        )
+        assert "EE stopped: dispatched=" in result.stdout, (
+            result.stdout + result.stderr
+        )
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        registers = report["gpr_lo"]
+        assert registers[8] == 0, report  # uninitialized table starts empty
+        assert registers[9] == 0x00100050, report  # 0x83 first installation
+        assert registers[11] == 0x00100050, report  # physical alias
+        assert registers[12] == 0x00100030, report  # 0x5A at 0x1968
+        assert registers[13] == 0x00100050, report  # 0x83 unchanged by 0x5A
+        assert registers[14] == 0x00100030, report  # 0x83 replacement
+        assert registers[15] == 0, report  # untouched 0x84 at 0x1A10
 
     with tempfile.TemporaryDirectory(prefix="ee-native-registered-callback-") as tmp:
         root = Path(tmp)
