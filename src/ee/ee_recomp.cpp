@@ -342,6 +342,13 @@ bool ee_recomp(const char* elf_path,
     // segments is never decoded, so it never pollutes coverage.
     // ------------------------------------------------------------------
     std::map<uint32_t, s_ee_instruction> global_insns;
+    std::vector<uint32_t> entries;
+    std::set<uint32_t> static_jalr_targets;
+    std::set<uint32_t> jalr_only_entries;
+    std::vector<s_static_jalr_site> jalr_site_audit;
+
+    if (opts.discovery_cache_path.empty())
+    {
     std::set<uint32_t> worklist;
     std::set<uint32_t> discovered;
 
@@ -351,6 +358,7 @@ bool ee_recomp(const char* elf_path,
         }
     };
     seed_entry(loader.entry_point());
+    seed_entry(opts.only_function);
     for (const auto& sym : loader.symbols())
     {
         if (sym.is_function && !sym.is_undefined && sym.value != 0)
@@ -378,7 +386,6 @@ bool ee_recomp(const char* elf_path,
 
     // Seed entries from the ELF entry point and all defined STT_FUNC symbols
     // in executable segments. Calls discovered below are added to this set.
-    std::vector<uint32_t> entries;
     if (loader.entry_point() != 0 &&
         loader.is_executable_address(loader.entry_point())) {
         entries.push_back(loader.entry_point());
@@ -394,9 +401,6 @@ bool ee_recomp(const char* elf_path,
     std::sort(entries.begin(), entries.end());
     entries.erase(std::unique(entries.begin(), entries.end()), entries.end());
     std::set<uint32_t> entry_set(entries.begin(), entries.end());
-    std::set<uint32_t> static_jalr_targets;
-    std::set<uint32_t> jalr_only_entries;
-    std::vector<s_static_jalr_site> jalr_site_audit;
 
     // Iterate to a fixed point. Direct JAL/branch-and-link targets are
     // harvested as before. JALR targets are added only when CFG constant
@@ -476,6 +480,89 @@ bool ee_recomp(const char* elf_path,
         }
     }
 
+        // The full discovery is expensive, but identical for every
+        // single-function translation of the same ELF. Save it once.
+        const uint64_t fingerprint = elf_fingerprint(elf_path);
+        const std::string cache_path = std::string(output_dir)
+            + "/ee_discovery_cache.bin";
+        if (fingerprint == 0 ||
+            !write_discovery_cache(
+                cache_path, fingerprint, global_insns, entries,
+                static_jalr_targets, jalr_only_entries, jalr_site_audit))
+        {
+            std::fprintf(stderr,
+                "ee_recomp: warning: discovery snapshot not saved\n");
+        }
+    }
+    else
+    {
+        if (opts.only_function == 0)
+        {
+            if (error)
+            {
+                *error = "--discovery-cache requires --function";
+            }
+            return false;
+        }
+
+        const uint64_t fingerprint = elf_fingerprint(elf_path);
+        if (fingerprint == 0 ||
+            !read_discovery_cache(
+                opts.discovery_cache_path, fingerprint, &global_insns,
+                &entries, &static_jalr_targets, &jalr_only_entries,
+                &jalr_site_audit))
+        {
+            if (error)
+            {
+                *error = "discovery cache missing, stale or invalid; "
+                         "rerun without --discovery-cache";
+            }
+            return false;
+        }
+
+        // A dynamic dispatcher entry need not have been reachable from
+        // static ELF discovery. Decode newly reached instructions locally,
+        // without re-running all-ELF direct/indirect call discovery.
+        std::set<uint32_t> pending{opts.only_function};
+        std::set<uint32_t> seen;
+        const std::set<uint32_t> known_entries(entries.begin(), entries.end());
+        while (!pending.empty())
+        {
+            const uint32_t pc = *pending.begin();
+            pending.erase(pending.begin());
+            if (!seen.insert(pc).second || (pc != opts.only_function &&
+                known_entries.count(pc) != 0))
+            {
+                continue;
+            }
+            if (global_insns.count(pc) != 0)
+            {
+                continue;
+            }
+            uint32_t word = 0;
+            if (!loader.read32_at(pc, &word))
+            {
+                continue;
+            }
+            const s_ee_instruction ins = decode(pc, word);
+            global_insns.emplace(pc, ins);
+            for (uint32_t successor : collect_successors(ins))
+            {
+                if (ins.flow == e_ee_flow::FLOW_CALL &&
+                    successor == ins.jump_target)
+                {
+                    continue;
+                }
+                if (known_entries.count(successor) == 0)
+                {
+                    pending.insert(successor);
+                }
+            }
+        }
+        std::printf("  discovery cache: %zu decoded PCs, %zu entries\n",
+            global_insns.size(), entries.size());
+    }
+
     const std::vector<uint32_t> discovered_entries = entries;
     function_analyzer analyzer;
     llvm::llvm_context ctx("ee_game");
@@ -489,7 +576,9 @@ bool ee_recomp(const char* elf_path,
         collect_function_block_starts(global_insns, entries);
     std::set<uint32_t> function_pcs;
     std::set<uint32_t> analyzed_entries;
-    for (uint32_t ep : entries)
+    const std::vector<uint32_t> coverage_entries = opts.only_function != 0
+        ? std::vector<uint32_t>{opts.only_function} : entries;
+    for (uint32_t ep : coverage_entries)
     {
         if (!analyzed_entries.insert(ep).second) continue;
         std::vector<s_ee_function> fns =
