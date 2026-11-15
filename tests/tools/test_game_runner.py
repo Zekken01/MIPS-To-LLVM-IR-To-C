@@ -319,15 +319,6 @@ def make_semaphore_operations_elf(path, blocking_wait=False,
     for index, opcode in enumerate(opcodes):
         struct.pack_into("<I", image, 0x108 + index * 4, opcode)
     path.write_bytes(image)
-    # Return the EPC for the intentional blocking/invalid pointer stop.
-    if blocking_wait:
-        # descriptor load: LUI, ORI, service, syscall, move;
-        # id load: addiu, service, syscall.
-        return 0x00100008 + (5 + 1 + 1) * 4
-    if invalid_status:
-        # Trace reports the actual precise faulting EPC for comparison.
-        return None
-    return None
 
 
 def make_set_syscall_elf(path):
@@ -1824,7 +1815,9 @@ def main():
             state = json.loads(report_path.read_text(encoding="utf-8"))
             regs = state["gpr_lo"]
             assert state["snapshot_kind"] == "stopped", state
-            assert state["exit_name"] == "EXCEPTION", state
+            assert state["exit_name"] == (
+                "EXCEPTION" if blocking_wait or invalid_status else "RETURN"
+            ), state
             assert regs[8] == 1, state
             assert "HLE CreateSema: id=1" in result.stdout, result.stdout
             if blocking_wait:
