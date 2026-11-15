@@ -110,7 +110,7 @@ int main()
         io.m_last_address != k_intc_mask || io.m_last_width != 2 ||
         ee::ee_mem_read32(&runtime, k_intc_mask) != 0x44332211u ||
         io.m_last_width != 4 ||
-        ee::ee_mem_read64(&runtime, 0xa000f010u) != 0x8877665544332211ull ||
+        ee::ee_mem_read64(&runtime, 0xb000f010u) != 0x8877665544332211ull ||
         io.m_last_width != 8)
     {
         return fail("MMIO scalar width/alias/physical-address dispatch");
