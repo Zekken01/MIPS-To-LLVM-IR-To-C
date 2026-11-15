@@ -82,6 +82,47 @@ def make_set_syscall_elf(path):
     path.write_bytes(image)
 
 
+def make_eret_target_elf(path, status):
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    image.extend(bytes(max(0, 0x300 - len(image))))
+    struct.pack_into("<I", image, 52 + 16, 0x200)
+    struct.pack_into("<I", image, 52 + 20, 0x200)
+
+    # Both alternate targets are reachable static basic blocks, but the
+    # never-taken BNE instructions do not actually take either branch.
+    # This tests the real MTC0+ERET instructions in LLVM-generated code.
+    instructions = (
+        (0x108, 0x1400001d),  # bne zero, zero, ErrorEPC 0x00100080
+        (0x10c, 0x00000000),
+        (0x110, 0x1400002b),  # bne zero, zero, EPC 0x001000c0
+        (0x114, 0x00000000),
+        (0x118, 0x24080000 | status),  # t0 = Status (EXL or ERL)
+        (0x11c, 0x40886000),  # mtc0 t0, Status
+        (0x120, 0x3c090010),  # lui t1, 0x0010
+        (0x124, 0x35290080),  # ErrorEPC = 0x00100080
+        (0x128, 0x4089f000),  # mtc0 t1, ErrorEPC
+        (0x12c, 0x3c0a0010),  # lui t2, 0x0010
+        (0x130, 0x354a00c0),  # EPC = 0x001000c0
+        (0x134, 0x408a7000),  # mtc0 t2, EPC
+        (0x138, 0x42000018),  # ERET
+        (0x13c, 0x240f0001),  # must never execute
+        (0x180, 0x400b6000),  # mfc0 t3, Status at ErrorEPC
+        (0x184, 0x400cf000),  # mfc0 t4, ErrorEPC
+        (0x188, 0x400d7000),  # mfc0 t5, EPC
+        (0x18c, 0x00000008),  # jr zero to finish
+        (0x190, 0x00000000),
+        (0x1c0, 0x400b6000),  # mfc0 t3, Status at EPC
+        (0x1c4, 0x400cf000),  # mfc0 t4, ErrorEPC
+        (0x1c8, 0x400d7000),  # mfc0 t5, EPC
+        (0x1cc, 0x00000008),
+        (0x1d0, 0x00000000),
+    )
+    for offset, opcode in instructions:
+        struct.pack_into("<I", image, offset, opcode)
+    path.write_bytes(image)
+
+
 def make_overlapping_entry_elf(path):
     make_elf(path)
     image = bytearray(path.read_bytes())
@@ -803,6 +844,40 @@ def main():
         assert "EE stopped: dispatched=2" in result.stdout, (
             result.stdout + result.stderr
         )
+
+    for status, expected_target in (
+        (2, 0x001000c0),  # EXL: ordinary EPC
+        (4, 0x00100080),  # ERL: ErrorEPC takes precedence
+    ):
+        with tempfile.TemporaryDirectory(prefix="ee-native-eret-") as tmp:
+            root = Path(tmp)
+            elf = root / "eret.elf"
+            make_eret_target_elf(elf, status)
+            report_path = root / "eret.json"
+            result = subprocess.run(
+                [
+                    sys.executable, str(source / "tools" / "run_game.py"),
+                    str(elf),
+                    "--build-dir", str(build),
+                    "--work-dir", str(root / "out"),
+                    "--max-dispatches=16",
+                    "--trace",
+                    "--report", str(report_path),
+                ],
+                capture_output=True, text=True, check=False,
+            )
+            assert result.returncode != 0, result.stdout + result.stderr
+            assert (
+                f"dispatch=1 pc=0x00100008 -> 0x{expected_target:08x} "
+                "reason=DISPATCH(3) status=1"
+            ) in result.stdout, result.stdout + result.stderr
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            assert report["dispatches"] == 2, report
+            assert report["final_pc"] == 0, report
+            assert report["gpr_lo"][11] == 0, report
+            assert report["gpr_lo"][12] == 0x00100080, report
+            assert report["gpr_lo"][13] == 0x001000c0, report
+            assert report["gpr_lo"][15] == 0, report
 
     with tempfile.TemporaryDirectory(prefix="ee-native-overlapping-entry-") as tmp:
         root = Path(tmp)
