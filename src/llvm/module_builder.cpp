@@ -1,4 +1,6 @@
 #include "module_builder.h"
+#include "ee_runtime.h"
+#include <cstddef>
 #include "ee_opcode.h"
 #include <cctype>
 #include <cstdio>
@@ -2237,12 +2239,68 @@ void module_builder::emit_block(const std::vector<ee::s_ee_instruction>& block,
                                 const std::set<uint8_t>& live_in,
                                 const std::set<uint8_t>& live_out,
                                 uint32_t fallthrough_pc,
-                                bool is_terminator)
+                                bool is_terminator,
+                                bool guarded_loop_header)
 {
     using ee::e_ee_opcode;
     if (block.empty()) return;
     m_out += block_label(block[0].pc);
     m_out += ":\n";
+
+    if (guarded_loop_header)
+    {
+        // This guard executes before the first instruction in an
+        // intra-function loop header. It is *not* an EE exception: the
+        // host receives the exact resume PC and a distinct reason.
+        // Null runtime and a zero limit keep older JIT clients working.
+        // Incoming predecessors must flush their architectural GPR
+        // changes; emit_function_cfg seeds all GPRs live at this header.
+        const uint32_t pc = block[0].pc;
+        const std::string suffix = std::to_string(pc);
+        const std::string enabled_label = "loop_enabled_" + suffix;
+        const std::string tick_label = "loop_tick_" + suffix;
+        const std::string decrement_label = "loop_decrement_" + suffix;
+        const std::string exhausted_label = "loop_exhausted_" + suffix;
+        const std::string continue_label = "loop_continue_" + suffix;
+        const std::string is_null = newtemp();
+        m_out += "  " + is_null + " = icmp eq ptr %rt, null\n";
+        m_out += "  br i1 " + is_null + ", label %" + continue_label +
+                 ", label %" + enabled_label + "\n";
+        m_out += enabled_label + ":\n";
+        const std::string limit_ptr = newtemp();
+        const std::string limit = newtemp();
+        const std::string disabled = newtemp();
+        m_out += "  " + limit_ptr + " = getelementptr i8, ptr %rt, i64 " +
+                 std::to_string(offsetof(ee::s_ee_runtime, m_loop_safepoint_limit)) +
+                 "\n";
+        m_out += "  " + limit + " = load i32, ptr " + limit_ptr + "\n";
+        m_out += "  " + disabled + " = icmp eq i32 " + limit + ", 0\n";
+        m_out += "  br i1 " + disabled + ", label %" + continue_label +
+                 ", label %" + tick_label + "\n";
+        m_out += tick_label + ":\n";
+        const std::string remaining_ptr = newtemp();
+        const std::string remaining = newtemp();
+        const std::string empty = newtemp();
+        m_out += "  " + remaining_ptr + " = getelementptr i8, ptr %rt, i64 " +
+                 std::to_string(offsetof(ee::s_ee_runtime, m_loop_safepoint_remaining)) +
+                 "\n";
+        m_out += "  " + remaining + " = load i32, ptr " + remaining_ptr + "\n";
+        m_out += "  " + empty + " = icmp eq i32 " + remaining + ", 0\n";
+        m_out += "  br i1 " + empty + ", label %" + exhausted_label +
+                 ", label %" + decrement_label + "\n";
+        m_out += decrement_label + ":\n";
+        const std::string decremented = newtemp();
+        m_out += "  " + decremented + " = sub i32 " + remaining + ", 1\n";
+        m_out += "  store i32 " + decremented + ", ptr " + remaining_ptr + "\n";
+        m_out += "  br label %" + continue_label + "\n";
+        m_out += exhausted_label + ":\n";
+        const std::string pc_ptr = state_field(6);
+        const std::string reason_ptr = state_field(7);
+        m_out += "  store i32 " + std::to_string(pc) + ", ptr " + pc_ptr + "\n";
+        m_out += "  store i32 5, ptr " + reason_ptr + "\n";
+        m_out += "  ret i32 5\n";
+        m_out += continue_label + ":\n";
+    }
 
     reset_tracking();
 
@@ -3449,6 +3507,21 @@ void module_builder::emit_function_cfg(const ee::s_ee_function& fn,
     for (const auto& bb : fn.blocks)
         block_pcs.insert(bb.start_pc);
 
+    // Only already-discovered backwards intra-function edges need a
+    // loop guard. We guard their destination headers so delay slots
+    // have fully committed before the watchdog can stop execution.
+    std::set<uint32_t> loop_headers;
+    for (const auto& bb : fn.blocks)
+    {
+        for (const uint32_t successor : bb.successors)
+        {
+            if (successor <= bb.start_pc && block_pcs.count(successor) != 0u)
+            {
+                loop_headers.insert(successor);
+            }
+        }
+    }
+
     std::set<uint32_t> dispatch_exit_blocks;
     for (size_t i = 0; i < fn.blocks.size(); ++i)
     {
@@ -3543,6 +3616,13 @@ void module_builder::emit_function_cfg(const ee::s_ee_function& fn,
             for (uint8_t r : live_out[bb.start_pc])
                 if (written.count(r) == 0) new_in.insert(r);
             for (uint8_t r : rbw) new_in.insert(r);
+            if (loop_headers.count(bb.start_pc) != 0u)
+            {
+                // A loop-budget exit can occur at this block *before*
+                // it executes. Make all GPRs architecturally observable
+                // on incoming edges, not merely those used by the loop.
+                new_in.insert(all_arch_gprs.begin(), all_arch_gprs.end());
+            }
             if (new_in != live_in[bb.start_pc])
             {
                 live_in[bb.start_pc] = new_in;
@@ -3611,7 +3691,8 @@ void module_builder::emit_function_cfg(const ee::s_ee_function& fn,
         const auto& bb = fn.blocks[i];
         emit_block(block_insns_vec[i], i == fn.blocks.size() - 1, fn.entry_pc,
                    live_in[bb.start_pc], live_out[bb.start_pc],
-                   bb.fallthrough_pc, bb.is_terminator);
+                   bb.fallthrough_pc, bb.is_terminator,
+                   loop_headers.count(bb.start_pc) != 0u);
     }
 
     // External / unresolved targets return to the host dispatcher. Returning
