@@ -181,11 +181,14 @@ ADC routing), FOG, TEX0/TEX2 merging, per-context texture, frame,
 scissor, depth, alpha and test setup, and the image-transfer registers
 BITBLTBUF (0x50), TRXPOS (0x51), TRXREG (0x52) and TRXDIR (0x53).
 GS now has its own **4 MiB VRAM**, separate from EE RAM and the EE
-scratchpad. For PSMCT32 host-to-local transfers (TRXDIR=0), it decodes
+scratchpad. For PSMCT32 and PSMCT24 host-to-local transfers (TRXDIR=0),
+it decodes
 BITBLTBUF's 256-byte destination base units and 64-pixel buffer width,
 TRXPOS's 11-bit destination coordinates, and TRXREG's transfer rectangle.
-It writes 32-bit pixels in raster order to swizzled 64x32-pixel,
-8-KiB GS pages using the reference's block and column layout. Pixel
+It writes pixels in raster order to swizzled 64x32-pixel,
+8-KiB GS pages using the reference's block and column layout.
+PSMCT32 writes all four bytes per pixel; PSMCT24 writes three bytes
+into each 32-bit GS word while preserving its upper byte. Pixel
 coordinates and byte addresses wrap at their respective 11-bit and
 4-MiB boundaries, matching the reference implementation.
 
@@ -193,10 +196,10 @@ IMAGE/IMAGE2 quadwords can span separately completed GIF/DMA batches.
 The transfer tracks completed pixels, ignoring trailing quadword padding
 once the rectangle has been filled. The previous bounded 4 MiB raw-image
 capture remains available for diagnostics; this is not a texture
-decoder or rendered frame. PSMCT32 pixels are exactly four bytes, so
-16-byte IMAGE quadwords never split a pixel across DMA boundaries.
-Other pixel storage formats, host-to-local HWREG writes, local-to-host
-downloads, and local-to-local copies remain unimplemented.
+decoder or rendered frame. PSMCT32 pixels cannot split across 16-byte
+IMAGE quadwords; PSMCT24 retains its 1- or 2-byte incomplete pixel
+between event batches. PSMCT16, indexed formats, host-to-local HWREG,
+local-to-host downloads, and local-to-local copies remain unimplemented.
 
 Every event batch is applied to a temporary state copy and its VRAM
 pixel writes are staged until **all** events are supported, input offsets
@@ -215,7 +218,7 @@ default, because a working GS renderer is not yet present.
 
 This is **not** a VIF interpreter, a GS primitive rasterizer, GPU
 presentation, device DMA chain engine for channels 0..2, MFIFO, or a
-timed hardware queue. Only PSMCT32 image uploads have GS VRAM effects;
+timed hardware queue. Only PSMCT32 and PSMCT24 image uploads have GS VRAM effects;
 real SDBZ image-stream and PCSX2 differential validation remain needed.
 
 `fromSPR` channel 8 also supports

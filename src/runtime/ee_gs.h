@@ -9,7 +9,7 @@
 
 namespace ee
 {
-// GS register-state and PSMCT32 host-to-local transfer consumer.
+// GS register-state and PSMCT32/PSMCT24 host-to-local transfer consumer.
 // It does not rasterize primitives, present frames or implement GS IRQs.
 // Based on ps2-web-recomp/runtime/src/gs/gs.cpp::write/write_packed.
 struct s_ee_gs_state
@@ -22,7 +22,9 @@ struct s_ee_gs_state
     uint32_t m_image_qwc = 0;
     std::vector<uint8_t> m_image_data; // bounded diagnostic transfer capture
     bool m_transfer_started = false;
-    uint32_t m_transfer_pixels_written = 0; // PSMCT32 pixels, across IMAGE events
+    uint32_t m_transfer_pixels_written = 0; // across IMAGE events
+    uint8_t m_transfer_pending_size = 0; // PSMCT24 incomplete pixel
+    std::array<uint8_t, 3> m_transfer_pending{};
 };
 
 // Transactional consumer for c_ee_gif_path3::t_event_callback.
@@ -63,9 +65,10 @@ private:
     {
         uint32_t m_offset = 0;
         uint32_t m_value = 0;
+        uint8_t m_bytes = 4u; // PSMCT24 preserves VRAM high byte
     };
 
-    // GS PSMCT32: 64x32 pages, 8 KiB per page, 256-byte blocks.
+    // GS PSMCT32/24: 64x32 pages, 8 KiB per page, 256-byte blocks.
     // Addresses wrap at 4 MiB, matching ps2-web-recomp GS memory.
     static uint32_t psmct32_address(
         uint32_t base, uint32_t width, uint32_t x, uint32_t y
