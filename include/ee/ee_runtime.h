@@ -226,6 +226,13 @@ struct s_ee_runtime
     void* m_mmio_user = nullptr;
     t_ee_mmio_read_callback m_mmio_read = nullptr;
     t_ee_mmio_write_callback m_mmio_write = nullptr;
+
+    // Host diagnostic guard against translated guest loops that never
+    // return to the dispatcher. Zero limit disables the guard; all new
+    // fields are appended to preserve the existing runtime ABI prefix.
+    // The host resets remaining before entering one native guest function.
+    uint32_t m_loop_safepoint_limit = 0u;
+    uint32_t m_loop_safepoint_remaining = 0u;
 };
 
 // Outside a branch delay slot, all four transfer forms only catch VU0 up to

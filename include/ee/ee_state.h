@@ -127,7 +127,10 @@ enum class e_ee_exit_reason : uint32_t
     EE_EXIT_EXCEPTION = 1,
     EE_EXIT_EXTERNAL_CALL = 2,
     EE_EXIT_DISPATCH = 3,
-    EE_EXIT_UNSUPPORTED = 4
+    EE_EXIT_UNSUPPORTED = 4,
+    // Diagnostic fail-closed exit at an instrumented CFG loop header.
+    // Not an architectural EE exception or a completed guest boot.
+    EE_EXIT_LOOP_BUDGET = 5
 };
 
 // Forward declaration; the runtime owns the memory/peripheral subsystems.

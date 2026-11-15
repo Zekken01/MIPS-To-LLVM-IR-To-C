@@ -661,6 +661,16 @@ def make_kernel_ram_probe_elf(path):
     path.write_bytes(image)
 
 
+def make_counting_loop_elf(path):
+    """Count while branching backward within a single native CFG."""
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    struct.pack_into("<I", image, 0x108, 0x25080001)  # addiu t0,t0,1
+    struct.pack_into("<I", image, 0x10c, 0x1000fffe)  # beq zero,zero,-2
+    struct.pack_into("<I", image, 0x110, 0x00000000)  # delay-slot nop
+    path.write_bytes(image)
+
+
 def make_spin_elf(path):
     make_elf(path)
     image = bytearray(path.read_bytes())
@@ -1670,6 +1680,34 @@ def main():
         assert "native_ms=" in result.stderr, result.stderr
         assert "report_ms=" in result.stderr, result.stderr
         assert "slowest_native_pc=" in result.stderr, result.stderr
+
+    with tempfile.TemporaryDirectory(prefix="ee-native-loop-budget-") as tmp:
+        root = Path(tmp)
+        elf = root / "counting-loop.elf"
+        make_counting_loop_elf(elf)
+        report_path = root / "loop-budget.json"
+        result = subprocess.run(
+            [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf),
+                "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--max-dispatches=8",
+                "--timeout-seconds=10",
+                "--loop-budget=32",
+                "--report", str(report_path),
+            ],
+            capture_output=True, text=True, check=False, timeout=40,
+        )
+        assert result.returncode == 3, result.stdout + result.stderr
+        assert "guest loop budget exhausted:" in result.stderr, result.stderr
+        state = json.loads(report_path.read_text(encoding="utf-8"))
+        assert state["snapshot_kind"] == "stopped", state
+        assert state["exit_reason"] == 5, state
+        assert state["exit_name"] == "LOOP_BUDGET", state
+        assert state["dispatches"] == 1, state
+        assert state["final_pc"] == 0x00100008, state
+        assert state["gpr_lo"][8] == 32, state
 
     with tempfile.TemporaryDirectory(prefix="ee-native-timeout-snapshot-") as tmp:
         root = Path(tmp)

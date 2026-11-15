@@ -133,6 +133,7 @@ void usage(const char* program)
         "  --max-dispatches=N    Native function dispatch budget (default 10000)\n"
         "  --entry=0xADDR       Override ELF entry PC\n"
         "  --stack=0xADDR       Initial EE stack pointer (default 0x01fff000)\n"
+        "  --loop-budget=N       Stop at a guest CFG loop after N header entries (0=off)\n"
         "  --trace              Print guest PC, reason and dispatch count per step\n"
         "  --hle-startup        Handle selected startup and semaphore kernel calls\n"
         "  --kseg-ram           Enable direct EE RAM aliases (KSEG0/1 and 0x2/0x3)\n"
@@ -154,6 +155,7 @@ const char* exit_name(uint32_t reason)
     case ee::e_ee_exit_reason::EE_EXIT_EXTERNAL_CALL: return "EXTERNAL_CALL";
     case ee::e_ee_exit_reason::EE_EXIT_DISPATCH: return "DISPATCH";
     case ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED: return "UNSUPPORTED";
+    case ee::e_ee_exit_reason::EE_EXIT_LOOP_BUDGET: return "LOOP_BUDGET";
     default: return "UNKNOWN";
     }
 }
@@ -444,6 +446,7 @@ int main(int argc, char** argv)
     const char* kernel_ram_path = nullptr;
     const char* report_path = nullptr;
     uint32_t budget = k_default_dispatch_budget;
+    uint32_t loop_budget = 0u;
     uint32_t stack = k_default_stack;
     uint32_t entry_override = 0;
     bool override_entry = false;
@@ -503,6 +506,10 @@ int main(int argc, char** argv)
         };
 
         int parsed = parse_option("--max-dispatches=", &budget);
+        if (parsed == 0)
+        {
+            parsed = parse_option("--loop-budget=", &loop_budget);
+        }
         if (parsed == 0)
         {
             parsed = parse_option("--stack=", &stack);
@@ -628,6 +635,8 @@ int main(int argc, char** argv)
     runtime.m_mmio_user = &hardware;
     runtime.m_mmio_read = &ee::c_ee_hw_bus::mmio_read;
     runtime.m_mmio_write = &ee::c_ee_hw_bus::mmio_write;
+    runtime.m_loop_safepoint_limit = loop_budget;
+    runtime.m_loop_safepoint_remaining = loop_budget;
     cpu.m_pc = entry;
     cpu.m_gpr[29].m_lo = stack;
     cpu.m_exit_reason = static_cast<uint32_t>(
@@ -798,6 +807,11 @@ int main(int argc, char** argv)
         uint32_t out_pc = from_pc;
         const uint32_t slice = (trace || report_path != nullptr) ? 1u : remaining;
         const auto native_start = std::chrono::steady_clock::now();
+        // A given native function can branch internally forever without
+        // returning to the dispatcher. Reset a per-invocation loop-header
+        // budget before execution; instrumented CFG blocks exit precisely
+        // with LOOP_BUDGET if this count is exhausted.
+        runtime.m_loop_safepoint_remaining = runtime.m_loop_safepoint_limit;
         reason = native_run(&cpu, &runtime, slice, &count, &out_pc, &status);
         if (report_path != nullptr)
         {
@@ -1666,6 +1680,17 @@ int main(int argc, char** argv)
             ee::e_ee_exit_reason::EE_EXIT_EXCEPTION))
     {
         std::fprintf(stderr, "ELF entry has no translated host block; emit the entry function\n");
+        return 3;
+    }
+    if (reason == static_cast<uint32_t>(ee::e_ee_exit_reason::EE_EXIT_LOOP_BUDGET))
+    {
+        std::fprintf(
+            stderr,
+            "guest loop budget exhausted: next_pc=0x%08x budget=%u; "
+            "inspect guest state and translated loop instead of "
+            "increasing the wall-clock timeout\n",
+            cpu.m_pc, runtime.m_loop_safepoint_limit
+        );
         return 3;
     }
     if (reason == static_cast<uint32_t>(ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED) ||
