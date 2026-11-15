@@ -153,16 +153,16 @@ int main()
     constexpr uint32_t k_bp = 0x140u;
     constexpr uint32_t k_base = k_bp * 256u;
 
-    // Depth-buffer swizzling remains unsupported: reject rather than
-    // silently interpreting PSMZ32 (0x30) as a 32-bit color layout.
-    if (!reg(gs, 0x50u, bitblt(k_bp, 2u, 0x30u)) ||
+    // A reserved pixel-storage format must be rejected rather than
+    // silently using an unrelated 32-bit color layout.
+    if (!reg(gs, 0x50u, bitblt(k_bp, 2u, 0x03u)) ||
         !reg(gs, 0x51u, trxpos(0u, 31u)) ||
         !reg(gs, 0x52u, trxreg(65u, 2u)) ||
         reg(gs, 0x53u, 0u) ||
         gs.was_written(0x53u) ||
         gs.state().m_transfer_started)
     {
-        return fail("unsupported PSMZ32 transfer was committed");
+        return fail("unsupported reserved PSM 0x03 transfer was committed");
     }
 
     // High-byte formats share PSMCT32's 64x32 page and 256-byte

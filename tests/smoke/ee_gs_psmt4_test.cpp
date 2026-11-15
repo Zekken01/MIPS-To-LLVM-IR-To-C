@@ -88,16 +88,16 @@ int main()
     constexpr uint32_t k_bp = 0x140u;
     constexpr uint32_t k_base = k_bp * 256u;
 
-    // PSMZ32 uses depth-buffer swizzling, not PSMT4 indexing;
-    // unsupported transfer setup must not commit TRXDIR.
-    if (!reg(gs, 0x50u, bitblt(k_bp, 4u, 0x30u)) ||
+    // Reserved destination format 0x03 has no supported swizzle.
+    // Unsupported transfer setup must not commit TRXDIR.
+    if (!reg(gs, 0x50u, bitblt(k_bp, 4u, 0x03u)) ||
         !reg(gs, 0x51u, trxpos(0u, 127u)) ||
         !reg(gs, 0x52u, trxreg(129u, 2u)) ||
         reg(gs, 0x53u, 0u) ||
         gs.was_written(0x53u) ||
         gs.state().m_transfer_started)
     {
-        return fail("unsupported PSMZ32 configuration was accepted");
+        return fail("unsupported reserved PSM 0x03 configuration was accepted");
     }
 
     // The 129x2 rectangle at y=127 crosses X=128 and Y=128 page
