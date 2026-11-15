@@ -80,7 +80,7 @@ int main()
     }
 
     // Stop on unknown code; never silently replace it with a NOP.
-    write32(memory, k_ram_address, 0xffffffffu);
+    write32(memory, k_ram_address, 0x70000000u); // SPECIAL2, unsupported
     cpu = {};
     const ee::s_ee_ram_execution unknown = ee::ee_execute_ram_callback(
         &cpu, &memory, k_ram_address, k_return_address, 50u
@@ -88,7 +88,7 @@ int main()
     if (!check(unknown.m_result == ee::e_ee_ram_result::UNSUPPORTED,
                "unknown instruction must fail closed") ||
         !check(unknown.m_pc == k_ram_address, "unsupported PC retained") ||
-        !check(unknown.m_opcode == 0xffffffffu, "unsupported opcode retained"))
+        !check(unknown.m_opcode == 0x70000000u, "unsupported opcode retained"))
     {
         return 1;
     }

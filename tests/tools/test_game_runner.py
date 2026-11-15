@@ -198,7 +198,7 @@ def make_kernel_ram_handler_elf(path, invoke=False):
         0x3c0c03e0,  # lui t4, 0x03e0 (JR RA opcode)
         0x358c0008,  # ori t4, t4, 8
         0xad6c0000,  # sw t4, 0(t3), writing RAM JR $ra
-        0x240c002a,  # addiu t4, zero, 42
+        0x2402002a,  # addiu v0, zero, 42
         0xad6c0004,  # sw t4, 4(t3), second RAM opcode (42 is a synthetic test value)
         0x2404005b,  # addiu a0, zero, 0x5B
         0x01602821,  # addu a1, t3, zero: 0x80076000
