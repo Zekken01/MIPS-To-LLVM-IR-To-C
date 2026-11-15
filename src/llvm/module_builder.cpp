@@ -854,7 +854,7 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
         std::string addr = newtemp();
         m_out += "  " + sum + " = add i64 " + src_lo(ins.rs) + ", " + imm + "\n";
         m_out += "  " + addr + " = trunc i64 " + sum + " to i32\n";
-        m_out += "  call void @ee_mem_" + name + "(ptr %rt, i32 " + addr +
+        m_out += std::string("  call void @ee_mem_") + name + "(ptr %rt, i32 " + addr +
                  ", i64 " + src_lo(ins.rt) + ")\n";
         break;
     }
