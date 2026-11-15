@@ -118,10 +118,18 @@ native game runner now installs a minimal EE **INTC** model for
 acknowledge status bits (write-one-to-clear) and toggle enabled-mask bits
 (write-one-to-toggle), matching `ps2-web-recomp/runtime/src/hw.cpp`.
 It raises/clears COP0 Cause.IP2 whenever a masked interrupt is pending.
-Device events must explicitly call `c_ee_intc::raise(cause)`, and the
-host does not yet provide a device-event scheduler or guest exception-entry
-timing. Other registers still remain unimplemented; no general GS, DMA,
-SIF, GIF, or VIF device behavior is implied.
+The native runner's host MMIO bus now also exposes the DMA interrupt
+status register `D_STAT=0x1000e010`. Its low 16 bits are write-one-to-clear;
+the upper 16 bits are write-one-to-toggle channel masks. Bits 0..9 report
+the ten DMA channels, and masked pending channels assert COP0 Cause.IP3.
+These register rules come from `ps2-web-recomp/runtime/src/hw.cpp`.
+Separate INTC and DMAC models preserve their own pending COP0 lines.
+Devices must explicitly call `c_ee_intc::raise(cause)` or
+`c_ee_dmac::raise(channel)` when a real hardware event occurs.
+No channel transfers or DMA-completion events are fabricated by writing
+DMA channel control addresses: those registers remain unsupported.
+The host does not yet provide a device-event scheduler, precise guest
+interrupt exception timing, or general GS/SIF/GIF/VIF behavior.
 
 This still does **not** implement scratchpad DMA, TLB translation,
 VU1, guest address/alignment exceptions, or hardware-specific device
@@ -213,7 +221,7 @@ dispatch and selected kernel calls resume correctly. The real-game observations
 above were captured locally from the user's privately supplied ELF, not in CI.
 
 The native host has bounded EE RAM, opt-in direct aliases, scratchpad,
-VU0 apertures, a host MMIO bus, and a narrow INTC register model, but still
+VU0 apertures, a host MMIO bus, and small INTC and D_STAT register models, but still
 no general TLB, BIOS, DMA, device scheduling, or full interrupt emulation. The syscall handling is deliberately
 opt-in, experimental, and incomplete. Reaching the PCs above is not evidence
 of full console initialization, correct kernel behaviour or graphical output.
