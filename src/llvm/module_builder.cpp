@@ -3067,9 +3067,12 @@ void module_builder::emit_mmi_insn(const ee::s_ee_instruction& ins)
                 store_vec4i32(vr); return;
             }
         }
-        // MMI2 (0x09): PAND / PXOR
+        // MMI2 (0x09): PCPYLD / PAND / PXOR
         if (fn == 0x09) {
             switch (sa) {
+            case 0x0e: // PCPYLD: rd[63:0]=rt[63:0], rd[127:64]=rs[63:0]
+                store_gpr(ins.rd, b.first, a.first);
+                return;
             case 0x12: // PAND
                 m_out += "  " + vr + " = and <2 x i64> " + va2 + ", " + vb2 + "\n";
                 store_vec2i64(vr); return;
@@ -3360,6 +3363,21 @@ void module_builder::emit_mmi_insn(const ee::s_ee_instruction& ins)
                     m_out += "  " + vr + " = xor <2 x i64> " + vo + ", <i64 -1, i64 -1>\n";
                 }
                 store_vec2i64(vr); return;
+            case 0x1b: // PCPYH: each doubleword broadcasts its own low halfword
+            {
+                const std::string low_halfword = newtemp();
+                const std::string high_halfword = newtemp();
+                const std::string result_lo = newtemp();
+                const std::string result_hi = newtemp();
+                m_out += "  " + low_halfword + " = and i64 " + b.first + ", 65535\n";
+                m_out += "  " + high_halfword + " = and i64 " + b.second + ", 65535\n";
+                m_out += "  " + result_lo + " = mul i64 " + low_halfword +
+                         ", 281479271743489\n"; // 0x0001000100010001
+                m_out += "  " + result_hi + " = mul i64 " + high_halfword +
+                         ", 281479271743489\n";
+                store_gpr(ins.rd, result_lo, result_hi);
+                return;
+            }
             default:
                 m_out += "  " + vr + " = or <2 x i64> " + va2 + ", " + vb2 + "\n";
                 store_vec2i64(vr); return;
