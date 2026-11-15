@@ -9,7 +9,7 @@
 
 namespace ee
 {
-// GS register-state and swizzled PSMCT, PSMZ and indexed PSMT uploads.
+// GS register-state and swizzled PSMCT, PSMZ and indexed PSMT transfers.
 // It does not rasterize primitives, present frames or implement GS IRQs.
 // Based on ps2-web-recomp/runtime/src/gs/gs.cpp::write/write_packed.
 struct s_ee_gs_state
@@ -25,6 +25,8 @@ struct s_ee_gs_state
     uint32_t m_transfer_pixels_written = 0; // across IMAGE events
     uint8_t m_transfer_pending_size = 0; // PSMCT24 incomplete pixel
     std::array<uint8_t, 3> m_transfer_pending{};
+    uint64_t m_local_copy_count = 0; // executed TRXDIR=2 operations
+    uint64_t m_local_copy_pixels = 0; // copied pixels, including overlaps
 
     // Snapshot of the GS internal CLUT, not a view of current VRAM.
     // TEX0/TEX2 CLD controls when entries are reloaded from GS memory.
@@ -43,6 +45,8 @@ class c_ee_gs_state
 public:
     static constexpr size_t k_max_image_bytes = 4u * 1024u * 1024u;
     static constexpr size_t k_vram_bytes = 4u * 1024u * 1024u;
+    // Keep per-batch staged writes bounded for malformed transfer sizes.
+    static constexpr size_t k_max_local_copy_pixels = k_vram_bytes;
 
     // GS VRAM is a separate 4 MiB allocation, not EE RAM.
     const std::vector<uint8_t>& vram() const;
@@ -121,6 +125,31 @@ private:
     // The returned index is in nibbles, wrapped over 4 MiB GS VRAM.
     static uint32_t psmt4_nibble_address(
         uint32_t base, uint32_t width, uint32_t x, uint32_t y
+    );
+
+    // Pixel formats share address lookup, but differ in byte/nibble
+    // widths. These helpers also preserve neighboring VRAM lanes.
+    static bool supported_psm(uint32_t psm);
+    static uint32_t read_pixel(
+        const std::vector<uint8_t>& vram,
+        uint32_t psm, uint32_t base, uint32_t width,
+        uint32_t x, uint32_t y
+    );
+    static s_vram_write pixel_write(
+        uint32_t psm, uint32_t base, uint32_t width,
+        uint32_t x, uint32_t y, uint32_t value,
+        uint8_t size
+    );
+    static void apply_vram_write(
+        std::vector<uint8_t>& vram, const s_vram_write& write
+    );
+
+    // TRXDIR=2 snapshots the source side before any destination write.
+    // The supplied VRAM view already includes earlier staged writes
+    // within this GIF event batch, not later ones.
+    static bool stage_local_copy(
+        s_ee_gs_state& state, const std::vector<uint8_t>& source_vram,
+        std::vector<s_vram_write>& writes
     );
 
     // Load a CLUT snapshot on TEX0/TEX2 writes. Staged IMAGE writes
