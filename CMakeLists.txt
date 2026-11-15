@@ -157,6 +157,9 @@ target_link_libraries(ee_gif_path3_test PRIVATE ee_core)
 add_executable(ee_gs_state_test tests/smoke/ee_gs_state_test.cpp)
 target_link_libraries(ee_gs_state_test PRIVATE ee_core)
 
+add_executable(ee_gs_vram_test tests/smoke/ee_gs_vram_test.cpp)
+target_link_libraries(ee_gs_vram_test PRIVATE ee_core)
+
 add_executable(ee_scratchpad_test tests/smoke/ee_scratchpad_test.cpp)
 target_link_libraries(ee_scratchpad_test PRIVATE ee_core)
 
@@ -247,6 +250,7 @@ add_test(NAME ee_tospr_chain COMMAND ee_tospr_chain_test)
 add_test(NAME ee_device_dma COMMAND ee_device_dma_test)
 add_test(NAME ee_gif_path3 COMMAND ee_gif_path3_test)
 add_test(NAME ee_gs_state COMMAND ee_gs_state_test)
+add_test(NAME ee_gs_vram COMMAND ee_gs_vram_test)
 add_test(NAME ee_scratchpad COMMAND ee_scratchpad_test)
 add_test(NAME ee_vu0_memory_map COMMAND ee_vu0_memory_map_test)
 add_test(NAME ee_unaligned_memory COMMAND ee_unaligned_memory_test)
