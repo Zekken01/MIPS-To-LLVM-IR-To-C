@@ -103,12 +103,25 @@ extern "C" uint32_t ee_exception_return(s_ee_cpu_state* cpu)
     if (!cpu) return 0;
 
     uint32_t& status = cpu->m_cop0[COP0_Status];
-    status &= ~STATUS_EXL;
+    uint32_t resume_pc = 0u;
 
-    const uint32_t epc = cpu->m_cop0[COP0_EPC];
-    cpu->m_pc = epc;
+    // R5900 ERET prioritizes ErrorEPC when ERL is set. Clearing EXL
+    // unconditionally would instead resume at the previous exception
+    // (often a syscall) and skip the guest's explicit ErrorEPC return.
+    if ((status & STATUS_ERL) != 0u)
+    {
+        resume_pc = cpu->m_cop0[COP0_ErrorEPC];
+        status &= ~STATUS_ERL;
+    }
+    else
+    {
+        resume_pc = cpu->m_cop0[COP0_EPC];
+        status &= ~STATUS_EXL;
+    }
+
+    cpu->m_pc = resume_pc;
     cpu->m_exit_reason = static_cast<uint32_t>(e_ee_exit_reason::EE_EXIT_DISPATCH);
-    return epc;
+    return resume_pc;
 }
 
 // ---- Interrupts ----------------------------------------------------------

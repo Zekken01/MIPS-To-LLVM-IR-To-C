@@ -777,6 +777,38 @@ and the shared successor PC must occur exactly once in dispatcher
 metadata. The real US ELF must be replayed again after this change
 to establish the next blocker beyond dispatch 97.
 
+### R5900 ERET ERL/ErrorEPC semantics (US SDBZ, dispatch 98)
+
+After the alternate-entry metadata change, a fresh real US ELF
+translation now runs to **dispatch 98**, entering the SYSCALL
+instruction at 0x00174994 again with V1=0, and stops at
+0x80000180 with exception code 8. The exception is *not*
+evidence that SDBZ expects syscall 0: the earlier COP0
+return sequence was wrong.
+
+The ELF itself contains `MTC0 $ra, ErrorEPC` at 0x0017F62C followed by
+`ERET` at 0x0017F634. The native runtime used to **always** clear
+EXL and return from EPC, regardless of the ERL flag. Consequently
+ERET resumed at the previous syscall EPC (0x00174994) rather
+than the guest's programmed ErrorEPC. This produced the spurious
+second syscall and blocked initialization.
+
+The R5900 architectural behavior, also present in
+`ps2-web-recomp/runtime/src/kernel.cpp::eret`, selects
+ErrorEPC and clears **ERL** if Status.ERL is set. Otherwise
+it selects EPC and clears **EXL**. The unrelated status bit
+must remain unchanged. Native MIPS ELFs explicitly load
+different ErrorEPC and EPC targets via MTC0, execute ERET,
+and check the resulting control flow, status, and register
+contents in both EXL and ERL cases. An additional native
+unit regression checks all combinations including ERL and EXL
+simultaneously.
+
+**Unverified after this fix:** the original US ELF must be
+replayed to establish the actual target of its ErrorEPC
+return and the next initialization dependency. No fake
+ErrorEPC or BIOS register contents are introduced.
+
 ## Validation limits
 
 CTest contains `game_runner_end_to_end` which creates small synthetic MIPS
