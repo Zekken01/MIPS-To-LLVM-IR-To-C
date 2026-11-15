@@ -11,6 +11,7 @@
 #include "module_builder.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -86,6 +87,236 @@ std::string native_function_symbol(uint32_t guest_entry)
     return buf;
 }
 
+
+// A full discovery produces an immutable snapshot of decoded PCs and
+// function boundaries. Re-emitting one guest function should not repeat
+// fixed-point JALR discovery and thousands of unrelated CFG analyses.
+// Cache files are local binary artifacts, tied to the exact input ELF.
+// They are never accepted on a fingerprint or format mismatch.
+uint64_t elf_fingerprint(const char* path)
+{
+    std::FILE* input = std::fopen(path, "rb");
+    if (!input)
+    {
+        return 0;
+    }
+
+    uint64_t hash = UINT64_C(14695981039346656037);
+    unsigned char buffer[65536];
+    size_t count = 0;
+    while ((count = std::fread(buffer, 1, sizeof(buffer), input)) != 0)
+    {
+        for (size_t i = 0; i < count; ++i)
+        {
+            hash ^= buffer[i];
+            hash *= UINT64_C(1099511628211);
+        }
+    }
+    const bool valid = !std::ferror(input);
+    std::fclose(input);
+    return valid ? hash : 0;
+}
+
+template<typename t_value>
+bool cache_write(std::FILE* output, const t_value& value)
+{
+    return std::fwrite(&value, sizeof(value), 1, output) == 1;
+}
+
+template<typename t_value>
+bool cache_read(std::FILE* input, t_value* value)
+{
+    return std::fread(value, sizeof(*value), 1, input) == 1;
+}
+
+bool write_discovery_cache(
+    const std::string& path,
+    uint64_t fingerprint,
+    const std::map<uint32_t, s_ee_instruction>& instructions,
+    const std::vector<uint32_t>& entries,
+    const std::set<uint32_t>& jalr_targets,
+    const std::set<uint32_t>& jalr_only,
+    const std::vector<s_static_jalr_site>& sites)
+{
+    const std::string temporary = path + ".tmp";
+    std::FILE* output = std::fopen(temporary.c_str(), "wb");
+    if (!output)
+    {
+        return false;
+    }
+
+    const char magic[8] = { 'E', 'E', 'I', 'D', 'X', 'C', '0', '1' };
+    const uint32_t insn_count = static_cast<uint32_t>(instructions.size());
+    const uint32_t entry_count = static_cast<uint32_t>(entries.size());
+    const uint32_t jalr_count = static_cast<uint32_t>(jalr_targets.size());
+    const uint32_t jalr_only_count = static_cast<uint32_t>(jalr_only.size());
+    const uint32_t site_count = static_cast<uint32_t>(sites.size());
+
+    bool ok = std::fwrite(magic, 1, sizeof(magic), output) == sizeof(magic)
+        && cache_write(output, fingerprint)
+        && cache_write(output, insn_count)
+        && cache_write(output, entry_count)
+        && cache_write(output, jalr_count)
+        && cache_write(output, jalr_only_count)
+        && cache_write(output, site_count);
+
+    for (const auto& kv : instructions)
+    {
+        ok = ok && cache_write(output, kv.first)
+            && cache_write(output, kv.second.opcode_word);
+    }
+    for (uint32_t entry : entries)
+    {
+        ok = ok && cache_write(output, entry);
+    }
+    for (uint32_t target : jalr_targets)
+    {
+        ok = ok && cache_write(output, target);
+    }
+    for (uint32_t target : jalr_only)
+    {
+        ok = ok && cache_write(output, target);
+    }
+    for (const s_static_jalr_site& site : sites)
+    {
+        const uint32_t source_register = site.m_source_register;
+        const uint32_t source_known = site.m_source_known ? 1u : 0u;
+        const uint32_t target_aligned = site.m_target_aligned ? 1u : 0u;
+        ok = ok && cache_write(output, site.m_caller_entry)
+            && cache_write(output, site.m_pc)
+            && cache_write(output, source_register)
+            && cache_write(output, source_known)
+            && cache_write(output, site.m_source_value)
+            && cache_write(output, site.m_target)
+            && cache_write(output, target_aligned);
+    }
+
+    if (std::fclose(output) != 0)
+    {
+        ok = false;
+    }
+    std::error_code ec;
+    if (ok)
+    {
+        // Older cache files may exist after a new full translation.
+        std::filesystem::remove(path, ec);
+        ec.clear();
+        std::filesystem::rename(temporary, path, ec);
+        ok = !ec;
+    }
+    if (!ok)
+    {
+        std::filesystem::remove(temporary, ec);
+    }
+    return ok;
+}
+
+bool read_discovery_cache(
+    const std::string& path,
+    uint64_t expected_fingerprint,
+    std::map<uint32_t, s_ee_instruction>* instructions,
+    std::vector<uint32_t>* entries,
+    std::set<uint32_t>* jalr_targets,
+    std::set<uint32_t>* jalr_only,
+    std::vector<s_static_jalr_site>* sites)
+{
+    std::FILE* input = std::fopen(path.c_str(), "rb");
+    if (!input)
+    {
+        return false;
+    }
+
+    char magic[8] = {};
+    uint64_t fingerprint = 0;
+    uint32_t insn_count = 0;
+    uint32_t entry_count = 0;
+    uint32_t jalr_count = 0;
+    uint32_t jalr_only_count = 0;
+    uint32_t site_count = 0;
+    bool ok = std::fread(magic, 1, sizeof(magic), input) == sizeof(magic)
+        && std::memcmp(magic, "EEIDXC01", 8) == 0
+        && cache_read(input, &fingerprint)
+        && fingerprint == expected_fingerprint
+        && cache_read(input, &insn_count)
+        && cache_read(input, &entry_count)
+        && cache_read(input, &jalr_count)
+        && cache_read(input, &jalr_only_count)
+        && cache_read(input, &site_count)
+        && insn_count <= 8000000
+        && entry_count <= 8000000
+        && jalr_count <= 8000000
+        && jalr_only_count <= 8000000
+        && site_count <= 8000000;
+
+    if (ok)
+    {
+        for (uint32_t i = 0; i < insn_count && ok; ++i)
+        {
+            uint32_t pc = 0;
+            uint32_t word = 0;
+            ok = cache_read(input, &pc) && cache_read(input, &word)
+                && (pc & 3u) == 0
+                && instructions->emplace(pc, decode(pc, word)).second;
+        }
+        for (uint32_t i = 0; i < entry_count && ok; ++i)
+        {
+            uint32_t entry = 0;
+            ok = cache_read(input, &entry);
+            if (ok)
+            {
+                entries->push_back(entry);
+            }
+        }
+        for (uint32_t i = 0; i < jalr_count && ok; ++i)
+        {
+            uint32_t target = 0;
+            ok = cache_read(input, &target);
+            if (ok)
+            {
+                jalr_targets->insert(target);
+            }
+        }
+        for (uint32_t i = 0; i < jalr_only_count && ok; ++i)
+        {
+            uint32_t target = 0;
+            ok = cache_read(input, &target);
+            if (ok)
+            {
+                jalr_only->insert(target);
+            }
+        }
+        for (uint32_t i = 0; i < site_count && ok; ++i)
+        {
+            s_static_jalr_site site;
+            uint32_t source_register = 0;
+            uint32_t source_known = 0;
+            uint32_t target_aligned = 0;
+            ok = cache_read(input, &site.m_caller_entry)
+                && cache_read(input, &site.m_pc)
+                && cache_read(input, &source_register)
+                && cache_read(input, &source_known)
+                && cache_read(input, &site.m_source_value)
+                && cache_read(input, &site.m_target)
+                && cache_read(input, &target_aligned)
+                && source_register < 32
+                && source_known <= 1
+                && target_aligned <= 1;
+            if (ok)
+            {
+                site.m_source_register = static_cast<uint8_t>(source_register);
+                site.m_source_known = source_known != 0;
+                site.m_target_aligned = target_aligned != 0;
+                sites->push_back(site);
+            }
+        }
+        ok = ok && std::fgetc(input) == EOF && !std::ferror(input)
+            && std::is_sorted(entries->begin(), entries->end())
+            && std::adjacent_find(entries->begin(), entries->end()) == entries->end();
+    }
+    std::fclose(input);
+    return ok;
+}
+
 } // namespace
 
 bool ee_recomp(const char* elf_path,
@@ -94,6 +325,7 @@ bool ee_recomp(const char* elf_path,
                std::string* error,
                const s_recomp_options& opts)
 {
+    const auto started = std::chrono::steady_clock::now();
     std::error_code ec;
     std::filesystem::create_directories(output_dir, ec);
 
@@ -112,6 +344,13 @@ bool ee_recomp(const char* elf_path,
     // segments is never decoded, so it never pollutes coverage.
     // ------------------------------------------------------------------
     std::map<uint32_t, s_ee_instruction> global_insns;
+    std::vector<uint32_t> entries;
+    std::set<uint32_t> static_jalr_targets;
+    std::set<uint32_t> jalr_only_entries;
+    std::vector<s_static_jalr_site> jalr_site_audit;
+
+    if (opts.discovery_cache_path.empty())
+    {
     std::set<uint32_t> worklist;
     std::set<uint32_t> discovered;
 
@@ -121,6 +360,7 @@ bool ee_recomp(const char* elf_path,
         }
     };
     seed_entry(loader.entry_point());
+    seed_entry(opts.only_function);
     for (const auto& sym : loader.symbols())
     {
         if (sym.is_function && !sym.is_undefined && sym.value != 0)
@@ -148,7 +388,6 @@ bool ee_recomp(const char* elf_path,
 
     // Seed entries from the ELF entry point and all defined STT_FUNC symbols
     // in executable segments. Calls discovered below are added to this set.
-    std::vector<uint32_t> entries;
     if (loader.entry_point() != 0 &&
         loader.is_executable_address(loader.entry_point())) {
         entries.push_back(loader.entry_point());
@@ -164,9 +403,6 @@ bool ee_recomp(const char* elf_path,
     std::sort(entries.begin(), entries.end());
     entries.erase(std::unique(entries.begin(), entries.end()), entries.end());
     std::set<uint32_t> entry_set(entries.begin(), entries.end());
-    std::set<uint32_t> static_jalr_targets;
-    std::set<uint32_t> jalr_only_entries;
-    std::vector<s_static_jalr_site> jalr_site_audit;
 
     // Iterate to a fixed point. Direct JAL/branch-and-link targets are
     // harvested as before. JALR targets are added only when CFG constant
@@ -246,6 +482,90 @@ bool ee_recomp(const char* elf_path,
         }
     }
 
+        // The full discovery is expensive, but identical for every
+        // single-function translation of the same ELF. Save it once.
+        const uint64_t fingerprint = elf_fingerprint(elf_path);
+        const std::string cache_path = std::string(output_dir)
+            + "/ee_discovery_cache.bin";
+        if (fingerprint == 0 ||
+            !write_discovery_cache(
+                cache_path, fingerprint, global_insns, entries,
+                static_jalr_targets, jalr_only_entries, jalr_site_audit))
+        {
+            std::fprintf(stderr,
+                "ee_recomp: warning: discovery snapshot not saved\n");
+        }
+    }
+    else
+    {
+        if (opts.only_function == 0)
+        {
+            if (error)
+            {
+                *error = "--discovery-cache requires --function";
+            }
+            return false;
+        }
+
+        const uint64_t fingerprint = elf_fingerprint(elf_path);
+        if (fingerprint == 0 ||
+            !read_discovery_cache(
+                opts.discovery_cache_path, fingerprint, &global_insns,
+                &entries, &static_jalr_targets, &jalr_only_entries,
+                &jalr_site_audit))
+        {
+            if (error)
+            {
+                *error = "discovery cache missing, stale or invalid; "
+                         "rerun without --discovery-cache";
+            }
+            return false;
+        }
+
+        // A dynamic dispatcher entry need not have been reachable from
+        // static ELF discovery. Decode newly reached instructions locally,
+        // without re-running all-ELF direct/indirect call discovery.
+        std::set<uint32_t> pending{opts.only_function};
+        std::set<uint32_t> seen;
+        const std::set<uint32_t> known_entries(entries.begin(), entries.end());
+        while (!pending.empty())
+        {
+            const uint32_t pc = *pending.begin();
+            pending.erase(pending.begin());
+            if (!seen.insert(pc).second || (pc != opts.only_function &&
+                known_entries.count(pc) != 0))
+            {
+                continue;
+            }
+            if (global_insns.count(pc) != 0)
+            {
+                continue;
+            }
+            uint32_t word = 0;
+            if (!loader.read32_at(pc, &word))
+            {
+                continue;
+            }
+            const s_ee_instruction ins = decode(pc, word);
+            global_insns.emplace(pc, ins);
+            for (uint32_t successor : collect_successors(ins))
+            {
+                if (ins.flow == e_ee_flow::FLOW_CALL &&
+                    successor == ins.jump_target)
+                {
+                    continue;
+                }
+                if (known_entries.count(successor) == 0)
+                {
+                    pending.insert(successor);
+                }
+            }
+        }
+        std::printf("  discovery cache: %zu decoded PCs, %zu entries\n",
+            global_insns.size(), entries.size());
+    }
+
+    const auto discovery_done = std::chrono::steady_clock::now();
     const std::vector<uint32_t> discovered_entries = entries;
     function_analyzer analyzer;
     llvm::llvm_context ctx("ee_game");
@@ -259,7 +579,9 @@ bool ee_recomp(const char* elf_path,
         collect_function_block_starts(global_insns, entries);
     std::set<uint32_t> function_pcs;
     std::set<uint32_t> analyzed_entries;
-    for (uint32_t ep : entries)
+    const std::vector<uint32_t> coverage_entries = opts.only_function != 0
+        ? std::vector<uint32_t>{opts.only_function} : entries;
+    for (uint32_t ep : coverage_entries)
     {
         if (!analyzed_entries.insert(ep).second) continue;
         std::vector<s_ee_function> fns =
@@ -313,6 +635,7 @@ bool ee_recomp(const char* elf_path,
         record_sub(ins, ok);
     }
 
+    const auto coverage_done = std::chrono::steady_clock::now();
     std::set<uint32_t> emitted_blocks;
 
     auto emit_entry = [&](uint32_t entry) -> bool {
@@ -428,6 +751,14 @@ bool ee_recomp(const char* elf_path,
         }
     }
 
+    const auto emission_done = std::chrono::steady_clock::now();
+    const auto milliseconds = [](auto start, auto end) {
+        return std::chrono::duration<double, std::milli>(end - start).count();
+    };
+    std::printf("ee_recomp timings: discovery=%.1fms coverage=%.1fms IR=%.1fms\n",
+        milliseconds(started, discovery_done),
+        milliseconds(discovery_done, coverage_done),
+        milliseconds(coverage_done, emission_done));
     result->function_count = (uint32_t)result->functions.size();
     result->function_scoped_pcs = (uint32_t)function_pcs.size();
     result->total_insns = total_insns;

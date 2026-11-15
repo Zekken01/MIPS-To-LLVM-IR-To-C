@@ -60,6 +60,21 @@ source lines; it primarily makes native symbols and compiled runtime
 information available to Windows debuggers. If you change the
 `--emit-opt` setting, perform a fresh compilation first.
 
+**Fast IR generation:** A full `ee_recomp` discovery now writes
+`ee_discovery_cache.bin` alongside `ee_functions.json`. For each later
+`--auto-expand` function, the runner passes this snapshot to
+`ee_recomp --discovery-cache=...`, avoiding repeated whole-ELF fixed-point
+JALR discovery and thousands of unrelated CFG analyses. Each snapshot stores
+decoded guest instruction PCs, known function entries, and JALR research
+results; the loader verifies its format and an ELF-content fingerprint before
+use. A stale/corrupt snapshot fails rather than silently producing wrong IR.
+The cache is optional: old work directories without it fall back to full
+discovery. Only-function coverage now describes the selected function rather
+than re-analysing every discovered function. Synthetic regression compares
+cached and uncached IR byte-for-byte and verifies invalidation. This speeds
+up the **IR generation** stage; the separate object emission and DLL linking
+stages are addressed below. Real SDBZ runs remain user-owned.
+
 Native host-object generation now supports verified incremental reuse. In
 `run_game.py`, `--emit-jobs=N` (default 2; use 4 or 8 if RAM permits)
 processes LLVM IR modules in parallel when more than one object needs

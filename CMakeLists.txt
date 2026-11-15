@@ -260,6 +260,10 @@ endif()
 
 enable_testing()
 if(Python3_Interpreter_FOUND)
+    add_test(NAME recomp_discovery_cache
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/tools/test_recomp_discovery_cache.py
+                $<TARGET_FILE:ee_recomp>)
     if(EE_HAVE_LLVM_JIT_TEST)
         add_test(NAME verify_ir_incremental
             COMMAND ${Python3_EXECUTABLE}
