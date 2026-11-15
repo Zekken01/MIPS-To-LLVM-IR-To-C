@@ -1,6 +1,6 @@
 #include "ee_runtime.h"
 #include "ee_memory.h"
-#include "ee_intc.h"
+#include "ee_hw_bus.h"
 #include "elf_loader.h"
 
 #include <cerrno>
@@ -539,14 +539,14 @@ int main(int argc, char** argv)
     // general device scheduler, BIOS, DMA or full exception lifecycle.
     ee::s_ee_cpu_state cpu{};
     ee::s_ee_vu0_state vu0{};
-    ee::c_ee_intc intc;
-    intc.bind_cpu(&cpu);
+    ee::c_ee_hw_bus hardware;
+    hardware.bind_cpu(&cpu);
     ee::s_ee_runtime runtime{};
     runtime.m_user = memory.get();
     runtime.m_vu0_state = &vu0;
-    runtime.m_mmio_user = &intc;
-    runtime.m_mmio_read = &ee::c_ee_intc::mmio_read;
-    runtime.m_mmio_write = &ee::c_ee_intc::mmio_write;
+    runtime.m_mmio_user = &hardware;
+    runtime.m_mmio_read = &ee::c_ee_hw_bus::mmio_read;
+    runtime.m_mmio_write = &ee::c_ee_hw_bus::mmio_write;
     cpu.m_pc = entry;
     cpu.m_gpr[29].m_lo = stack;
     cpu.m_exit_reason = static_cast<uint32_t>(
