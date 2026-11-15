@@ -128,8 +128,22 @@ Devices must explicitly call `c_ee_intc::raise(cause)` or
 `c_ee_dmac::raise(channel)` when a real hardware event occurs.
 No channel transfers or DMA-completion events are fabricated by writing
 DMA channel control addresses: those registers remain unsupported.
-The host does not yet provide a device-event scheduler, precise guest
-interrupt exception timing, or general GS/SIF/GIF/VIF behavior.
+A translated native dispatch now samples pending, enabled EE COP0
+interrupts **at mapped function-entry boundaries**. When an interrupt is
+pending and IE/EIE/IM permit it, the existing exception helper sets
+Cause.ExcCode=Int, EPC to the next guest entry PC, Status.EXL and the
+configured BEV exception vector, without invoking the next guest function.
+This also detects pending levels immediately after a translated ERET returns.
+The synthetic PC-zero entry sentinel is excluded. A `max_dispatches` limit
+can postpone a checkpoint until the next call; the pending level persists.
+The runner reports the exception rather than misdiagnosing it as a missing
+entry, but it cannot execute an unavailable BIOS handler.
+
+This is **not** cycle-accurate EE interrupt delivery. A translated function
+that runs indefinitely never reaches the next checkpoint; handling
+interrupts within such code requires instrumentation and a timed scheduler.
+The host does not yet provide device event timing, complete guest BIOS
+interrupt handlers, or general GS/SIF/GIF/VIF behavior.
 
 This still does **not** implement scratchpad DMA, TLB translation,
 VU1, guest address/alignment exceptions, or hardware-specific device
