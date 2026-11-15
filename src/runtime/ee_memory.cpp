@@ -330,6 +330,16 @@ bool in_mmio_aperture(uint32_t physical, size_t width)
         width <= static_cast<size_t>(k_mmio_end - physical);
 }
 
+// A transfer beginning inside a VU0 aperture must not spill into adjacent
+// hardware space and then be misrouted to an unrelated MMIO handler.
+bool begins_in_vu0_aperture(uint32_t physical)
+{
+    return (physical >= k_vu0_code_base &&
+            physical < k_vu0_code_base + k_vu0_window_size) ||
+           (physical >= k_vu0_data_base &&
+            physical < k_vu0_data_base + k_vu0_window_size);
+}
+
 ee_memory* runtime_memory(s_ee_runtime* runtime)
 {
     return static_cast<ee_memory*>(runtime != nullptr ? runtime->m_user : nullptr);
@@ -348,6 +358,11 @@ bool read_bus(s_ee_runtime* runtime, uint32_t guest, uint32_t width, s_ee_u128* 
             out->m_hi = load_le(bytes + 8, 8);
         }
         return true;
+    }
+
+    if (begins_in_vu0_aperture(physical))
+    {
+        return true; // unmapped or invalid-width VU0 access
     }
 
     if (!in_mmio_aperture(physical, width))
@@ -378,6 +393,11 @@ bool write_bus(s_ee_runtime* runtime, uint32_t guest, uint32_t width,
             store_le(bytes + 8, 8, value->m_hi);
         }
         return true;
+    }
+
+    if (begins_in_vu0_aperture(physical))
+    {
+        return true; // unmapped or invalid-width VU0 access
     }
 
     if (!in_mmio_aperture(physical, width))
