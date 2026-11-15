@@ -42,7 +42,7 @@ uint32_t trigger_dmac(ee::s_ee_cpu_state* cpu, ee::s_ee_runtime* runtime)
     {
         // Simulate a completed transfer only after an explicit host event,
         // not as an effect of a fabricated channel-start register.
-        ee::ee_mem_write32(runtime, ee::c_ee_dmac::k_stat_address, 1u << 16u);
+        ee::ee_mem_write32(runtime, ee::c_ee_dmac::k_stat_address, 1u << 17u);
         ee::c_ee_hw_bus* hardware =
             static_cast<ee::c_ee_hw_bus*>(runtime->m_mmio_user);
         if (!hardware->dmac().raise(1u))
