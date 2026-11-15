@@ -37,7 +37,13 @@ struct s_ee_dispatch_result
 
 // Run translated functions until execution exits the registered code set,
 // an architectural exit other than RETURN/DISPATCH occurs, or the dispatch
-// budget is exhausted. RETURN and DISPATCH both re-enter translated code when
+// budget is exhausted. A pending and enabled COP0 interrupt is sampled before
+// each mapped translated-function entry (except the synthetic PC-zero sentinel).
+// Interrupt entry sets EPC, Status.EXL, Cause and the exception vector PC,
+// returning EXITED + EE_EXIT_EXCEPTION without invoking the next function.
+// This is a *function-boundary* checkpoint; long-running translated functions
+// cannot be preempted until they return to this dispatcher.
+// RETURN and DISPATCH both re-enter translated code when
 // cpu->m_pc belongs to a registered function; otherwise the exit is returned
 // to the outer host (which may handle BIOS, IOP, MMIO, or other external code).
 //
