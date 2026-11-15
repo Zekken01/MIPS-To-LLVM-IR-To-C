@@ -222,9 +222,9 @@ complete 16-bit pixels; PSMT8 has 16 complete one-byte indices per
 quadword; PSMT8H also has 16 indices per quadword. PSMT4 and
 PSMT4HL/PSMT4HH each have 32 packed 4-bit indices per quadword
 (low nibble first). Odd-width rows do not introduce per-row padding;
-indices remain packed in raster order across rows. Indexed palette
-lookup/CLUT snapshots, depth swizzles and other unsupported formats,
-host-to-local HWREG, local-to-host downloads, and local-to-local
+indices remain packed in raster order across rows. Final RGBA
+conversion and texture filtering, depth swizzles and other unsupported
+formats, host-to-local HWREG, local-to-host downloads, and local-to-local
 copies remain unimplemented.
 
 Every event batch is applied to a temporary state copy and its VRAM
