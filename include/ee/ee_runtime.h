@@ -193,6 +193,19 @@ using t_ee_vu0_control_callback = uint32_t (*)(
     uint32_t pc
 );
 
+// Optional host-owned EE hardware-register dispatcher. The address is the
+// translated physical bus address, and width is one of 1, 2, 4, 8, 16.
+// The caller zero-initializes *value. Return true only when the device
+// actually handled the access; false means unmapped/unimplemented.
+// A 128-bit access is a SINGLE callback, never 2 separate 64-bit accesses,
+// so FIFO and other side-effectful registers can behave correctly.
+using t_ee_mmio_read_callback = bool (*)(
+    void* user, uint32_t physical_address, uint32_t width, s_ee_u128* value
+);
+using t_ee_mmio_write_callback = bool (*)(
+    void* user, uint32_t physical_address, uint32_t width, const s_ee_u128* value
+);
+
 struct s_ee_runtime
 {
     // Opaque EE memory/runtime context; retained as the first ABI member.
@@ -207,6 +220,12 @@ struct s_ee_runtime
     // Optional host-side VU0/VU1 control actions for CTC2 special registers.
     void* m_vu0_control_user;
     t_ee_vu0_control_callback m_vu0_control;
+
+    // Installed by the host, never implicitly emulated by the recompiler.
+    // No device callbacks means reads return zero and writes are ignored.
+    void* m_mmio_user = nullptr;
+    t_ee_mmio_read_callback m_mmio_read = nullptr;
+    t_ee_mmio_write_callback m_mmio_write = nullptr;
 };
 
 // Outside a branch delay slot, all four transfer forms only catch VU0 up to
@@ -220,10 +239,11 @@ e_ee_vu0_sync_mode ee_vu0_transfer_sync_mode(
 extern "C" {
 #endif
 
-// Guest memory access helpers. The prototype currently maps bounded EE RAM,
-// scratchpad, and two VU0 windows (when m_vu0_state is installed). Full
-// address translation, alignment exceptions, general MMIO and VU1 are NOT
-// implemented. The lifter calls these rather than dereferencing host pointers.
+// Guest memory access helpers. The prototype maps bounded EE RAM,
+// scratchpad, and VU0 memories, and can dispatch 0x10000000..0x12ffffff
+// hardware bus addresses through host-provided MMIO callbacks. It does NOT
+// implement the TLB, alignment exceptions, VU1, or actual hardware devices.
+// The lifter calls these rather than dereferencing host pointers.
 uint8_t  ee_mem_read8 (s_ee_runtime* rt, uint32_t addr);
 uint16_t ee_mem_read16(s_ee_runtime* rt, uint32_t addr);
 uint32_t ee_mem_read32(s_ee_runtime* rt, uint32_t addr);
