@@ -98,11 +98,27 @@ also mapped when the runtime has an `m_vu0_state`:
 `0x11004000..0x11004fff` for VU0 data memory. These addresses match
 `ps2-web-recomp/runtime/src/memory.cpp`; the mapped micro-program array is
 the same one used by `ee_vu0_fetch_micro_instruction`.
-The map rejects cross-boundary reads/writes without silently wrapping,
-but this does **not** implement scratchpad DMA, TLB translations, VU1,
-hardware MMIO, or address exceptions on invalid accesses. VU0 code writes
-are visible to the current interpreter fetch; future compiled microcode
-engines will need explicit invalidation if they cache decoded programs. `--hle-startup` is opt-in and only covers explicitly
+The map rejects cross-boundary reads/writes without silently wrapping.
+The EE physical-address dispatcher also supports **opt-in** direct aliases:
+`0x80000000..0xbfffffff` aliases physical `0x00000000..0x1fffffff`;
+`0x20000000..0x3fffffff` aliases physical `0x00000000..0x0fffffff`.
+This follows `ps2-web-recomp/runtime/src/memory.cpp::physical()`, but RAM
+accesses remain bounded by the actual allocated RAM size rather than
+silently mirroring unbacked physical addresses.
+
+A host may now attach `s_ee_runtime::m_mmio_read` and `m_mmio_write`.
+Within the physical EE hardware aperture `0x10000000..0x12ffffff`,
+the dispatcher supplies the **physical address**, exact access width
+(1/2/4/8/16 bytes), and 128-bit value. A 16-byte FIFO access is a
+single callback, not two 8-byte callbacks. VU0 memory has priority.
+Unimplemented devices return zero on reads and ignore writes by default.
+No actual registers or DMA engines are modeled by these hooks.
+
+This still does **not** implement scratchpad DMA, TLB translation,
+VU1, guest address/alignment exceptions, or hardware-specific device
+semantics. VU0 code writes are visible to the current interpreter fetch;
+future compiled microcode engines will need explicit invalidation if
+they cache decoded programs. `--hle-startup` is opt-in and only covers explicitly
 recognized kernel calls; it does not implement BIOS, IOP, GS, SIF or DMA.
 
 ## Confirmed real-ELF checkpoints

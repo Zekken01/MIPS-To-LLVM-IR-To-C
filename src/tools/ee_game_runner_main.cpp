@@ -125,7 +125,7 @@ void usage(const char* program)
         "  --stack=0xADDR       Initial EE stack pointer (default 0x01fff000)\n"
         "  --trace              Print guest PC, reason and dispatch count per step\n"
         "  --hle-startup        Handle selected startup and semaphore kernel calls\n"
-        "  --kseg-ram           Alias KSEG0/KSEG1 addresses into 32 MiB EE RAM\n"
+        "  --kseg-ram           Enable direct EE RAM aliases (KSEG0/1 and 0x2/0x3)\n"
         "  --kernel-ram=FILE    Load 512 KiB of captured EE kernel RAM (not BIOS ROM)\n"
         "  --help               Show this message\n"
         "\n"
