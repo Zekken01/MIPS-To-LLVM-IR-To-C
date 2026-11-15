@@ -7,11 +7,11 @@
 
 namespace ee
 {
-// EE DMA interrupt registers and conservative SPR normal-mode DMA.
+// EE DMA registers, normal-mode SPR DMA, and bounded fromSPR chains.
 // Reference: ps2-web-recomp/runtime/src/dmac.cpp and hw.cpp.
-// The channel 8/9 normal-mode operations below execute synchronously;
-// DMA chains, interleave, MFIFO, bus contention and timed completion
-// are not emulated.
+// Transfers execute synchronously. The fromSPR chain path is prevalidated
+// before any RAM writes; interleave, MFIFO, toSPR chains, arbitration,
+// and cycle-accurate completion remain unimplemented.
 class c_ee_dmac
 {
 public:
@@ -49,6 +49,9 @@ private:
     bool read_spr_channel(uint32_t address, uint32_t* value) const;
     bool write_spr_channel(uint32_t address, uint32_t value);
     bool transfer_spr_normal(uint32_t channel);
+    bool transfer_from_spr_chain();
+    bool walk_from_spr_chain(s_spr_channel& channel, bool copy_data);
+    bool transfer_from_spr_span(s_spr_channel& channel, uint32_t qwc, bool copy_data);
 
     s_ee_cpu_state* m_cpu = nullptr;
     ee_memory* m_memory = nullptr;
