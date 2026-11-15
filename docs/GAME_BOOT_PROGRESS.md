@@ -1204,6 +1204,41 @@ The previously translated **189 game functions remain reusable**
 without invalidating their cache. The next user-run
 is needed to verify the actual subsequent boot path.
 
+### First real-game unsupported instruction: PCPYUD (US SDBZ, dispatch 6032)
+
+The ninth user-owned Windows run got past the new EndOfHeap HLE
+and auto-translated **26 additional functions** (189 -> **215**),
+with no IR verification or linker failures. It reached **6,032
+dispatches**, then stopped with `UNSUPPORTED(4)` at guest PC
+`0x0018E154` in `sub_0x18E0D8`. The translated function
+contained 56 decoded instructions; exactly one was explicitly
+unsupported by the decoder.
+
+Inspection of the user-provided US ELF (SLUS_214.42), mapped at
+guest vaddr 0x00100000 from file offset 0x80, establishes the
+**exact instruction word 0x70491BA9** at guest PC `0x0018E154`.
+This decodes to **PCPYUD $v1, $v0, $t1**: R5900 MMI3,
+funct 0x29, subopcode 0x0E. It concatenates the *upper
+doublewords* of its sources: the destination low 64 bits
+receive `rs[127:64]`, and the destination high 64 bits
+receive `rt[127:64]`. The operation does not touch HI/LO
+or raise an architectural exception.
+
+The EE decoder now validates MMI3/0x0E as `pcpyud`, and
+LLVM emission writes both complete 64-bit halves using
+the pre-write sources, including cases where `rd == rs`
+or `rd == rt`. A regression checks the exact 0x70491BA9
+game opcode and JIT execution at O0-O3, distinct source
+halves, zero-register behavior and destination aliasing.
+
+**Cache consequence:** this changes decoder validity and emitted
+LLVM guest instructions. The provenance check must invalidate
+and rebuild the 215-function translated cache; reusing the old
+`sub_0x18E0D8` would still produce `EE_EXIT_UNSUPPORTED`.
+The next real-game run will establish the following genuine
+runtime boundary. No additional MMI opcodes have been enabled
+without exact implementations.
+
 ## Validation limits
 
 CTest contains `game_runner_end_to_end` which creates small synthetic MIPS
