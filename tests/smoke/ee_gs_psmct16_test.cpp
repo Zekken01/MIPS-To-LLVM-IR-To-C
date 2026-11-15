@@ -84,7 +84,7 @@ int main()
     constexpr uint32_t k_bp = 0x200u;
     constexpr uint32_t k_base = k_bp * 256u;
 
-    // reserved PSM 0x03 uses depth swizzling and remains unsupported.
+    // Reserved destination format 0x03 remains unsupported.
     // Rejection must not commit TRXDIR or start an upload.
     if (!reg(gs, 0x50u, bitblt(k_bp, 2u, 0x03u)) ||
         !reg(gs, 0x51u, trxpos(0u, 63u)) ||
