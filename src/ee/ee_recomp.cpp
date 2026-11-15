@@ -86,6 +86,236 @@ std::string native_function_symbol(uint32_t guest_entry)
     return buf;
 }
 
+
+// A full discovery produces an immutable snapshot of decoded PCs and
+// function boundaries. Re-emitting one guest function should not repeat
+// fixed-point JALR discovery and thousands of unrelated CFG analyses.
+// Cache files are local binary artifacts, tied to the exact input ELF.
+// They are never accepted on a fingerprint or format mismatch.
+uint64_t elf_fingerprint(const char* path)
+{
+    std::FILE* input = std::fopen(path, "rb");
+    if (!input)
+    {
+        return 0;
+    }
+
+    uint64_t hash = UINT64_C(14695981039346656037);
+    unsigned char buffer[65536];
+    size_t count = 0;
+    while ((count = std::fread(buffer, 1, sizeof(buffer), input)) != 0)
+    {
+        for (size_t i = 0; i < count; ++i)
+        {
+            hash ^= buffer[i];
+            hash *= UINT64_C(1099511628211);
+        }
+    }
+    const bool valid = !std::ferror(input);
+    std::fclose(input);
+    return valid ? hash : 0;
+}
+
+template<typename t_value>
+bool cache_write(std::FILE* output, const t_value& value)
+{
+    return std::fwrite(&value, sizeof(value), 1, output) == 1;
+}
+
+template<typename t_value>
+bool cache_read(std::FILE* input, t_value* value)
+{
+    return std::fread(value, sizeof(*value), 1, input) == 1;
+}
+
+bool write_discovery_cache(
+    const std::string& path,
+    uint64_t fingerprint,
+    const std::map<uint32_t, s_ee_instruction>& instructions,
+    const std::vector<uint32_t>& entries,
+    const std::set<uint32_t>& jalr_targets,
+    const std::set<uint32_t>& jalr_only,
+    const std::vector<s_static_jalr_site>& sites)
+{
+    const std::string temporary = path + ".tmp";
+    std::FILE* output = std::fopen(temporary.c_str(), "wb");
+    if (!output)
+    {
+        return false;
+    }
+
+    const char magic[8] = { 'E', 'E', 'I', 'D', 'X', 'C', '0', '1' };
+    const uint32_t insn_count = static_cast<uint32_t>(instructions.size());
+    const uint32_t entry_count = static_cast<uint32_t>(entries.size());
+    const uint32_t jalr_count = static_cast<uint32_t>(jalr_targets.size());
+    const uint32_t jalr_only_count = static_cast<uint32_t>(jalr_only.size());
+    const uint32_t site_count = static_cast<uint32_t>(sites.size());
+
+    bool ok = std::fwrite(magic, 1, sizeof(magic), output) == sizeof(magic)
+        && cache_write(output, fingerprint)
+        && cache_write(output, insn_count)
+        && cache_write(output, entry_count)
+        && cache_write(output, jalr_count)
+        && cache_write(output, jalr_only_count)
+        && cache_write(output, site_count);
+
+    for (const auto& kv : instructions)
+    {
+        ok = ok && cache_write(output, kv.first)
+            && cache_write(output, kv.second.opcode_word);
+    }
+    for (uint32_t entry : entries)
+    {
+        ok = ok && cache_write(output, entry);
+    }
+    for (uint32_t target : jalr_targets)
+    {
+        ok = ok && cache_write(output, target);
+    }
+    for (uint32_t target : jalr_only)
+    {
+        ok = ok && cache_write(output, target);
+    }
+    for (const s_static_jalr_site& site : sites)
+    {
+        const uint32_t source_register = site.m_source_register;
+        const uint32_t source_known = site.m_source_known ? 1u : 0u;
+        const uint32_t target_aligned = site.m_target_aligned ? 1u : 0u;
+        ok = ok && cache_write(output, site.m_caller_entry)
+            && cache_write(output, site.m_pc)
+            && cache_write(output, source_register)
+            && cache_write(output, source_known)
+            && cache_write(output, site.m_source_value)
+            && cache_write(output, site.m_target)
+            && cache_write(output, target_aligned);
+    }
+
+    if (std::fclose(output) != 0)
+    {
+        ok = false;
+    }
+    std::error_code ec;
+    if (ok)
+    {
+        // Older cache files may exist after a new full translation.
+        std::filesystem::remove(path, ec);
+        ec.clear();
+        std::filesystem::rename(temporary, path, ec);
+        ok = !ec;
+    }
+    if (!ok)
+    {
+        std::filesystem::remove(temporary, ec);
+    }
+    return ok;
+}
+
+bool read_discovery_cache(
+    const std::string& path,
+    uint64_t expected_fingerprint,
+    std::map<uint32_t, s_ee_instruction>* instructions,
+    std::vector<uint32_t>* entries,
+    std::set<uint32_t>* jalr_targets,
+    std::set<uint32_t>* jalr_only,
+    std::vector<s_static_jalr_site>* sites)
+{
+    std::FILE* input = std::fopen(path.c_str(), "rb");
+    if (!input)
+    {
+        return false;
+    }
+
+    char magic[8] = {};
+    uint64_t fingerprint = 0;
+    uint32_t insn_count = 0;
+    uint32_t entry_count = 0;
+    uint32_t jalr_count = 0;
+    uint32_t jalr_only_count = 0;
+    uint32_t site_count = 0;
+    bool ok = std::fread(magic, 1, sizeof(magic), input) == sizeof(magic)
+        && std::memcmp(magic, "EEIDXC01", 8) == 0
+        && cache_read(input, &fingerprint)
+        && fingerprint == expected_fingerprint
+        && cache_read(input, &insn_count)
+        && cache_read(input, &entry_count)
+        && cache_read(input, &jalr_count)
+        && cache_read(input, &jalr_only_count)
+        && cache_read(input, &site_count)
+        && insn_count <= 8000000
+        && entry_count <= 8000000
+        && jalr_count <= 8000000
+        && jalr_only_count <= 8000000
+        && site_count <= 8000000;
+
+    if (ok)
+    {
+        for (uint32_t i = 0; i < insn_count && ok; ++i)
+        {
+            uint32_t pc = 0;
+            uint32_t word = 0;
+            ok = cache_read(input, &pc) && cache_read(input, &word)
+                && (pc & 3u) == 0
+                && instructions->emplace(pc, decode(pc, word)).second;
+        }
+        for (uint32_t i = 0; i < entry_count && ok; ++i)
+        {
+            uint32_t entry = 0;
+            ok = cache_read(input, &entry);
+            if (ok)
+            {
+                entries->push_back(entry);
+            }
+        }
+        for (uint32_t i = 0; i < jalr_count && ok; ++i)
+        {
+            uint32_t target = 0;
+            ok = cache_read(input, &target);
+            if (ok)
+            {
+                jalr_targets->insert(target);
+            }
+        }
+        for (uint32_t i = 0; i < jalr_only_count && ok; ++i)
+        {
+            uint32_t target = 0;
+            ok = cache_read(input, &target);
+            if (ok)
+            {
+                jalr_only->insert(target);
+            }
+        }
+        for (uint32_t i = 0; i < site_count && ok; ++i)
+        {
+            s_static_jalr_site site;
+            uint32_t source_register = 0;
+            uint32_t source_known = 0;
+            uint32_t target_aligned = 0;
+            ok = cache_read(input, &site.m_caller_entry)
+                && cache_read(input, &site.m_pc)
+                && cache_read(input, &source_register)
+                && cache_read(input, &source_known)
+                && cache_read(input, &site.m_source_value)
+                && cache_read(input, &site.m_target)
+                && cache_read(input, &target_aligned)
+                && source_register < 32
+                && source_known <= 1
+                && target_aligned <= 1;
+            if (ok)
+            {
+                site.m_source_register = static_cast<uint8_t>(source_register);
+                site.m_source_known = source_known != 0;
+                site.m_target_aligned = target_aligned != 0;
+                sites->push_back(site);
+            }
+        }
+        ok = ok && std::fgetc(input) == EOF && !std::ferror(input)
+            && std::is_sorted(entries->begin(), entries->end())
+            && std::adjacent_find(entries->begin(), entries->end()) == entries->end();
+    }
+    std::fclose(input);
+    return ok;
+}
+
 } // namespace
 
 bool ee_recomp(const char* elf_path,
