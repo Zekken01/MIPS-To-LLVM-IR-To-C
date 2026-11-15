@@ -6,6 +6,27 @@
 
 namespace ee {
 
+namespace
+{
+uint64_t load_le(const uint8_t* bytes, size_t count)
+{
+    uint64_t value = 0;
+    for (size_t i = 0; i < count; ++i)
+    {
+        value |= static_cast<uint64_t>(bytes[i]) << (i * 8u);
+    }
+    return value;
+}
+
+void store_le(uint8_t* bytes, size_t count, uint64_t value)
+{
+    for (size_t i = 0; i < count; ++i)
+    {
+        bytes[i] = static_cast<uint8_t>(value >> (i * 8u));
+    }
+}
+} // namespace
+
 ee_memory::ee_memory(size_t size)
     : m_size(size)
 {
@@ -39,52 +60,97 @@ uint32_t ee_memory::normalize_ram_address(uint32_t addr) const
     return addr;
 }
 
+
+const uint8_t* ee_memory::map_address(uint32_t addr, size_t len) const
+{
+    // Scratchpad has its own storage. It is NOT part of RAM and is not
+    // affected by the optional KSEG0/KSEG1 physical-RAM mirror mode.
+    if (addr >= k_scratchpad_base &&
+        static_cast<uint64_t>(addr - k_scratchpad_base) < k_scratchpad_size)
+    {
+        const size_t offset = static_cast<size_t>(addr - k_scratchpad_base);
+        return len <= k_scratchpad_size - offset ? m_scratchpad + offset : nullptr;
+    }
+
+    const size_t physical = normalize_ram_address(addr);
+    if (m_data == nullptr || physical > m_size || len > m_size - physical)
+    {
+        return nullptr;
+    }
+    return m_data + physical;
+}
+
+uint8_t* ee_memory::map_address(uint32_t addr, size_t len)
+{
+    return const_cast<uint8_t*>(
+        static_cast<const ee_memory*>(this)->map_address(addr, len)
+    );
+}
+
 bool ee_memory::contains(uint32_t addr, size_t len) const
 {
-    const size_t physical = normalize_ram_address(addr);
-    return m_data != nullptr && physical <= m_size && len <= m_size - physical;
+    return map_address(addr, len) != nullptr;
 }
 
 uint8_t ee_memory::read8(uint32_t addr)
 {
-    addr = normalize_ram_address(addr);
-    return contains(addr, 1) ? m_data[addr] : 0;
+    const uint8_t* bytes = map_address(addr, 1);
+    return bytes != nullptr ? bytes[0] : 0;
 }
 
 uint16_t ee_memory::read16(uint32_t addr)
 {
-    addr = normalize_ram_address(addr);
-    if (!contains(addr, 2)) return 0;
-    return (uint16_t)(m_data[addr] | (m_data[addr + 1] << 8));
+    const uint8_t* bytes = map_address(addr, 2);
+    return bytes != nullptr ? static_cast<uint16_t>(load_le(bytes, 2)) : 0;
 }
 
 void ee_memory::read128(uint32_t addr, s_ee_u128* out)
 {
-    if (out) {
-        out->m_lo = read64(addr);
-        out->m_hi = read64(addr + 8);
+    if (out == nullptr)
+    {
+        return;
+    }
+
+    const uint8_t* bytes = map_address(addr, 16);
+    if (bytes == nullptr)
+    {
+        *out = {};
+        return;
+    }
+
+    out->m_lo = load_le(bytes, 8);
+    out->m_hi = load_le(bytes + 8, 8);
+}
+
+void ee_memory::write8(uint32_t addr, uint8_t value)
+{
+    if (uint8_t* bytes = map_address(addr, 1))
+    {
+        bytes[0] = value;
     }
 }
 
-void ee_memory::write8(uint32_t addr, uint8_t v)
+void ee_memory::write16(uint32_t addr, uint16_t value)
 {
-    addr = normalize_ram_address(addr);
-    if (contains(addr, 1)) m_data[addr] = v;
+    if (uint8_t* bytes = map_address(addr, 2))
+    {
+        store_le(bytes, 2, value);
+    }
 }
 
-void ee_memory::write16(uint32_t addr, uint16_t v)
+void ee_memory::write128(uint32_t addr, const s_ee_u128* value)
 {
-    addr = normalize_ram_address(addr);
-    if (!contains(addr, 2)) return;
-    m_data[addr]   = (uint8_t)(v & 0xff);
-    m_data[addr+1] = (uint8_t)((v >> 8) & 0xff);
-}
+    if (value == nullptr)
+    {
+        return;
+    }
 
-void ee_memory::write128(uint32_t addr, const s_ee_u128* v)
-{
-    if (!v) return;
-    write64(addr,   v->m_lo);
-    write64(addr+8, v->m_hi);
+    // Reject a cross-boundary quadword in its entirety.
+    if (uint8_t* bytes = map_address(addr, 16))
+    {
+        store_le(bytes, 8, value->m_lo);
+        store_le(bytes + 8, 8, value->m_hi);
+    }
 }
 
 void ee_memory::set_ram_range(uint32_t base, uint32_t size)
@@ -94,10 +160,22 @@ void ee_memory::set_ram_range(uint32_t base, uint32_t size)
     m_ram_configured = true;
 }
 
+
 bool ee_memory::in_ram_range(uint32_t addr, size_t len) const
 {
-    if (!m_ram_configured) return false;
-    return addr >= m_ram_base && addr + len <= m_ram_base + m_ram_size;
+    if (!m_ram_configured || m_data == nullptr)
+    {
+        return false;
+    }
+
+    // Verify both the configured range and the actual host buffer before
+    // allowing the unchecked direct_* path. Do not accept wraparound.
+    const size_t start = static_cast<size_t>(addr);
+    const size_t range_start = static_cast<size_t>(m_ram_base);
+    const size_t range_end = range_start + static_cast<size_t>(m_ram_size);
+    return start >= range_start && start <= range_end &&
+        len <= range_end - start &&
+        start <= m_size && len <= m_size - start;
 }
 
 uint32_t ee_memory::direct_read32(uint32_t addr)
@@ -127,42 +205,59 @@ void ee_memory::direct_write64(uint32_t addr, uint64_t v)
     direct_write32(addr+4, (uint32_t)((v >> 32) & 0xffffffffu));
 }
 
+
 uint32_t ee_memory::read32(uint32_t addr)
 {
-    addr = normalize_ram_address(addr);
-    if (in_ram_range(addr, 4)) return direct_read32(addr);
-    if (!contains(addr, 4)) return 0;
-    return (uint32_t)(m_data[addr] | (m_data[addr + 1] << 8) |
-                      (m_data[addr + 2] << 16) | (m_data[addr + 3] << 24));
+    const uint32_t physical = normalize_ram_address(addr);
+    if (in_ram_range(physical, 4))
+    {
+        return direct_read32(physical);
+    }
+
+    const uint8_t* bytes = map_address(addr, 4);
+    return bytes != nullptr ? static_cast<uint32_t>(load_le(bytes, 4)) : 0;
 }
 
-void ee_memory::write32(uint32_t addr, uint32_t v)
+void ee_memory::write32(uint32_t addr, uint32_t value)
 {
-    addr = normalize_ram_address(addr);
-    if (in_ram_range(addr, 4)) { direct_write32(addr, v); return; }
-    if (!contains(addr, 4)) return;
-    m_data[addr]   = (uint8_t)(v & 0xff);
-    m_data[addr+1] = (uint8_t)((v >> 8) & 0xff);
-    m_data[addr+2] = (uint8_t)((v >> 16) & 0xff);
-    m_data[addr+3] = (uint8_t)((v >> 24) & 0xff);
+    const uint32_t physical = normalize_ram_address(addr);
+    if (in_ram_range(physical, 4))
+    {
+        direct_write32(physical, value);
+        return;
+    }
+
+    if (uint8_t* bytes = map_address(addr, 4))
+    {
+        store_le(bytes, 4, value);
+    }
 }
 
 uint64_t ee_memory::read64(uint32_t addr)
 {
-    addr = normalize_ram_address(addr);
-    if (in_ram_range(addr, 8)) return direct_read64(addr);
-    if (!contains(addr, 8)) return 0;
-    uint64_t lo = read32(addr);
-    uint64_t hi = read32(addr + 4);
-    return lo | (hi << 32);
+    const uint32_t physical = normalize_ram_address(addr);
+    if (in_ram_range(physical, 8))
+    {
+        return direct_read64(physical);
+    }
+
+    const uint8_t* bytes = map_address(addr, 8);
+    return bytes != nullptr ? load_le(bytes, 8) : 0;
 }
 
-void ee_memory::write64(uint32_t addr, uint64_t v)
+void ee_memory::write64(uint32_t addr, uint64_t value)
 {
-    addr = normalize_ram_address(addr);
-    if (in_ram_range(addr, 8)) { direct_write64(addr, v); return; }
-    write32(addr,   (uint32_t)(v & 0xffffffffu));
-    write32(addr+4, (uint32_t)((v >> 32) & 0xffffffffu));
+    const uint32_t physical = normalize_ram_address(addr);
+    if (in_ram_range(physical, 8))
+    {
+        direct_write64(physical, value);
+        return;
+    }
+
+    if (uint8_t* bytes = map_address(addr, 8))
+    {
+        store_le(bytes, 8, value);
+    }
 }
 
 namespace
