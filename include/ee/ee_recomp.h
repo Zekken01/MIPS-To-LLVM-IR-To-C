@@ -76,6 +76,9 @@ struct s_recomp_options
     uint32_t only_function = 0;
     // LLVM optimisation level hint (0-3); currently logged only.
     int opt_level = 0;
+    // Reuse a verified full-ELF discovery snapshot when emitting one function.
+    // The snapshot is tied to the exact source ELF and discovery format.
+    std::string discovery_cache_path;
 };
 
 // Recompile functions discovered in `elf_path` into per-function LLVM IR
