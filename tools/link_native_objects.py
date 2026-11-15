@@ -243,6 +243,7 @@ def main():
 
         required_sources = [
             source_root / "src/runtime/ee_memory.cpp",
+            source_root / "src/runtime/ee_unaligned.cpp",
             source_root / "src/runtime/ee_exceptions.cpp",
             source_root / "src/runtime/ee_vu0.cpp",
             source_root / "src/ee/recompiled_functions.cpp",
