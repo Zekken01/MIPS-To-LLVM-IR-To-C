@@ -913,7 +913,9 @@ int main(int argc, char** argv)
             }
             if ((service >= 0x10u && service <= 0x17u) ||
                 (service >= 0x1au && service <= 0x1du) ||
-                service == 0x20u || service == 0x2fu ||
+                service == 0x20u ||
+                service == 0x29u || service == 0x2au ||
+                service == 0x2fu ||
                 service == 0x3cu || service == 0x3du ||
                 service == 0x40u || service == 0x64u ||
                 service == 0x68u || service == 0x74u)
@@ -1151,6 +1153,58 @@ int main(int argc, char** argv)
                                 thread.m_stack_size, thread.m_gp,
                                 thread.m_priority, thread.m_attr,
                                 thread.m_option, parameter_address
+                            );
+                        }
+                    }
+                }
+
+                else if (service == 0x29u || service == 0x2au)
+                {
+                    // ChangeThreadPriority / iChangeThreadPriority.
+                    // Reference kernel maps thread ID 0 to the currently
+                    // running thread; returns the PREVIOUS priority and
+                    // masks the requested priority into [0, 127].
+                    // All guest threads other than ID 1 remain dormant
+                    // until StartThread and scheduling are implemented.
+                    const uint32_t requested_id =
+                        static_cast<uint32_t>(cpu.m_gpr[4].m_lo);
+                    const uint32_t new_priority =
+                        static_cast<uint32_t>(cpu.m_gpr[5].m_lo) & 127u;
+                    const uint32_t thread_id = requested_id == 0u
+                        ? current_thread_id : requested_id;
+                    const bool found = thread_id > 0u &&
+                        thread_id < 256u && threads[thread_id].m_used;
+                    if (!found)
+                    {
+                        cpu.m_gpr[2].m_lo =
+                            static_cast<uint64_t>(-1ll);
+                        cpu.m_gpr[2].m_hi = 0u;
+                        if (trace)
+                        {
+                            std::printf(
+                                "HLE %sChangeThreadPriority: id=%u "
+                                "not found, result=-1\n",
+                                service == 0x2au ? "i" : "",
+                                requested_id
+                            );
+                        }
+                    }
+                    else
+                    {
+                        s_kernel_thread& thread = threads[thread_id];
+                        const uint32_t previous_priority =
+                            thread.m_priority;
+                        thread.m_priority = new_priority;
+                        cpu.m_gpr[2].m_lo = previous_priority;
+                        cpu.m_gpr[2].m_hi = 0u;
+                        if (trace)
+                        {
+                            std::printf(
+                                "HLE %sChangeThreadPriority: id=%u "
+                                "old=%u new=%u (no scheduler)\n",
+                                service == 0x2au ? "i" : "",
+                                thread_id, previous_priority,
+                                new_priority
                             );
                         }
                     }
