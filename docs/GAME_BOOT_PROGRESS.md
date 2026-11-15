@@ -173,10 +173,31 @@ DMAC does not advance or raise completion. It does not infer GS register
 side effects or perform rasterization; there is deliberately **no**
 default event sink and the native game runner still leaves it unbound.
 
-The device DMA transport and optional parser are **not** a VIF command
-interpreter, GIF packet renderer, GS state machine, DMA chain engine
-for channels 0..2, or timed device queue. Nonempty DMA remains
-outstanding until an accepting device consumer is connected.
+The opt-in **GS register-state sink** (`c_ee_gs_state`) can now receive
+the PATH3 parser's complete event batches. Based on
+`ps2-web-recomp/runtime/src/gs/gs.cpp::write/write_packed`, it captures
+PRIM/PRE, RGBAQ, packed STQ and Q reset, UV, XYZ/XYZF (including
+ADC routing), FOG, TEX0/TEX2 merging, per-context texture, frame,
+scissor, depth, alpha and test setup, and the image-transfer registers
+BITBLTBUF (0x50), TRXPOS (0x51), TRXREG (0x52) and TRXDIR (0x53).
+For configured host-to-local transfers (TRXDIR=0), it retains raw
+IMAGE/IMAGE2 bytes in a bounded 4 MiB diagnostic staging buffer,
+including payloads split across DMA starts. It does **not** write GS VRAM
+or rasterize vertices; captured vertex counts and raw image buffers are
+diagnostics, not rendered output.
+
+Every event batch is applied to a temporary state copy and committed
+only if **all** its events are supported, input offsets are valid and any
+image payload fits the capture bound. Unsupported side effects such as
+GS SIGNAL/FINISH/LABEL, HWREG and TEXFLUSH, or IMAGE without proper
+host-to-local setup, reject the whole batch. Rejection preserves the
+GS state and upstream GIF parser/DMA progress. Applications opt in by
+binding `c_ee_gs_state::gif_events` as the GIF parser's event sink.
+The native runner deliberately does not bind the parser or GS sink by
+default, because a working GS renderer is not yet present.
+
+This is **not** a VIF interpreter, GS VRAM/rasterizer, device DMA chain
+engine for channels 0..2, MFIFO, or a timed hardware queue.
 
 `fromSPR` channel 8 also supports
 **synchronous chain mode** (CHCR.MOD=1). It copies a preloaded QWC segment
