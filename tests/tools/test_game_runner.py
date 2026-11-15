@@ -82,6 +82,49 @@ def make_set_syscall_elf(path):
     path.write_bytes(image)
 
 
+def make_out_of_range_set_syscall_elf(path):
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    image.extend(bytes(max(0, 0x200 - len(image))))
+    struct.pack_into("<I", image, 52 + 16, 0x100)
+    struct.pack_into("<I", image, 52 + 20, 0x100)
+
+    # Install a valid service, then attempt out-of-range 0x12C.
+    # Both valid entry 0x83 and the first word beyond the table
+    # must remain intact. The second bad index tests overflow.
+    instructions = (
+        0x3c0a8000,  # lui t2, 0x8000 (KSEG0 base)
+        0x24040083,  # addiu a0, zero, 0x83
+        0x3c050010,  # lui a1, 0x0010
+        0x34a50050,  # ori a1, a1, 0x0050
+        0x24030074,  # addiu v1, zero, SetSyscall
+        0x0000000c,  # syscall
+        0x8d481a0c,  # lw t0, 0x1A0C(t2): original entry
+        0x2404012c,  # addiu a0, zero, 0x12C
+        0x3c058007,  # lui a1, 0x8007
+        0x34a56488,  # ori a1, a1, 0x6488
+        0x24020007,  # addiu v0, zero, 7 (overwritten)
+        0x24030074,  # addiu v1, zero, SetSyscall
+        0x0000000c,  # syscall: out-of-range index
+        0x00404821,  # addu t1, v0, zero: zero return
+        0x8d4b1a0c,  # lw t3, 0x1A0C(t2): valid entry still set
+        0x8d4c1c00,  # lw t4, 0x1C00(t2): first word after table
+        0x3c04ffff,  # lui a0, 0xFFFF
+        0x3484ffff,  # ori a0, a0, 0xFFFF
+        0x24020009,  # addiu v0, zero, 9 (overwritten)
+        0x24030074,  # addiu v1, zero, SetSyscall
+        0x0000000c,  # syscall: 0xFFFFFFFF
+        0x00406821,  # addu t5, v0, zero
+        0x8d4e1a0c,  # lw t6, 0x1A0C(t2): preserved
+        0x8d4f1c00,  # lw t7, 0x1C00(t2): preserved
+        0x00000008,  # jr zero
+        0x00000000,  # nop
+    )
+    for index, opcode in enumerate(instructions):
+        struct.pack_into("<I", image, 0x108 + index * 4, opcode)
+    path.write_bytes(image)
+
+
 def make_guest_syscall_table_elf(path):
     make_elf(path)
     image = bytearray(path.read_bytes())
@@ -583,6 +626,50 @@ def main():
         assert "EE stopped: dispatched=2" in result.stdout, (
             result.stdout + result.stderr
         )
+
+    with tempfile.TemporaryDirectory(prefix="ee-native-syscall-out-of-range-") as tmp:
+        root = Path(tmp)
+        elf = root / "out-of-range-syscalls.elf"
+        make_out_of_range_set_syscall_elf(elf)
+        report_path = root / "out-of-range.json"
+        result = subprocess.run(
+            [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf),
+                "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--max-dispatches=16",
+                "--hle-startup",
+                "--kseg-ram",
+                "--trace",
+                "--report", str(report_path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert "HLE SetSyscall: number=0x83 handler=0x00100050" in result.stdout, (
+            result.stdout + result.stderr
+        )
+        assert "HLE SetSyscall: unsupported number=0x0000012c handler=0x80076488 (ignored)" in result.stderr, (
+            result.stdout + result.stderr
+        )
+        assert "HLE SetSyscall: unsupported number=0xffffffff handler=0x80076488 (ignored)" in result.stderr, (
+            result.stdout + result.stderr
+        )
+        assert "EE stopped: dispatched=" in result.stdout, (
+            result.stdout + result.stderr
+        )
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        registers = report["gpr_lo"]
+        assert registers[8] == 0x00100050, report
+        assert registers[9] == 0, report  # 0x12C returns zero
+        assert registers[11] == 0x00100050, report
+        assert registers[12] == 0, report  # past table untouched
+        assert registers[13] == 0, report  # huge number returns zero
+        assert registers[14] == 0x00100050, report
+        assert registers[15] == 0, report  # still untouched
+        assert registers[2] == 0, report
 
     with tempfile.TemporaryDirectory(prefix="ee-native-syscall-table-") as tmp:
         root = Path(tmp)
