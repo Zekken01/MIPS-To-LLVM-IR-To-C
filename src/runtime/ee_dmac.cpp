@@ -174,6 +174,131 @@ bool c_ee_dmac::transfer_spr_normal(uint32_t channel_index)
     return raise(channel_index);
 }
 
+bool c_ee_dmac::transfer_from_spr_span(
+    s_spr_channel& channel, uint32_t qwc, bool copy_data)
+{
+    // DMA MADR is a physical EE address. Match the normal-mode policy:
+    // reject unbacked, unaligned, or non-RAM spans without any writes.
+    const uint64_t bytes = static_cast<uint64_t>(qwc) * 16u;
+    const uint64_t end = static_cast<uint64_t>(channel.m_madr) + bytes;
+
+    if (qwc != 0u &&
+        ((channel.m_madr & 0x0fu) != 0u ||
+         channel.m_madr >= 0x02000000u ||
+         end > 0x02000000ull ||
+         !m_memory->contains(channel.m_madr, static_cast<size_t>(bytes))))
+    {
+        return false;
+    }
+
+    if (copy_data)
+    {
+        for (uint32_t i = 0; i < qwc; ++i)
+        {
+            const uint32_t spr_address =
+                ee_memory::k_scratchpad_base +
+                ((channel.m_sadr + i * 16u) & 0x3ff0u);
+            const uint32_t ram_address = channel.m_madr + i * 16u;
+            s_ee_u128 quad{};
+            m_memory->read128(spr_address, &quad);
+            m_memory->write128(ram_address, &quad);
+        }
+    }
+
+    channel.m_sadr =
+        (channel.m_sadr + static_cast<uint32_t>(bytes)) & 0x3ff0u;
+    channel.m_madr += static_cast<uint32_t>(bytes);
+    channel.m_qwc = 0u;
+    return true;
+}
+
+bool c_ee_dmac::walk_from_spr_chain(
+    s_spr_channel& channel, bool copy_data)
+{
+    if (m_memory == nullptr ||
+        ((channel.m_chcr >> 2u) & 3u) != 1u)
+    {
+        return false;
+    }
+
+    // ps2-web-recomp runs a preloaded QWC segment first, if present,
+    // using the existing CHCR tag ID/IRQ bits to determine termination.
+    const bool tie = (channel.m_chcr & 0x80u) != 0u;
+    bool done = false;
+    if (channel.m_qwc != 0u)
+    {
+        done = ((channel.m_chcr >> 28u) & 7u) == 7u ||
+            (tie && (channel.m_chcr & 0x80000000u) != 0u);
+        if (!transfer_from_spr_span(
+                channel, channel.m_qwc, copy_data))
+        {
+            return false;
+        }
+    }
+
+    // The reference has a very large loop guard. This conservative
+    // implementation caps the number of tags at 4096 and refuses to
+    // complete a nonterminating chain. A preflight pass guarantees
+    // invalid later tags cannot cause partial writes to EE RAM.
+    constexpr uint32_t k_max_chain_tags = 4096u;
+    for (uint32_t i = 0; !done && i < k_max_chain_tags; ++i)
+    {
+        const uint32_t tag_address =
+            ee_memory::k_scratchpad_base + (channel.m_sadr & 0x3ff0u);
+        const uint64_t tag = m_memory->read64(tag_address);
+        channel.m_sadr = (channel.m_sadr + 16u) & 0x3ff0u;
+
+        // DMA tag bits 16..31 update the CHCR upper half; the high
+        // 32-bit tag word sets the RAM destination address.
+        channel.m_chcr =
+            (channel.m_chcr & 0x0000ffffu) |
+            (static_cast<uint32_t>(tag) & 0xffff0000u);
+        const uint32_t qwc = static_cast<uint32_t>(tag) & 0xffffu;
+        const uint32_t tag_id =
+            (static_cast<uint32_t>(tag) >> 28u) & 7u;
+        channel.m_madr = static_cast<uint32_t>(tag >> 32u);
+
+        if (!transfer_from_spr_span(channel, qwc, copy_data))
+        {
+            return false;
+        }
+
+        done = tag_id == 7u ||
+            (tie && (tag & 0x80000000ull) != 0u);
+    }
+
+    return done;
+}
+
+bool c_ee_dmac::transfer_from_spr_chain()
+{
+    if (m_memory == nullptr)
+    {
+        return false;
+    }
+
+    // First pass: check every destination and verify termination without
+    // modifying guest memory or visible channel registers.
+    s_spr_channel candidate = m_spr_channels[0];
+    if (!walk_from_spr_chain(candidate, false))
+    {
+        return false;
+    }
+
+    // Only validated chains are copied. The source tags/data live in
+    // SPR and destination addresses are restricted to main EE RAM, so
+    // the copy cannot modify tags consumed by the second pass.
+    candidate = m_spr_channels[0];
+    if (!walk_from_spr_chain(candidate, true))
+    {
+        return false;
+    }
+
+    candidate.m_chcr &= ~k_chcr_str;
+    m_spr_channels[0] = candidate;
+    return raise(8u);
+}
+
 bool c_ee_dmac::write_spr_channel(uint32_t address, uint32_t value)
 {
     s_spr_channel* channel = nullptr;
@@ -205,7 +330,15 @@ bool c_ee_dmac::write_spr_channel(uint32_t address, uint32_t value)
         channel->m_chcr = value;
         if (!was_running && (value & k_chcr_str) != 0u)
         {
-            (void)transfer_spr_normal(channel_index);
+            if (channel_index == 8u &&
+                ((channel->m_chcr >> 2u) & 3u) == 1u)
+            {
+                (void)transfer_from_spr_chain();
+            }
+            else
+            {
+                (void)transfer_spr_normal(channel_index);
+            }
         }
         return true;
     }
