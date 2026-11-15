@@ -9,7 +9,7 @@
 
 namespace ee
 {
-// GS register-state and PSMCT32/24/16/16S plus PSMT8 upload consumer.
+// GS register-state and PSMCT32/24/16/16S plus PSMT8/PSMT4 upload consumer.
 // It does not rasterize primitives, present frames or implement GS IRQs.
 // Based on ps2-web-recomp/runtime/src/gs/gs.cpp::write/write_packed.
 struct s_ee_gs_state
@@ -67,7 +67,8 @@ private:
     {
         uint32_t m_offset = 0;
         uint32_t m_value = 0;
-        uint8_t m_bytes = 4u; // write 1, 2, 3 or 4 bytes
+        uint8_t m_bytes = 4u; // 0 = nibble write; otherwise 1..4 bytes
+        uint8_t m_shift = 0u; // nibble position: 0 (low) or 4 (high)
     };
 
     // GS PSMCT32/24: 64x32 pages, 8 KiB per page, 256-byte blocks.
@@ -86,6 +87,12 @@ private:
     // PSMT8: 128x64 pages, 16x16 blocks and byte-lane swizzling.
     // DBW is still measured in units of 64 pixels.
     static uint32_t psmt8_address(
+        uint32_t base, uint32_t width, uint32_t x, uint32_t y
+    );
+
+    // PSMT4: 128x128 pages, 32x16 blocks and nibble-lane swizzling.
+    // The returned index is in nibbles, wrapped over 4 MiB GS VRAM.
+    static uint32_t psmt4_nibble_address(
         uint32_t base, uint32_t width, uint32_t x, uint32_t y
     );
 
