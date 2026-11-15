@@ -48,7 +48,9 @@ int main()
     // silent fallback add/and/or/move was emitted for them).
     expect("paddsw",  R(0x1c,4,5,6,0x10,0x08), "paddsw", U);   // saturating: was plain add
     expect("pextlw",  R(0x1c,4,5,6,0x12,0x08), "pextlw", U);   // was lowered as OR
-    expect("pcpyld",  R(0x1c,4,5,6,0x0e,0x09), "pcpyld", U);   // was lowered as AND
+    expect("pcpyld",  R(0x1c,4,5,6,0x0e,0x09), "pcpyld", V);   // exact lower-64 interleave
+    expect("pcpyh",   R(0x1c,0,5,6,0x1b,0x29), "pcpyh",  V);   // independent halfword broadcast
+    expect("pcpyh-bad-rs", R(0x1c,4,5,6,0x1b,0x29), "pcpyh", U); // unary instruction requires rs=0
     expect("pabsw",  R(0x1c,0,5,6,0x01,0x28), "pabsw",  V);
     expect("pceqw",  R(0x1c,4,5,6,0x02,0x28), "pceqw",  V);
     expect("pminw",  R(0x1c,4,5,6,0x03,0x28), "pminw",  V);
