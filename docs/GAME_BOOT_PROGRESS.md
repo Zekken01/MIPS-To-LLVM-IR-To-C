@@ -594,7 +594,7 @@ its address to be an executable ELF segment. The native runner
 now accepts aligned, backed KSEG0/KSEG1/direct RAM handler
 addresses, and accepts zero to clear handlers, in addition to
 normal compiled-ELF callbacks. It continues to reject
-misaligned and unbacked pointers and out-of-range services.
+misaligned and unbacked pointers. Out-of-range indices are not installed.
 A synthetic ELF runner test registers KSEG0 code, verifies the
 guest-visible table and physical RAM, checks zero unregister,
 and confirms invoking an uncompiled RAM handler produces an
@@ -620,6 +620,32 @@ does NOT claim the entire 0x740-byte handler blob can
 execute or that later dynamic code is complete. Running
 the real ELF again is required to establish the next
 unsupported instruction or kernel service.
+
+### Out-of-range SetSyscall registration (US SDBZ, dispatch 77)
+
+The next actual no-snapshot US boot reaches 77 native dispatches.
+The relocated 0x80076000 callback executes five lookups
+for keys 0xFC, 0xFE, 0xFD, 0xFF, and 0x12C, returning their
+guest handler pointers and allowing successful registration of
+the first four services. At dispatch 77, SDBZ requests
+SetSyscall(0x12C, 0x80076488) from EPC 0x0017F494.
+
+The reference ps2-web-recomp/runtime/src/kernel.cpp does not
+register a handler for a syscall number >= 0x100: it logs the
+unsupported index, returns zero, and continues. The native runner
+previously stopped at this request; it now follows the reference,
+reporting an ignored out-of-range registration while leaving
+both native installed handlers and guest-visible kernel table
+unchanged. The table address is not computed until the index
+is validated, preventing overflow or accidental writes beyond
+the 256-entry table. Successful and ignored SetSyscall requests
+both return V0=0. Invalid in-range handler pointers still fail.
+
+A synthetic ELF test installs a valid handler, requests
+registrations for 0x12C and 0xFFFFFFFF, checks both returns
+are zero, and reads the original kernel table entry and
+the word just beyond its boundary to ensure neither changed.
+A real-game replay is needed to identify the next blocker.
 
 ## Validation limits
 
