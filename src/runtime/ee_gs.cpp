@@ -34,6 +34,18 @@ constexpr uint8_t k_block16[8][4] =
     {21, 23, 29, 31}
 };
 
+constexpr uint8_t k_block16s[8][4] =
+{
+    {0, 2, 16, 18},
+    {1, 3, 17, 19},
+    {8, 10, 24, 26},
+    {9, 11, 25, 27},
+    {4, 6, 20, 22},
+    {5, 7, 21, 23},
+    {12, 14, 28, 30},
+    {13, 15, 29, 31}
+};
+
 constexpr uint8_t k_column16[2][16] =
 {
     {0, 2, 8, 10, 16, 18, 24, 26, 1, 3, 9, 11, 17, 19, 25, 27},
@@ -66,13 +78,15 @@ uint32_t c_ee_gs_state::psmct32_address(
 }
 
 uint32_t c_ee_gs_state::psmct16_address(
-    uint32_t base, uint32_t width, uint32_t x, uint32_t y)
+    uint32_t base, uint32_t width, uint32_t x, uint32_t y,
+    uint32_t psm)
 {
     // 64x64 pixels per 8192-byte page, DBW in 64-pixel units.
     const uint64_t page =
         (static_cast<uint64_t>(x / 64u) +
          static_cast<uint64_t>(y / 64u) * width) * 8192u;
-    const uint32_t block =
+    const uint32_t block = psm == 0x0au ?
+        k_block16s[(y & 63u) / 8u][(x & 63u) / 16u] :
         k_block16[(y & 63u) / 8u][(x & 63u) / 16u];
     const uint32_t column = ((y & 7u) / 2u) * 64u +
         static_cast<uint32_t>(k_column16[y & 1u][x & 15u]) * 2u;
@@ -213,7 +227,7 @@ bool c_ee_gs_state::write_register(
         state.m_transfer_pending_size = 0u;
         if ((value & 3u) == 0u)
         {
-            // Only verified PSMCT32, PSMCT24 and PSMCT16 uploads execute.
+            // Only verified PSMCT32, PSMCT24, PSMCT16 and PSMCT16S execute.
             // Unsupported formats and malformed setup reject the batch.
             if (!state.m_written[0x50u] ||
                 !state.m_written[0x51u] ||
@@ -232,7 +246,8 @@ bool c_ee_gs_state::write_register(
             const uint32_t pixel_height =
                 static_cast<uint32_t>((reg_size >> 32u) & 0xfffu);
             if (dest_width == 0u ||
-                (dest_psm != 0u && dest_psm != 1u && dest_psm != 2u) ||
+                (dest_psm != 0u && dest_psm != 1u &&
+                 dest_psm != 2u && dest_psm != 0x0au) ||
                 pixel_width == 0u || pixel_height == 0u)
             {
                 return false;
@@ -419,8 +434,9 @@ bool c_ee_gs_state::consume(
             );
             next.m_image_qwc += e.m_qwc;
 
-            // PSMCT32/24 share 64x32 pages; PSMCT16 uses 64x64 pages.
-            // Only PSMCT24 requires 3-byte pixel carry across GIF tags.
+            // PSMCT32/24 share 64x32 pages. PSMCT16 and PSMCT16S
+            // use 64x64 pages but different block permutations.
+            // Only PSMCT24 carries incomplete 3-byte pixels.
             const uint64_t buf = next.m_registers[0x50u];
             const uint64_t pos = next.m_registers[0x51u];
             const uint64_t reg_size = next.m_registers[0x52u];
@@ -441,7 +457,9 @@ bool c_ee_gs_state::consume(
 
             // A transfer setup may have been rewritten after TRXDIR;
             // reject it rather than applying a guessed pixel layout.
-            if (width == 0u || (psm != 0u && psm != 1u && psm != 2u) ||
+            if (width == 0u ||
+                (psm != 0u && psm != 1u && psm != 2u &&
+                 psm != 0x0au) ||
                 rrw == 0u || rrh == 0u ||
                 next.m_transfer_pixels_written > total_pixels)
             {
@@ -453,17 +471,19 @@ bool c_ee_gs_state::consume(
                 const uint32_t pixel = next.m_transfer_pixels_written;
                 const uint32_t dx = (x + pixel % rrw) & 0x7ffu;
                 const uint32_t dy = (y + pixel / rrw) & 0x7ffu;
-                const uint32_t address = psm == 2u ?
-                    psmct16_address(base, width, dx, dy) :
+                const uint32_t address =
+                    (psm == 2u || psm == 0x0au) ?
+                    psmct16_address(base, width, dx, dy, psm) :
                     psmct32_address(base, width, dx, dy);
                 writes.push_back({address, value, size});
                 ++next.m_transfer_pixels_written;
             };
 
-            if (psm == 0u || psm == 2u)
+            if (psm == 0u || psm == 2u || psm == 0x0au)
             {
                 // 2-byte and 4-byte pixels cannot straddle GIF qwords.
-                const uint8_t pixel_bytes = psm == 2u ? 2u : 4u;
+                const uint8_t pixel_bytes =
+                    (psm == 2u || psm == 0x0au) ? 2u : 4u;
                 if (next.m_transfer_pending_size != 0u)
                 {
                     return false;
