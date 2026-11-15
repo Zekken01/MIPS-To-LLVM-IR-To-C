@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -204,13 +205,66 @@ def load_inputs(metadata_path, object_dir):
     return metadata, object_manifest, validated_functions, linked_objects
 
 
+
+def choose_compiler(requested, pdb=False, platform=None, which=None):
+    """Select a compiler that exists in the current host environment.
+
+    Windows VS Developer Command Prompts provide cl.exe, not c++.
+    Keep explicit --cxx and CXX overrides intact.
+    """
+    if requested:
+        return requested
+    platform = sys.platform if platform is None else platform
+    which = shutil.which if which is None else which
+    if platform != "win32":
+        return "c++"
+    candidates = ("clang++",) if pdb else (
+        "cl.exe", "clang++", "g++", "c++",
+    )
+    for candidate in candidates:
+        if which(candidate):
+            return candidate
+    raise ValueError(
+        "no Windows C++ compiler found; open the x64 Native Tools "
+        "Command Prompt for Visual Studio (cl.exe) or install clang++"
+    )
+
+
+def is_msvc_compiler(compiler):
+    return Path(compiler).name.lower() in ("cl", "cl.exe")
+
+
+def msvc_compile_command(compiler, sources, output, includes, optimize):
+    """Build an MSVC command line; use /Fo for an exact .obj destination."""
+    if len(sources) != 1:
+        raise ValueError("MSVC compile command requires exactly one source")
+    return [
+        compiler, "/nologo", "/std:c++17", "/EHsc", "/MD", "/bigobj",
+        "/O2" if optimize else "/Od",
+        *("/I" + str(directory) for directory in includes),
+        "/c", str(sources[0]), "/Fo" + str(output),
+    ]
+
+
+def msvc_link_command(linker, output, object_response, extra_objects):
+    """Link llvmlite's Windows/MSVC COFF .o files and native .obj files."""
+    return [
+        linker, "/NOLOGO", "/DLL", "/MACHINE:X64",
+        "/OUT:" + str(output),
+        "/IMPLIB:" + str(output.with_suffix(".lib")),
+        "@" + str(object_response),
+        *(str(path) for path in extra_objects),
+    ]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("functions_json", type=Path, help="ee_functions.json from ee_recomp")
     parser.add_argument("object_dir", type=Path, help="directory containing .o files and objects.json")
     parser.add_argument("output", type=Path, help="output shared library path")
     parser.add_argument("--source-root", type=Path, default=Path(__file__).resolve().parents[1])
-    parser.add_argument("--cxx", default=os.environ.get("CXX", "c++"))
+    parser.add_argument("--cxx", default=os.environ.get("CXX"),
+                        help="Host C++ compiler (or CXX). On Windows defaults to cl.exe when available")
     parser.add_argument(
         "--pdb", action="store_true",
         help="Generate a matching Windows PDB using Clang, CodeView and LLD",
@@ -226,6 +280,10 @@ def main():
 
     source_root = args.source_root.resolve()
     try:
+        args.cxx = choose_compiler(args.cxx, args.pdb)
+        msvc = sys.platform == "win32" and is_msvc_compiler(args.cxx)
+        if args.pdb and msvc:
+            raise ValueError("--pdb requires clang++ with lld; cl.exe mode does not produce PDBs")
         if args.pdb and sys.platform != "win32":
             raise ValueError("--pdb requires a Windows host and a Clang/LLD MinGW toolchain")
         pdb_path = args.output.with_suffix(".pdb") if args.pdb else None
@@ -259,31 +317,37 @@ def main():
             build_dispatch_source(metadata, functions), encoding="utf-8"
         )
 
-        include_args = [
-            "-I" + str(source_root / "include"),
-            "-I" + str(source_root / "include/ee"),
-            "-I" + str(source_root / "src/runtime"),
+        include_directories = [
+            source_root / "include",
+            source_root / "include/ee",
+            source_root / "src/runtime",
         ]
+        include_args = ["-I" + str(path) for path in include_directories]
 
-        # The generated metadata glue can contain several megabytes of static
-        # initializer code for a full game. Compile it separately at a low
-        # optimisation level; optimising these tables is expensive and does not
-        # improve the generated guest functions (already compiled to objects).
-        dispatch_object = args.output.with_suffix(args.output.suffix + ".dispatch.o")
-        compile_command = [
-            args.cxx,
-            "-std=c++17",
-            f"-O{args.dispatcher_opt}",
-        ]
-        if sys.platform in ("linux", "darwin"):
-            compile_command.append("-fPIC")
-        if args.pdb:
-            compile_command += ["-g", "-gcodeview"]
-        compile_command += include_args
-        compile_command += ["-c", str(dispatch_source), "-o", str(dispatch_object)]
+        # The generated metadata glue can be several megabytes for a
+        # complete game. Keep optimization independent of game objects.
+        dispatch_object = args.output.with_suffix(
+            args.output.suffix + (".dispatch.obj" if msvc else ".dispatch.o")
+        )
+        if msvc:
+            compile_command = msvc_compile_command(
+                args.cxx, [dispatch_source], dispatch_object,
+                include_directories, args.dispatcher_opt != 0,
+            )
+        else:
+            compile_command = [
+                args.cxx, "-std=c++17", f"-O{args.dispatcher_opt}",
+            ]
+            if sys.platform in ("linux", "darwin"):
+                compile_command.append("-fPIC")
+            if args.pdb:
+                compile_command += ["-g", "-gcodeview"]
+            compile_command += include_args
+            compile_command += ["-c", str(dispatch_source), "-o", str(dispatch_object)]
 
         print(
-            f"link_native_objects: compiling dispatcher glue at -O{args.dispatcher_opt}",
+            f"link_native_objects: compiling dispatcher glue at -O{args.dispatcher_opt} "
+            f"with {args.cxx}",
             flush=True,
         )
         subprocess.run(compile_command, check=True)
@@ -297,30 +361,69 @@ def main():
             encoding="utf-8",
         )
 
-        command = [
-            args.cxx,
-            "-std=c++17",
-            "-O2",
-        ]
-        if sys.platform == "linux":
-            command += ["-shared", "-fPIC", "-Wl,--no-undefined"]
-        elif sys.platform == "darwin":
-            command += ["-dynamiclib", "-fPIC"]
-        elif sys.platform == "win32":
-            command += ["-shared"]
-            if args.pdb:
-                command += [
-                    "-g", "-gcodeview", "-fuse-ld=lld",
-                    "-Wl,--pdb=" + str(pdb_path).replace("\\", "/"),
-                ]
+        if msvc:
+            # LLVM's x86_64-pc-windows-msvc target emits COFF object
+            # files, even though verify_ir.py names them *.o. link.exe
+            # accepts these directly; do not reinterpret them as ELF.
+            triple = object_manifest["target_triple"].lower()
+            if "windows" not in triple or "msvc" not in triple:
+                raise ValueError(
+                    f"cl.exe requires Windows/MSVC COFF objects, got {triple}"
+                )
+            linker = shutil.which("link.exe")
+            if linker is None:
+                raise ValueError(
+                    "link.exe not found; run from an x64 Visual Studio "
+                    "Developer Command Prompt"
+                )
+            native_objects = []
+            for source in required_sources:
+                output_object = args.output.with_suffix(
+                    args.output.suffix + "." + source.stem + ".obj"
+                )
+                print(
+                    f"link_native_objects: compiling {source.name} with MSVC",
+                    flush=True,
+                )
+                subprocess.run(
+                    msvc_compile_command(
+                        args.cxx, [source], output_object,
+                        include_directories, True,
+                    ),
+                    check=True,
+                )
+                native_objects.append(output_object)
+            command = msvc_link_command(
+                linker, args.output, response_path,
+                [*native_objects, dispatch_object],
+            )
         else:
-            raise ValueError(f"unsupported host platform for shared-library linking: {sys.platform}")
+            command = [
+                args.cxx,
+                "-std=c++17",
+                "-O2",
+            ]
+            if sys.platform == "linux":
+                command += ["-shared", "-fPIC", "-Wl,--no-undefined"]
+            elif sys.platform == "darwin":
+                command += ["-dynamiclib", "-fPIC"]
+            elif sys.platform == "win32":
+                command += ["-shared"]
+                if args.pdb:
+                    command += [
+                        "-g", "-gcodeview", "-fuse-ld=lld",
+                        "-Wl,--pdb=" + str(pdb_path).replace("\\", "/"),
+                    ]
+            else:
+                raise ValueError(
+                    f"unsupported host platform for shared-library linking: {sys.platform}"
+                )
 
-        command += include_args
-        command.append("@" + str(response_path))
-        command += [str(path) for path in required_sources]
-        command.append(str(dispatch_object))
-        command += ["-o", str(args.output)]
+            command += include_args
+            command.append("@" + str(response_path))
+            command += [str(path) for path in required_sources]
+            command.append(str(dispatch_object))
+            command += ["-o", str(args.output)]
 
         if pdb_path is not None and pdb_path.exists():
             # Never accept a PDB left over from an earlier, unrelated DLL.
