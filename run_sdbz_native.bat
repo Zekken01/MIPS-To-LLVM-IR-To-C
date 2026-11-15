@@ -100,23 +100,28 @@ if defined REUSE_FLAG (
     echo === First translation or changed inputs: full guest translation ===
 )
 
-echo === Running local ELF ===
-echo Log: "%WORK_DIR%\boot.log"
+rem Keep the already compiled guest objects, even across expansion budgets.
+rem Two bounded passes of 128 new functions each are allowed; when the
+rem first pass hits its limit, resume using the exact verified DLL/cache.
+rem Trace only the final replay so a long boot doesn't make a 50 MB log.
+echo === Running resumable local ELF expansion ===
+echo Trace: "%WORK_DIR%\boot.log"
+echo Expansion details: "%WORK_DIR%\expansion.log"
 echo Report: "%WORK_DIR%\first-boot.json"
 
-python tools\run_game.py "%ELF%" ^
+python tools\run_boot_session.py "%ELF%" ^
     --build-dir build ^
     --config Release ^
     --work-dir "%WORK_DIR%" ^
+    --expansion-passes=2 ^
+    --expansion-per-pass=128 ^
     --hle-startup ^
     --kseg-ram ^
-    --auto-expand=64 ^
     --emit-jobs=%EMIT_JOBS% ^
     --emit-opt=0 ^
     --max-dispatches=100000 ^
     --timeout-seconds=120 ^
-    --trace ^
-    --report "%WORK_DIR%\first-boot.json" %REUSE_FLAG% > "%WORK_DIR%\boot.log" 2>&1
+    --report "%WORK_DIR%\first-boot.json" %REUSE_FLAG%
 
 set "EXIT_CODE=%ERRORLEVEL%"
 echo.
