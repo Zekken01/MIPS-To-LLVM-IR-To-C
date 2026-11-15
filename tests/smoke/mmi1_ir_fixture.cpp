@@ -48,6 +48,7 @@ int main(int argc, char** argv)
     constexpr uint32_t entry_pc = 0x00120000u;
     const std::vector<uint32_t> words =
     {
+        0x70491ba9u,                     // SDBZ 0x0018E154: PCPYUD $v1,$v0,$t1
         make_mmi(0, 4, 6,  1, 0x28), // PABSW  $a2, $a0
         make_mmi(0, 4, 7,  5, 0x28), // PABSH  $a3, $a0
         make_mmi(4, 5, 8,  2, 0x28), // PCEQW  $t0, $a0, $a1
@@ -77,7 +78,12 @@ int main(int argc, char** argv)
         make_mmi(0, 30, 26, 0x1b, 0x29),  // PCPYH $k0, $fp
         make_mmi(0, 29, 27, 0x1b, 0x29),  // PCPYH $k1, $sp
         make_mmi(29, 30, 29, 0x0e, 0x09), // PCPYLD $sp, $sp, $fp (aliases rs)
-        make_mmi(0, 29, 28, 0x1b, 0x29)   // PCPYH $gp, $sp (sees latest write)
+        make_mmi(0, 29, 28, 0x1b, 0x29),  // PCPYH $gp, $sp (sees latest write)
+        make_mmi(29, 30, 31, 0x0e, 0x29), // PCPYUD $ra, $sp, $fp (upper copies)
+        make_mmi(29, 30, 30, 0x0e, 0x29), // PCPYUD $fp, $sp, $fp (aliases rt)
+        make_mmi(29, 30, 29, 0x0e, 0x29), // PCPYUD $sp, $sp, $fp (aliases rs)
+        make_mmi(0, 30, 2, 0x0e, 0x29),   // PCPYUD $v0, $zero, $fp
+        make_mmi(29, 30, 0, 0x0e, 0x29)   // PCPYUD $zero, $sp, $fp (discard)
     };
 
     std::map<uint32_t, ee::s_ee_instruction> insn_map;

@@ -42,6 +42,9 @@ int main()
     expect("pxor",    R(0x1c,4,5,6,0x13,0x09), "pxor",   V);
     expect("por",     R(0x1c,4,5,6,0x12,0x29), "por",    V);
     expect("pnor",    R(0x1c,4,5,6,0x13,0x29), "pnor",   V);
+    expect("pcpyud",  R(0x1c,4,5,6,0x0e,0x29), "pcpyud", V);
+    // Verified from the US SDBZ ELF: PC 0x0018E154.
+    expect("pcpyud SDBZ", 0x70491ba9u, "pcpyud", V);
     expect("mfhi1",   R(0x1c,0,0,6,0,0x10),    "mfhi1",  V);
     expect("mtlo1",   R(0x1c,4,0,0,0,0x13),    "mtlo1",  V);
     // Real ops that are NOT lowered exactly must never be VALID (previously a

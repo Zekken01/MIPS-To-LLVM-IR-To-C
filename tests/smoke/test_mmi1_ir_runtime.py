@@ -155,6 +155,12 @@ def run_opt_level(fixture_exe, temp_dir, opt_level, byte_shift, half_shift):
     copy_b = (0xFEDCBA9876543210, 0x0123456789ABCDEF)
     state.gpr[29].lo, state.gpr[29].hi = copy_a
     state.gpr[30].lo, state.gpr[30].hi = copy_b
+    # Exact 0x70491BA9 from SDBZ: PCPYUD v1,v0,t1. Distinct
+    # high/low halves make operand-order mistakes immediately visible.
+    game_rs = (0x0123456789ABCDEF, 0x1122334455667788)
+    game_rt = (0xFEDCBA9876543210, 0x8877665544332211)
+    state.gpr[2].lo, state.gpr[2].hi = game_rs
+    state.gpr[9].lo, state.gpr[9].hi = game_rt
 
     result = guest_fn(ctypes.pointer(state), None)
     prefix = f"O{opt_level} MTSAB={byte_shift} MTSAH={half_shift}: "
@@ -192,7 +198,14 @@ def run_opt_level(fixture_exe, temp_dir, opt_level, byte_shift, half_shift):
     expected_values[25] = (copy_a[0] << 64) | copy_b[0]
     expected_values[26] = (broadcast_halfword(copy_b[1]) << 64) | broadcast_halfword(copy_b[0])
     expected_values[27] = (broadcast_halfword(copy_a[1]) << 64) | broadcast_halfword(copy_a[0])
-    expected_values[29] = (copy_a[0] << 64) | copy_b[0]
+    # PCPYUD writes rd.lo=rs.hi, rd.hi=rt.hi. Exercise both
+    # register alias directions after PCPYLD overwrites SP, and a
+    # zero-source/zero-destination combination.
+    expected_values[29] = (copy_b[1] << 64) | copy_a[0]
+    expected_values[30] = (copy_b[1] << 64) | copy_a[0]
+    expected_values[31] = (copy_b[1] << 64) | copy_a[0]
+    expected_values[2] = copy_b[1] << 64
+    expected_values[3] = (game_rt[1] << 64) | game_rs[1]
     expected_values[28] = (
         (broadcast_halfword(copy_a[0]) << 64) |
         broadcast_halfword(copy_b[0])
@@ -204,6 +217,8 @@ def run_opt_level(fixture_exe, temp_dir, opt_level, byte_shift, half_shift):
                 prefix + f"GPR{register}: got ({actual.hi:016x}:{actual.lo:016x}), "
                 f"expected ({expected_hi:016x}:{expected_lo:016x})")
 
+    require(state.gpr[0].lo == 0 and state.gpr[0].hi == 0,
+            prefix + "PCPYUD must discard writes to GPR zero")
     # This lane set checks INT_MIN saturation in both ABS variants, word
     # unsigned-add carry, unsigned-subtract underflow, and repeated equal lanes.
     require(state.gpr[6].lo >> 32 == 0x7FFFFFFF,
@@ -233,7 +248,7 @@ def main():
                 modules.append(module)
                 target_machines.append(target_machine)
 
-    print("mmi1_ir_runtime: PASS (O0-O3; packed MMI1; PCPYH/PCPYLD; 128-bit source halves; aliases; QFSRV)")
+    print("mmi1_ir_runtime: PASS (O0-O3; packed MMI1; PCPYH/PCPYLD/PCPYUD; SDBZ opcode; 128-bit source halves; aliases; QFSRV)")
 
 
 

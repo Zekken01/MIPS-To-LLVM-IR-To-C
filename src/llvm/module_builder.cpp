@@ -3411,6 +3411,11 @@ void module_builder::emit_mmi_insn(const ee::s_ee_instruction& ins)
         // MMI3 (0x29)
         if (fn == 0x29) {
             switch (sa) {
+            case 0x0e: // PCPYUD: low64=rs.upper64, high64=rt.upper64
+                // Capture both source halves before writing rd, including
+                // cases where the destination aliases rs or rt.
+                store_gpr(ins.rd, a.second, b.second);
+                return;
             case 0x12: // POR
                 m_out += "  " + vr + " = or <2 x i64> " + va2 + ", " + vb2 + "\n";
                 store_vec2i64(vr); return;
