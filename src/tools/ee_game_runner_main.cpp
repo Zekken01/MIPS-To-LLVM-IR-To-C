@@ -644,6 +644,26 @@ int main(int argc, char** argv)
         uint32_t m_option = 0;
     };
     s_kernel_semaphore semaphores[64]{};
+
+    struct s_kernel_thread
+    {
+        bool m_used = false;
+        uint32_t m_entry = 0u;
+        uint32_t m_stack = 0u;
+        uint32_t m_stack_size = 0u;
+        uint32_t m_gp = 0u;
+        uint32_t m_priority = 0u;
+        uint32_t m_attr = 0u;
+        uint32_t m_option = 0u;
+    };
+    // The loaded executable already runs as the kernel's main thread.
+    // Just like ps2-web-recomp::start_main_thread, reserve ID 1.
+    // CreateThread below registers dormant threads only. StartThread and
+    // scheduling remain unsupported until their semantics are implemented.
+    s_kernel_thread threads[256]{};
+    threads[1].m_used = true;
+    threads[1].m_entry = entry;
+    threads[1].m_stack = stack;
     uint32_t installed_syscall_handlers[k_kernel_syscall_table_entries]{};
     std::vector<s_kernel_interrupt_handler> intc_handlers;
     std::vector<s_kernel_interrupt_handler> dmac_handlers;
@@ -890,6 +910,7 @@ int main(int argc, char** argv)
             }
             if ((service >= 0x10u && service <= 0x17u) ||
                 (service >= 0x1au && service <= 0x1du) ||
+                service == 0x20u ||
                 service == 0x3cu || service == 0x3du ||
                 service == 0x40u || service == 0x64u ||
                 service == 0x68u || service == 0x74u)
@@ -1060,6 +1081,75 @@ int main(int argc, char** argv)
                             cause, changed ? 1u : 0u,
                             old_mask ^ (changed ? bit : 0u)
                         );
+                    }
+                }
+
+                else if (service == 0x20u)
+                {
+                    // ps2-web-recomp's CreateThread reads a nine-word
+                    // ee_thread_t parameter block and allocates the lowest
+                    // unused thread ID in [1, 255]. Thread 1 is the
+                    // already-running ELF main thread. Creation alone does
+                    // not run a callback or schedule a new CPU context.
+                    const uint32_t parameter_address =
+                        static_cast<uint32_t>(cpu.m_gpr[4].m_lo);
+                    if ((parameter_address & 3u) != 0u ||
+                        !memory->contains(parameter_address, 36u))
+                    {
+                        std::fprintf(stderr,
+                            "CreateThread HLE refused unbacked or "
+                            "unaligned parameter block 0x%08x\n",
+                            parameter_address
+                        );
+                        break;
+                    }
+
+                    uint32_t id = 0u;
+                    for (uint32_t candidate = 1u; candidate < 256u;
+                         ++candidate)
+                    {
+                        if (!threads[candidate].m_used)
+                        {
+                            id = candidate;
+                            break;
+                        }
+                    }
+                    if (id == 0u)
+                    {
+                        // The reference kernel returns -1 when all
+                        // 255 EE thread identifiers are in use.
+                        cpu.m_gpr[2].m_lo = static_cast<uint64_t>(-1ll);
+                        cpu.m_gpr[2].m_hi = 0u;
+                    }
+                    else
+                    {
+                        s_kernel_thread& thread = threads[id];
+                        thread.m_used = true;
+                        thread.m_entry = memory->read32(parameter_address + 4u);
+                        thread.m_stack = memory->read32(parameter_address + 8u);
+                        thread.m_stack_size =
+                            memory->read32(parameter_address + 12u);
+                        thread.m_gp = memory->read32(parameter_address + 16u);
+                        thread.m_priority =
+                            memory->read32(parameter_address + 20u);
+                        thread.m_attr = memory->read32(parameter_address + 28u);
+                        thread.m_option =
+                            memory->read32(parameter_address + 32u);
+                        cpu.m_gpr[2].m_lo = id;
+                        cpu.m_gpr[2].m_hi = 0u;
+                        if (trace)
+                        {
+                            std::printf(
+                                "HLE CreateThread: id=%u entry=0x%08x "
+                                "stack=0x%08x size=0x%08x gp=0x%08x "
+                                "priority=%u attr=0x%08x option=0x%08x "
+                                "parameters=0x%08x dormant\n",
+                                id, thread.m_entry, thread.m_stack,
+                                thread.m_stack_size, thread.m_gp,
+                                thread.m_priority, thread.m_attr,
+                                thread.m_option, parameter_address
+                            );
+                        }
                     }
                 }
 
