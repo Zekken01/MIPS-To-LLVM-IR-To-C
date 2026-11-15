@@ -1,4 +1,5 @@
 #include "ee_dispatcher.h"
+#include "ee_exceptions.h"
 
 namespace ee
 {
@@ -70,6 +71,25 @@ s_ee_dispatch_result ee_dispatch_run(
         {
             result.status = e_ee_dispatch_status::INVALID_ARGUMENT;
             result.exit_reason = cpu->m_exit_reason;
+            return result;
+        }
+
+        // Only fully committed, mapped guest function-entry boundaries
+        // can be checked here. A translated branch has completed its delay
+        // slot before it returns to this dispatcher. We deliberately skip
+        // the synthetic PC-zero start-of-run sentinel.
+        //
+        // A guest function that loops without returning still cannot be
+        // preempted at instruction granularity; that requires instrumented
+        // dispatch safepoints and a timed device scheduler.
+        if (cpu->m_pc != 0u &&
+            ee_check_interrupts(cpu, runtime, cpu->m_pc, 0u) != 0u)
+        {
+            result.status = e_ee_dispatch_status::EXITED;
+            result.exit_reason = static_cast<uint32_t>(
+                e_ee_exit_reason::EE_EXIT_EXCEPTION
+            );
+            result.guest_pc = cpu->m_pc;
             return result;
         }
 
