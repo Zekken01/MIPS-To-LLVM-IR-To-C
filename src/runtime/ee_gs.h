@@ -9,9 +9,8 @@
 
 namespace ee
 {
-// GS command-state capture, NOT a GPU/GS renderer. It records supported
-// register writes and stages host-to-local IMAGE payload bytes without
-// performing VRAM writes, primitives, signals or hardware IRQs.
+// GS register-state and PSMCT32 host-to-local transfer consumer.
+// It does not rasterize primitives, present frames or implement GS IRQs.
 // Based on ps2-web-recomp/runtime/src/gs/gs.cpp::write/write_packed.
 struct s_ee_gs_state
 {
@@ -21,7 +20,9 @@ struct s_ee_gs_state
     uint64_t m_tag_count = 0;
     uint64_t m_vertex_count = 0; // diagnostic only; no rasterization
     uint32_t m_image_qwc = 0;
-    std::vector<uint8_t> m_image_data; // last host-to-local upload stream
+    std::vector<uint8_t> m_image_data; // bounded diagnostic transfer capture
+    bool m_transfer_started = false;
+    uint32_t m_transfer_pixels_written = 0; // PSMCT32 pixels, across IMAGE events
 };
 
 // Transactional consumer for c_ee_gif_path3::t_event_callback.
@@ -31,6 +32,12 @@ class c_ee_gs_state
 {
 public:
     static constexpr size_t k_max_image_bytes = 4u * 1024u * 1024u;
+    static constexpr size_t k_vram_bytes = 4u * 1024u * 1024u;
+
+    // GS VRAM is a separate 4 MiB allocation, not EE RAM.
+    const std::vector<uint8_t>& vram() const;
+    // Returns false for out-of-range raw VRAM accesses.
+    bool read_vram32(uint32_t offset, uint32_t& value) const;
 
     void reset();
     const s_ee_gs_state& state() const;
@@ -52,6 +59,18 @@ public:
     );
 
 private:
+    struct s_vram_write
+    {
+        uint32_t m_offset = 0;
+        uint32_t m_value = 0;
+    };
+
+    // GS PSMCT32: 64x32 pages, 8 KiB per page, 256-byte blocks.
+    // Addresses wrap at 4 MiB, matching ps2-web-recomp GS memory.
+    static uint32_t psmct32_address(
+        uint32_t base, uint32_t width, uint32_t x, uint32_t y
+    );
+
     static bool write_register(
         s_ee_gs_state& state, uint32_t reg, uint64_t value
     );
@@ -60,5 +79,6 @@ private:
     );
 
     s_ee_gs_state m_state{};
+    std::vector<uint8_t> m_vram = std::vector<uint8_t>(k_vram_bytes, 0u);
 };
 } // namespace ee

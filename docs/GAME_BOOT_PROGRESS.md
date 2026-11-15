@@ -180,24 +180,43 @@ PRIM/PRE, RGBAQ, packed STQ and Q reset, UV, XYZ/XYZF (including
 ADC routing), FOG, TEX0/TEX2 merging, per-context texture, frame,
 scissor, depth, alpha and test setup, and the image-transfer registers
 BITBLTBUF (0x50), TRXPOS (0x51), TRXREG (0x52) and TRXDIR (0x53).
-For configured host-to-local transfers (TRXDIR=0), it retains raw
-IMAGE/IMAGE2 bytes in a bounded 4 MiB diagnostic staging buffer,
-including payloads split across DMA starts. It does **not** write GS VRAM
-or rasterize vertices; captured vertex counts and raw image buffers are
-diagnostics, not rendered output.
+GS now has its own **4 MiB VRAM**, separate from EE RAM and the EE
+scratchpad. For PSMCT32 host-to-local transfers (TRXDIR=0), it decodes
+BITBLTBUF's 256-byte destination base units and 64-pixel buffer width,
+TRXPOS's 11-bit destination coordinates, and TRXREG's transfer rectangle.
+It writes 32-bit pixels in raster order to swizzled 64x32-pixel,
+8-KiB GS pages using the reference's block and column layout. Pixel
+coordinates and byte addresses wrap at their respective 11-bit and
+4-MiB boundaries, matching the reference implementation.
 
-Every event batch is applied to a temporary state copy and committed
-only if **all** its events are supported, input offsets are valid and any
-image payload fits the capture bound. Unsupported side effects such as
-GS SIGNAL/FINISH/LABEL, HWREG and TEXFLUSH, or IMAGE without proper
-host-to-local setup, reject the whole batch. Rejection preserves the
-GS state and upstream GIF parser/DMA progress. Applications opt in by
+IMAGE/IMAGE2 quadwords can span separately completed GIF/DMA batches.
+The transfer tracks completed pixels, ignoring trailing quadword padding
+once the rectangle has been filled. The previous bounded 4 MiB raw-image
+capture remains available for diagnostics; this is not a texture
+decoder or rendered frame. PSMCT32 pixels are exactly four bytes, so
+16-byte IMAGE quadwords never split a pixel across DMA boundaries.
+Other pixel storage formats, host-to-local HWREG writes, local-to-host
+downloads, and local-to-local copies remain unimplemented.
+
+Every event batch is applied to a temporary state copy and its VRAM
+pixel writes are staged until **all** events are supported, input offsets
+are valid and any image payload fits the capture bound. Unsupported
+host-to-local destination formats (including PSMCT16/PSMT8/PSMT4),
+zero destination buffer width, zero-size transfer rectangles and side
+effects such as GS SIGNAL/FINISH/LABEL, HWREG and TEXFLUSH, or IMAGE
+without proper setup, reject the whole batch. Rejection preserves the
+GS state, VRAM, and upstream GIF parser/DMA progress. The GS VRAM is
+zero-initialized and cleared by the consumer's reset; this is a
+deterministic host reset policy, not a claim about physical GS power-on
+contents. Applications opt in by
 binding `c_ee_gs_state::gif_events` as the GIF parser's event sink.
 The native runner deliberately does not bind the parser or GS sink by
 default, because a working GS renderer is not yet present.
 
-This is **not** a VIF interpreter, GS VRAM/rasterizer, device DMA chain
-engine for channels 0..2, MFIFO, or a timed hardware queue.
+This is **not** a VIF interpreter, a GS primitive rasterizer, GPU
+presentation, device DMA chain engine for channels 0..2, MFIFO, or a
+timed hardware queue. Only PSMCT32 image uploads have GS VRAM effects;
+real SDBZ image-stream and PCSX2 differential validation remain needed.
 
 `fromSPR` channel 8 also supports
 **synchronous chain mode** (CHCR.MOD=1). It copies a preloaded QWC segment
