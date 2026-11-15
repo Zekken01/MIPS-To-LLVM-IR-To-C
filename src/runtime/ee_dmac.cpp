@@ -39,6 +39,7 @@ void c_ee_dmac::bind_memory(ee_memory* memory)
 void c_ee_dmac::reset()
 {
     m_status = 0u;
+    m_sqwc = 0u;
     for (s_spr_channel& channel : m_spr_channels)
     {
         channel = {};
@@ -125,9 +126,11 @@ bool c_ee_dmac::transfer_spr_normal(uint32_t channel_index)
     }
 
     s_spr_channel& channel = m_spr_channels[channel_index - 8u];
-    // At this milestone, only normal DMA is implemented. Leaving STR set
-    // on unsupported modes or invalid memory prevents a false completion.
-    if (((channel.m_chcr >> 2u) & 3u) != 0u)
+    // ps2-web-recomp falls back to contiguous normal DMA for MOD=2
+    // when D_SQWC.TQWC is zero. The modulo operation must never
+    // be executed with a zero transfer period.
+    const uint32_t mode = (channel.m_chcr >> 2u) & 3u;
+    if (mode != 0u && !(mode == 2u && ((m_sqwc >> 16u) & 0xffu) == 0u))
     {
         return false;
     }
@@ -171,6 +174,83 @@ bool c_ee_dmac::transfer_spr_normal(uint32_t channel_index)
     channel.m_chcr &= ~k_chcr_str;
     // The existing D_STAT model latches completion even if masked, and
     // asserts COP0 IP3 only when the matching mask bit is enabled.
+    return raise(channel_index);
+}
+
+bool c_ee_dmac::transfer_spr_interleave(uint32_t channel_index)
+{
+    if (m_memory == nullptr || channel_index < 8u || channel_index > 9u)
+    {
+        return false;
+    }
+
+    s_spr_channel& channel = m_spr_channels[channel_index - 8u];
+    const uint32_t transfer = (m_sqwc >> 16u) & 0xffu;
+    const uint32_t skip = m_sqwc & 0xffu;
+
+    if (((channel.m_chcr >> 2u) & 3u) != 2u || transfer == 0u)
+    {
+        return false;
+    }
+
+    // Match the reference's per-QWC D_SQWC pattern: one RAM qword at
+    // MADR, then advance by 16 bytes; after each group of TQWC words,
+    // also skip SQWC words in RAM. SADR always advances contiguously
+    // through SPR, wrapping at the 16 KiB boundary.
+    //
+    // Preflight EVERY RAM qword before writing anything: a contiguous
+    // bounds check is insufficient because the skipped RAM holes may
+    // carry a later transfer beyond the allocated EE memory.
+    uint64_t address = channel.m_madr;
+    for (uint32_t i = 0; i < channel.m_qwc; ++i)
+    {
+        if ((address & 0x0fu) != 0u ||
+            address >= 0x02000000ull ||
+            address + 16u > 0x02000000ull ||
+            !m_memory->contains(static_cast<uint32_t>(address), 16u))
+        {
+            return false;
+        }
+
+        address += 16u;
+        if ((i + 1u) % transfer == 0u)
+        {
+            address += static_cast<uint64_t>(skip) * 16u;
+        }
+    }
+
+    // The validated RAM addresses and SPR qwords are independent.
+    // Copy only after the complete interleave pattern has passed.
+    uint64_t current = channel.m_madr;
+    for (uint32_t i = 0; i < channel.m_qwc; ++i)
+    {
+        const uint32_t ram_address = static_cast<uint32_t>(current);
+        const uint32_t spr_address = ee_memory::k_scratchpad_base +
+            ((channel.m_sadr + i * 16u) & 0x3ff0u);
+        s_ee_u128 quad{};
+
+        if (channel_index == 8u)
+        {
+            m_memory->read128(spr_address, &quad);
+            m_memory->write128(ram_address, &quad);
+        }
+        else
+        {
+            m_memory->read128(ram_address, &quad);
+            m_memory->write128(spr_address, &quad);
+        }
+
+        current += 16u;
+        if ((i + 1u) % transfer == 0u)
+        {
+            current += static_cast<uint64_t>(skip) * 16u;
+        }
+    }
+
+    channel.m_madr = static_cast<uint32_t>(current);
+    channel.m_sadr = (channel.m_sadr + channel.m_qwc * 16u) & 0x3ff0u;
+    channel.m_qwc = 0u;
+    channel.m_chcr &= ~k_chcr_str;
     return raise(channel_index);
 }
 
@@ -330,10 +410,14 @@ bool c_ee_dmac::write_spr_channel(uint32_t address, uint32_t value)
         channel->m_chcr = value;
         if (!was_running && (value & k_chcr_str) != 0u)
         {
-            if (channel_index == 8u &&
-                ((channel->m_chcr >> 2u) & 3u) == 1u)
+            const uint32_t mode = (channel->m_chcr >> 2u) & 3u;
+            if (channel_index == 8u && mode == 1u)
             {
                 (void)transfer_from_spr_chain();
+            }
+            else if (mode == 2u && ((m_sqwc >> 16u) & 0xffu) != 0u)
+            {
+                (void)transfer_spr_interleave(channel_index);
             }
             else
             {
@@ -364,6 +448,10 @@ bool c_ee_dmac::mmio_read(void* user, uint32_t address,
     {
         word = controller->m_status;
     }
+    else if (address == k_sqwc_address)
+    {
+        word = controller->m_sqwc;
+    }
     else if (!controller->read_spr_channel(address, &word))
     {
         return false;
@@ -383,6 +471,12 @@ bool c_ee_dmac::mmio_write(void* user, uint32_t address,
 
     c_ee_dmac* controller = static_cast<c_ee_dmac*>(user);
     const uint32_t word = static_cast<uint32_t>(value->m_lo);
+    if (address == k_sqwc_address)
+    {
+        controller->m_sqwc = word;
+        return true;
+    }
+
     if (address != k_stat_address)
     {
         return controller->write_spr_channel(address, word);
