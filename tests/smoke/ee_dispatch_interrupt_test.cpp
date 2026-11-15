@@ -218,6 +218,56 @@ int main()
         }
     }
 
+    // R5900 ERET selects ErrorEPC and clears ERL in error level;
+    // otherwise it selects EPC and clears EXL. Error level takes
+    // precedence when both flags are present.
+    {
+        struct s_eret_case
+        {
+            uint32_t m_initial_status;
+            uint32_t m_expected_status;
+            uint32_t m_expected_pc;
+        };
+        const s_eret_case cases[] = {
+            {
+                ee::STATUS_ERL | ee::STATUS_EXL | ee::STATUS_IE,
+                ee::STATUS_EXL | ee::STATUS_IE, 0x00102000u
+            },
+            {
+                ee::STATUS_ERL | ee::STATUS_IE,
+                ee::STATUS_IE, 0x00102000u
+            },
+            {
+                ee::STATUS_EXL | ee::STATUS_IE,
+                ee::STATUS_IE, 0x00101000u
+            },
+            {
+                ee::STATUS_IE,
+                ee::STATUS_IE, 0x00101000u
+            }
+        };
+
+        for (const s_eret_case& test : cases)
+        {
+            ee::s_ee_cpu_state cpu{};
+            cpu.m_pc = 0x80000180u;
+            cpu.m_cop0[ee::COP0_Status] = test.m_initial_status;
+            cpu.m_cop0[ee::COP0_EPC] = 0x00101000u;
+            cpu.m_cop0[ee::COP0_ErrorEPC] = 0x00102000u;
+            const uint32_t returned = ee::ee_exception_return(&cpu);
+            if (returned != test.m_expected_pc ||
+                cpu.m_pc != test.m_expected_pc ||
+                cpu.m_cop0[ee::COP0_Status] != test.m_expected_status ||
+                cpu.m_cop0[ee::COP0_EPC] != 0x00101000u ||
+                cpu.m_cop0[ee::COP0_ErrorEPC] != 0x00102000u ||
+                cpu.m_exit_reason != static_cast<uint32_t>(
+                    ee::e_ee_exit_reason::EE_EXIT_DISPATCH))
+            {
+                return fail("ERET ErrorEPC/EPC status selection incorrect");
+            }
+        }
+    }
+
     // ERET clears EXL. A still-pending level interrupt must be sampled
     // immediately at the next translated boundary, before EPC executes.
     {
