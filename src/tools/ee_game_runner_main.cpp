@@ -137,6 +137,7 @@ void usage(const char* program)
         "  --trace              Print guest PC, reason and dispatch count per step\n"
         "  --trace-entry=0xPC   Print arguments and pointed-to words at a guest entry\n"
         "  --watch-word=0xADDR  Report guest word changes between native dispatches\n"
+        "  --trace-store=0xADDR Trace individual guest stores overlapping this word (64 max)\n"
         "  --hle-startup        Handle selected startup and semaphore kernel calls\n"
         "  --kseg-ram           Enable direct EE RAM aliases (KSEG0/1 and 0x2/0x3)\n"
         "  --kernel-ram=FILE    Load 512 KiB of captured EE kernel RAM (not BIOS ROM)\n"
@@ -451,8 +452,10 @@ int main(int argc, char** argv)
     uint32_t loop_budget = 0u;
     uint32_t trace_entry = 0u;
     uint32_t watch_word = 0u;
+    uint32_t trace_store = 0u;
     bool has_trace_entry = false;
     bool has_watch_word = false;
+    bool has_trace_store = false;
     uint32_t stack = k_default_stack;
     uint32_t entry_override = 0;
     bool override_entry = false;
@@ -534,6 +537,14 @@ int main(int argc, char** argv)
         }
         if (parsed == 0)
         {
+            parsed = parse_option("--trace-store=", &trace_store);
+            if (parsed == 1)
+            {
+                has_trace_store = true;
+            }
+        }
+        if (parsed == 0)
+        {
             parsed = parse_option("--stack=", &stack);
         }
         if (parsed == 0)
@@ -576,7 +587,8 @@ int main(int argc, char** argv)
     if (elf_path == nullptr || library_path == nullptr || budget == 0 ||
         stack >= k_ee_ram_size ||
         (has_trace_entry && (trace_entry & 3u) != 0u) ||
-        (has_watch_word && (watch_word & 3u) != 0u))
+        (has_watch_word && (watch_word & 3u) != 0u) ||
+        (has_trace_store && (trace_store & 3u) != 0u))
     {
         usage(argv[0]);
         return 2;
@@ -661,6 +673,9 @@ int main(int argc, char** argv)
     runtime.m_mmio_write = &ee::c_ee_hw_bus::mmio_write;
     runtime.m_loop_safepoint_limit = loop_budget;
     runtime.m_loop_safepoint_remaining = loop_budget;
+    runtime.m_guest_store_trace_enabled = has_trace_store;
+    runtime.m_guest_store_trace_word = trace_store;
+    runtime.m_guest_store_trace_remaining = has_trace_store ? 64u : 0u;
     cpu.m_pc = entry;
     cpu.m_gpr[29].m_lo = stack;
 
@@ -668,6 +683,17 @@ int main(int argc, char** argv)
     // dispatches. They never modify guest RAM or trigger a guest exception.
     // An unbacked address is a usage error; reading zeros would conceal
     // the same invalid-memory condition being investigated.
+    if (has_trace_store && !memory->contains(trace_store, 4u))
+    {
+        std::fprintf(stderr, "trace-store address is not backed: 0x%08x\n",
+                     trace_store);
+        return 2;
+    }
+    if (has_trace_store)
+    {
+        std::printf("EE guest-store watch: addr=0x%08x max_events=64\n",
+                    trace_store);
+    }
     if (has_watch_word && !memory->contains(watch_word, 4u))
     {
         std::fprintf(stderr, "watch-word address is not backed: 0x%08x\n",
