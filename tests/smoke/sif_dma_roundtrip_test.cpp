@@ -375,8 +375,27 @@ int run_quantum(uint32_t quantum)
                 completed = true;
                 break;
             }
+            const uint32_t pc_before = f.m_iop.cpu().state().m_pc;
             const iop::s_kernel_run_result run =
                 f.m_iop.run(quantum, quantum);
+            if (quantum == 16u && sequence == 2u)
+            {
+                uint32_t d10 = 0u, d9 = 0u, icr2 = 0u, istat = 0u;
+                (void)f.m_iop.hardware().read(
+                    iop::c_hw::k_sif1_dma_base + 8u, 4u, &d10);
+                (void)f.m_iop.hardware().read(
+                    iop::c_hw::k_sif0_dma_base + 8u, 4u, &d9);
+                (void)f.m_iop.hardware().read(
+                    iop::c_hw::k_dma_icr2, 4u, &icr2);
+                (void)f.m_iop.hardware().read(
+                    iop::c_hw::k_i_stat, 4u, &istat);
+                std::fprintf(stderr,
+                    "STEP pc=%08x->%08x d10=%08x d9=%08x icr2=%08x istat=%08x delivered0=%llu delivered1=%llu\n",
+                    pc_before, f.m_iop.cpu().state().m_pc, d10, d9,
+                    icr2, istat,
+                    static_cast<unsigned long long>(f.m_sif0->delivered_bytes()),
+                    static_cast<unsigned long long>(f.m_sif1->delivered_bytes()));
+            }
             if (run.m_stop != iop::e_kernel_stop::budget_exhausted)
             {
                 return fail("guest stopped before valid reply",
