@@ -67,6 +67,28 @@ if errorlevel 1 goto :failed
 git pull --ff-only
 if errorlevel 1 goto :failed
 
+rem Use the newest stable official OpenPS2BIOS 4 MiB release by default.
+rem A caller-provided SDBZ_IOP_ROM0 always wins (and is never replaced).
+rem Explicit IRX bootstrap remains a separate, opt-in compatibility mode.
+rem Verify the upstream checksum and cache the last verified release for
+rem offline reuse; do not run an unchecked or partial BIOS image.
+if not defined SDBZ_IOP_ROM0 if not defined IOP_IRX if not defined IOP_IRX_LIST (
+    echo === Resolving latest official OpenPS2BIOS ROM0 ===
+    python tools\ensure_openps2bios.py --cache-dir "build\openps2bios"
+    if errorlevel 1 goto :failed
+    set "SDBZ_IOP_ROM0=%CD%\build\openps2bios\rom0.bin"
+)
+if defined SDBZ_IOP_ROM0 (
+    if not exist "%SDBZ_IOP_ROM0%" (
+        echo ERROR: SDBZ_IOP_ROM0 does not exist: "%SDBZ_IOP_ROM0%"
+        goto :failed
+    )
+    echo IOP ROM0 image: "%SDBZ_IOP_ROM0%"
+) else (
+    echo IOP ROM0 automatic bootstrap skipped: explicit IRX mode
+)
+
+
 rem Identify candidate IOP module path strings from this *local* game ELF.
 rem This is static evidence only; SIF LOADFILE RPC events will still need
 rem to be traced before declaring a genuine module load sequence.
