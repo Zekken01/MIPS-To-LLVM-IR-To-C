@@ -7,7 +7,7 @@ cd /d "%~dp0"
 if errorlevel 1 goto :failed
 
 set "ELF=PS2_GAME\SLUS_214.42"
-set "WORK_DIR=build\sdbz-thread-pr38"
+set "WORK_DIR=build\sdbz"
 rem Parallel LLVM object emission (tools/run_game.py allows 1..32).
 rem Default to 8 workers; callers can override with set EMIT_JOBS=16.
 rem Auto-expansion usually emits one module at a time, so this mostly
