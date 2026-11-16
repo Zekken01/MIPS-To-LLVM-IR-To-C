@@ -58,6 +58,104 @@ bool c_ee_dmac::commit_sif1_qwords(uint32_t qwc)
     channel.m_qwc -= qwc;
     if (channel.m_qwc == 0u)
     {
+        const bool chain = ((channel.m_chcr >> 2u) & 3u) == 1u;
+        if (!chain || m_sif1_chain_end)
+        {
+            channel.m_chcr &= ~k_chcr_str;
+            return raise(6u);
+        }
+
+        // CNT stores its next tag after the last inline payload
+        // qword; NEXT already selected its non-sequential successor.
+        if (((channel.m_chcr >> 28u) & 7u) == 1u)
+        {
+            channel.m_tadr = channel.m_madr;
+        }
+    }
+    return true;
+}
+
+bool c_ee_dmac::prepare_sif1_chain_tag()
+{
+    s_spr_channel& channel = m_sif1_channel;
+    const uint32_t chcr = channel.m_chcr;
+    if (m_memory == nullptr ||
+        (chcr & k_chcr_str) == 0u ||
+        ((chcr >> 2u) & 3u) != 1u ||
+        channel.m_qwc != 0u || m_sif1_chain_end ||
+        (chcr & 0x40u) != 0u || // TTE requires an extra FIFO tag header
+        m_sif1_chain_tags >= 4096u)
+    {
+        return false;
+    }
+
+    const uint32_t tag_address = channel.m_tadr;
+    if ((tag_address & 15u) != 0u ||
+        tag_address >= 0x02000000u ||
+        static_cast<uint64_t>(tag_address) + 16u > 0x02000000ull ||
+        !m_memory->contains(tag_address, 16u))
+    {
+        return false;
+    }
+
+    const uint64_t tag = m_memory->read64(tag_address);
+    const uint32_t low = static_cast<uint32_t>(tag);
+    const uint32_t qwc = low & 0xffffu;
+    const uint32_t id = (low >> 28u) & 7u;
+    const uint32_t address = static_cast<uint32_t>(tag >> 32u);
+    const uint64_t after_tag = static_cast<uint64_t>(tag_address) + 16u;
+    const uint64_t after_data = after_tag +
+        static_cast<uint64_t>(qwc) * 16u;
+
+    uint32_t source = address;
+    uint32_t next_tag = channel.m_tadr;
+    bool end = false;
+    switch (id)
+    {
+    case 0u: // REFE, referenced payload, then terminate
+        next_tag = static_cast<uint32_t>(after_tag);
+        end = true;
+        break;
+    case 1u: // CNT, inline payload, next tag after data
+        source = static_cast<uint32_t>(after_tag);
+        next_tag = static_cast<uint32_t>(after_data);
+        break;
+    case 2u: // NEXT, inline payload, tag at ADDR
+        source = static_cast<uint32_t>(after_tag);
+        next_tag = address;
+        break;
+    case 3u: // REF, referenced payload
+    case 4u: // REFS, referenced payload with later stall control
+        next_tag = static_cast<uint32_t>(after_tag);
+        break;
+    case 7u: // END, inline payload, terminate
+        source = static_cast<uint32_t>(after_tag);
+        end = true;
+        break;
+    default:
+        // CALL/RET need a verified address-stack contract.
+        return false;
+    }
+
+    if ((source & 15u) != 0u ||
+        source >= 0x02000000u ||
+        static_cast<uint64_t>(source) + uint64_t(qwc) * 16u >
+            0x02000000ull ||
+        !m_memory->contains(source, static_cast<size_t>(qwc) * 16u))
+    {
+        return false;
+    }
+    // Commit no register changes or payload until the entire tag and
+    // its source span are known valid. TIE+IRQ ends this tag's chain.
+    channel.m_chcr = (chcr & 0x0000ffffu) | (low & 0xffff0000u);
+    channel.m_madr = source;
+    channel.m_tadr = next_tag;
+    channel.m_qwc = qwc;
+    m_sif1_chain_end = end ||
+        ((chcr & 0x80u) != 0u && (low & 0x80000000u) != 0u);
+    ++m_sif1_chain_tags;
+    if (qwc == 0u && m_sif1_chain_end)
+    {
         channel.m_chcr &= ~k_chcr_str;
         return raise(6u);
     }
@@ -92,6 +190,8 @@ void c_ee_dmac::reset()
     }
     m_sif0_channel = {};
     m_sif1_channel = {};
+    m_sif1_chain_end = false;
+    m_sif1_chain_tags = 0u;
     sync_interrupt_line();
 }
 
@@ -829,6 +929,11 @@ bool c_ee_dmac::write_spr_channel(uint32_t address, uint32_t value)
         if (!was_running && (value & k_chcr_str) != 0u)
         {
             const uint32_t mode = (channel->m_chcr >> 2u) & 3u;
+            if (channel_index == 6u)
+            {
+                m_sif1_chain_end = false;
+                m_sif1_chain_tags = 0u;
+            }
             if (channel_index == 5u || channel_index == 6u)
             {
                 // SIF0 waits for an IOP producer. SIF1 notifies the
