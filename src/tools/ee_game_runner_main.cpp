@@ -2412,26 +2412,45 @@ int main(int argc, char** argv)
                         s_kernel_semaphore& semaphore =
                             semaphores[semaphore_id - 1u];
                         const uint32_t old_count = semaphore.m_count;
-                        if (service == 0x44u && old_count == 0u)
+                        const bool wait_blocked =
+                            service == 0x44u && old_count == 0u;
+                        if (wait_blocked)
                         {
-                            // A real WaitSema blocks the *current thread*
-                            // and schedules another. There is no guest EE
-                            // scheduler in this runner, so leave EPC/EXL
-                            // intact instead of reporting a fake success.
-                            std::fprintf(
-                                stderr,
-                                "WaitSema HLE refused blocking wait: "
-                                "id=%u current_thread=%u count=0 "
-                                "(EE thread scheduler required)\n",
-                                semaphore_id, current_thread_id
-                            );
-                            break;
+                            bool other_ready = false;
+                            for (uint32_t id = 1u; id < 256u; ++id)
+                            {
+                                if (id != current_thread_id &&
+                                    threads[id].m_used &&
+                                    threads[id].m_status == 2u)
+                                {
+                                    other_ready = true;
+                                    break;
+                                }
+                            }
+                            if (!other_ready || callback_active ||
+                                dmac_callback_active)
+                            {
+                                std::fprintf(stderr,
+                                    "WaitSema HLE: no runnable peer for "
+                                    "semaphore=%u thread=%u\n",
+                                    semaphore_id, current_thread_id);
+                                break;
+                            }
+                            semaphore.m_waiters.push_back(current_thread_id);
+                            threads[current_thread_id].m_status = 4u;
+                            threads[current_thread_id].m_wait_semaphore =
+                                semaphore_id;
+                            reschedule_requested = true;
                         }
 
                         if (service == 0x41u)
                         {
-                            // All allocated semaphores have zero waiters
-                            // because blocking waits currently fail closed.
+                            if (!semaphore.m_waiters.empty())
+                            {
+                                std::fprintf(stderr,
+                                    "DeleteSema HLE refused active waiters\n");
+                                break;
+                            }
                             semaphore = {};
                         }
                         else if (service == 0x42u || service == 0x43u)
@@ -2460,7 +2479,31 @@ int main(int argc, char** argv)
                                     );
                                 continue;
                             }
-                            ++semaphore.m_count;
+                            if (semaphore.m_waiters.empty())
+                            {
+                                ++semaphore.m_count;
+                            }
+                            else
+                            {
+                                const uint32_t wake_id =
+                                    semaphore.m_waiters.front();
+                                semaphore.m_waiters.erase(
+                                    semaphore.m_waiters.begin());
+                                if (wake_id == 0u || wake_id >= 256u ||
+                                    !threads[wake_id].m_used ||
+                                    threads[wake_id].m_status != 4u)
+                                {
+                                    std::fprintf(stderr,
+                                        "SignalSema HLE invalid guest waiter\n");
+                                    break;
+                                }
+                                s_kernel_thread& waiter = threads[wake_id];
+                                waiter.m_status = 2u;
+                                waiter.m_wait_semaphore = 0u;
+                                waiter.m_order = ++next_thread_order;
+                                waiter.m_context.m_gpr[2].m_lo = semaphore_id;
+                                reschedule_requested = true;
+                            }
                         }
                         else if (service == 0x44u ||
                                  service == 0x45u ||
@@ -2470,7 +2513,7 @@ int main(int argc, char** argv)
                             {
                                 --semaphore.m_count;
                             }
-                            else
+                            else if (!wait_blocked)
                             {
                                 // PollSema and iPollSema do not block.
                                 cpu.m_gpr[2].m_lo =
