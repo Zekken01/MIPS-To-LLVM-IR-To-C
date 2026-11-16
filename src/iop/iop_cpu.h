@@ -42,6 +42,16 @@ struct s_run_result
     uint32_t m_opcode = 0u;
 };
 
+// Diagnostic evidence from the guest address that failed its final
+// memory read/write. Not an architectural COP0 BadVAddr register.
+struct s_memory_fault
+{
+    uint32_t m_address = 0u;
+    uint32_t m_width = 0u;
+    bool m_write = false;
+    bool m_valid = false;
+};
+
 class c_cpu
 {
 public:
@@ -65,6 +75,7 @@ public:
     s_cpu_state& state();
 
     uint64_t cycles() const;
+    const s_memory_fault& last_memory_fault() const;
     bool read32(uint32_t address, uint32_t* value) const;
     bool write32(uint32_t address, uint32_t value);
 
@@ -80,11 +91,13 @@ public:
 private:
     bool read(uint32_t address, uint32_t width, uint32_t* value) const;
     bool write(uint32_t address, uint32_t width, uint32_t value);
+    bool fail_memory(uint32_t address, uint32_t width, bool write) const;
 
     c_hw* m_hardware = nullptr;
     std::vector<uint8_t> m_ram;
     std::vector<uint8_t> m_rom0;
     s_cpu_state m_state{};
+    mutable s_memory_fault m_last_memory_fault{};
     uint64_t m_cycles = 0u;
 };
 } // namespace iop
