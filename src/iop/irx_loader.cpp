@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstring>
+#include <set>
 #include <utility>
 
 namespace iop
@@ -18,6 +19,7 @@ constexpr uint32_t k_section_rel = 9u;
 constexpr uint32_t k_elf_ioprel = 0xff80u;
 constexpr uint32_t k_elf_ioprel_v2 = 0xff81u;
 constexpr uint32_t k_import_marker = 0x41e00000u;
+constexpr uint32_t k_export_marker = 0x41c00000u;
 constexpr uint32_t k_jr_ra = 0x03e00008u;
 constexpr uint32_t k_import_ordinal = 0x24000000u;
 constexpr uint32_t k_user_ram_start = 0x00020000u;
@@ -279,6 +281,77 @@ e_irx_load_result resolve_imports(
     }
     return e_irx_load_result::success;
 }
+// Sony IOP exports: a 20-byte 0x41c00000 header followed by a
+// zero-terminated table of relocated function pointers. Word N is
+// the callable entry for ordinal N.
+e_irx_load_result collect_exports(
+    const std::vector<uint8_t>& staged,
+    uint32_t base,
+    std::vector<s_irx_export>* exports
+)
+{
+    std::set<std::pair<std::string, uint16_t>> seen;
+    for (size_t offset = 0u; offset + 20u <= staged.size();
+         offset += 4u)
+    {
+        if (read32(staged, offset) != k_export_marker)
+        {
+            continue;
+        }
+        std::string library;
+        for (size_t index = 0u; index < 8u; ++index)
+        {
+            const uint8_t ch = staged[offset + 12u + index];
+            if (ch == 0u)
+            {
+                break;
+            }
+            if (ch < 0x21u || ch > 0x7eu)
+            {
+                return e_irx_load_result::invalid_export;
+            }
+            library.push_back(static_cast<char>(ch));
+        }
+        if (library.empty())
+        {
+            return e_irx_load_result::invalid_export;
+        }
+        bool terminated = false;
+        for (uint32_t ordinal = 0u; ordinal < 1024u; ++ordinal)
+        {
+            const size_t at = offset + 20u +
+                static_cast<size_t>(ordinal) * 4u;
+            if (!valid_word(staged, at))
+            {
+                break;
+            }
+            const uint32_t entry = read32(staged, at);
+            if (entry == 0u)
+            {
+                terminated = true;
+                break;
+            }
+            const uint32_t physical = entry & 0x1fffffffu;
+            if ((entry & 3u) != 0u ||
+                physical < base ||
+                static_cast<uint64_t>(physical) >=
+                    static_cast<uint64_t>(base) + staged.size() ||
+                !seen.emplace(library, static_cast<uint16_t>(ordinal)).second)
+            {
+                return e_irx_load_result::invalid_export;
+            }
+            exports->push_back({
+                library, static_cast<uint16_t>(ordinal), entry
+            });
+        }
+        if (!terminated)
+        {
+            return e_irx_load_result::invalid_export;
+        }
+    }
+    return e_irx_load_result::success;
+}
+
 } // namespace
 
 e_irx_load_result load_irx(
@@ -286,7 +359,8 @@ e_irx_load_result load_irx(
     const std::vector<uint8_t>& bytes,
     uint32_t base,
     s_irx_module* module,
-    const t_irx_import_resolver& resolver
+    const t_irx_import_resolver& resolver,
+    const t_irx_export_validator& validate_exports
 )
 {
     if (module == nullptr)
@@ -399,6 +473,17 @@ e_irx_load_result load_irx(
         return result;
     }
 
+    std::vector<s_irx_export> exports;
+    result = collect_exports(staged, base, &exports);
+    if (result != e_irx_load_result::success)
+    {
+        return result;
+    }
+    if (validate_exports && !validate_exports(exports))
+    {
+        return e_irx_load_result::duplicate_export;
+    }
+
     // All memory/range checks have succeeded. No writes occur before
     // this point; malformed IRX bytes never partially modify IOP RAM.
     for (size_t offset = 0u; offset < staged.size(); offset += 4u)
@@ -431,6 +516,7 @@ e_irx_load_result load_irx(
     module->m_size = static_cast<uint32_t>(aligned);
     module->m_entry = base + entry_offset;
     module->m_gp = base + gp_offset;
+    module->m_exports = std::move(exports);
     return e_irx_load_result::success;
 }
 } // namespace iop
