@@ -34,6 +34,13 @@ public:
     void bind_cpu(s_ee_cpu_state* cpu);
     void bind_memory(ee_memory* memory);
 
+    // Genuine SIF0 channel-5 DMA receives destination tags from the
+    // IOP DMA9 hardware FIFO, never from EE TADR.
+    using t_sif0_start_callback = void (*)(void* user);
+    void bind_sif0_start(void* user, t_sif0_start_callback callback);
+    bool begin_sif0_packet(uint32_t tag, uint32_t destination);
+    bool commit_sif0_qwords(uint32_t qwc);
+
     // Genuine SIF1 channel-6 DMA uses an attached hardware FIFO engine.
     // A CHCR start notifies the engine; it never implies completion.
     using t_sif1_start_callback = void (*)(void* user);
@@ -103,6 +110,8 @@ private:
     bool transfer_from_spr_span(s_spr_channel& channel, uint32_t qwc, bool copy_data);
 
     s_ee_cpu_state* m_cpu = nullptr;
+    void* m_sif0_user = nullptr;
+    t_sif0_start_callback m_sif0_start = nullptr;
     void* m_sif1_user = nullptr;
     t_sif1_start_callback m_sif1_start = nullptr;
     ee_memory* m_memory = nullptr;
@@ -113,7 +122,8 @@ private:
     uint32_t m_status = 0;
     uint32_t m_sqwc = 0;
     s_spr_channel m_device_channels[3]{}; // VIF0, VIF1, GIF PATH3
-    s_spr_channel m_sif0_channel{}; // SIF0, no IOP producer yet
+    s_spr_channel m_sif0_channel{}; // SIF0, guest IOP DMA9 producer
+    bool m_sif0_chain_end = false;
     s_spr_channel m_sif1_channel{}; // SIF1, no IOP receiver yet
     bool m_sif1_chain_end = false;
     uint32_t m_sif1_chain_tags = 0u;
