@@ -135,7 +135,7 @@ int main()
         0x3c0d0004u, // lui t5,0x0004 (SIF0 IRQ enable)
         0xad8d0000u, // sw t5,0(t4)
         0x8d8e0000u, // lw t6,0(t4)
-        0x358c1570u, // ori t4,t4,0x1570 (PCR2)
+        0x258cfffcu, // addiu t4,t4,-4 (DICR2 -> PCR2)
         0x3c0f1234u, // lui t7,0x1234
         0x35ef5678u, // ori t7,t7,0x5678
         0xad8f0000u, // sw t7,0(t4)
