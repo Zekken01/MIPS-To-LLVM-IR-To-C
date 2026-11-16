@@ -14,7 +14,7 @@ import sys
 from test_game_runner import make_elf
 
 
-def make_thread_elf(path):
+def make_thread_elf(path, blocking=False):
     make_elf(path)
     image = bytearray(path.read_bytes())
     image.extend(bytes(0x1100 - len(image)))
@@ -30,6 +30,11 @@ def make_thread_elf(path):
         0x02002021, 0x24030044, 0x0000000c,
         0x3c080010, 0x35080580, 0x8d120000, 0x0000000d,
     )
+    if blocking:
+        # Do not lower main priority. It must explicitly block in WaitSema
+        # before the lower-priority worker can run.
+        main = list(main)
+        main[10:14] = [0, 0, 0, 0]
     for index, word in enumerate(main):
         struct.pack_into("<I", image, 0x108 + index * 4, word)
 
@@ -49,7 +54,8 @@ def make_thread_elf(path):
     # current priority, attr, option. File-offset 0x640 => guest 0x100540.
     struct.pack_into(
         "<9I", image, 0x640,
-        16, 0x00100200, 0x00100600, 0x400, 0, 0, 0, 0, 0
+        16, 0x00100200, 0x00100600, 0x400, 0,
+        1 if blocking else 0, 0, 0, 0
     )
     path.write_bytes(image)
 
@@ -94,6 +100,42 @@ def main():
     assert state["gpr_lo"][18] == 0x42, state  # written by guest worker
     assert state["gpr_lo"][16] == 1, state  # CreateSema ID
     assert state["gpr_lo"][17] == 2, state  # CreateThread ID
+    # Second fixture: main remains at priority 0, worker is priority 1.
+    # A zero-count WaitSema must suspend main, then SignalSema must
+    # wake the exact blocked guest thread and restore its context.
+    blocking_elf = work / "thread-blocking.elf"
+    blocking_report = work / "thread-blocking.json"
+    make_thread_elf(blocking_elf, blocking=True)
+    blocking_command = [
+        sys.executable, str(source / "tools" / "run_game.py"),
+        str(blocking_elf),
+        "--build-dir", str(args.build_dir.resolve()),
+        "--work-dir", str(work / "native-blocking"),
+        "--functions=entry", "--extra-functions=0x00100200",
+        "--max-dispatches=256", "--hle-startup", "--kseg-ram",
+        "--trace", "--report", str(blocking_report),
+    ]
+    blocked = subprocess.run(
+        blocking_command, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, text=True, check=False, timeout=120
+    )
+    (work / "thread-blocking.log").write_text(blocked.stdout)
+    assert blocking_report.is_file(), blocked.stdout[-6000:]
+    blocked_state = json.loads(blocking_report.read_text())
+    assert "HLE WaitSema: id=1 old_count=0 new_count=0" in blocked.stdout, (
+        blocked.stdout[-6000:]
+    )
+    assert "HLE EE thread switch: id=2 pc=0x00100200" in blocked.stdout, (
+        blocked.stdout[-6000:]
+    )
+    assert "HLE EE thread switch: id=1 " in blocked.stdout, (
+        blocked.stdout[-6000:]
+    )
+    assert blocked_state["gpr_lo"][18] == 0x42, blocked_state
+    assert blocked_state["exit_name"] == "EXCEPTION", blocked_state
+    assert (blocked_state["cop0_cause"] >> 2) & 31 == 9, blocked_state
+    print("EE blocked WaitSema wakeup: PASS worker=2 signal=1 main_resumed=1")
+
     print(
         "EE native thread scheduler: PASS "
         "worker=2 flag=0x42 sema=1 restored_main=1"
