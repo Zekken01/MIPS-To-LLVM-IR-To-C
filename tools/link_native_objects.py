@@ -14,8 +14,10 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -204,6 +206,130 @@ def load_inputs(metadata_path, object_dir):
     return metadata, object_manifest, validated_functions, linked_objects
 
 
+def runtime_cache_key(sources, source_root, compiler, flags):
+    """Fingerprint the compilation ABI and all in-tree C++ include inputs.
+
+    This intentionally invalidates on any project header change rather than
+    risk stale inline definitions in cached runtime objects. The fingerprint
+    does not depend on guest IR, function count or generated dispatcher code.
+    """
+    info = {
+        "schema": "ee-runtime-objects-v1",
+        "compiler": compiler,
+        "flags": flags,
+        "platform": sys.platform,
+        "environment": {
+            name: os.environ.get(name, "")
+            for name in ("INCLUDE", "CPATH", "CPLUS_INCLUDE_PATH",
+                         "CXXFLAGS", "SDKROOT")
+        },
+    }
+    hasher = hashlib.sha256(json.dumps(info, sort_keys=True).encode("utf-8"))
+    paths = list(sources)
+    for directory in ("include", "src/runtime", "src/ee"):
+        paths.extend(
+            p for p in (source_root / directory).rglob("*")
+            if p.is_file() and p.suffix in (".h", ".hpp", ".inl")
+        )
+    for path in sorted(set(paths)):
+        relative = path.relative_to(source_root).as_posix()
+        hasher.update(relative.encode("utf-8"))
+        hasher.update(b"\\0")
+        hasher.update(hashlib.sha256(path.read_bytes()).digest())
+    return hasher.hexdigest()
+
+
+def cached_runtime_objects(output, sources, source_root, cxx,
+                           include_args, compile_flags):
+    """Compile fixed EE runtime objects once; verify every reuse by hash."""
+    started = time.monotonic()
+    cache_dir = output.parent / (output.name + ".runtime-cache")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = cache_dir / "runtime-objects.json"
+
+    compiler_path = shutil.which(cxx) or cxx
+    compiler_file = Path(compiler_path)
+    if not compiler_file.is_file():
+        raise ValueError(f"runtime compiler executable unavailable: {cxx}")
+    stat = compiler_file.stat()
+    compiler = {
+        "path": str(compiler_file.resolve()),
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+    }
+    key = runtime_cache_key(
+        sources, source_root, compiler, compile_flags + include_args
+    )
+    object_paths = [
+        cache_dir / (source.stem + "-" + hashlib.sha256(
+            str(source.relative_to(source_root)).encode("utf-8")
+        ).hexdigest()[:12] + ".o")
+        for source in sources
+    ]
+
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        manifest = {}
+    recorded = manifest.get("objects", [])
+    reuse = (
+        manifest.get("key") == key and
+        len(recorded) == len(object_paths) and
+        all(
+            item.get("path") == path.name and path.is_file() and
+            item.get("sha256") == hashlib.sha256(path.read_bytes()).hexdigest()
+            for item, path in zip(recorded, object_paths)
+        )
+    )
+    if reuse:
+        print(
+            "link_native_objects: reused "
+            f"{len(object_paths)} cached runtime objects "
+            f"({time.monotonic() - started:.2f}s)",
+            flush=True,
+        )
+        return object_paths
+
+    print(
+        "link_native_objects: compiling "
+        f"{len(sources)} runtime sources (cache miss)",
+        flush=True,
+    )
+    for source, obj in zip(sources, object_paths):
+        temporary = obj.with_suffix(".tmp.o")
+        try:
+            subprocess.run(
+                [cxx, *compile_flags, *include_args,
+                 "-c", str(source), "-o", str(temporary)],
+                check=True,
+            )
+            temporary.replace(obj)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+
+    manifest = {
+        "key": key,
+        "objects": [
+            {"path": path.name, "sha256": hashlib.sha256(
+                path.read_bytes()
+            ).hexdigest()}
+            for path in object_paths
+        ],
+    }
+    temporary_manifest = manifest_path.with_suffix(".tmp")
+    temporary_manifest.write_text(
+        json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+    )
+    temporary_manifest.replace(manifest_path)
+    print(
+        "link_native_objects: compiled runtime objects "
+        f"({time.monotonic() - started:.2f}s)",
+        flush=True,
+    )
+    return object_paths
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("functions_json", type=Path, help="ee_functions.json from ee_recomp")
@@ -286,7 +412,26 @@ def main():
             f"link_native_objects: compiling dispatcher glue at -O{args.dispatcher_opt}",
             flush=True,
         )
+        dispatch_started = time.monotonic()
         subprocess.run(compile_command, check=True)
+        print(
+            f"link_native_objects: dispatcher glue compiled "
+            f"({time.monotonic() - dispatch_started:.2f}s)",
+            flush=True,
+        )
+
+        # Runtime sources do not depend on the number of translated guest
+        # functions. Cache their compiled objects so boot auto-expansion does
+        # not rebuild the same six translation units on every relink.
+        runtime_flags = ["-std=c++17", "-O2"]
+        if sys.platform in ("linux", "darwin"):
+            runtime_flags.append("-fPIC")
+        if args.pdb:
+            runtime_flags += ["-g", "-gcodeview"]
+        runtime_objects = cached_runtime_objects(
+            args.output, required_sources, source_root, args.cxx,
+            include_args, runtime_flags
+        )
 
         # Use a response file: the complete game emits thousands of per-function
         # objects and can exceed the operating system's command-line length.
@@ -318,7 +463,7 @@ def main():
 
         command += include_args
         command.append("@" + str(response_path))
-        command += [str(path) for path in required_sources]
+        command += [str(path) for path in runtime_objects]
         command.append(str(dispatch_object))
         command += ["-o", str(args.output)]
 
@@ -331,7 +476,13 @@ def main():
             f"for {object_manifest['target_triple']} -> {args.output}",
             flush=True,
         )
+        link_started = time.monotonic()
         subprocess.run(command, check=True)
+        print(
+            f"link_native_objects: guest DLL linked "
+            f"({time.monotonic() - link_started:.2f}s)",
+            flush=True,
+        )
         if args.pdb and (not pdb_path.is_file() or pdb_path.stat().st_size == 0):
             raise ValueError(
                 f"link completed without producing the requested PDB: {pdb_path}"
