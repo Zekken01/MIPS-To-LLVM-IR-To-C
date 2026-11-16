@@ -62,7 +62,7 @@ def run_case(passes, initial_reuse=False, diagnostics=False):
         if diagnostics:
             argv.extend((
                 "--trace-entry=0x0018cf68",
-                "--watch-word=0x01ffec1c",
+                "--watch-word=0x01ffec14",
             ))
         with patch.object(SESSION.subprocess, "run", side_effect=fake_run):
             code = SESSION.main(argv)
@@ -75,7 +75,7 @@ def run_case(passes, initial_reuse=False, diagnostics=False):
         if diagnostics:
             assert all(
                 "--trace-entry=0x0018cf68" in call and
-                "--watch-word=0x01ffec1c" in call
+                "--watch-word=0x01ffec14" in call
                 for call in calls
             ), calls
             assert "--trace-entry=0x0018cf68" in (
@@ -110,7 +110,7 @@ def main():
         {"trace": True, "replay": 0, "exit_reason": 5},
     ], initial_reuse=True, diagnostics=True)
     assert code == 3
-    assert "--watch-word=0x01ffec1c" in expansion
+    assert "--watch-word=0x01ffec14" in expansion
     assert "--trace-entry=0x0018cf68" in boot
 
     # Even if the second pass also hits its cap, stop at the session
