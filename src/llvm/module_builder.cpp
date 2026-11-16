@@ -70,6 +70,7 @@ void module_builder::declare_memory_helpers()
     m_out += "declare void @ee_mem_write32(ptr, i32, i32)\n";
     m_out += "declare void @ee_mem_write64(ptr, i32, i64)\n";
     m_out += "declare void @ee_mem_write128(ptr, i32, ptr)\n";
+    m_out += "declare void @ee_trace_guest_store(ptr, i32, i32, i32, i32, i32, i64, i32, i64, i64, i64, i64)\n";
     m_out += "declare i64 @ee_mem_lwl(ptr, i32, i64)\n";
     m_out += "declare i64 @ee_mem_lwr(ptr, i32, i64)\n";
     m_out += "declare i64 @ee_mem_ldl(ptr, i32, i64)\n";
@@ -254,6 +255,28 @@ std::string module_builder::src_hi(uint8_t reg)
     if (reg == 0) return "0";
     load_gpr_temp(reg);
     return m_cur_hi[reg];
+}
+
+void module_builder::emit_guest_store_trace(
+    const ee::s_ee_instruction& ins,
+    const std::string& effective_address,
+    const std::string& affected_address, uint32_t width,
+    const std::string& source_value, uint32_t source_lane
+)
+{
+    // SSA values capture current architectural operands even when the CPU
+    // backing store has not been synchronized at this block boundary.
+    const std::string base = src_lo(ins.rs);
+    const std::string sp = src_lo(29);
+    const std::string fp = src_lo(30);
+    const std::string ra = src_lo(31);
+    m_out += "  call void @ee_trace_guest_store(ptr %rt, i32 " +
+             std::to_string(ins.pc) + ", i32 " +
+             std::to_string(ins.opcode_word) + ", i32 " +
+             effective_address + ", i32 " + affected_address + ", i32 " +
+             std::to_string(width) + ", i64 " + source_value + ", i32 " +
+             std::to_string(source_lane) + ", i64 " + base + ", i64 " +
+             sp + ", i64 " + fp + ", i64 " + ra + ")\n";
 }
 
 void module_builder::set_gpr_temp(uint8_t reg, const std::string& lo,
@@ -764,6 +787,11 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
         std::string addr = newtemp();
         m_out += "  " + sum + " = add i64 " + src_lo(ins.rs) + ", " + imm + "\n";
         m_out += "  " + addr + " = trunc i64 " + sum + " to i32\n";
+        const uint32_t width =
+            ins.opcode == ee::e_ee_opcode::OP_SB ? 1u :
+            ins.opcode == ee::e_ee_opcode::OP_SH ? 2u :
+            ins.opcode == ee::e_ee_opcode::OP_SD ? 8u : 4u;
+        emit_guest_store_trace(ins, addr, addr, width, src_lo(ins.rt), 0u);
         if (ins.opcode == ee::e_ee_opcode::OP_SB) {
             std::string v = newtemp();
             m_out += "  " + v + " = trunc i64 " + src_lo(ins.rt) + " to i8\n";
@@ -810,9 +838,11 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
         std::string addr8 = newtemp();
         m_out += "  " + sum + " = add i64 " + src_lo(ins.rs) + ", " + imm + "\n";
         m_out += "  " + addr + " = trunc i64 " + sum + " to i32\n";
+        emit_guest_store_trace(ins, addr, addr, 8u, src_lo(ins.rt), 0u);
         m_out += "  call void @ee_mem_write64(ptr %rt, i32 " + addr + ", i64 " +
                  src_lo(ins.rt) + ")\n";
         m_out += "  " + addr8 + " = add i32 " + addr + ", 8\n";
+        emit_guest_store_trace(ins, addr8, addr8, 8u, src_hi(ins.rt), 1u);
         m_out += "  call void @ee_mem_write64(ptr %rt, i32 " + addr8 + ", i64 " +
                  src_hi(ins.rt) + ")\n";
         break;
@@ -856,6 +886,14 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
         std::string addr = newtemp();
         m_out += "  " + sum + " = add i64 " + src_lo(ins.rs) + ", " + imm + "\n";
         m_out += "  " + addr + " = trunc i64 " + sum + " to i32\n";
+        const bool is_word =
+            ins.opcode == ee::e_ee_opcode::OP_SWL ||
+            ins.opcode == ee::e_ee_opcode::OP_SWR;
+        const std::string aligned = newtemp();
+        m_out += "  " + aligned + " = and i32 " + addr +
+                 (is_word ? ", -4\n" : ", -8\n");
+        emit_guest_store_trace(ins, addr, aligned, is_word ? 4u : 8u,
+                               src_lo(ins.rt), 0u);
         m_out += std::string("  call void @ee_mem_") + name + "(ptr %rt, i32 " + addr +
                  ", i64 " + src_lo(ins.rt) + ")\n";
         break;
@@ -893,7 +931,9 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
         m_out += "  " + addr8 + " = add i32 " + addr + ", 8\n";
         m_out += "  " + vlo + " = load i64, ptr " + vu0_lo_ptr(ins.rt) + "\n";
         m_out += "  " + vhi + " = load i64, ptr " + vu0_hi_ptr(ins.rt) + "\n";
+        emit_guest_store_trace(ins, addr, addr, 8u, vlo, 0u);
         m_out += "  call void @ee_mem_write64(ptr %rt, i32 " + addr + ", i64 " + vlo + ")\n";
+        emit_guest_store_trace(ins, addr8, addr8, 8u, vhi, 1u);
         m_out += "  call void @ee_mem_write64(ptr %rt, i32 " + addr8 + ", i64 " + vhi + ")\n";
         break;
     }
@@ -1526,6 +1566,9 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
             store_fpr_i32(ins.rt, w);
         } else {
             std::string w = load_fpr_i32(ins.rt);
+            const std::string source64 = newtemp();
+            m_out += "  " + source64 + " = zext i32 " + w + " to i64\n";
+            emit_guest_store_trace(ins, addr, addr, 4u, source64, 0u);
             m_out += "  call void @ee_mem_write32(ptr %rt, i32 " + addr + ", i32 " + w + ")\n";
         }
         break;
