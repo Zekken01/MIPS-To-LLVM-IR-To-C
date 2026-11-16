@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <memory>
 #include <vector>
 
 namespace
@@ -63,11 +64,9 @@ struct s_fixture
     ee::ee_memory m_ram{4u * 1024u * 1024u};
     ee::c_ee_dmac m_dmac{};
     iop::c_kernel m_kernel{};
-    iop::c_sif1_dma_transport m_transport;
+    std::unique_ptr<iop::c_sif1_dma_transport> m_transport;
 
     s_fixture()
-        : m_transport(m_ram, m_dmac, m_kernel.cpu(),
-                      m_kernel.hardware())
     {
         m_dmac.bind_memory(&m_ram);
         m_dmac.reset();
@@ -92,7 +91,15 @@ struct s_fixture
         {
             rom_word(rom, index * 4u, instructions[index]);
         }
-        return m_kernel.start_rom0_boot(rom);
+        if (!m_kernel.start_rom0_boot(rom))
+        {
+            return false;
+        }
+        // CPU reset also resets IOP peripherals and intentionally
+        // detaches hardware callbacks. Attach after ROM0 reset.
+        m_transport = std::make_unique<iop::c_sif1_dma_transport>(
+            m_ram, m_dmac, m_kernel.cpu(), m_kernel.hardware());
+        return true;
     }
 
     bool start_ee(uint32_t chcr = 0x105u)
@@ -157,15 +164,15 @@ bool run_multitag_chain()
     }
     // Sender-first: a complete EE chain may fill its FIFO without an
     // IOP receiver, but no IOP completion or RAM writes may occur.
-    if (!f.start_ee() || f.m_transport.faulted() ||
-        f.m_transport.queued_bytes() != 64u ||
-        f.m_transport.delivered_bytes() != 0u)
+    if (!f.start_ee() || f.m_transport->faulted() ||
+        f.m_transport->queued_bytes() != 64u ||
+        f.m_transport->delivered_bytes() != 0u)
     {
         std::fprintf(stderr,
             "EE chain pre-receiver: fault=%u queued=%llu delivered=%llu status=%08x\n",
-            f.m_transport.faulted() ? 1u : 0u,
-            static_cast<unsigned long long>(f.m_transport.queued_bytes()),
-            static_cast<unsigned long long>(f.m_transport.delivered_bytes()),
+            f.m_transport->faulted() ? 1u : 0u,
+            static_cast<unsigned long long>(f.m_transport->queued_bytes()),
+            static_cast<unsigned long long>(f.m_transport->delivered_bytes()),
             f.m_dmac.status());
         return false;
     }
@@ -186,14 +193,14 @@ bool run_multitag_chain()
         return false;
     }
 
-    if (f.m_transport.faulted() ||
-        f.m_transport.fifo_words() != 0u ||
-        f.m_transport.delivered_bytes() != 48u)
+    if (f.m_transport->faulted() ||
+        f.m_transport->fifo_words() != 0u ||
+        f.m_transport->delivered_bytes() != 48u)
     {
         std::fprintf(stderr, "EE chain post-receiver: fault=%u fifo=%u delivered=%llu\n",
-            f.m_transport.faulted() ? 1u : 0u,
-            f.m_transport.fifo_words(),
-            static_cast<unsigned long long>(f.m_transport.delivered_bytes()));
+            f.m_transport->faulted() ? 1u : 0u,
+            f.m_transport->fifo_words(),
+            static_cast<unsigned long long>(f.m_transport->delivered_bytes()));
         return false;
     }
 
@@ -252,7 +259,7 @@ bool run_multitag_chain()
         "\"requested_bytes\":48,\"transferred_bytes\":%llu,"
         "\"final_tadr\":%u,\"dstat\":%u,\"iop_istat\":%u}\n",
         k_chain, k_destination,
-        static_cast<unsigned long long>(f.m_transport.delivered_bytes()),
+        static_cast<unsigned long long>(f.m_transport->delivered_bytes()),
         tadr, f.m_dmac.status(), iop_stat);
     return true;
 }
@@ -280,8 +287,8 @@ bool run_tie_irq()
 
     if (!arm_iop_guest(f.m_kernel) ||
         !f.start_ee(0x185u) ||
-        f.m_transport.faulted() ||
-        f.m_transport.delivered_bytes() != 16u)
+        f.m_transport->faulted() ||
+        f.m_transport->delivered_bytes() != 16u)
     {
         return false;
     }
@@ -323,9 +330,9 @@ bool run_bad_tag()
         !f.start_ee() ||
         !read_ee(f.m_dmac, 0u, &before) ||
         (before & ee::c_ee_dmac::k_chcr_str) == 0u ||
-        !f.m_transport.faulted() ||
-        f.m_transport.queued_bytes() != 0u ||
-        f.m_transport.delivered_bytes() != 0u ||
+        !f.m_transport->faulted() ||
+        f.m_transport->queued_bytes() != 0u ||
+        f.m_transport->delivered_bytes() != 0u ||
         f.m_dmac.status() != 0u)
     {
         return false;
