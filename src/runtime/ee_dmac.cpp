@@ -38,6 +38,32 @@ void c_ee_dmac::bind_memory(ee_memory* memory)
     m_memory = memory;
 }
 
+void c_ee_dmac::bind_sif1_start(
+    void* user, t_sif1_start_callback callback)
+{
+    m_sif1_user = callback != nullptr ? user : nullptr;
+    m_sif1_start = m_sif1_user != nullptr ? callback : nullptr;
+}
+
+bool c_ee_dmac::commit_sif1_qwords(uint32_t qwc)
+{
+    s_spr_channel& channel = m_sif1_channel;
+    if ((channel.m_chcr & k_chcr_str) == 0u ||
+        qwc == 0u || qwc > channel.m_qwc)
+    {
+        return false;
+    }
+
+    channel.m_madr += qwc * 16u;
+    channel.m_qwc -= qwc;
+    if (channel.m_qwc == 0u)
+    {
+        channel.m_chcr &= ~k_chcr_str;
+        return raise(6u);
+    }
+    return true;
+}
+
 void c_ee_dmac::bind_device_transfer(
     void* user, t_device_transfer_callback callback)
 {
@@ -805,8 +831,12 @@ bool c_ee_dmac::write_spr_channel(uint32_t address, uint32_t value)
             const uint32_t mode = (channel->m_chcr >> 2u) & 3u;
             if (channel_index == 5u || channel_index == 6u)
             {
-                // No linked SIF hardware transport yet. Keep CHCR.STR
-                // visible without inventing DMA completion or payload.
+                // SIF0 waits for an IOP producer. SIF1 notifies the
+                // hardware FIFO; only committed words can retire STR.
+                if (channel_index == 6u && m_sif1_start != nullptr)
+                {
+                    m_sif1_start(m_sif1_user);
+                }
             }
             else if (device_channel)
             {
