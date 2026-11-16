@@ -383,9 +383,8 @@ int main(int argc, char** argv)
                       kernel);
     }
 
-    // Do not turn a raw transport payload into an invented SIFCMD
-    // success claim. Continue authentic firmware instructions, but
-    // leave SIFCMD/RPC request/response for the next acceptance gate.
+    // Continue the original transport probe before testing native
+    // firmware SIFCMD processing. No host callback handles commands.
     const iop::s_kernel_run_result continued = kernel.run(4096u, 256u);
     if (continued.m_stop != iop::e_kernel_stop::budget_exhausted)
     {
@@ -395,6 +394,171 @@ int main(int argc, char** argv)
             continued.m_opcode);
         return failed("guest stopped while processing DMA receipt",
                       kernel);
+    }
+
+    // Test real firmware command processing, not an HLE dispatcher.
+    // The v0.6 ob_sif_cmd_build packet has a 16-byte header:
+    // [size, extra=0, command, option] followed by payload words.
+    uint32_t status_magic = 0u;
+    uint32_t received_before = 0u;
+    if (!kernel.cpu().read32(
+            k_firmware_sif_status, &status_magic) ||
+        status_magic != k_firmware_status_magic ||
+        !kernel.cpu().read32(
+            k_firmware_status_received, &received_before))
+    {
+        return failed("genuine firmware SIF status block absent", kernel);
+    }
+
+    // INIT_CMD opt=0 publishes an EE command buffer to the guest IOP.
+    const uint32_t init_address[5] =
+    {
+        20u, 0u, 0x80000002u, 0u, k_ee_sifcmd_reply
+    };
+    uint32_t received_after_address = 0u;
+    if (!send_firmware_sifcmd(
+            memory, ee_hardware.dmac(), sif1, kernel,
+            ee_subaddr, init_address, 5u) ||
+        !run_until_firmware_receives(
+            kernel, received_before, &received_after_address))
+    {
+        return failed("IOP did not process INIT_CMD buffer address",
+                      kernel);
+    }
+    uint32_t command_id = 0u;
+    uint32_t command_result = 0xffffffffu;
+    uint32_t command_buffer = 0u;
+    if (!kernel.cpu().read32(
+            k_firmware_sif_status + 8u, &command_id) ||
+        !kernel.cpu().read32(
+            k_firmware_sif_status + 12u, &command_result) ||
+        !kernel.cpu().read32(
+            k_firmware_sif_status + 16u, &command_buffer) ||
+        command_id != 0x80000002u ||
+        command_result != 0u ||
+        command_buffer != k_ee_sifcmd_reply)
+    {
+        std::fprintf(stderr,
+            "INIT_CMD address: command=%08x result=%08x buffer=%08x\n",
+            command_id, command_result, command_buffer);
+        return failed("guest firmware rejected valid INIT_CMD address",
+                      kernel);
+    }
+
+    // Arm EE DMA5 before requesting RPC initialization. OpenPS2BIOS
+    // itself will build SET_SREG(RPCINIT,1) and send it through IOP
+    // DMA9/SIF0; no host packet is placed into the EE reply buffer.
+    for (uint32_t offset = 0u; offset < 48u; offset += 4u)
+    {
+        memory.write32(k_ee_sifcmd_reply - 16u + offset, 0xcdcdcdcdu);
+    }
+    if (!arm_firmware_sif0_receiver(ee_hardware.dmac()))
+    {
+        return failed("could not arm genuine EE DMA5 receiver", kernel);
+    }
+
+    // INIT_CMD opt=1 requests the firmware's own RPC readiness reply.
+    const uint32_t request_rpc[4] =
+    {
+        16u, 0u, 0x80000002u, 1u
+    };
+    uint32_t received_after_rpc = 0u;
+    if (!send_firmware_sifcmd(
+            memory, ee_hardware.dmac(), sif1, kernel,
+            ee_subaddr, request_rpc, 4u) ||
+        !run_until_firmware_receives(
+            kernel, received_after_address, &received_after_rpc))
+    {
+        return failed("IOP did not process RPC INIT_CMD", kernel);
+    }
+
+    uint32_t rpc_requested = 0u;
+    uint32_t rpc_announced = 0u;
+    uint32_t received_bytes = 0u;
+    uint32_t last_argument = 0u;
+    uint32_t dma9_chcr = 0u;
+    uint32_t ee5_chcr = 0u;
+    ee::s_ee_u128 ee5_word{};
+    if (!kernel.cpu().read32(
+            k_firmware_sif_status + 8u, &command_id) ||
+        !kernel.cpu().read32(
+            k_firmware_sif_status + 12u, &command_result) ||
+        !kernel.cpu().read32(
+            k_firmware_sif_status + 148u, &rpc_requested) ||
+        !kernel.cpu().read32(
+            k_firmware_sif_status + 152u, &rpc_announced) ||
+        !kernel.cpu().read32(
+            k_firmware_sif_status + 156u, &received_bytes) ||
+        !kernel.cpu().read32(
+            k_firmware_sif_status + 160u, &last_argument) ||
+        !kernel.hardware().read(
+            iop::c_hw::k_sif0_dma_base + 8u, 4u, &dma9_chcr) ||
+        !ee::c_ee_dmac::mmio_read(
+            &ee_hardware.dmac(), ee::c_ee_dmac::k_sif0_base,
+            4u, &ee5_word) ||
+        command_id != 0x80000002u || command_result != 0u ||
+        rpc_requested != 1u || rpc_announced != 1u ||
+        received_bytes != 16u || last_argument != 0u ||
+        received_after_rpc != received_after_address + 1u ||
+        sif0.faulted() || sif0.delivered_bytes() != 32u ||
+        (dma9_chcr & 0x01000000u) != 0u ||
+        (ee5_word.m_lo & ee::c_ee_dmac::k_chcr_str) != 0u ||
+        (ee_hardware.dmac().status() & (1u << 5u)) == 0u)
+    {
+        std::fprintf(stderr,
+            "SIFCMD reply: command=%08x result=%08x rpc_req=%u "
+            "rpc_ack=%u received=%u bytes=%u last_arg=%08x "
+            "sif0_delivered=%llu dma9=%08x ee5=%08llx DSTAT=%08x\n",
+            command_id, command_result, rpc_requested,
+            rpc_announced, received_after_rpc, received_bytes,
+            last_argument,
+            static_cast<unsigned long long>(sif0.delivered_bytes()),
+            dma9_chcr,
+            static_cast<unsigned long long>(ee5_word.m_lo),
+            ee_hardware.dmac().status());
+        return failed("genuine firmware SIF0 RPC readiness exchange",
+                      kernel);
+    }
+    ee5_chcr = static_cast<uint32_t>(ee5_word.m_lo);
+
+    // The reply is actually constructed by ob_sif_cmd_build in the
+    // firmware: a 24-byte SET_SREG command padded to 2 quadwords.
+    // Verify the entire 32-byte transfer and its guard regions.
+    const uint32_t expected_reply[8] =
+    {
+        24u, 0u, 0x80000001u, 0u, 0u, 1u, 0u, 0u
+    };
+    for (uint32_t index = 0u; index < 8u; ++index)
+    {
+        const uint32_t actual = memory.read32(
+            k_ee_sifcmd_reply + index * 4u);
+        if (actual != expected_reply[index])
+        {
+            std::fprintf(stderr,
+                "SIFCMD reply mismatch at EE %08x actual=%08x expected=%08x\n",
+                k_ee_sifcmd_reply + index * 4u,
+                actual, expected_reply[index]);
+            return failed("firmware SIF0 reply payload mismatch", kernel);
+        }
+    }
+    for (uint32_t offset = 0u; offset < 16u; offset += 4u)
+    {
+        if (memory.read32(
+                k_ee_sifcmd_reply - 16u + offset) != 0xcdcdcdcdu)
+        {
+            return failed("firmware reply corrupted EE lower guard",
+                          kernel);
+        }
+    }
+    // Upper guard begins after the full 32-byte rounded response.
+    for (uint32_t offset = 0u; offset < 16u; offset += 4u)
+    {
+        if (memory.read32(
+                k_ee_sifcmd_reply + 32u + offset) != 0xcdcdcdcdu)
+        {
+            return failed("firmware reply corrupted EE upper guard",
+                          kernel);
+        }
     }
 
     std::ofstream report(argv[2], std::ios::binary);
@@ -431,7 +595,16 @@ int main(int argc, char** argv)
         "  \"iop_istat\": " << istat << ",\n"
         "  \"continuation_stop\": \""
             << stop_name(continued.m_stop) << "\",\n"
-        "  \"guest_pc\": " << kernel.cpu().state().m_pc << "\n"
+        "  \"guest_pc\": " << kernel.cpu().state().m_pc << ",\n"
+        "  \"sifcmd_first_received\": " << received_after_address << ",\n"
+        "  \"sifcmd_second_received\": " << received_after_rpc << ",\n"
+        "  \"sifcmd_last_command\": " << command_id << ",\n"
+        "  \"sifcmd_result\": " << command_result << ",\n"
+        "  \"sifcmd_ee_buffer\": " << command_buffer << ",\n"
+        "  \"sifcmd_rpc_requested\": " << rpc_requested << ",\n"
+        "  \"sifcmd_rpc_announced\": " << rpc_announced << ",\n"
+        "  \"sifcmd_sif0_reply_bytes\": " << sif0.delivered_bytes() << ",\n"
+        "  \"sifcmd_ee_dma5_chcr\": " << ee5_chcr << "\n"
         "}\n";
     if (!report.good())
     {
