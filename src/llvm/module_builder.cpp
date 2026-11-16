@@ -3538,7 +3538,39 @@ void module_builder::emit_function_cfg(const ee::s_ee_function& fn,
         }
         block_insns_vec.push_back(insns);
         block_written_map[bb.start_pc] = block_written(insns);
-        block_rbw_map[bb.start_pc] = block_read_before_write(insns);
+        std::set<uint8_t> rbw = block_read_before_write(insns);
+        // The diagnostic store hook observes SP/FP/RA via SSA at the guest
+        // instruction. Account for these extra reads in predecessor liveness,
+        // otherwise a predecessor could discard a dirty register before this
+        // block even though the trace needs its actual architectural value.
+        for (const auto& ins : insns)
+        {
+            if (ins.valid != ee::e_ee_valid::VALID)
+            {
+                continue;
+            }
+            switch (ins.opcode)
+            {
+            case e_ee_opcode::OP_SB:
+            case e_ee_opcode::OP_SH:
+            case e_ee_opcode::OP_SW:
+            case e_ee_opcode::OP_SD:
+            case e_ee_opcode::OP_SQ:
+            case e_ee_opcode::OP_SWL:
+            case e_ee_opcode::OP_SWR:
+            case e_ee_opcode::OP_SDL:
+            case e_ee_opcode::OP_SDR:
+            case e_ee_opcode::OP_SWC1:
+            case e_ee_opcode::OP_SQC2:
+                rbw.insert(29u);
+                rbw.insert(30u);
+                rbw.insert(31u);
+                break;
+            default:
+                break;
+            }
+        }
+        block_rbw_map[bb.start_pc] = rbw;
     }
 
     // Initialize liveness. Every architectural GPR is observable at a
