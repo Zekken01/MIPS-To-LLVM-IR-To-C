@@ -40,6 +40,9 @@ public:
     void bind_sif1_start(void* user, t_sif1_start_callback callback);
     // The FIFO engine has moved exactly qwc complete source quadwords.
     bool commit_sif1_qwords(uint32_t qwc);
+    // A chain-mode sender reads EE source tags only as a consequence
+    // of a guest DMA start. False means malformed/unsupported tag.
+    bool prepare_sif1_chain_tag();
 
     // A host-owned, synchronous data consumer. channel is 0=VIF0,
     // 1=VIF1 (RAM-to-device), 2=GIF PATH3. data is a contiguous,
@@ -112,6 +115,8 @@ private:
     s_spr_channel m_device_channels[3]{}; // VIF0, VIF1, GIF PATH3
     s_spr_channel m_sif0_channel{}; // SIF0, no IOP producer yet
     s_spr_channel m_sif1_channel{}; // SIF1, no IOP receiver yet
+    bool m_sif1_chain_end = false;
+    uint32_t m_sif1_chain_tags = 0u;
     s_spr_channel m_spr_channels[2]{}; // fromSPR channel 8, toSPR channel 9
 };
 } // namespace ee
