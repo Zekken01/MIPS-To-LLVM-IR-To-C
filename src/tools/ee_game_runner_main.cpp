@@ -2431,8 +2431,9 @@ int main(int argc, char** argv)
                                 dmac_callback_active)
                             {
                                 std::fprintf(stderr,
-                                    "WaitSema HLE: no runnable peer for "
-                                    "semaphore=%u thread=%u\n",
+                                    "WaitSema HLE refused blocking wait: "
+                                    "id=%u current_thread=%u count=0 "
+                                    "(no runnable peer)\n",
                                     semaphore_id, current_thread_id);
                                 break;
                             }
