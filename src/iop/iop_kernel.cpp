@@ -527,7 +527,10 @@ s_kernel_run_result c_kernel::run(
             {
                 continue;
             }
-            result.m_stop = stop_for_guest(stepped.m_result);
+            result.m_stop =
+                stepped.m_result == e_step_result::syscall
+                    ? e_kernel_stop::unhandled_syscall
+                    : stop_for_guest(stepped.m_result);
             result.m_guest_pc = stepped.m_pc;
             result.m_opcode = stepped.m_opcode;
             return result;
