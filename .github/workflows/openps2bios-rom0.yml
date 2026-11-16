@@ -22,9 +22,9 @@ jobs:
       - name: Build ROM0 runner and focused regressions
         run: |
           cmake --build build-rom0 --parallel 2 --target \
-            iop_rom0_runner iop_cpu_test iop_rom0_boot_test iop_hw_test iop_timer5_exception_test iop_dma_icr_test iop_dma_global_enable_test iop_dma_sif_channels_test
+            iop_rom0_runner iop_cpu_test iop_rom0_boot_test iop_hw_test iop_timer5_exception_test iop_dma_icr_test iop_dma_global_enable_test iop_dma_sif_channels_test iop_sif_handoff_test
           ctest --test-dir build-rom0 --output-on-failure \
-            -R '^(iop_cpu|iop_rom0_boot|iop_rom0_runner|iop_hw|iop_timer5_exception|iop_dma_icr|iop_dma_global_enable|iop_dma_sif_channels)$'
+            -R '^(iop_cpu|iop_rom0_boot|iop_rom0_runner|iop_hw|iop_timer5_exception|iop_dma_icr|iop_dma_global_enable|iop_dma_sif_channels|iop_sif_handoff)$'
 
       - name: Download official OpenPS2BIOS v0.6 ROM0
         run: |
