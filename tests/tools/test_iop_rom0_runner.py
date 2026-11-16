@@ -92,6 +92,23 @@ def main() -> int:
         assert "IOPBOOT=present" in output.stdout, output.stdout
         assert "IOP trace: pc=0xbfc00010" in output.stdout, output.stdout
 
+        console, output = run_case(
+            executable, root, "iop-debug-console",
+            [
+                0x3C08BF80,  # lui t0,0xbf80 (IOP KSEG1)
+                0x35082080,  # ori t0,t0,0x2080
+                0x24090041,  # addiu t1,zero,'A'
+                0xA1090000,  # sb t1,0(t0)
+                0x0000000D,  # breakpoint
+            ],
+        )
+        assert console["stop"] == "BREAKPOINT", console
+        assert console["executed"] == 4, console
+        assert console["console_output_hex"] == "41", console
+        assert console["console_truncated"] is False, console
+        assert "IOP console: 1 bytes" in output.stdout, output.stdout
+        assert "A\n" in output.stdout, output.stdout
+
         mmio_read, output = run_case(
             executable, root, "unimplemented-mmio-read",
             [
