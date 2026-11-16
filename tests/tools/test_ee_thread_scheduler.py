@@ -45,7 +45,14 @@ def make_thread_elf(path, blocking=False, rotate=False):
         # RotateThreadReadyQueue(0) must move it behind the READY worker.
         main = list(main)
         main[10:14] = [0, 0, 0, 0]
-        main[18:21] = [0x00002021, 0x2403002b, 0x0000000c]
+        # First rotate a *different* priority (0x81 masks to 1):
+        # this must return 1 without switching. Then rotate our own
+        # priority 0 to yield to the READY worker.
+        main[18:21] = [
+            0x24040081, 0x2403002b, 0x0000000c,
+            0x0040a021,  # move s4, v0: masked priority returned
+            0x00002021, 0x2403002b, 0x0000000c,
+        ]
     for index, word in enumerate(main):
         struct.pack_into("<I", image, 0x108 + index * 4, word)
 
@@ -195,6 +202,7 @@ def main():
         rotated.stdout[-6000:]
     )
     assert rotated_state["gpr_lo"][18] == 0x42, rotated_state
+    assert rotated_state["gpr_lo"][20] == 1, rotated_state  # 0x81 -> 1
     assert rotated_state["exit_name"] == "EXCEPTION", rotated_state
     assert (rotated_state["cop0_cause"] >> 2) & 31 == 9, rotated_state
     print("EE RotateThreadReadyQueue: PASS equal_priority_worker_ran=1")
