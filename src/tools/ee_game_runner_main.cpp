@@ -7,6 +7,8 @@
 #include "iop_sifman_bridge.h"
 #include "iop_sif1_bridge.h"
 #include "iop_sifcmd_bridge.h"
+#include "iop_disc_loader.h"
+#include "iop_sif_rpc_bridge.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -16,6 +18,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <filesystem>
 #include <iterator>
 #include <limits>
 #include <memory>
@@ -738,6 +741,8 @@ int main(int argc, char** argv)
     std::unique_ptr<iop::c_sifman_bridge> iop_sifman;
     std::unique_ptr<iop::c_sif1_bridge> iop_sif1;
     std::unique_ptr<iop::c_sifcmd_bridge> iop_sifcmd;
+    std::unique_ptr<iop::c_disc_loader> iop_disc;
+    std::unique_ptr<iop::c_sif_rpc_bridge> iop_rpc;
     if (!iop_irx_paths.empty())
     {
         iop_kernel = std::make_unique<iop::c_kernel>();
@@ -749,9 +754,18 @@ int main(int argc, char** argv)
             std::fprintf(stderr, "IOP sifcmd service installation failed\n");
             return 1;
         }
+        // LOADFILE is backed by actual game disc files, but nothing
+        // is loaded until a guest-initialized IOP endpoint receives
+        // a valid EE RPC packet through SIF1.
+        iop_disc = std::make_unique<iop::c_disc_loader>(
+            *iop_kernel, std::filesystem::path(elf_path).parent_path()
+        );
+        iop_rpc = std::make_unique<iop::c_sif_rpc_bridge>(
+            *iop_disc, *iop_sifcmd, *memory, hardware.dmac()
+        );
         iop_sif1 = std::make_unique<iop::c_sif1_bridge>(
             *memory, iop_kernel->cpu(), hardware.dmac(),
-            iop_sifcmd.get()
+            iop_sifcmd.get(), iop_rpc.get()
         );
         iop_sifman = std::make_unique<iop::c_sifman_bridge>(
             *iop_kernel, hardware.sif(),
@@ -2185,12 +2199,21 @@ int main(int argc, char** argv)
                         break;
                     }
 
+                    // An IOP LOADFILE server may have a validated
+                    // response pending until EE SIF0 is armed.
+                    if (iop_rpc != nullptr)
+                    {
+                        (void)iop_rpc->pump();
+                    }
                     if (trace)
                     {
                         std::printf(
                             "HLE SifSetDChain: channel=5 "
                             "qwc=0 chcr=0x00000184 "
-                            "result=void (no IOP producer)\n"
+                            "result=void (%s)\n",
+                            iop_rpc == nullptr
+                                ? "no IOP producer"
+                                : "IOP LOADFILE RPC connected"
                         );
                     }
                 }

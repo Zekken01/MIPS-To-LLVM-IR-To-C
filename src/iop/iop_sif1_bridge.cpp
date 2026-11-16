@@ -1,5 +1,6 @@
 #include "iop_sif1_bridge.h"
 #include "iop_sifcmd_bridge.h"
+#include "iop_sif_rpc_bridge.h"
 
 #include <utility>
 #include <vector>
@@ -65,16 +66,19 @@ struct s_transfer
     uint32_t m_destination = 0u;
     std::vector<uint32_t> m_words;
     bool m_command = false;
+    bool m_rpc_command = false;
+    bool m_rpc_payload = false;
     c_sifcmd_bridge::s_command m_command_effect{};
+    c_sif_rpc_bridge::s_request m_rpc_effect{};
 };
 } // namespace
 
 c_sif1_bridge::c_sif1_bridge(
     ee::ee_memory& ee_ram, c_cpu& iop_cpu, ee::c_ee_dmac& dmac,
-    c_sifcmd_bridge* sifcmd
+    c_sifcmd_bridge* sifcmd, c_sif_rpc_bridge* rpc
 )
     : m_ee_ram(ee_ram), m_iop_cpu(iop_cpu), m_dmac(dmac),
-      m_sifcmd(sifcmd)
+      m_sifcmd(sifcmd), m_rpc(rpc)
 {
 }
 
@@ -95,6 +99,8 @@ bool c_sif1_bridge::set_dma(
 
     std::vector<s_transfer> transfers;
     transfers.reserve(count);
+    uint32_t rpc_payload_source = 0u;
+    uint32_t rpc_payload_length = 0u;
     for (uint32_t index = 0u; index < count; ++index)
     {
         const uint32_t descriptor = list_physical + index * 16u;
@@ -105,6 +111,8 @@ bool c_sif1_bridge::set_dma(
 
         uint32_t ee_source = 0u;
         uint32_t iop_destination = 0u;
+        const bool rpc_payload =
+            destination == c_sif_rpc_bridge::k_rpc_data_destination;
         const uint64_t rounded =
             (static_cast<uint64_t>(size) + 15u) & ~uint64_t(15u);
 
@@ -116,17 +124,19 @@ bool c_sif1_bridge::set_dma(
             (source & 0x0fu) != 0u ||
             (destination & 0x0fu) != 0u ||
             !normalize_ee_address(source, &ee_source) ||
-            !normalize_iop_address(destination, &iop_destination) ||
-            iop_destination == 0u ||
-            static_cast<uint64_t>(iop_destination) + rounded >
-                c_cpu::k_ram_size ||
-            // The reserved SIFCMD receiving region must not be
-            // overwritten by arbitrary overlapping DMA transfers.
-            (static_cast<uint64_t>(iop_destination) <
-                 c_sifcmd_bridge::k_command_buffer + 0x400u &&
-             static_cast<uint64_t>(iop_destination) + rounded >
-                 c_sifcmd_bridge::k_command_buffer &&
-             iop_destination != c_sifcmd_bridge::k_command_buffer) ||
+            (!rpc_payload &&
+             !normalize_iop_address(destination, &iop_destination)) ||
+            (!rpc_payload &&
+             (iop_destination == 0u ||
+              static_cast<uint64_t>(iop_destination) + rounded >
+                  c_cpu::k_ram_size ||
+              // The IOP command buffer accepts only whole validated
+              // command packets, never overlapping arbitrary writes.
+              (static_cast<uint64_t>(iop_destination) <
+                   c_sifcmd_bridge::k_command_buffer + 0x400u &&
+               static_cast<uint64_t>(iop_destination) + rounded >
+                   c_sifcmd_bridge::k_command_buffer &&
+               iop_destination != c_sifcmd_bridge::k_command_buffer))) ||
             !m_ee_ram.contains(ee_source, static_cast<size_t>(rounded)))
         {
             return false;
@@ -142,17 +152,46 @@ bool c_sif1_bridge::set_dma(
                 m_ee_ram.read32(ee_source + offset)
             );
         }
-        if (iop_destination == c_sifcmd_bridge::k_command_buffer)
+        if (rpc_payload)
         {
-            // Only guest-initialized, implemented system commands may
-            // pass through the reserved IOP command receiver.
-            if (m_sifcmd == nullptr ||
-                !m_sifcmd->prepare_command(
-                    transfer.m_words, size, &transfer.m_command_effect))
+            if (m_rpc == nullptr ||
+                rpc_payload_length != 0u)
             {
                 return false;
             }
-            transfer.m_command = true;
+            transfer.m_rpc_payload = true;
+            rpc_payload_source = ee_source;
+            rpc_payload_length = size;
+        }
+        else if (iop_destination == c_sifcmd_bridge::k_command_buffer)
+        {
+            // The guest command receiver accepts a small set of
+            // explicit SIFCMD and LOADFILE RPC packet types.
+            const uint32_t cid = transfer.m_words.size() >= 3u
+                ? transfer.m_words[2] : 0u;
+            if (cid == c_sif_rpc_bridge::k_bind_cid ||
+                cid == c_sif_rpc_bridge::k_call_cid)
+            {
+                if (m_rpc == nullptr ||
+                    !m_rpc->prepare_command(
+                        transfer.m_words, size,
+                        rpc_payload_source, rpc_payload_length,
+                        &transfer.m_rpc_effect))
+                {
+                    return false;
+                }
+                transfer.m_rpc_command = true;
+            }
+            else
+            {
+                if (m_sifcmd == nullptr ||
+                    !m_sifcmd->prepare_command(
+                        transfer.m_words, size, &transfer.m_command_effect))
+                {
+                    return false;
+                }
+                transfer.m_command = true;
+            }
         }
         transfers.push_back(std::move(transfer));
     }
@@ -161,24 +200,36 @@ bool c_sif1_bridge::set_dma(
     // The R3000 RAM writes below cannot fail after those checks.
     for (const s_transfer& transfer : transfers)
     {
-        for (size_t index = 0u; index < transfer.m_words.size(); ++index)
+        if (!transfer.m_rpc_payload)
         {
-            m_iop_cpu.write32(
-                transfer.m_destination +
-                    static_cast<uint32_t>(index * 4u),
-                transfer.m_words[index]
-            );
+            for (size_t index = 0u; index < transfer.m_words.size(); ++index)
+            {
+                m_iop_cpu.write32(
+                    transfer.m_destination +
+                        static_cast<uint32_t>(index * 4u),
+                    transfer.m_words[index]
+                );
+            }
         }
     }
 
-    // Command effects are committed only once every DMA write has
-    // completed. There are no invented SIF replies or readiness bits.
+    // Apply the guest packets in descriptor order. LOADFILE invokes
+    // the real disc loader only after *every* descriptor passed
+    // validation. Replies go through armed EE SIF0, not SMFLAG.
     for (const s_transfer& transfer : transfers)
     {
         if (transfer.m_command)
         {
             m_sifcmd->commit_command(transfer.m_command_effect);
         }
+        else if (transfer.m_rpc_command)
+        {
+            m_rpc->commit_command(transfer.m_rpc_effect);
+        }
+    }
+    if (m_rpc != nullptr)
+    {
+        (void)m_rpc->pump();
     }
 
     m_dmac.raise(6u);
