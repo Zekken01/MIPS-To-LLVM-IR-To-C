@@ -5,6 +5,7 @@
 #include "elf_loader.h"
 #include "iop_kernel.h"
 #include "iop_sifman_bridge.h"
+#include "iop_sif1_bridge.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -734,9 +735,13 @@ int main(int argc, char** argv)
     // dispatcher does not yet expose an accurate EE-cycle clock.
     std::unique_ptr<iop::c_kernel> iop_kernel;
     std::unique_ptr<iop::c_sifman_bridge> iop_sifman;
+    std::unique_ptr<iop::c_sif1_bridge> iop_sif1;
     if (!iop_irx_paths.empty())
     {
         iop_kernel = std::make_unique<iop::c_kernel>();
+        iop_sif1 = std::make_unique<iop::c_sif1_bridge>(
+            *memory, iop_kernel->cpu(), hardware.dmac()
+        );
         iop_sifman = std::make_unique<iop::c_sifman_bridge>(
             *iop_kernel, hardware.sif(),
             &hardware.dmac(), memory.get()
@@ -1354,6 +1359,7 @@ int main(int argc, char** argv)
                 service == 0x4au || service == 0x4bu ||
                 service == 0x64u ||
                 service == 0x68u || service == 0x74u ||
+                service == 0x76u || service == 0x77u ||
                 service == 0x78u || service == 0x79u ||
                 service == 0x7au || service == 0x7cu)
             {
@@ -2073,6 +2079,69 @@ int main(int argc, char** argv)
                             "HLE %s: mode=0x%08x result=0\n",
                             service == 0x64u ? "FlushCache" : "iFlushCache",
                             static_cast<uint32_t>(cpu.m_gpr[4].m_lo)
+                        );
+                    }
+                }
+
+                else if (service == 0x76u)
+                {
+                    // SifDmaStat reports only real transfers accepted by
+                    // the connected EE-to-IOP transport. Until cycle-level
+                    // scheduling exists, those copies finish synchronously.
+                    const uint32_t id =
+                        static_cast<uint32_t>(cpu.m_gpr[4].m_lo);
+                    int32_t dma_status = 0;
+                    if (iop_sif1 == nullptr ||
+                        !iop_sif1->dma_stat(id, &dma_status))
+                    {
+                        std::fprintf(
+                            stderr,
+                            "SifDmaStat refused untracked SIF1 DMA id=%u\n",
+                            id
+                        );
+                        break;
+                    }
+                    cpu.m_gpr[2].m_lo = static_cast<uint64_t>(
+                        static_cast<int64_t>(dma_status)
+                    );
+                    cpu.m_gpr[2].m_hi = 0u;
+                    if (trace)
+                    {
+                        std::printf(
+                            "HLE SifDmaStat: id=%u status=%d\n",
+                            id, dma_status
+                        );
+                    }
+                }
+
+                else if (service == 0x77u)
+                {
+                    // SifSetDma accepts guest descriptor lists, not an
+                    // assumed IOP firmware or fabricated RPC completion.
+                    const uint32_t descriptors =
+                        static_cast<uint32_t>(cpu.m_gpr[4].m_lo);
+                    const uint32_t count =
+                        static_cast<uint32_t>(cpu.m_gpr[5].m_lo);
+                    uint32_t dma_id = 0u;
+                    if (iop_sif1 == nullptr ||
+                        !iop_sif1->set_dma(descriptors, count, &dma_id))
+                    {
+                        std::fprintf(
+                            stderr,
+                            "SifSetDma refused unconnected or unsupported "
+                            "IOP transfer: descriptors=0x%08x count=%u\n",
+                            descriptors, count
+                        );
+                        break;
+                    }
+                    cpu.m_gpr[2].m_lo = dma_id;
+                    cpu.m_gpr[2].m_hi = 0u;
+                    if (trace)
+                    {
+                        std::printf(
+                            "HLE SifSetDma: descriptors=0x%08x "
+                            "count=%u id=%u (synchronous SIF1)\n",
+                            descriptors, count, dma_id
                         );
                     }
                 }
