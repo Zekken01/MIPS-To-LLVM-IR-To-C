@@ -66,11 +66,21 @@ def translation_inputs(elf, recomp, source_root):
 def ir_generation_inputs(elf, source_root):
     """Separate guest lowering source fingerprints from host-only runtime code."""
     paths = [("ELF", elf)]
+    ir_ee_sources = {
+        "decoder.cpp", "opcode_tables.cpp",
+        "function_analyzer.cpp", "ee_recomp.cpp"
+    }
     for directory in ("include/ee", "src/ee", "src/elf",
                       "src/lift", "src/llvm"):
         for item in sorted((source_root / directory).rglob("*")):
-            if item.is_file() and item.suffix in (".h", ".hpp", ".cpp"):
-                paths.append((item.relative_to(source_root).as_posix(), item))
+            if not item.is_file() or item.suffix not in (".h", ".hpp", ".cpp"):
+                continue
+            if directory == "src/ee" and item.suffix == ".cpp" and (
+                item.name not in ir_ee_sources
+            ):
+                # Dispatch glue and runtime linking do not affect IR text.
+                continue
+            paths.append((item.relative_to(source_root).as_posix(), item))
     for name in ("src/tools/ee_recomp_main.cpp",
                  "src/runtime/ee_runtime.h"):
         paths.append((name, source_root / name))
