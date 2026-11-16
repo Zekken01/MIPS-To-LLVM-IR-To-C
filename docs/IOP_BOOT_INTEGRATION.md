@@ -151,3 +151,39 @@ To progress SDBZ beyond `0x001750B4`, load and schedule authentic
 IOP boot services/modules at a defined source of EE cycles, then install
 this SIFMAN bridge for services those modules actually call. Do not
 prepopulate the SMFLAG register on startup merely to satisfy the EE poll.
+
+
+## Opt-in EE/IOP guest rendezvous (PR #70)
+
+`ee_game_runner` and `tools/run_game.py` now accept
+`--iop-irx=FILE` and `--iop-quantum=N` (default 256). When explicitly
+requested, the runner loads the provided IOP IRX with the existing
+transactional loader, registers its known SIFMAN ordinals, creates and
+starts a real R3000 thread, and lets it execute up to N IOP instructions
+when the EE reaches `sceSifGetReg(4)` with SMFLAG still zero. The EE then
+re-reads the **same** `ee::c_ee_sif` instance that received the IOP
+guest's `sceSifSetSMFlag` call. Unknown IOP imports, syscalls and CPU
+faults still stop execution instead of inventing completion.
+
+For a synthetic module or a user-supplied independently executable
+IOP IRX, run:
+
+```text
+python tools/run_game.py PS2_GAME/SLUS_214.42 --build-dir build --work-dir build/sdbz-thread-pr38 --no-recompile --hle-startup --kseg-ram --sif-poll-limit=256 --iop-irx=path/to/module.irx --iop-quantum=256
+```
+
+The SDBZ .bat launcher does not supply an IOP IRX automatically. No
+copyrighted module bytes are committed; the option requires a real
+local file. Authentic game modules may depend on additional IOP
+libraries and services not yet provided by this limited bridge.
+
+**Timing limitation:** this schedules IOP instructions at a *host-visible
+EE SIF polling rendezvous*. The native EE function dispatcher reports
+function boundaries, not hardware cycles, so **this is not yet
+cycle-accurate EE/IOP execution**. An accurate clock/event scheduler and
+IOP boot module set are still required. The normal no-IOP path is
+unchanged and continues to report SMFLAG=0 if nothing publishes it.
+
+The end-to-end `game_runner_end_to_end` test now includes synthetic
+EE and IOP ELF inputs to prove that executed R3000 guest code, rather
+than an HLE reset constant, causes the EE to exit its SIF poll.
