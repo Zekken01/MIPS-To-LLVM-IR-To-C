@@ -1683,7 +1683,11 @@ int main(int argc, char** argv)
                 service < 256u &&
                 installed_syscall_handlers[service] != 0u)
             {
-                const uint32_t epc = cpu.m_cop0[14];
+                // In interrupt context R5900 EPC still refers to the
+                // interrupted thread, not the nested syscall. The runtime
+                // separately records the actual trap instruction PC.
+                const uint32_t epc = dmac_callback_active
+                    ? cpu.m_pad : cpu.m_cop0[14];
                 const uint32_t handler = installed_syscall_handlers[service];
                 uint32_t opcode = 0;
                 if (!image.read32_at(epc, &opcode) ||
@@ -1753,7 +1757,11 @@ int main(int argc, char** argv)
                 service == 0x78u || service == 0x79u ||
                 service == 0x7au || service == 0x7cu)
             {
-                const uint32_t epc = cpu.m_cop0[14];
+                // In interrupt context R5900 EPC still refers to the
+                // interrupted thread, not the nested syscall. The runtime
+                // separately records the actual trap instruction PC.
+                const uint32_t epc = dmac_callback_active
+                    ? cpu.m_pad : cpu.m_cop0[14];
                 uint32_t opcode = 0;
                 if (!image.read32_at(epc, &opcode) ||
                     (opcode & 0x3fu) != 0x0cu ||
@@ -1763,6 +1771,15 @@ int main(int argc, char** argv)
                 {
                     std::fprintf(stderr, "startup HLE refused invalid syscall context\n");
                     break;
+                }
+
+                if (interrupt_sif_service && trace)
+                {
+                    std::printf(
+                        "HLE interrupt SIF syscall: pc=0x%08x "
+                        "architectural_epc=0x%08x resume=0x%08x\\n",
+                        epc, cpu.m_cop0[14], epc + 4u
+                    );
                 }
 
                 if (service >= 0x10u && service <= 0x13u)
