@@ -30,6 +30,9 @@ public:
     static constexpr uint32_t k_timer5_mode = 0x1f8014a4u;
     static constexpr uint32_t k_timer5_target = 0x1f8014a8u;
     static constexpr uint32_t k_timer5_irq = 16u;
+    static constexpr uint32_t k_dma_icr = 0x1f8010f4u;
+    static constexpr uint32_t k_dma_icr2 = 0x1f801574u;
+    static constexpr uint32_t k_dma_irq = 3u;
     static constexpr uint32_t k_cdvd_disc_type = 0x1f40200fu;
     static constexpr uint8_t k_cdvd_no_disc = 0x00u;
 
@@ -50,11 +53,16 @@ public:
     // Advance IOP timer clock by completed guest execution cycles.
     // The standalone R3000 runtime currently counts one cycle per instruction.
     void advance_cycles(uint32_t cycles);
+    // A future actual DMA channel completion may assert its flag.
+    // Merely writing ICR enables must never complete any transfer.
+    bool complete_dma_channel(uint32_t channel);
     const std::string& debug_console() const;
     bool debug_console_truncated() const;
 
 private:
     bool scratchpad_range(uint32_t address, uint32_t width) const;
+    uint32_t update_dma_icr(uint32_t previous, uint32_t value);
+    void assert_dma_irq(uint32_t& control, bool sif_channel);
 
     uint8_t m_scratchpad[k_scratchpad_size]{};
     uint32_t m_i_stat = 0u;
@@ -66,6 +74,8 @@ private:
     uint32_t m_timer5_target = 0u;
     uint32_t m_timer5_remainder = 0u;
     bool m_timer5_irq_armed = true;
+    uint32_t m_dma_icr = 0u;
+    uint32_t m_dma_icr2 = 0u;
     std::string m_debug_console;
     bool m_debug_console_truncated = false;
 };
