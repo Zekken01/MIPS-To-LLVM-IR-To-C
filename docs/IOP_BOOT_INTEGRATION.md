@@ -42,9 +42,14 @@ subsequent IOP-side command buffer, DMA and RPC services.
    relocation types for IRX v1/v2, resolves import stubs through an explicit
    caller-provided callback, and rejects malformed/unknown imports before
    modifying memory. It takes an explicit preallocated module base. Next:
-   implement module allocation, library registration, syscall/HLE boundaries,
-   IOP threads and interrupts in the kernel. Use real game module bytes
-   supplied at runtime, not committed copyrighted binaries.
+   the new standalone `c_kernel` supplies first-fit IOP RAM allocation,
+   a concrete export registry for IRX import linking, module registration,
+   dormant/ready/blocked/faulted threads, deterministic priority/round-robin
+   time slicing, and an explicit fail-closed syscall callback. It can run
+   linked guest IRX code through `c_cpu`, but does not implement the actual
+   PS2 IOP kernel syscall tables, interrupt controller, real IRX services,
+   or host-facing EE/SIF integration. Use real game module bytes supplied
+   at runtime, not committed copyrighted binaries.
 3. **Cycle/event integration.** Advance IOP execution from an explicit,
    deterministic EE-cycle source. Do not derive hardware cycles from native
    dispatch count: one dispatch can execute widely different numbers of
@@ -89,3 +94,30 @@ IOP CPU and loader are still intentionally not linked into the EE runner.
 **Boot status as of the 04:20 US run:** 6,945 EE dispatches,
 `sceSifGetReg(4)` at `0x001750B4` returns SMFLAG=0. The independent
 IOP CPU and IRX parser cannot yet satisfy this wait.
+
+## Kernel module and thread execution milestone
+
+The standalone `src/iop/iop_kernel.{h,cpp}` composes the existing R3000
+interpreter and IRX loader. It owns 2 MiB of isolated guest IOP RAM,
+allocates module images and stacks inside the user area, resolves only
+explicitly registered IOP library exports and offers a host-injected
+syscall handler. Without a handler, encountering an R3000 syscall stops
+at that syscall's real guest PC with `unhandled_syscall`. There are no
+implicit kernel success stubs, synthetic module-start responses or IOP
+SMFLAG writes.
+
+Threads have independent PC, GPR and COP0 state. The bounded scheduler
+uses lowest-numbered priority first and rotates equal-priority ready
+threads between fixed guest-instruction quanta. A thread may be blocked
+until an explicit IOP cycle deadline or woken by a kernel event; guest
+runtime state is saved at each switch. The IOP scheduler's cycle input
+is abstract and explicit at this stage, **not** driven from the EE native
+dispatch count. Cycle-accurate EE/IOP stepping and interrupt delivery
+remain future integration work.
+
+The new `iop_kernel` CTest covers failed-import rollback, actual IRX
+module loading/entry execution, guest register and stack setup, thread
+priorities, round-robin scheduling, explicit syscalls, and unsupported
+service traps. The standalone kernel is deliberately **not** invoked by
+`run_sdbz_native.bat` yet, so current US boot logs are expected to remain
+at the same `0x001750B4` SIF wait.
