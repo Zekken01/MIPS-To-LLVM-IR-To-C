@@ -561,6 +561,122 @@ int main(int argc, char** argv)
         }
     }
 
+
+    // Next exchange: genuine firmware RPC_BIND to the built-in
+    // LOADFILE server. ob_rpc_parse() accepts the public 36-byte
+    // request and ob_iop_rpc_handle() replies with 48-byte RPC_END.
+    // Both directions must traverse guest DMA registers and FIFO.
+    constexpr uint32_t k_bind_sid = 0x80000006u;
+    constexpr uint32_t k_bind_rec_id = 0x12345678u;
+    constexpr uint32_t k_bind_packet_address = 0x00190000u;
+    constexpr uint32_t k_bind_rpc_id = 0x12340001u;
+    constexpr uint32_t k_bind_client = 0x001a0000u;
+    // The firmware's built-in LOADFILE server is descriptor index 1
+    // in RPC_AREA_IOP (0x0004b700), with 0x400 bytes per server.
+    constexpr uint32_t k_expected_loadfile_server = 0x0004bb00u;
+
+    for (uint32_t offset = 0u; offset < 80u; offset += 4u)
+    {
+        memory.write32(k_ee_sifcmd_reply - 16u + offset, 0xcdcdcdcdu);
+    }
+    if (!arm_firmware_sif0_receiver(ee_hardware.dmac()))
+    {
+        return failed("could not rearm EE DMA5 for RPC_BIND", kernel);
+    }
+
+    const uint32_t bind_request[9] =
+    {
+        36u, 0u, 0x80000009u, 0u,
+        k_bind_rec_id, k_bind_packet_address, k_bind_rpc_id,
+        k_bind_client, k_bind_sid
+    };
+    uint32_t received_after_bind = 0u;
+    if (!send_firmware_sifcmd(
+            memory, ee_hardware.dmac(), sif1, kernel,
+            ee_subaddr, bind_request, 9u) ||
+        !run_until_firmware_receives(
+            kernel, received_after_rpc, &received_after_bind))
+    {
+        return failed("firmware did not process guest RPC_BIND", kernel);
+    }
+
+    uint32_t bind_command = 0u;
+    uint32_t bind_result = 0xffffffffu;
+    uint32_t bind_argument = 0u;
+    uint32_t bind_iop_dma9_chcr = 0u;
+    uint32_t bind_ee_dma5_chcr = 0u;
+    ee::s_ee_u128 bind_ee5_word{};
+    if (!kernel.cpu().read32(
+            k_firmware_sif_status + 8u, &bind_command) ||
+        !kernel.cpu().read32(
+            k_firmware_sif_status + 12u, &bind_result) ||
+        !kernel.cpu().read32(
+            k_firmware_sif_status + 160u, &bind_argument) ||
+        !kernel.hardware().read(
+            iop::c_hw::k_sif0_dma_base + 8u, 4u,
+            &bind_iop_dma9_chcr) ||
+        !ee::c_ee_dmac::mmio_read(
+            &ee_hardware.dmac(),
+            ee::c_ee_dmac::k_sif0_base, 4u, &bind_ee5_word))
+    {
+        return failed("could not inspect actual firmware RPC_BIND state",
+                      kernel);
+    }
+    bind_ee_dma5_chcr = static_cast<uint32_t>(bind_ee5_word.m_lo);
+
+    const uint32_t expected_bind_reply[12] =
+    {
+        48u, 0u, 0x80000008u, 0u,
+        k_bind_rec_id, k_bind_packet_address,
+        k_bind_rpc_id, k_bind_client, 0x80000009u,
+        k_expected_loadfile_server, k_expected_loadfile_server, 0u
+    };
+    for (uint32_t index = 0u; index < 12u; ++index)
+    {
+        const uint32_t actual = memory.read32(
+            k_ee_sifcmd_reply + index * 4u);
+        if (actual != expected_bind_reply[index])
+        {
+            std::fprintf(stderr,
+                "RPC_END word %u actual=%08x expected=%08x\n",
+                index, actual, expected_bind_reply[index]);
+            return failed("firmware RPC_BIND reply bytes mismatch", kernel);
+        }
+    }
+    for (uint32_t offset = 0u; offset < 16u; offset += 4u)
+    {
+        if (memory.read32(k_ee_sifcmd_reply - 16u + offset) !=
+                0xcdcdcdcdu ||
+            memory.read32(k_ee_sifcmd_reply + 48u + offset) !=
+                0xcdcdcdcdu)
+        {
+            return failed("RPC_BIND reply corrupted EE memory guards",
+                          kernel);
+        }
+    }
+
+    if (received_after_bind != received_after_rpc + 1u ||
+        bind_command != 0x80000009u ||
+        bind_result != 0u || bind_argument != k_bind_sid ||
+        sif0.faulted() || sif1.faulted() ||
+        sif0.delivered_bytes() != 80u ||
+        sif1.delivered_bytes() != 112u ||
+        (bind_iop_dma9_chcr & 0x01000000u) != 0u ||
+        (bind_ee_dma5_chcr & ee::c_ee_dmac::k_chcr_str) != 0u ||
+        (ee_hardware.dmac().status() & (1u << 5u)) == 0u)
+    {
+        std::fprintf(stderr,
+            "RPC_BIND: command=%08x result=%08x arg=%08x "
+            "sif0=%llu sif1=%llu d9=%08x d5=%08x received=%u\n",
+            bind_command, bind_result, bind_argument,
+            static_cast<unsigned long long>(sif0.delivered_bytes()),
+            static_cast<unsigned long long>(sif1.delivered_bytes()),
+            bind_iop_dma9_chcr, bind_ee_dma5_chcr,
+            received_after_bind);
+        return failed("genuine firmware RPC_BIND completion mismatch",
+                      kernel);
+    }
+
     std::ofstream report(argv[2], std::ios::binary);
     if (!report)
     {
