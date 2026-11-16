@@ -9,6 +9,7 @@
 #include "iop_sifcmd_bridge.h"
 #include "iop_disc_loader.h"
 #include "iop_sif_rpc_bridge.h"
+#include "iop_sif_mmio_link.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -799,6 +800,12 @@ int main(int argc, char** argv)
                 );
                 return 1;
             }
+            // Both CPUs must observe the same SIF mailbox. A guest
+            // ROM0 store now updates the EE-visible SMFLAG/SMCOM without
+            // host injection or a high-level replacement for IOPBOOT.
+            iop::c_sif_mmio_link::bind(
+                iop_kernel->hardware(), hardware.sif()
+            );
             const iop::s_cpu_state& boot =
                 iop_kernel->cpu().state();
             std::printf(
