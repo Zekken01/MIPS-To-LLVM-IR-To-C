@@ -161,6 +161,19 @@ def parse_address(value):
     return number
 
 
+def parse_trace_v0(value):
+    parts = value.split(":")
+    if len(parts) != 2:
+        raise argparse.ArgumentTypeError("--trace-v0 requires START:END")
+    try:
+        first, last = (parse_address(part) for part in parts)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from error
+    if first > last or last - first > 0x2000:
+        raise argparse.ArgumentTypeError("--trace-v0 needs an ordered range of at most 0x2000 bytes")
+    return f"0x{first:08x}:0x{last:08x}"
+
+
 def run(command, capture=False, timeout_seconds=None):
     print("+ " + subprocess.list2cmdline([str(item) for item in command]), flush=True)
     result = subprocess.run(
@@ -337,6 +350,8 @@ def main(argv=None):
                         help="Dump guest arguments and backed pointer words on entry to a specified PC")
     parser.add_argument("--watch-word", type=lambda value: int(value, 0),
                         help="Log changes to a 32-bit guest RAM word between native dispatches")
+    parser.add_argument("--trace-v0", type=parse_trace_v0,
+                        help="Trace native guest V0 changes within an aligned guest PC interval START:END")
     parser.add_argument("--trace-store", type=lambda value: int(value, 0),
                         help="Trace guest store PCs and operands overlapping a 32-bit guest word")
     parser.add_argument("--report", type=Path,
@@ -488,6 +503,8 @@ def main(argv=None):
             command.append(f"--watch-word=0x{args.watch_word:08x}")
         if args.trace_store is not None:
             command.append(f"--trace-store=0x{args.trace_store:08x}")
+        if args.trace_v0 is not None:
+            command.append(f"--trace-v0={args.trace_v0}")
         if args.report is not None:
             report_path = args.report.resolve()
             report_path.parent.mkdir(parents=True, exist_ok=True)

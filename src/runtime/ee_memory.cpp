@@ -601,4 +601,32 @@ void ee_trace_guest_store(
     std::fflush(stdout);
 }
 
+
+void ee_trace_guest_v0_write(
+    s_ee_runtime* runtime, uint32_t pc, uint32_t opcode,
+    uint64_t old_value, uint64_t new_value
+)
+{
+    if (runtime == nullptr || runtime->m_guest_v0_trace_remaining == 0u ||
+        pc < runtime->m_guest_v0_trace_first_pc ||
+        pc > runtime->m_guest_v0_trace_last_pc ||
+        old_value == new_value)
+    {
+        return;
+    }
+
+    --runtime->m_guest_v0_trace_remaining;
+    std::printf(
+        "EE guest-v0-write: pc=0x%08x opcode=0x%08x "
+        "old=0x%016llx new=0x%016llx "
+        "rs=%u rt=%u rd=%u\n",
+        pc, opcode,
+        static_cast<unsigned long long>(old_value),
+        static_cast<unsigned long long>(new_value),
+        (opcode >> 21u) & 31u, (opcode >> 16u) & 31u,
+        (opcode >> 11u) & 31u
+    );
+    std::fflush(stdout);
+}
+
 } // namespace ee

@@ -71,6 +71,7 @@ void module_builder::declare_memory_helpers()
     m_out += "declare void @ee_mem_write64(ptr, i32, i64)\n";
     m_out += "declare void @ee_mem_write128(ptr, i32, ptr)\n";
     m_out += "declare void @ee_trace_guest_store(ptr, i32, i32, i32, i32, i32, i64, i32, i64, i64, i64, i64)\n";
+    m_out += "declare void @ee_trace_guest_v0_write(ptr, i32, i32, i64, i64)\n";
     m_out += "declare i64 @ee_mem_lwl(ptr, i32, i64)\n";
     m_out += "declare i64 @ee_mem_lwr(ptr, i32, i64)\n";
     m_out += "declare i64 @ee_mem_ldl(ptr, i32, i64)\n";
@@ -279,10 +280,32 @@ void module_builder::emit_guest_store_trace(
              sp + ", i64 " + fp + ", i64 " + ra + ")\n";
 }
 
+void module_builder::emit_guest_v0_write(
+    const std::string& old_value, const std::string& new_value
+)
+{
+    if (m_current_guest_insn == nullptr)
+    {
+        return;
+    }
+
+    // All values refer to the emitter's live SSA GPR state. This observes
+    // the guest V0 assignment without causing a second architectural write.
+    m_out += "  call void @ee_trace_guest_v0_write(ptr %rt, i32 " +
+             std::to_string(m_current_guest_insn->pc) + ", i32 " +
+             std::to_string(m_current_guest_insn->opcode_word) + ", i64 " +
+             old_value + ", i64 " + new_value + ")\n";
+}
+
 void module_builder::set_gpr_temp(uint8_t reg, const std::string& lo,
                                   const std::string& hi)
 {
     if (reg == 0) return; // $zero is hard-wired
+    if (reg == 2 && m_current_guest_insn != nullptr)
+    {
+        const std::string old_value = src_lo(reg);
+        emit_guest_v0_write(old_value, lo);
+    }
     m_cur_lo[reg] = lo;
     m_cur_hi[reg] = hi;
     m_dirty_regs.insert(reg);
@@ -295,6 +318,11 @@ void module_builder::set_gpr_lo64(uint8_t reg, const std::string& lo)
     if (reg == 0) return;
     // Ensure hi is loaded into the tracking map so it is not lost on store-back.
     std::string hi = src_hi(reg);
+    if (reg == 2 && m_current_guest_insn != nullptr)
+    {
+        const std::string old_value = src_lo(reg);
+        emit_guest_v0_write(old_value, lo);
+    }
     m_cur_lo[reg] = lo;
     m_cur_hi[reg] = hi;
     m_dirty_regs.insert(reg);
@@ -628,6 +656,21 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
                                bool in_delay_slot)
 {
     using ee::e_ee_opcode;
+    // Restore the previous instruction even when an opcode emits an early
+    // return (or is a branch delay-slot instruction). LLVM register writes
+    // outside emit_insn must never inherit a stale guest instruction PC.
+    const ee::s_ee_instruction* saved_insn = m_current_guest_insn;
+    m_current_guest_insn = &ins;
+    struct s_insn_trace_restore
+    {
+        const ee::s_ee_instruction*& m_target;
+        const ee::s_ee_instruction* m_saved;
+        ~s_insn_trace_restore()
+        {
+            m_target = m_saved;
+        }
+    } restore{m_current_guest_insn, saved_insn};
+
     m_out += "  ; ";
     m_out += u32hex(ins.pc);
     m_out += ": ";
@@ -3539,6 +3582,14 @@ void module_builder::emit_function_cfg(const ee::s_ee_function& fn,
         block_insns_vec.push_back(insns);
         block_written_map[bb.start_pc] = block_written(insns);
         std::set<uint8_t> rbw = block_read_before_write(insns);
+        // The V0 write trace observes the pre-write SSA value even for an
+        // instruction which otherwise kills V0 on entry to the block.
+        // Keep that old value live across predecessors whenever this block
+        // may write V0; this only strengthens dataflow, not guest semantics.
+        if (block_written_map[bb.start_pc].count(2u) != 0u)
+        {
+            rbw.insert(2u);
+        }
         // The diagnostic store hook observes SP/FP/RA via SSA at the guest
         // instruction. Account for these extra reads in predecessor liveness,
         // otherwise a predecessor could discard a dirty register before this

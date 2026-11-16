@@ -55,7 +55,7 @@ def make_guest_word_watch_elf(path):
         0x24090007,  # addiu t1,zero,7
         0xad090000,  # sw t1,0(t0)
         0x00000008,  # jr zero
-        0x00000000,  # delay-slot nop
+        0x24020007,  # delay slot: addiu v0,zero,7; trace exact guest PC
     )
     for index, word in enumerate(words):
         struct.pack_into("<I", image, 0x108 + index * 4, word)
@@ -1207,6 +1207,7 @@ def main():
             "--max-dispatches=8",
             "--trace-entry=0x00100008",
             "--watch-word=0x00100200",
+            "--trace-v0=0x00100008:0x0010001c",
             "--trace-store=0x00100200",
         ]
         result = subprocess.run(args, capture_output=True, text=True,
@@ -1219,6 +1220,11 @@ def main():
                 "base=gpr8 base_value=0x0000000000100200 "
                 "sp=0x01fff000 fp=0x00000000 ra=0x00000000") in result.stdout, result.stdout
         assert result.stdout.count("EE guest-store:") == 1, result.stdout
+        assert "EE guest-v0 watch: first_pc=0x00100008 last_pc=0x0010001c max_events=64" in result.stdout, result.stdout
+        assert ("EE guest-v0-write: pc=0x0010001c opcode=0x24020007 "
+                "old=0x0000000000000000 new=0x0000000000000007 "
+                "rs=0 rt=2 rd=0") in result.stdout, result.stdout
+        assert result.stdout.count("EE guest-v0-write:") == 1, result.stdout
         assert "EE watch initial: addr=0x00100200 value=0x00000000" in result.stdout, result.stdout
         assert "EE trace-entry: dispatch=1 pc=0x00100008" in result.stdout, result.stdout
         assert "sp=0x01fff000" in result.stdout, result.stdout
@@ -1261,6 +1267,23 @@ def main():
         assert "trace-store address is not backed: 0x02000000" in invalid_store.stderr, (
             invalid_store.stdout + invalid_store.stderr
         )
+
+        excluded_v0 = subprocess.run(
+            args[:-2] + ["--trace-v0=0x00100008:0x00100018", "--no-recompile"],
+            capture_output=True, text=True, check=False,
+        )
+        assert excluded_v0.returncode == 3, excluded_v0.stdout + excluded_v0.stderr
+        assert "EE guest-v0-write:" not in excluded_v0.stdout, excluded_v0.stdout
+
+        bad_v0_window = subprocess.run(
+            args[:-2] + ["--trace-v0=0x0010001c:0x00100008", "--no-recompile"],
+            capture_output=True, text=True, check=False,
+        )
+        assert bad_v0_window.returncode == 2, bad_v0_window.stdout + bad_v0_window.stderr
+        assert "ordered range" in bad_v0_window.stderr, (
+            bad_v0_window.stdout + bad_v0_window.stderr
+        )
+
 
 
     with tempfile.TemporaryDirectory(prefix="ee-native-heap-boundary-") as tmp:

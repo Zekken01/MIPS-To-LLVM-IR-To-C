@@ -138,6 +138,7 @@ void usage(const char* program)
         "  --trace-entry=0xPC   Print arguments and pointed-to words at a guest entry\n"
         "  --watch-word=0xADDR  Report guest word changes between native dispatches\n"
         "  --trace-store=0xADDR Trace individual guest stores overlapping this word (64 max)\n"
+        "  --trace-v0=0xSTART:0xEND Trace low-64 V0 changes by guest PC (64 max)\n"
         "  --hle-startup        Handle selected startup and semaphore kernel calls\n"
         "  --kseg-ram           Enable direct EE RAM aliases (KSEG0/1 and 0x2/0x3)\n"
         "  --kernel-ram=FILE    Load 512 KiB of captured EE kernel RAM (not BIOS ROM)\n"
@@ -453,9 +454,12 @@ int main(int argc, char** argv)
     uint32_t trace_entry = 0u;
     uint32_t watch_word = 0u;
     uint32_t trace_store = 0u;
+    uint32_t trace_v0_first_pc = 0u;
+    uint32_t trace_v0_last_pc = 0u;
     bool has_trace_entry = false;
     bool has_watch_word = false;
     bool has_trace_store = false;
+    bool has_trace_v0 = false;
     uint32_t stack = k_default_stack;
     uint32_t entry_override = 0;
     bool override_entry = false;
@@ -501,6 +505,27 @@ int main(int argc, char** argv)
         if (argument == "--hle-startup")
         {
             hle_startup = true;
+            continue;
+        }
+
+        if (argument.compare(0, 11, "--trace-v0=") == 0)
+        {
+            const std::string range = argument.substr(11);
+            const size_t separator = range.find(':');
+            if (separator == std::string::npos || separator == 0u ||
+                separator + 1u >= range.size() ||
+                range.find(':', separator + 1u) != std::string::npos ||
+                !parse_u32(range.substr(0, separator).c_str(), &trace_v0_first_pc) ||
+                !parse_u32(range.substr(separator + 1u).c_str(), &trace_v0_last_pc) ||
+                (trace_v0_first_pc & 3u) != 0u ||
+                (trace_v0_last_pc & 3u) != 0u ||
+                trace_v0_first_pc > trace_v0_last_pc ||
+                trace_v0_last_pc - trace_v0_first_pc > 0x2000u)
+            {
+                std::fprintf(stderr, "invalid --trace-v0 guest PC window: %s\n", argument.c_str());
+                return 2;
+            }
+            has_trace_v0 = true;
             continue;
         }
 
@@ -676,6 +701,9 @@ int main(int argc, char** argv)
     runtime.m_guest_store_trace_enabled = has_trace_store;
     runtime.m_guest_store_trace_word = trace_store;
     runtime.m_guest_store_trace_remaining = has_trace_store ? 64u : 0u;
+    runtime.m_guest_v0_trace_first_pc = trace_v0_first_pc;
+    runtime.m_guest_v0_trace_last_pc = trace_v0_last_pc;
+    runtime.m_guest_v0_trace_remaining = has_trace_v0 ? 64u : 0u;
     cpu.m_pc = entry;
     cpu.m_gpr[29].m_lo = stack;
 
@@ -693,6 +721,13 @@ int main(int argc, char** argv)
     {
         std::printf("EE guest-store watch: addr=0x%08x max_events=64\n",
                     trace_store);
+    }
+    if (has_trace_v0)
+    {
+        std::printf(
+            "EE guest-v0 watch: first_pc=0x%08x last_pc=0x%08x max_events=64\n",
+            trace_v0_first_pc, trace_v0_last_pc
+        );
     }
     if (has_watch_word && !memory->contains(watch_word, 4u))
     {

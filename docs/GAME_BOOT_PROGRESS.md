@@ -1414,6 +1414,56 @@ exactly one matching store event, a nearby nonmatching watched
 word and invalid/unbacked address refusal. Existing native state and
 post-dispatch word assertions remain in place.
 
+### US formatter V0 write provenance (16 November 2026, 01:37 run)
+
+The real-game trace from merged PR #56 identifies **the exact store**
+responsible for the malformed seventh vector length:
+
+```text
+EE guest-store: pc=0x00194794 opcode=0xae620004 ins=SW
+  effective=0x01ffec14 width=4
+  src=gpr2 source_value=0x0000000000171d0c
+  base=gpr19 base_value=0x0000000001ffec10
+  sp=0x01ffebd0 fp=0x00000007 ra=0x00194478
+```
+
+This decodes to **`sw $v0, 4($s3)`**. The *effective address is
+correct* for the observed `$s3`. The previous formatter dispatch
+entry at `0x00194478` had `$v0=1`; the store later sees
+`$v0=0x00171d0c`. This strongly shifts attention from store address
+generation to the **source of the guest V0 value**. A preceding
+`SQ` at `0x004ddf38` also overlaps the descriptor, but it does
+not explain the later 32-bit length written by `0x00194794`.
+
+The run still ends after **6,048 dispatches** with
+`LOOP_BUDGET` at `0x0018e194`; no semantics fix or new boot
+progress is claimed. The submitted expansion log rebuilt **216
+translated guest modules** as required after the PR #56 emitter ABI
+change; the new store probe did run.
+
+The next narrow diagnostic is `--trace-v0=START:END`, an opt-in
+aligned guest-PC window (maximum 0x2000 bytes), which reports
+only *changed low-64-bit V0 values* produced by LLVM-translated guest
+instructions. Its code-generation path attaches the original MIPS
+opcode and PC to the SSA before/after V0 values at each emitted
+register assignment. It does not invent a return value, read guest
+memory, change CPU state, or bypass guest control flow. A host-side
+64-event cap prevents unlimited trace volume.
+
+The SDBZ launcher defaults to
+`--trace-v0=0x00194478:0x00194794` alongside the existing store
+probe. `EE_TRACE_V0` overrides the interval and
+`SDBZ_BOOT_DIAGNOSTICS=0` disables the default. The guest
+translation cache must be rebuilt because the LLVM emitter and
+native runtime ABI changed; keep the existing fingerprint validation
+rather than forcing `--no-recompile`.
+
+Synthetic regression additionally uses an `ADDIU V0,zero,7` in
+a **JR delay slot** at `0x0010001c`, verifying the exact original
+opcode, PC, old/new SSA values and range filtering. This validates
+the diagnostics only: identifying the actual SDBZ producer instruction
+still requires the next user-owned local ELF run.
+
 ## Validation limits
 
 CTest contains `game_runner_end_to_end` which creates small synthetic MIPS

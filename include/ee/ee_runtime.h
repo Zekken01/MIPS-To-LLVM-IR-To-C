@@ -240,6 +240,12 @@ struct s_ee_runtime
     uint32_t m_guest_store_trace_word = 0u;
     uint32_t m_guest_store_trace_remaining = 0u;
     bool m_guest_store_trace_enabled = false;
+
+    // Optional PC-bounded diagnostic for guest V0 assignments.
+    // Remaining == 0 disables the trace; appended for ABI compatibility.
+    uint32_t m_guest_v0_trace_first_pc = 0u;
+    uint32_t m_guest_v0_trace_last_pc = 0u;
+    uint32_t m_guest_v0_trace_remaining = 0u;
 };
 
 // Outside a branch delay slot, all four transfer forms only catch VU0 up to
@@ -279,6 +285,14 @@ void ee_trace_guest_store(
     uint32_t effective_address, uint32_t affected_address,
     uint32_t width, uint64_t source_value, uint32_t source_lane,
     uint64_t base_value, uint64_t sp, uint64_t fp, uint64_t ra
+);
+
+// Reports the exact instruction which changes the low 64 bits of GPR V0.
+// Called with the emitter's SSA old/new values, not the stale CPU backing
+// store, and does not modify architectural CPU or memory state.
+void ee_trace_guest_v0_write(
+    s_ee_runtime* rt, uint32_t pc, uint32_t opcode,
+    uint64_t old_value, uint64_t new_value
 );
 
 // R5900 partial-word / partial-doubleword memory operations.
