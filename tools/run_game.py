@@ -333,6 +333,10 @@ def main(argv=None):
     parser.add_argument("--entry", type=lambda value: int(value, 0))
     parser.add_argument("--stack", type=lambda value: int(value, 0))
     parser.add_argument("--trace", action="store_true")
+    parser.add_argument("--trace-entry", type=lambda value: int(value, 0),
+                        help="Dump guest arguments and backed pointer words on entry to a specified PC")
+    parser.add_argument("--watch-word", type=lambda value: int(value, 0),
+                        help="Log changes to a 32-bit guest RAM word between native dispatches")
     parser.add_argument("--report", type=Path,
                         help="Save structured EE stop state and last 64 native dispatches as JSON")
     parser.add_argument("--kernel-ram", type=Path,
@@ -353,6 +357,10 @@ def main(argv=None):
         parser.error("--max-dispatches must fit a positive uint32")
     if args.loop_budget < 0 or args.loop_budget > 0xFFFFFFFF:
         parser.error("--loop-budget must fit a uint32")
+    for name in ("trace_entry", "watch_word"):
+        address = getattr(args, name)
+        if address is not None and not (0 <= address <= 0xFFFFFFFF and address % 4 == 0):
+            parser.error(f"--{name.replace('_', '-')} must be an aligned uint32")
     if args.timeout_seconds < 1 or args.timeout_seconds > 3600:
         parser.error("--timeout-seconds must be in [1, 3600]")
     if args.auto_expand < 0 or args.auto_expand > 128:
@@ -472,6 +480,10 @@ def main(argv=None):
             command.append(f"--stack=0x{args.stack:08x}")
         if args.trace:
             command.append("--trace")
+        if args.trace_entry is not None:
+            command.append(f"--trace-entry=0x{args.trace_entry:08x}")
+        if args.watch_word is not None:
+            command.append(f"--watch-word=0x{args.watch_word:08x}")
         if args.report is not None:
             report_path = args.report.resolve()
             report_path.parent.mkdir(parents=True, exist_ok=True)
