@@ -64,6 +64,42 @@ unimplemented instruction. That is valuable evidence for implementing
 the next device and a much more legitimate milestone than forcing
 SMFLAG `0x00020000` to ready.
 
+## Real-game ROM0 scheduling and reproducible SIF readiness (PR #103)
+
+The game runner now selects a 65,536-instruction *ROM0* quantum by
+default (versus 256 for the explicit IRX/HLE mode). The EE\'s 256-read
+SMFLAG stall guard previously permitted only 65,536 IOP instructions total,
+whereas the standalone OpenPS2BIOS hardware integration grants 10 million
+instructions before asserting guest firmware readiness. This is a bounded
+deterministic rendezvous, **not** EE/IOP cycle-accurate scheduling.
+
+The firmware guest runs its own `sifcmd` / `sifman` logic. Unlike explicit
+ IRX/HLE mode, authentic ROM0 mode does **not** install their compatibility
+stubs into IOP RAM, does not create compatibility LOADFILE RPC responses, and
+does not synthesize SIF readiness. On a failed poll guard it logs the actual
+IOP PC, executed instruction count, receive buffer, DMA10 CHCR and hardware
+SIF0/SIF1 byte counters to distinguish CPU progress from transport stalls.
+
+For the unchanged Python translation driver and `--no-recompile` cache, set
+host-only environment variables in CMD:
+
+```bat
+set "SDBZ_IOP_ROM0=C:\\path\\to\\your\\bios-rom0.bin"
+rem Optional: override the default ROM0 guest instruction quantum (1..65536)
+set "SDBZ_IOP_ROM0_QUANTUM=65536"
+run_sdbz_native.bat
+```
+
+The direct `ee_game_runner` command also accepts
+`--iop-quantum=N`; that explicit argument takes precedence over the
+environment variable. The existing `run_game.py` script intentionally
+does not forward this option for ROM0; use the environment variable instead.
+
+Even when firmware publishes SMFLAG successfully, **this is not yet a full
+SDBZ boot**: real EE `SifSetDma` syscall routing to guest EE DMA6 source
+ chains, SIF0 reply interrupts, and real LOADFILE module requests still need
+EE integration. Never replace IOP readiness with host-injected bits.
+
 ## Remaining work
 
 - Implement ROM0-visible IOP hardware registers, exception/interrupt
