@@ -105,6 +105,13 @@ if defined REUSE_FLAG (
     echo === First translation or changed inputs: full guest translation ===
 )
 
+rem Optional EE diagnostic instrumentation without game-specific magic addresses.
+rem Example: set EE_TRACE_ENTRY=0x0018cf68
+rem          set EE_WATCH_WORD=0x01ffec1c
+set "GUEST_TRACE_FLAGS="
+if defined EE_TRACE_ENTRY set "GUEST_TRACE_FLAGS=%GUEST_TRACE_FLAGS% --trace-entry=%EE_TRACE_ENTRY%"
+if defined EE_WATCH_WORD set "GUEST_TRACE_FLAGS=%GUEST_TRACE_FLAGS% --watch-word=%EE_WATCH_WORD%"
+
 rem Keep the already compiled guest objects, even across expansion budgets.
 rem Two bounded passes of 128 new functions each are allowed; when the
 rem first pass hits its limit, resume using the exact verified DLL/cache.
@@ -127,7 +134,7 @@ python tools\run_boot_session.py "%ELF%" ^
     --max-dispatches=100000 ^
     --loop-budget=1000000 ^
     --timeout-seconds=120 ^
-    --report "%WORK_DIR%\first-boot.json" %REUSE_FLAG%
+    --report "%WORK_DIR%\first-boot.json" %REUSE_FLAG% %GUEST_TRACE_FLAGS%
 
 set "EXIT_CODE=%ERRORLEVEL%"
 echo.

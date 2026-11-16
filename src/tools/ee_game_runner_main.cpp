@@ -135,6 +135,8 @@ void usage(const char* program)
         "  --stack=0xADDR       Initial EE stack pointer (default 0x01fff000)\n"
         "  --loop-budget=N       Stop at a guest CFG loop after N header entries (0=off)\n"
         "  --trace              Print guest PC, reason and dispatch count per step\n"
+        "  --trace-entry=0xPC   Print arguments and pointed-to words at a guest entry\n"
+        "  --watch-word=0xADDR  Report guest word changes between native dispatches\n"
         "  --hle-startup        Handle selected startup and semaphore kernel calls\n"
         "  --kseg-ram           Enable direct EE RAM aliases (KSEG0/1 and 0x2/0x3)\n"
         "  --kernel-ram=FILE    Load 512 KiB of captured EE kernel RAM (not BIOS ROM)\n"
@@ -447,6 +449,10 @@ int main(int argc, char** argv)
     const char* report_path = nullptr;
     uint32_t budget = k_default_dispatch_budget;
     uint32_t loop_budget = 0u;
+    uint32_t trace_entry = 0u;
+    uint32_t watch_word = 0u;
+    bool has_trace_entry = false;
+    bool has_watch_word = false;
     uint32_t stack = k_default_stack;
     uint32_t entry_override = 0;
     bool override_entry = false;
@@ -512,6 +518,22 @@ int main(int argc, char** argv)
         }
         if (parsed == 0)
         {
+            parsed = parse_option("--trace-entry=", &trace_entry);
+            if (parsed == 1)
+            {
+                has_trace_entry = true;
+            }
+        }
+        if (parsed == 0)
+        {
+            parsed = parse_option("--watch-word=", &watch_word);
+            if (parsed == 1)
+            {
+                has_watch_word = true;
+            }
+        }
+        if (parsed == 0)
+        {
             parsed = parse_option("--stack=", &stack);
         }
         if (parsed == 0)
@@ -552,7 +574,9 @@ int main(int argc, char** argv)
     }
 
     if (elf_path == nullptr || library_path == nullptr || budget == 0 ||
-        stack >= k_ee_ram_size)
+        stack >= k_ee_ram_size ||
+        (has_trace_entry && (trace_entry & 3u) != 0u) ||
+        (has_watch_word && (watch_word & 3u) != 0u))
     {
         usage(argv[0]);
         return 2;
@@ -639,6 +663,22 @@ int main(int argc, char** argv)
     runtime.m_loop_safepoint_remaining = loop_budget;
     cpu.m_pc = entry;
     cpu.m_gpr[29].m_lo = stack;
+
+    // Watchpoints observe *committed* architectural memory between host
+    // dispatches. They never modify guest RAM or trigger a guest exception.
+    // An unbacked address is a usage error; reading zeros would conceal
+    // the same invalid-memory condition being investigated.
+    if (has_watch_word && !memory->contains(watch_word, 4u))
+    {
+        std::fprintf(stderr, "watch-word address is not backed: 0x%08x\n",
+                     watch_word);
+        return 2;
+    }
+    if (has_watch_word)
+    {
+        std::printf("EE watch initial: addr=0x%08x value=0x%08x\n",
+                    watch_word, memory->read32(watch_word));
+    }
     cpu.m_exit_reason = static_cast<uint32_t>(
         ee::e_ee_exit_reason::EE_EXIT_DISPATCH
     );
@@ -805,6 +845,42 @@ int main(int argc, char** argv)
         }
 
         const uint32_t from_pc = cpu.m_pc;
+        if (has_trace_entry && from_pc == trace_entry)
+        {
+            const uint32_t a0 = static_cast<uint32_t>(cpu.m_gpr[4].m_lo);
+            const uint32_t a1 = static_cast<uint32_t>(cpu.m_gpr[5].m_lo);
+            std::printf(
+                "EE trace-entry: dispatch=%llu pc=0x%08x "
+                "ra=0x%08x sp=0x%08x "
+                "a0=0x%08x a1=0x%08x a2=0x%08x a3=0x%08x\n",
+                static_cast<unsigned long long>(dispatched + 1u),
+                from_pc,
+                static_cast<uint32_t>(cpu.m_gpr[31].m_lo),
+                static_cast<uint32_t>(cpu.m_gpr[29].m_lo),
+                a0, a1,
+                static_cast<uint32_t>(cpu.m_gpr[6].m_lo),
+                static_cast<uint32_t>(cpu.m_gpr[7].m_lo)
+            );
+            // Show the descriptor content without interpreting the memory
+            // as a particular game's C structure or dereferencing a raw
+            // host pointer. The caller can determine which fields matter.
+            for (const uint32_t address : {a0, a1})
+            {
+                if (memory->contains(address, 16u))
+                {
+                    std::printf(
+                        "EE trace-entry memory: addr=0x%08x "
+                        "words=%08x,%08x,%08x,%08x\n",
+                        address, memory->read32(address),
+                        memory->read32(address + 4u),
+                        memory->read32(address + 8u),
+                        memory->read32(address + 12u)
+                    );
+                }
+            }
+        }
+        const uint32_t watched_before = has_watch_word
+            ? memory->read32(watch_word) : 0u;
         uint32_t count = 0;
         uint32_t out_pc = from_pc;
         const uint32_t slice = (trace || report_path != nullptr) ? 1u : remaining;
@@ -836,6 +912,19 @@ int main(int argc, char** argv)
 
         dispatched += count;
         remaining -= count;
+        if (has_watch_word && count != 0u)
+        {
+            const uint32_t watched_after = memory->read32(watch_word);
+            if (watched_after != watched_before)
+            {
+                std::printf(
+                    "EE watch changed: dispatch=%llu from_pc=0x%08x "
+                    "to_pc=0x%08x addr=0x%08x old=0x%08x new=0x%08x\n",
+                    static_cast<unsigned long long>(dispatched), from_pc,
+                    cpu.m_pc, watch_word, watched_before, watched_after
+                );
+            }
+        }
         if (report_path != nullptr && count != 0)
         {
             if (history.size() == k_report_history_limit)

@@ -1239,6 +1239,63 @@ The next real-game run will establish the following genuine
 runtime boundary. No additional MMI opcodes have been enabled
 without exact implementations.
 
+### Post-PCPYUD memchr loop: I/O-vector argument provenance (US SDBZ, dispatch 6048)
+
+The tenth and eleventh user-owned Windows reports confirm that the
+exact `PCPYUD` implementation passed the former unsupported-instruction
+boundary. The subsequent stop is a reproducible `LOOP_BUDGET (5)`
+at **`0x0018E194`**, reached after **6,048 dispatches**, without
+another unsupported opcode. The saved argument registers after one
+million guarded loop-header visits are:
+
+- `A0=0x020F2FC5` (one million bytes above original `0x01FFED85`,
+  now **past the 32 MiB EE RAM boundary**)
+- `A1=0x0A` (newline)
+- `A2=0x0007DACB` (514,763 bytes still to scan)
+
+The original US ELF's `0x0018E0D8` is a byte-search/memchr-like
+routine. Its backward-branch at `0x0018E194` decrements A2 and
+increments A0 correctly: the loop budget is behaving as designed,
+not identifying a broken branch. The direct caller at `0x0018D1E4`
+passes `A0=S3`, `A1=10`, `A2=S2`. Immediately beforehand, the
+caller loaded `S3=[S4+0]`, `S2=[S4+4]` at
+`0x0018D1BC` and `0x0018D1B8`. Thus the suspicious
+**length comes from an I/O-vector descriptor**, not a computed
+memchr-loop counter. At the last stop S4 was `0x01FFEC18`,
+so its length word is `0x01FFEC1C`. The initial length
+is approximately `0x00171D0C` (a code-like address), which is
+not plausible for a stack-local log output buffer. Its cause is
+not yet established: an earlier state write, bad descriptor
+setup, or an ABI bug could each explain this symptom.
+
+The native runner now supports two **opt-in diagnostics**:
+
+- `--watch-word=0xADDR` watches one aligned, backed guest 32-bit
+  word between dispatches and logs its previous and new value
+  together with the translated function PC on change. Invalid
+  and unbacked addresses are rejected, rather than silently
+  reading zero. It cannot pinpoint a guest instruction inside
+  one translated function or writes that cancel each other.
+- `--trace-entry=0xPC` logs A0-A3, SP, RA when execution
+  enters the chosen translated guest PC, and prints the first
+  four guest words at A0 or A1 where backed. It does not
+  interpret game-specific C layouts or modify guest state.
+
+For the next local diagnostic run with `run_sdbz_native.bat`:
+
+```bat
+set "EE_TRACE_ENTRY=0x0018CF68"
+set "EE_WATCH_WORD=0x01FFEC1C"
+run_sdbz_native.bat
+```
+
+Both variables are optional, passed through
+`run_boot_session.py` to the `run_game.py` driver, and
+require **no translation-cache invalidation**. Compare the
+watchword's first write with the I/O-vector state at
+`0x0018CF68`, then trace the producer function rather
+than raising the loop budget.
+
 ## Validation limits
 
 CTest contains `game_runner_end_to_end` which creates small synthetic MIPS
