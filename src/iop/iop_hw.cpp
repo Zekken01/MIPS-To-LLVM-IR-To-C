@@ -314,14 +314,11 @@ bool c_hw::write(
         address < k_cdrom_dma_base + 12u)
     {
         const uint32_t reg = (address - k_cdrom_dma_base) / 4u;
-        // DMA3.CHCR.STR starts a genuine CD-ROM transfer. No CD-ROM
-        // transport is connected, so fail rather than simulate success.
-        // A zero CHCR store is an authentic register reset and must
-        // not claim completion or raise an interrupt.
-        if (reg == 2u && (value & 0x01000000u) != 0u)
-        {
-            return false;
-        }
+        // Programming CHCR.STR requests CD-ROM DMA3. In the
+        // absence of a disc/data producer, retain the requested
+        // state (including STR) without transferring bytes, clearing
+        // STR, asserting an IRQ or claiming command completion.
+        // A future disc transport must explicitly complete it.
         m_cdrom_dma[reg] = value;
         return true;
     }
