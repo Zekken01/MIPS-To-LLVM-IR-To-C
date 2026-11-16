@@ -83,6 +83,7 @@ bool c_sif_rpc_bridge::prepare_command(
 {
     if (!m_sifcmd.initialized() ||
         request == nullptr ||
+        m_replies.size() >= 64u ||
         packet.size() < size / 4u ||
         (size != 36u && size != 56u) ||
         (packet[0] & 0xffu) != size ||
@@ -184,6 +185,16 @@ void c_sif_rpc_bridge::commit_command(const s_request& request)
 
 bool c_sif_rpc_bridge::pump()
 {
+    if (m_reply_in_flight)
+    {
+        // The prior SIF0 interrupt must have been acknowledged before
+        // overwriting the EE command receiver with another reply.
+        if ((m_dmac.status() & (1u << 5u)) != 0u)
+        {
+            return false;
+        }
+        m_reply_in_flight = false;
+    }
     if (m_replies.empty() || !m_sifcmd.initialized())
     {
         return false;
@@ -212,6 +223,7 @@ bool c_sif_rpc_bridge::pump()
         return false;
     }
     m_replies.pop_front();
+    m_reply_in_flight = true;
     return true;
 }
 
