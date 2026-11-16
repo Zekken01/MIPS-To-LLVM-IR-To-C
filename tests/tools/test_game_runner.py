@@ -1162,6 +1162,91 @@ def main():
         assert "native library ready:" in link_only.stdout, link_only.stdout
         assert "EE stopped:" not in link_only.stdout, link_only.stdout
 
+        # A host-only code/tool update must preserve the previously emitted
+        # guest IR and objects. Simulate an older v1 provenance snapshot
+        # that predates separate IR-generator source hashes, and change only
+        # the saved linker-script fingerprint.
+        cache_path = root / "out" / "translation-cache.json"
+        original_snapshot = json.loads(cache_path.read_text(encoding="utf-8"))
+        preserved_metadata = (root / "out" / "ir" / "ee_functions.json").read_bytes()
+        preserved_ir = {
+            item.name: item.read_bytes()
+            for item in (root / "out" / "ir").glob("*.ll")
+        }
+        legacy_snapshot = dict(original_snapshot)
+        legacy_snapshot.pop("ir_sources", None)
+        legacy_snapshot.pop("ir_hashes", None)
+        legacy_snapshot["inputs"] = dict(original_snapshot["inputs"])
+        legacy_snapshot["inputs"]["tools/link_native_objects.py"] = "0" * 64
+        cache_path.write_text(
+            json.dumps(legacy_snapshot) + "\n", encoding="utf-8"
+        )
+        stale_link = subprocess.run(
+            [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf), "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--no-recompile", "--link-only",
+            ],
+            capture_output=True, text=True, check=False,
+        )
+        assert stale_link.returncode != 0, stale_link
+        assert "tools/link_native_objects.py changed" in stale_link.stderr
+
+        repaired = subprocess.run(
+            [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf), "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--relink-existing", "--link-only",
+            ],
+            capture_output=True, text=True, check=False,
+        )
+        assert repaired.returncode == 0, repaired.stdout + repaired.stderr
+        assert "preserving guest IR and objects" in repaired.stdout, repaired.stdout
+        assert "ee_recomp: loading" not in repaired.stdout, repaired.stdout
+        assert "reused 1/1 cached object(s)" in repaired.stdout, repaired.stdout
+        assert (root / "out" / "ir" / "ee_functions.json").read_bytes() == preserved_metadata
+        assert {
+            item.name: item.read_bytes()
+            for item in (root / "out" / "ir").glob("*.ll")
+        } == preserved_ir
+
+        # A mismatched generator-source fingerprint must not reuse old IR.
+        repair_command = [
+            sys.executable, str(source / "tools" / "run_game.py"),
+            str(elf), "--build-dir", str(build),
+            "--work-dir", str(root / "out"),
+            "--relink-existing", "--link-only",
+        ]
+        repaired_snapshot = json.loads(cache_path.read_text(encoding="utf-8"))
+        altered_sources = dict(repaired_snapshot)
+        altered_sources["ir_sources"] = dict(repaired_snapshot["ir_sources"])
+        altered_sources["ir_sources"]["ELF"] = "f" * 64
+        cache_path.write_text(
+            json.dumps(altered_sources) + "\n", encoding="utf-8"
+        )
+        stale_ir_source = subprocess.run(
+            repair_command, capture_output=True, text=True, check=False,
+        )
+        assert stale_ir_source.returncode != 0, stale_ir_source
+        assert "guest IR generation input changed: ELF" in stale_ir_source.stderr
+        cache_path.write_text(
+            json.dumps(repaired_snapshot) + "\n", encoding="utf-8"
+        )
+
+        # Even with a matching ELF and generator, the preserved code's
+        # content must still match its recorded hashes.
+        module_path = next((root / "out" / "ir").glob("*.ll"))
+        original_module = module_path.read_bytes()
+        module_path.write_bytes(original_module + b"\n; tampered\n")
+        modified_module = subprocess.run(
+            repair_command, capture_output=True, text=True, check=False,
+        )
+        assert modified_module.returncode != 0, modified_module
+        assert "preserved LLVM IR module was modified" in modified_module.stderr
+        module_path.write_bytes(original_module)
+
         # A replay must reject old native code when the same ELF path
         # changes, even if its entry and translated function map do not.
         cache_path = root / "out" / "translation-cache.json"
