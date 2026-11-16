@@ -31,64 +31,66 @@ References:
 - ROM0 bootstrap and the existing `--iop-irx` experimental module
   bootstrap are deliberately mutually exclusive.
 
-## Running with a locally obtained BIOS image
+## Running with automatically managed OpenPS2BIOS
 
-No BIOS data is bundled with this project. Use an authentic primary
-4 MiB ROM0 dump obtained from hardware you are entitled to use.
-Rebuild the native runner after pulling this change, but the existing
-translated EE guest DLL does not need recompilation.
+No BIOS data is bundled with this project. By default,
+\`run_sdbz_native.bat\` checks the official
+[TamaribaEmu/OpenPS2BIOS releases](https://github.com/TamaribaEmu/OpenPS2BIOS/releases)
+for its latest **stable** release and downloads the matching 4 MiB ROM0
+image to \`build/openps2bios/rom0.bin\`. It verifies the downloaded bytes
+using the release's \`.sha256\` sidecar (or GitHub's SHA256 asset digest),
+then writes a local version/asset/sha256 manifest. On later launches it
+checks for a newer release and reuses the cached image if unchanged.
+A verified cached image can also be used if the release API is unavailable.
+A missing or corrupted cache is never executed. No Sony ROM is downloaded.
 
-To use the unchanged `tools/run_boot_session.py` and `run_game.py`
-with `--no-recompile`, set the host-only environment variable in
-your Windows CMD shell before running your existing boot command:
+**Standard run (no manual ROM path):**
 
-```bat
+\`\`\`bat
+run_sdbz_native.bat
+\`\`\`
+
+**Manual override (takes precedence, no automatic download):**
+
+\`\`\`bat
 set "SDBZ_IOP_ROM0=C:\path\to\your\bios-rom0.bin"
-python tools/run_boot_session.py PS2_GAME\SLUS_214.42 --work-dir=build\sdbz-thread-pr38 --report=build\sdbz-thread-pr38\first-boot.json --no-recompile --hle-startup --kseg-ram --sif-poll-limit=256 --trace
-```
+run_sdbz_native.bat
+\`\`\`
 
-Alternatively, the `ee_game_runner` executable supports
-`--iop-rom0=FILE` directly. Do not pass that option to `run_game.py`,
-which deliberately stays unchanged to preserve translation-cache
-provenance.
+Explicit \`IOP_IRX\` / \`IOP_IRX_LIST\` compatibility mode skips the
+automatic ROM0 download unless the caller explicitly sets
+\`SDBZ_IOP_ROM0\`; ROM0 and those legacy IRX bootstrap options are
+otherwise mutually exclusive.
 
-Expected diagnostic before full hardware support:
+The environment variable is passed directly to \`ee_game_runner\` via
+the unchanged \`tools/run_boot_session.py\` and \`run_game.py\`, so
+downloaded BIOS version changes **do not invalidate** the existing
+native EE guest translation cache. The direct \`ee_game_runner\`
+executable also accepts \`--iop-rom0=FILE\`.
 
-```text
-IOP ROM0 reset: pc=0xbfc00000 cp0_status=0x10900000 cp0_prid=0x0000001f ...
-IOP guest stopped: reason=... thread=0 pc=0x... opcode=0x...
-```
-
-This may stop early at the first BIOS MMIO register access or other
-unimplemented instruction. That is valuable evidence for implementing
-the next device and a much more legitimate milestone than forcing
-SMFLAG `0x00020000` to ready.
+This is an **emulator-only** firmware image and is not suitable for
+flashing to physical PS2 hardware.
 
 ## Real-game ROM0 scheduling and reproducible SIF readiness (PR #103)
 
 The game runner now selects a 65,536-instruction *ROM0* quantum by
-default (versus 256 for the explicit IRX/HLE mode). The EE\'s 256-read
+default (versus 256 for the explicit IRX/HLE mode). The EE's 256-read
 SMFLAG stall guard previously permitted only 65,536 IOP instructions total,
 whereas the standalone OpenPS2BIOS hardware integration grants 10 million
 instructions before asserting guest firmware readiness. This is a bounded
 deterministic rendezvous, **not** EE/IOP cycle-accurate scheduling.
 
 The firmware guest runs its own `sifcmd` / `sifman` logic. Unlike explicit
- IRX/HLE mode, authentic ROM0 mode does **not** install their compatibility
+IRX/HLE mode, authentic ROM0 mode does **not** install their compatibility
 stubs into IOP RAM, does not create compatibility LOADFILE RPC responses, and
 does not synthesize SIF readiness. On a failed poll guard it logs the actual
 IOP PC, executed instruction count, receive buffer, DMA10 CHCR and hardware
 SIF0/SIF1 byte counters to distinguish CPU progress from transport stalls.
 
-For the unchanged Python translation driver and `--no-recompile` cache, set
-host-only environment variables in CMD:
-
-```bat
-set "SDBZ_IOP_ROM0=C:\\path\\to\\your\\bios-rom0.bin"
-rem Optional: override the default ROM0 guest instruction quantum (1..65536)
-set "SDBZ_IOP_ROM0_QUANTUM=65536"
-run_sdbz_native.bat
-```
+The ROM0 guest instruction quantum defaults to 65,536 per unready
+SMFLAG poll. To override the scheduler independently of the selected
+ROM0 file, set \`SDBZ_IOP_ROM0_QUANTUM=NNN\` in the environment.
+The batch script leaves both caller-provided variables intact.
 
 The direct `ee_game_runner` command also accepts
 `--iop-quantum=N`; that explicit argument takes precedence over the
@@ -130,4 +132,4 @@ readiness or replies with host-injected flags or synthetic packets.
 - Confirm that firmware-originated SIF writes, not host startup,
   publish actual readiness flags.
 
-The existing runner without a ROM0 image or manual IRXs is unchanged.
+The runner can also be invoked directly without ROM0 or manual IRXs; that explicit minimal mode is unchanged.
