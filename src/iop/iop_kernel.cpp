@@ -250,9 +250,28 @@ s_module_load_result c_kernel::load_module(
         return true;
     };
 
+    // Reject already registered exports before the IRX loader writes
+    // any bytes. This prevents partially installed module state when
+    // an authentic library collides with another module or HLE service.
+    const auto accept_exports = [this](
+        const std::vector<s_irx_export>& exports
+    )
+    {
+        for (const s_irx_export& item : exports)
+        {
+            const auto library = m_libraries.find(item.m_library);
+            if (library != m_libraries.end() &&
+                library->second.count(item.m_ordinal) != 0u)
+            {
+                return false;
+            }
+        }
+        return true;
+    };
+
     s_irx_module image{};
     result.m_status = load_irx(
-        m_cpu, bytes, base, &image, resolve
+        m_cpu, bytes, base, &image, resolve, accept_exports
     );
     if (result.m_status != e_irx_load_result::success)
     {
@@ -260,6 +279,14 @@ s_module_load_result c_kernel::load_module(
         return result;
     }
 
+    // All exports were checked against the existing registry and each
+    // other on the staged image. Publish only after a successful load.
+    for (const s_irx_export& item : image.m_exports)
+    {
+        m_libraries[item.m_library].emplace(
+            item.m_ordinal, item.m_entry
+        );
+    }
     const uint32_t id = m_next_module_id++;
     m_modules.emplace(id, s_kernel_module{id, std::move(image)});
     result.m_id = id;
