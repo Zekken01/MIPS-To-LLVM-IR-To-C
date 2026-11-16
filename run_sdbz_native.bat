@@ -19,6 +19,19 @@ rem identical kernel calls; 0 disables this diagnostic for comparisons.
 if not defined SIF_POLL_LIMIT set "SIF_POLL_LIMIT=256"
 echo SIF SMFLAG poll diagnostic limit: %SIF_POLL_LIMIT%
 
+rem IOP IRX execution is explicitly opt-in. An IRX path by itself is
+rem insufficient to boot the real IOP kernel if imports/services are missing.
+set "IOP_IRX_FLAGS="
+if defined IOP_IRX (
+    if not exist "%IOP_IRX%" (
+        echo Missing IOP IRX: "%IOP_IRX%"
+        goto :failed
+    )
+    if not defined IOP_QUANTUM set "IOP_QUANTUM=256"
+    set IOP_IRX_FLAGS=--iop-irx="%IOP_IRX%" --iop-quantum=%IOP_QUANTUM%
+    echo IOP IRX execution enabled: "%IOP_IRX%" quantum=%IOP_QUANTUM%
+)
+
 if not exist "%ELF%" (
     echo Missing local game ELF: "%ELF%"
     goto :failed
@@ -175,7 +188,7 @@ python tools\run_boot_session.py "%ELF%" ^
     --loop-budget=1000000 ^
     --sif-poll-limit=%SIF_POLL_LIMIT% ^
     --timeout-seconds=120 ^
-    --report "%WORK_DIR%\first-boot.json" %REUSE_FLAG% %GUEST_TRACE_FLAGS%
+    --report "%WORK_DIR%\first-boot.json" %REUSE_FLAG% %GUEST_TRACE_FLAGS% %IOP_IRX_FLAGS%
 
 set "EXIT_CODE=%ERRORLEVEL%"
 echo.
