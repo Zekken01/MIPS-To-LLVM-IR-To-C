@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 
 
 REPLAY_PATTERN = re.compile(r"== Executing translated EE code \(replay (\d+)\) ==")
@@ -25,6 +26,7 @@ def read_report(path):
 
 
 def run_session(command, log_path, append=False):
+    started = time.monotonic()
     result = subprocess.run(
         [str(item) for item in command],
         stdout=subprocess.PIPE,
@@ -37,7 +39,7 @@ def run_session(command, log_path, append=False):
     with log_path.open("a" if append else "w", encoding="utf-8") as log:
         log.write("+ " + subprocess.list2cmdline([str(item) for item in command]) + "\n")
         log.write(output)
-    return result.returncode, output
+    return result.returncode, output, time.monotonic() - started
 
 
 def main(argv=None):
@@ -87,7 +89,7 @@ def main(argv=None):
             f"(up to {args.expansion_per_pass} new functions) ===",
             flush=True,
         )
-        code, output = run_session(command, expansion_log, append=True)
+        code, output, elapsed = run_session(command, expansion_log, append=True)
         state = read_report(report)
         replays = REPLAY_PATTERN.findall(output)
         last_replay = int(replays[-1]) if replays else -1
@@ -96,7 +98,7 @@ def main(argv=None):
         print(
             f"pass {index + 1}: replay={last_replay} "
             f"dispatches={state.get('dispatches', '?')} "
-            f"stop={pc_text} exit={code}",
+            f"stop={pc_text} exit={code} elapsed={elapsed:.2f}s",
             flush=True,
         )
 
@@ -136,7 +138,7 @@ def main(argv=None):
     # repetitive dispatch logs, but the final snapshot must stay useful
     # for diagnosing the next kernel service or translation failure.
     print(f"=== Final traced replay: {boot_log} ===", flush=True)
-    code, _ = run_session(
+    code, _, elapsed = run_session(
         [*base, "--no-recompile", "--auto-expand=0", "--trace"],
         boot_log,
     )
@@ -145,7 +147,7 @@ def main(argv=None):
     pc_text = f"0x{final_pc:08x}" if isinstance(final_pc, int) else "unknown"
     print(
         f"Final trace: dispatches={state.get('dispatches', '?')} "
-        f"stop={pc_text} exit={code}. "
+        f"stop={pc_text} exit={code} elapsed={elapsed:.2f}s. "
         f"Logs: {boot_log}, {expansion_log}",
         flush=True,
     )
