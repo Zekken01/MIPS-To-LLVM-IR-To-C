@@ -738,7 +738,8 @@ int main(int argc, char** argv)
     {
         iop_kernel = std::make_unique<iop::c_kernel>();
         iop_sifman = std::make_unique<iop::c_sifman_bridge>(
-            *iop_kernel, hardware.sif()
+            *iop_kernel, hardware.sif(),
+            &hardware.dmac(), memory.get()
         );
         if (!iop_sifman->install())
         {
