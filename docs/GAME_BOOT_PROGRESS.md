@@ -1359,6 +1359,61 @@ boot is needed to determine whether `FP` or a stack
 value was already wrong on entry; no guest-code semantic
 patch is justified from these observations alone.
 
+### Instruction-level EE guest store provenance (pending real US SDBZ replay)
+
+The user's **16 November 2026, 01:02** local trace again stops at
+**6,048 native dispatches**, with `LOOP_BUDGET` at `0x0018E194`.
+The new formatter entry snapshot, taken at dispatch 6029 PC
+`0x00194478`, has `S3=0x01FFEC00`, `S5=0x01FFED85`,
+`FP=7` and `RA=0x00194478`. The watched seventh I/O-vector
+length at `0x01FFEC14` changes from zero to `0x00171D0C`
+during that native dispatch. This establishes the affected
+**dispatch segment**, not yet the executing store instruction.
+The reported length is also a valid guest executable address.
+
+The next diagnostic instruments every explicitly lowered guest memory
+store **before** its existing memory helper call. Its emitted LLVM call
+carries the exact guest instruction PC, original opcode, effective and
+affected memory addresses, store width, source operand and lane, base
+register value, and live SSA values for SP/FP/RA. Reading architectural
+GPR backing fields at this point would risk capturing stale values,
+because the emitter caches registers until a basic-block boundary.
+The trace helper does not change CPU or guest memory state.
+
+The host opt-in `--trace-store=0xADDR` requires an aligned, backed
+32-bit guest word; only overlapping guest stores are printed, up to
+64 matches per run. Partial-word/doubleword stores use the aligned
+affected range for filtering but still report their unaligned effective
+address and original source register. Their **source_value** is not
+misrepresented as the merged final memory value. Ordinary stores and
+SWC1/SQC2/SQ stores are also included. Guest addresses are inspected
+only through the existing validated memory mapping; the trace itself
+does not read or modify guest memory.
+
+The SDBZ Windows launcher now enables
+`--trace-store=0x01FFEC14` alongside the existing entry and word
+watchpoint when `SDBZ_BOOT_DIAGNOSTICS=1`. `EE_TRACE_STORE`
+overrides this address; `SDBZ_BOOT_DIAGNOSTICS=0` disables the new
+default as with the old probes. The driver forwards this flag to
+both expansion and final replay.
+
+Because this changes LLVM emission and appends native runtime ABI
+fields, the existing translated guest library must be **re-emitted
+and relinked**. `run_game.py` fingerprints `ee_recomp`, all
+`include/ee` and `src/runtime` files, and the driver itself.
+The Windows launcher validates cache provenance before deciding
+whether to reuse objects, and will take its full-translation path
+when those inputs change. Do not force `--no-recompile` with the old
+objects. The result of the next real ELF run is **not yet known**;
+the word should not be patched or the loop budget raised.
+
+The synthetic native ELF regression checks a real translated `SW`
+at PC `0x00100014`, including opcode `0xAD090000`, data source
+GPR9=7, base GPR8=`0x00100200`, stack/register context,
+exactly one matching store event, a nearby nonmatching watched
+word and invalid/unbacked address refusal. Existing native state and
+post-dispatch word assertions remain in place.
+
 ## Validation limits
 
 CTest contains `game_runner_end_to_end` which creates small synthetic MIPS

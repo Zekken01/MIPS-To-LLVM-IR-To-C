@@ -233,6 +233,13 @@ struct s_ee_runtime
     // The host resets remaining before entering one native guest function.
     uint32_t m_loop_safepoint_limit = 0u;
     uint32_t m_loop_safepoint_remaining = 0u;
+
+    // Optional, host-only trace of translated guest STORE instructions.
+    // A zero-initialized runtime never traces. Keep these fields appended
+    // to preserve all existing ABI offsets.
+    uint32_t m_guest_store_trace_word = 0u;
+    uint32_t m_guest_store_trace_remaining = 0u;
+    bool m_guest_store_trace_enabled = false;
 };
 
 // Outside a branch delay slot, all four transfer forms only catch VU0 up to
@@ -262,6 +269,17 @@ void     ee_mem_write16(s_ee_runtime* rt, uint32_t addr, uint16_t v);
 void     ee_mem_write32(s_ee_runtime* rt, uint32_t addr, uint32_t v);
 void     ee_mem_write64(s_ee_runtime* rt, uint32_t addr, uint64_t v);
 void     ee_mem_write128(s_ee_runtime* rt, uint32_t addr, const s_ee_u128* v);
+
+// Diagnostic only: emitted immediately BEFORE a guest memory store.
+// The SSA operands are sampled at the instruction, including in delay slots.
+// 'affected_address' is the aligned containing word/doubleword for partial
+// stores; 'effective_address' preserves the actual guest address.
+void ee_trace_guest_store(
+    s_ee_runtime* rt, uint32_t pc, uint32_t opcode,
+    uint32_t effective_address, uint32_t affected_address,
+    uint32_t width, uint64_t source_value, uint32_t source_lane,
+    uint64_t base_value, uint64_t sp, uint64_t fp, uint64_t ra
+);
 
 // R5900 partial-word / partial-doubleword memory operations.
 // The load helpers merge into the existing GPR low 64 bits and return the

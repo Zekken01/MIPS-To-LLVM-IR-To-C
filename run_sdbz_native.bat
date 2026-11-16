@@ -111,15 +111,17 @@ rem formatter's resumed PC 0x00194478 as the first writer of the
 rem suspicious I/O-vector length word 0x01ffec14. Trace its saved
 rem registers and stack vector just before the writer runs.
 rem Set SDBZ_BOOT_DIAGNOSTICS=0 to disable these defaults.
-rem Explicit EE_TRACE_ENTRY / EE_WATCH_WORD values take precedence.
+rem Explicit EE_TRACE_ENTRY / EE_WATCH_WORD / EE_TRACE_STORE values take precedence.
 if not defined SDBZ_BOOT_DIAGNOSTICS set "SDBZ_BOOT_DIAGNOSTICS=1"
 if "%SDBZ_BOOT_DIAGNOSTICS%"=="1" (
     if not defined EE_TRACE_ENTRY set "EE_TRACE_ENTRY=0x00194478"
     if not defined EE_WATCH_WORD set "EE_WATCH_WORD=0x01ffec14"
+    if not defined EE_TRACE_STORE set "EE_TRACE_STORE=0x01ffec14"
 )
 set "GUEST_TRACE_FLAGS="
 if defined EE_TRACE_ENTRY set "GUEST_TRACE_FLAGS=%GUEST_TRACE_FLAGS% --trace-entry=%EE_TRACE_ENTRY%"
 if defined EE_WATCH_WORD set "GUEST_TRACE_FLAGS=%GUEST_TRACE_FLAGS% --watch-word=%EE_WATCH_WORD%"
+if defined EE_TRACE_STORE set "GUEST_TRACE_FLAGS=%GUEST_TRACE_FLAGS% --trace-store=%EE_TRACE_STORE%"
 if defined GUEST_TRACE_FLAGS (
     echo === Active SDBZ guest diagnostics: %GUEST_TRACE_FLAGS% ===
 ) else (

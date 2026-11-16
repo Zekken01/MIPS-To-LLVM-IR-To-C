@@ -337,6 +337,8 @@ def main(argv=None):
                         help="Dump guest arguments and backed pointer words on entry to a specified PC")
     parser.add_argument("--watch-word", type=lambda value: int(value, 0),
                         help="Log changes to a 32-bit guest RAM word between native dispatches")
+    parser.add_argument("--trace-store", type=lambda value: int(value, 0),
+                        help="Trace guest store PCs and operands overlapping a 32-bit guest word")
     parser.add_argument("--report", type=Path,
                         help="Save structured EE stop state and last 64 native dispatches as JSON")
     parser.add_argument("--kernel-ram", type=Path,
@@ -357,7 +359,7 @@ def main(argv=None):
         parser.error("--max-dispatches must fit a positive uint32")
     if args.loop_budget < 0 or args.loop_budget > 0xFFFFFFFF:
         parser.error("--loop-budget must fit a uint32")
-    for name in ("trace_entry", "watch_word"):
+    for name in ("trace_entry", "watch_word", "trace_store"):
         address = getattr(args, name)
         if address is not None and not (0 <= address <= 0xFFFFFFFF and address % 4 == 0):
             parser.error(f"--{name.replace('_', '-')} must be an aligned uint32")
@@ -484,6 +486,8 @@ def main(argv=None):
             command.append(f"--trace-entry=0x{args.trace_entry:08x}")
         if args.watch_word is not None:
             command.append(f"--watch-word=0x{args.watch_word:08x}")
+        if args.trace_store is not None:
+            command.append(f"--trace-store=0x{args.trace_store:08x}")
         if args.report is not None:
             report_path = args.report.resolve()
             report_path.parent.mkdir(parents=True, exist_ok=True)

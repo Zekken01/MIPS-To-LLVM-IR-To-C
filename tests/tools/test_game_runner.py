@@ -1207,10 +1207,18 @@ def main():
             "--max-dispatches=8",
             "--trace-entry=0x00100008",
             "--watch-word=0x00100200",
+            "--trace-store=0x00100200",
         ]
         result = subprocess.run(args, capture_output=True, text=True,
                                 check=False)
         assert result.returncode == 3, result.stdout + result.stderr
+        assert "EE guest-store watch: addr=0x00100200 max_events=64" in result.stdout, result.stdout
+        assert ("EE guest-store: pc=0x00100014 opcode=0xad090000 ins=SW "
+                "effective=0x00100200 affected=0x00100200 width=4 "
+                "src=gpr9 lane=0 source_value=0x0000000000000007 "
+                "base=gpr8 base_value=0x0000000000100200 "
+                "sp=0x01fff000 fp=0x00000000 ra=0x00000000") in result.stdout, result.stdout
+        assert result.stdout.count("EE guest-store:") == 1, result.stdout
         assert "EE watch initial: addr=0x00100200 value=0x00000000" in result.stdout, result.stdout
         assert "EE trace-entry: dispatch=1 pc=0x00100008" in result.stdout, result.stdout
         assert "sp=0x01fff000" in result.stdout, result.stdout
@@ -1229,13 +1237,31 @@ def main():
                 "word0=0x00000000 word1=0x00000007") in result.stdout, result.stdout
 
         rejected = subprocess.run(
-            args[:-1] + ["--watch-word=0x02000000", "--no-recompile"],
+            args[:-2] + ["--watch-word=0x02000000", "--no-recompile"],
             capture_output=True, text=True, check=False,
         )
         assert rejected.returncode == 2, rejected.stdout + rejected.stderr
         assert "watch-word address is not backed: 0x02000000" in rejected.stderr, (
             rejected.stdout + rejected.stderr
         )
+
+        # A guest-store watch does not generate a false event for a
+        # different word, and its own guest address must be backed.
+        nearby = subprocess.run(
+            args[:-1] + ["--trace-store=0x00100204", "--no-recompile"],
+            capture_output=True, text=True, check=False,
+        )
+        assert nearby.returncode == 3, nearby.stdout + nearby.stderr
+        assert "EE guest-store:" not in nearby.stdout, nearby.stdout
+        invalid_store = subprocess.run(
+            args[:-1] + ["--trace-store=0x02000000", "--no-recompile"],
+            capture_output=True, text=True, check=False,
+        )
+        assert invalid_store.returncode == 2, invalid_store.stdout + invalid_store.stderr
+        assert "trace-store address is not backed: 0x02000000" in invalid_store.stderr, (
+            invalid_store.stdout + invalid_store.stderr
+        )
+
 
     with tempfile.TemporaryDirectory(prefix="ee-native-heap-boundary-") as tmp:
         root = Path(tmp)

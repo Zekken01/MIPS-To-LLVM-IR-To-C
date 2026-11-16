@@ -2,6 +2,7 @@
 #include "ee_runtime.h"
 #include <cstdlib>
 #include <cstring>
+#include <cstdio>
 #include <new>
 
 namespace ee {
@@ -537,6 +538,67 @@ void ee_mem_write128(s_ee_runtime* runtime, uint32_t address, const s_ee_u128* v
             memory->write128(address, value);
         }
     }
+}
+
+
+void ee_trace_guest_store(
+    s_ee_runtime* runtime, uint32_t pc, uint32_t opcode,
+    uint32_t effective_address, uint32_t affected_address,
+    uint32_t width, uint64_t source_value, uint32_t source_lane,
+    uint64_t base_value, uint64_t sp, uint64_t fp, uint64_t ra
+)
+{
+    if (runtime == nullptr || !runtime->m_guest_store_trace_enabled ||
+        runtime->m_guest_store_trace_remaining == 0u || width == 0u)
+    {
+        return;
+    }
+
+    // Compare half-open byte ranges in 64 bits to avoid uint32 wraparound.
+    // For SWL/SWR/SDL/SDR, 'affected_address' is the containing aligned
+    // word/doubleword, not the (possibly unaligned) effective address.
+    const uint64_t write_start = affected_address;
+    const uint64_t write_end = write_start + width;
+    const uint64_t watch_start = runtime->m_guest_store_trace_word;
+    const uint64_t watch_end = watch_start + 4u;
+    if (write_start >= watch_end || watch_start >= write_end)
+    {
+        return;
+    }
+
+    --runtime->m_guest_store_trace_remaining;
+
+    // The raw primary opcode distinguishes store classes without relying on
+    // host disassembly, and the original word remains available for auditing.
+    const uint32_t primary = opcode >> 26u;
+    const char* name =
+        primary == 0x28u ? "SB" : primary == 0x29u ? "SH" :
+        primary == 0x2bu ? "SW" : primary == 0x3fu ? "SD" :
+        primary == 0x1fu ? "SQ" : primary == 0x2au ? "SWL" :
+        primary == 0x2eu ? "SWR" : primary == 0x2cu ? "SDL" :
+        primary == 0x2du ? "SDR" : primary == 0x39u ? "SWC1" :
+        primary == 0x3eu ? "SQC2" : "STORE";
+    const char* source_class =
+        primary == 0x39u ? "fpr" : primary == 0x3eu ? "vu" : "gpr";
+
+    // For partial stores source_value is the original register operand;
+    // the affected-memory word is formed by the existing R5900 RMW helper.
+    // Do not label the source operand as the final merged write value.
+    std::printf(
+        "EE guest-store: pc=0x%08x opcode=0x%08x ins=%s "
+        "effective=0x%08x affected=0x%08x width=%u "
+        "src=%s%u lane=%u source_value=0x%016llx "
+        "base=gpr%u base_value=0x%016llx "
+        "sp=0x%08x fp=0x%08x ra=0x%08x\n",
+        pc, opcode, name, effective_address, affected_address, width,
+        source_class, (opcode >> 16u) & 31u, source_lane,
+        static_cast<unsigned long long>(source_value),
+        (opcode >> 21u) & 31u,
+        static_cast<unsigned long long>(base_value),
+        static_cast<uint32_t>(sp), static_cast<uint32_t>(fp),
+        static_cast<uint32_t>(ra)
+    );
+    std::fflush(stdout);
 }
 
 } // namespace ee
