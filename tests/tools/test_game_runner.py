@@ -1319,6 +1319,9 @@ def main():
             initial.stdout + initial.stderr
         )
         assert "auto-expand: compiling" not in initial.stdout, initial.stdout
+        assert "link_native_objects: compiling 6 runtime sources (cache miss)" in initial.stdout, (
+            initial.stdout + initial.stderr
+        )
         metadata_path = root / "out" / "ir" / "ee_functions.json"
         assert json.loads(metadata_path.read_text(encoding="utf-8"))["function_count"] == 1
 
@@ -1335,6 +1338,9 @@ def main():
             resumed.stdout + resumed.stderr
         )
         assert "ee_recomp: loading" in resumed.stdout, resumed.stdout
+        assert "link_native_objects: reused 6 cached runtime objects" in resumed.stdout, (
+            resumed.stdout + resumed.stderr
+        )
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         assert metadata["function_count"] == 2, metadata
 
