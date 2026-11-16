@@ -19,10 +19,16 @@ rem identical kernel calls; 0 disables this diagnostic for comparisons.
 if not defined SIF_POLL_LIMIT set "SIF_POLL_LIMIT=256"
 echo SIF SMFLAG poll diagnostic limit: %SIF_POLL_LIMIT%
 
-rem IOP IRX execution is explicitly opt-in. An IRX path by itself is
-rem insufficient to boot the real IOP kernel if imports/services are missing.
+rem IOP IRX execution is explicitly opt-in. A single IRX can be
+rem specified via IOP_IRX. For dependencies, use IOP_IRX_LIST: a UTF-8
+rem manifest with provider paths first and the entry module last.
+rem Unlisted kernel HLE services / accurate EE-IOP timing are not provided.
 set "IOP_IRX_FLAGS="
 if not defined IOP_QUANTUM set "IOP_QUANTUM=256"
+if defined IOP_IRX if defined IOP_IRX_LIST (
+    echo ERROR: IOP_IRX and IOP_IRX_LIST cannot both be set.
+    goto :failed
+)
 if defined IOP_IRX (
     if not exist "%IOP_IRX%" (
         echo Missing IOP IRX: "%IOP_IRX%"
@@ -30,6 +36,22 @@ if defined IOP_IRX (
     )
     set IOP_IRX_FLAGS=--iop-irx="%IOP_IRX%" --iop-quantum=%IOP_QUANTUM%
     echo IOP IRX execution enabled: "%IOP_IRX%" quantum=%IOP_QUANTUM%
+)
+if defined IOP_IRX_LIST (
+    if not exist "%IOP_IRX_LIST%" (
+        echo Missing IOP module manifest: "%IOP_IRX_LIST%"
+        goto :failed
+    )
+    set IOP_IRX_FLAGS=--iop-irx-list="%IOP_IRX_LIST%" --iop-quantum=%IOP_QUANTUM%
+    echo IOP module list: "%IOP_IRX_LIST%"
+)
+if "%IOP_START_ALL%"=="1" (
+    if not defined IOP_IRX_FLAGS (
+        echo ERROR: IOP_START_ALL requires IOP_IRX or IOP_IRX_LIST.
+        goto :failed
+    )
+    set "IOP_IRX_FLAGS=%IOP_IRX_FLAGS% --iop-start-all"
+    echo IOP start mode: all listed modules
 )
 
 if not exist "%ELF%" (
