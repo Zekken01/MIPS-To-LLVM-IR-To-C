@@ -109,6 +109,20 @@ def main() -> int:
         assert "IOP console: 1 bytes" in output.stdout, output.stdout
         assert "A\n" in output.stdout, output.stdout
 
+        no_media, _ = run_case(
+            executable, root, "cdvd-no-media",
+            [
+                0x3C08BF40,  # lui t0,0xbf40
+                0x3508200F,  # ori t0,t0,0x200f
+                0x91090000,  # lbu t1,0(t0), CDVD disc-type
+                0x0000000D,  # breakpoint
+            ],
+        )
+        assert no_media["stop"] == "BREAKPOINT", no_media
+        assert no_media["executed"] == 3, no_media
+        assert no_media["gpr"][9] == 0, no_media
+        assert no_media["memory_fault"] is None, no_media
+
         mmio_read, output = run_case(
             executable, root, "unimplemented-mmio-read",
             [
