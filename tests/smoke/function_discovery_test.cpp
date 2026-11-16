@@ -515,6 +515,76 @@ int main()
               "audit conflicting predecessor values as unresolved");
     }
 
+    // An explicitly reused stop-entry index must produce the identical
+    // CFG as the legacy per-call temporary set. This also covers the
+    // dynamic new-function case when the caller extends the entry list.
+    {
+        std::map<uint32_t, ee::s_ee_instruction> insns;
+        add(insns, 0x2000, encode_beq(0, 0, 3)); // target 0x2010
+        add(insns, 0x2004, 0);
+        add(insns, 0x2008, encode_ori(0, 8, 2));
+        add(insns, 0x200c, 0);
+        add(insns, 0x2010, encode_jr(31));
+        add(insns, 0x2014, 0);
+        add(insns, 0x3000, encode_jr(31));
+        add(insns, 0x3004, 0);
+
+        std::vector<uint32_t> entries{0x2000, 0x3000};
+        std::set<uint32_t> stops(entries.begin(), entries.end());
+        ee::function_analyzer analyzer;
+
+        const auto equivalent = [&]() -> bool
+        {
+            const std::set<uint32_t> leaders =
+                ee::collect_function_block_starts(insns, entries);
+            for (uint32_t entry : entries)
+            {
+                const auto old_cfg = analyzer.analyze(
+                    insns, {entry}, entries, &leaders);
+                const auto indexed_cfg = analyzer.analyze(
+                    insns, {entry}, entries, &leaders, &stops);
+                if (old_cfg.size() != indexed_cfg.size())
+                {
+                    return false;
+                }
+                for (size_t i = 0; i < old_cfg.size(); ++i)
+                {
+                    if (old_cfg[i].entry_pc != indexed_cfg[i].entry_pc ||
+                        old_cfg[i].blocks.size() != indexed_cfg[i].blocks.size())
+                    {
+                        return false;
+                    }
+                    for (size_t b = 0; b < old_cfg[i].blocks.size(); ++b)
+                    {
+                        const auto& lhs = old_cfg[i].blocks[b];
+                        const auto& rhs = indexed_cfg[i].blocks[b];
+                        if (lhs.start_pc != rhs.start_pc ||
+                            lhs.end_pc != rhs.end_pc ||
+                            lhs.fallthrough_pc != rhs.fallthrough_pc ||
+                            lhs.target_pc != rhs.target_pc ||
+                            lhs.has_delay_slot != rhs.has_delay_slot ||
+                            lhs.branch_likely != rhs.branch_likely ||
+                            lhs.is_terminator != rhs.is_terminator ||
+                            lhs.insn_indices != rhs.insn_indices ||
+                            lhs.successors != rhs.successors ||
+                            lhs.predecessors != rhs.predecessors)
+                        {
+                            return false;
+                        }
+                    }
+                }
+            }
+            return true;
+        };
+
+        check(equivalent(),
+              "reused stop-entry index preserves multi-function CFGs");
+        entries.insert(entries.begin() + 1, 0x2010);
+        stops.insert(0x2010);
+        check(equivalent(),
+              "reused stop-entry index preserves newly discovered entry bounds");
+    }
+
     std::printf("function_discovery_test: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

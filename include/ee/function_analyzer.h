@@ -51,7 +51,8 @@ public:
         const std::map<uint32_t, s_ee_instruction>& insns,
         const std::vector<uint32_t>& entry_points,
         const std::vector<uint32_t>& all_entries = {},
-        const std::set<uint32_t>* block_starts = nullptr);
+        const std::set<uint32_t>* block_starts = nullptr,
+        const std::set<uint32_t>* stop_entries = nullptr);
 
 private:
     void split_into_blocks(

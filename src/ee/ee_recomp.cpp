@@ -577,6 +577,10 @@ bool ee_recomp(const char* elf_path,
     // ------------------------------------------------------------------
     const std::set<uint32_t> block_starts =
         collect_function_block_starts(global_insns, entries);
+    // This index is constant for the full coverage and emission passes.
+    // Reuse it across functions rather than rebuilding ~8K tree nodes
+    // for each of the thousands of function analyses.
+    std::set<uint32_t> stop_entries(entries.begin(), entries.end());
     std::set<uint32_t> function_pcs;
     std::set<uint32_t> analyzed_entries;
     const std::vector<uint32_t> coverage_entries = opts.only_function != 0
@@ -585,7 +589,9 @@ bool ee_recomp(const char* elf_path,
     {
         if (!analyzed_entries.insert(ep).second) continue;
         std::vector<s_ee_function> fns =
-            analyzer.analyze(global_insns, {ep}, entries, &block_starts);
+            analyzer.analyze(
+                global_insns, {ep}, entries, &block_starts, &stop_entries
+            );
         if (fns.empty()) continue;
         for (const auto& bb : fns[0].blocks)
         {
@@ -641,7 +647,9 @@ bool ee_recomp(const char* elf_path,
     auto emit_entry = [&](uint32_t entry) -> bool {
         // Pass full entry set so CFGs stop at other functions (stop-at-other-entry).
         std::vector<s_ee_function> fns =
-            analyzer.analyze(global_insns, {entry}, entries, &block_starts);
+            analyzer.analyze(
+                global_insns, {entry}, entries, &block_starts, &stop_entries
+            );
         if (fns.empty()) return false;
         s_ee_function& fn = fns[0];
         fn.name = loader.find_symbol(entry) ?
@@ -722,6 +730,7 @@ bool ee_recomp(const char* elf_path,
         {
             // Allow an explicit address even if not in the harvested set.
             entries.push_back(opts.only_function);
+            stop_entries.insert(opts.only_function);
             std::sort(entries.begin(), entries.end());
             entries.erase(std::unique(entries.begin(), entries.end()),
                           entries.end());
