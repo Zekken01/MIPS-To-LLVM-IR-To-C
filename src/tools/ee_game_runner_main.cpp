@@ -3040,6 +3040,22 @@ int main(int argc, char** argv)
                                     iop_result.m_guest_pc,
                                     iop_result.m_opcode
                                 );
+                                if (iop_result.m_stop ==
+                                    iop::e_kernel_stop::memory_fault)
+                                {
+                                    const iop::s_memory_fault& fault =
+                                        iop_kernel->cpu().last_memory_fault();
+                                    const iop::s_cpu_state& iop_state =
+                                        iop_kernel->cpu().state();
+                                    std::fprintf(stderr,
+                                        "IOP guest memory fault: "
+                                        "address=0x%08x width=%u write=%u "
+                                        "gpr_at=0x%08x valid=%u\n",
+                                        fault.m_address, fault.m_width,
+                                        fault.m_write ? 1u : 0u,
+                                        iop_state.m_gpr[1],
+                                        fault.m_valid ? 1u : 0u);
+                                }
                                 break;
                             }
                             if (!hardware.sif().get_reg(id, &value))
