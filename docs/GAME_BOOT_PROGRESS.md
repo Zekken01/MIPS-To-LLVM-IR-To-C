@@ -1259,12 +1259,18 @@ increments A0 correctly: the loop budget is behaving as designed,
 not identifying a broken branch. The direct caller at `0x0018D1E4`
 passes `A0=S3`, `A1=10`, `A2=S2`. Immediately beforehand, the
 caller loaded `S3=[S4+0]`, `S2=[S4+4]` at
-`0x0018D1BC` and `0x0018D1B8`. Thus the suspicious
-**length comes from an I/O-vector descriptor**, not a computed
-memchr-loop counter. At the last stop S4 was `0x01FFEC18`,
-so its length word is `0x01FFEC1C`. The initial length
-is approximately `0x00171D0C` (a code-like address), which is
-not plausible for a stack-local log output buffer. Its cause is
+`0x0018D1BC` and `0x0018D1B8`. The branch at
+`0x0018D1CC` has **`addiu S4,S4,8` in its delay slot
+at `0x0018D1D0`**. That delay slot runs after the two
+loads, even when the branch is not taken. Thus the
+suspicious **length comes from an I/O-vector descriptor**,
+not a computed memchr-loop counter. At the stop S4 was
+`0x01FFEC18`, but it already points to the *next* entry;
+the consumed pointer and length were at `0x01FFEC10`
+and **`0x01FFEC14`**, respectively (not `0x01FFEC1C`
+as previously inferred). The initial length is approximately
+`0x00171D0C` (a code-like address), which is not plausible
+for a stack-local log output buffer. Its cause is
 not yet established: an earlier state write, bad descriptor
 setup, or an ABI bug could each explain this symptom.
 
@@ -1291,7 +1297,7 @@ environment, so that run provided no new state provenance.
 
 Until this specific blocker is fixed, the **SDBZ-only Windows launcher
 now enables both diagnostic arguments by default**, using the known
-guest entry `0x0018CF68` and watched guest word `0x01FFEC1C`.
+guest entry `0x0018CF68` and watched guest word `0x01FFEC14`.
 It prints the resolved arguments before starting the session, and
 the boot-session wrapper forwards them in both the expansion and
 final traced replay. The generic `run_game.py` and
