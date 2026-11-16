@@ -68,6 +68,42 @@ int main()
         return fail("scratchpad size, subword access or unknown MMIO safety");
     }
 
+    // Firmware writes bytes to the emulator's IOP debug console.
+    // Other widths, reads, and nearby unmapped addresses must still fault.
+    const uint32_t console = iop::c_hw::k_debug_console;
+    if (!hardware.write(console, 1u, 'H') ||
+        !hardware.write(console, 1u, 'i') ||
+        hardware.debug_console() != "Hi" ||
+        hardware.debug_console_truncated() ||
+        hardware.read(console, 1u, &actual) ||
+        hardware.write(console, 2u, 0x1234u) ||
+        hardware.write(console, 4u, 0x12345678u) ||
+        hardware.write(console + 1u, 1u, 0u))
+    {
+        return fail("IOP diagnostic console register write/read/width behavior");
+    }
+    hardware.reset();
+    if (!hardware.debug_console().empty() ||
+        hardware.debug_console_truncated())
+    {
+        return fail("IOP diagnostic console reset should clear output");
+    }
+    for (size_t index = 0u;
+         index <= iop::c_hw::k_debug_console_capacity; ++index)
+    {
+        if (!hardware.write(console, 1u, 'X'))
+        {
+            return fail("IOP diagnostic console failed bounded byte write");
+        }
+    }
+    if (hardware.debug_console().size() !=
+            iop::c_hw::k_debug_console_capacity ||
+        !hardware.debug_console_truncated())
+    {
+        return fail("IOP diagnostic console exceeded bounded capacity");
+    }
+    hardware.reset();
+
     if (!hardware.write(iop::c_hw::k_cache_control, 4u, 0x804u) ||
         !hardware.read(iop::c_hw::k_cache_control, 4u, &actual) ||
         actual != 0x804u ||
@@ -126,6 +162,33 @@ int main()
         actual != 0x1234u)
     {
         return fail("guest instruction stream did not access mapped hardware");
+    }
+
+    // Actual guest SB from KSEG1 into the diagnostic console, without
+    // allowing reads or changing memory state to fake hardware progress.
+    const uint32_t debug_instructions[] =
+    {
+        0x3c08bf80u, // lui t0,0xbf80
+        0x35082080u, // ori t0,t0,0x2080
+        0x24090041u, // addiu t1,zero,'A'
+        0xa1090000u, // sb t1,0(t0)
+        0x0000000du  // break
+    };
+    for (uint32_t index = 0u; index < 5u; ++index)
+    {
+        put32(rom, index * 4u, debug_instructions[index]);
+    }
+    iop::c_kernel debug_kernel{};
+    if (!debug_kernel.start_rom0_boot(rom))
+    {
+        return fail("IOP ROM0 console test failed to install ROM");
+    }
+    const iop::s_kernel_run_result logged = debug_kernel.run(16u, 4u);
+    if (logged.m_stop != iop::e_kernel_stop::breakpoint ||
+        logged.m_executed != 4u ||
+        debug_kernel.hardware().debug_console() != "A")
+    {
+        return fail("Guest SB to IOP diagnostic console was not captured");
     }
 
     // The cache-control register is address-specific. The IOP bus
