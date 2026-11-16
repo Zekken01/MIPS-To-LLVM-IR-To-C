@@ -32,6 +32,10 @@ struct s_cpu_state
     uint32_t m_cop0_cause = 0u;
     uint32_t m_cop0_epc = 0u;
     uint32_t m_cop0_prid = 0u;
+    // Delay-slot identity survives context switches and allows BD/EPC
+    // to describe guest exceptions at the precise branch boundary.
+    bool m_in_delay_slot = false;
+    uint32_t m_branch_pc = 0u;
 };
 
 struct s_run_result
@@ -92,6 +96,7 @@ private:
     bool read(uint32_t address, uint32_t width, uint32_t* value) const;
     bool write(uint32_t address, uint32_t width, uint32_t value);
     bool fail_memory(uint32_t address, uint32_t width, bool write) const;
+    void take_exception(uint32_t cause_code);
 
     c_hw* m_hardware = nullptr;
     std::vector<uint8_t> m_ram;
@@ -99,5 +104,6 @@ private:
     s_cpu_state m_state{};
     mutable s_memory_fault m_last_memory_fault{};
     uint64_t m_cycles = 0u;
+    bool m_guest_exceptions = false;
 };
 } // namespace iop

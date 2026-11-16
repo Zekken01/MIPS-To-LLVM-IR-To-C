@@ -20,6 +20,11 @@ void c_hw::reset()
     m_i_mask = 0u;
     m_i_ctrl = 1u;
     m_cache_control = 0u;
+    m_timer5_count = 0u;
+    m_timer5_mode = 0u;
+    m_timer5_target = 0u;
+    m_timer5_remainder = 0u;
+    m_timer5_irq_armed = true;
     m_debug_console.clear();
     m_debug_console_truncated = false;
 }
@@ -76,6 +81,17 @@ bool c_hw::read(
 
     switch (address)
     {
+    case k_timer5_count:
+        *value = m_timer5_count;
+        return true;
+    case k_timer5_mode:
+        *value = m_timer5_mode | (m_timer5_irq_armed ? 0x400u : 0u);
+        // Counter target/overflow status bits are cleared on read.
+        m_timer5_mode &= ~0x1800u;
+        return true;
+    case k_timer5_target:
+        *value = m_timer5_target;
+        return true;
     case k_i_stat:
         *value = m_i_stat;
         return true;
@@ -138,6 +154,32 @@ bool c_hw::write(
 
     switch (address)
     {
+    case k_timer5_count:
+        m_timer5_count = value;
+        m_timer5_remainder = 0u;
+        return true;
+    case k_timer5_target:
+        m_timer5_target = value;
+        return true;
+    case k_timer5_mode:
+        // Only accept the supported counter-clock, target-reset/IRQ,
+        // repeat, non-toggle mode, plus the disabled interrupt mode.
+        // Unknown gate/source/overflow configurations must not run
+        // with invented counter behaviour.
+        if ((value & ~0x6058u) != 0u ||
+            (value & 0x0058u) != 0x0058u)
+        {
+            // Also permit mode 0 to reset an unconfigured counter.
+            if (value != 0u)
+            {
+                return false;
+            }
+        }
+        m_timer5_mode = value & 0x6058u;
+        m_timer5_count = 0u;
+        m_timer5_remainder = 0u;
+        m_timer5_irq_armed = true;
+        return true;
     case k_i_stat:
         // Write-one keeps the IRQ; write-zero acknowledges it.
         m_i_stat &= value;
@@ -174,6 +216,53 @@ uint32_t c_hw::pending_interrupts() const
 uint32_t c_hw::cache_control() const
 {
     return m_cache_control;
+}
+
+void c_hw::advance_cycles(uint32_t cycles)
+{
+    if (cycles == 0u)
+    {
+        return;
+    }
+    // Timer 5 clock division, per IOP counter MODE[14:13].
+    // The initial kernel tick uses /1, mode 0x58.
+    const uint32_t shifts[4] = {1u, 8u, 16u, 256u};
+    const uint32_t divider = shifts[(m_timer5_mode >> 13u) & 3u];
+    const uint64_t accumulated =
+        static_cast<uint64_t>(m_timer5_remainder) + cycles;
+    const uint64_t elapsed = accumulated / divider;
+    m_timer5_remainder = static_cast<uint32_t>(accumulated % divider);
+    if (elapsed == 0u)
+    {
+        return;
+    }
+
+    const uint64_t count = static_cast<uint64_t>(m_timer5_count) + elapsed;
+    if ((m_timer5_mode & 0x08u) != 0u &&
+        m_timer5_target != 0u &&
+        m_timer5_count < m_timer5_target &&
+        count >= m_timer5_target)
+    {
+        const uint64_t over = count - m_timer5_target;
+        m_timer5_count = static_cast<uint32_t>(
+            over % m_timer5_target
+        );
+        m_timer5_mode |= 0x0800u;
+        if ((m_timer5_mode & 0x10u) != 0u && m_timer5_irq_armed)
+        {
+            (void)raise_interrupt(k_timer5_irq);
+            if ((m_timer5_mode & 0x40u) == 0u)
+            {
+                m_timer5_irq_armed = false;
+            }
+        }
+    }
+    else
+    {
+        // Unconfigured/free-running timer, or a counter past its
+        // target: normal 32-bit rollover without an invented IRQ.
+        m_timer5_count = static_cast<uint32_t>(count);
+    }
 }
 
 const std::string& c_hw::debug_console() const

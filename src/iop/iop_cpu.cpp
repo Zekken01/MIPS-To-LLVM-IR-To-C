@@ -57,6 +57,7 @@ void c_cpu::reset(uint32_t entry)
     m_state.m_pc = entry;
     m_state.m_next_pc = entry + 4u;
     m_cycles = 0u;
+    m_guest_exceptions = false;
     std::fill(m_ram.begin(), m_ram.end(), 0u);
     if (m_hardware != nullptr)
     {
@@ -96,6 +97,9 @@ bool c_cpu::reset_rom0()
     // PCSX2 R3000A reset: COP0 enabled, BEV and TS set, PRid 0x1f.
     m_state.m_cop0_status = 0x10900000u;
     m_state.m_cop0_prid = 0x0000001fu;
+    // A real ROM has its own exception handlers; generic IRX tests
+    // remain fail-closed until a guest ROM0 reset has occurred.
+    m_guest_exceptions = true;
     return true;
 }
 
@@ -253,6 +257,28 @@ void c_cpu::resume_syscall()
 {
     m_state.m_pc = m_state.m_next_pc;
     m_state.m_next_pc += 4u;
+    m_state.m_in_delay_slot = false;
+    m_state.m_branch_pc = 0u;
+}
+
+void c_cpu::take_exception(uint32_t cause_code)
+{
+    const uint32_t status = m_state.m_cop0_status;
+    const bool in_delay_slot = m_state.m_in_delay_slot;
+    m_state.m_cop0_epc = in_delay_slot
+        ? m_state.m_branch_pc : m_state.m_pc;
+    m_state.m_cop0_cause =
+        (m_state.m_cop0_cause & 0x0000ff00u) |
+        (cause_code << 2u) |
+        (in_delay_slot ? 0x80000000u : 0u);
+    // MIPS I KU/IE status stack: push IEc/KUc into IEp/KUp.
+    m_state.m_cop0_status =
+        (status & ~0x3fu) | ((status << 2u) & 0x3fu);
+    m_state.m_pc = (status & 0x00400000u) != 0u
+        ? 0xbfc00180u : 0x80000080u;
+    m_state.m_next_pc = m_state.m_pc + 4u;
+    m_state.m_in_delay_slot = false;
+    m_state.m_branch_pc = 0u;
 }
 
 e_step_result c_cpu::step(uint32_t* opcode)
@@ -260,6 +286,26 @@ e_step_result c_cpu::step(uint32_t* opcode)
     // Each guest instruction owns its own fault evidence. Successful
     // reads/writes do not leave a stale failure from a previous step.
     m_last_memory_fault = {};
+    // IOP peripheral IRQ reaches COP0 through IP2; preserve software
+    // pending bits and defer delivery until an executed delay slot ends.
+    if (m_hardware != nullptr)
+    {
+        if (m_hardware->pending_interrupts() != 0u)
+        {
+            m_state.m_cop0_cause |= 0x0400u;
+        }
+        else
+        {
+            m_state.m_cop0_cause &= ~0x0400u;
+        }
+    }
+    if (m_guest_exceptions && !m_state.m_in_delay_slot &&
+        (m_state.m_cop0_status & 1u) != 0u &&
+        (m_state.m_cop0_status & m_state.m_cop0_cause & 0xff00u) != 0u)
+    {
+        take_exception(0u);
+    }
+
     uint32_t word = 0u;
     if (!read32(m_state.m_pc, &word))
     {
@@ -283,6 +329,18 @@ e_step_result c_cpu::step(uint32_t* opcode)
     const uint32_t next = m_state.m_next_pc;
     uint32_t next_after_delay = next + 4u;
     uint32_t value = 0u;
+    bool has_delay_slot = false;
+    const auto guest_trap = [&](uint32_t code)
+    {
+        take_exception(code);
+        m_state.m_gpr[0] = 0u;
+        ++m_cycles;
+        if (m_hardware != nullptr)
+        {
+            m_hardware->advance_cycles(1u);
+        }
+        return e_step_result::completed;
+    };
 
     const auto assign = [&](uint32_t index, uint32_t assigned)
     {
@@ -293,6 +351,7 @@ e_step_result c_cpu::step(uint32_t* opcode)
     };
     const auto branch = [&](bool taken)
     {
+        has_delay_slot = true;
         if (taken)
         {
             next_after_delay = next +
@@ -326,12 +385,18 @@ e_step_result c_cpu::step(uint32_t* opcode)
                 static_cast<int32_t>(right) >> (left & 31u)
             ));
             break;
-        case 0x08u: next_after_delay = left; break;
-        case 0x09u:
-            assign(rd, pc + 8u);
+        case 0x08u:
+            has_delay_slot = true;
             next_after_delay = left;
             break;
-        case 0x0cu: return e_step_result::syscall;
+        case 0x09u:
+            assign(rd, pc + 8u);
+            has_delay_slot = true;
+            next_after_delay = left;
+            break;
+        case 0x0cu:
+            return m_guest_exceptions ? guest_trap(8u) :
+                e_step_result::syscall;
         case 0x0du: return e_step_result::breakpoint;
         case 0x10u: assign(rd, m_state.m_hi); break;
         case 0x11u: m_state.m_hi = left; break;
@@ -389,7 +454,8 @@ e_step_result c_cpu::step(uint32_t* opcode)
         case 0x20u:
             if (!signed_sum(left, right, &value))
             {
-                return e_step_result::overflow;
+                return m_guest_exceptions ? guest_trap(12u) :
+                    e_step_result::overflow;
             }
             assign(rd, value);
             break;
@@ -397,7 +463,8 @@ e_step_result c_cpu::step(uint32_t* opcode)
         case 0x22u:
             if (!signed_difference(left, right, &value))
             {
-                return e_step_result::overflow;
+                return m_guest_exceptions ? guest_trap(12u) :
+                    e_step_result::overflow;
             }
             assign(rd, value);
             break;
@@ -438,6 +505,7 @@ e_step_result c_cpu::step(uint32_t* opcode)
         {
             assign(31u, pc + 8u);
         }
+        has_delay_slot = true;
         next_after_delay = (next & 0xf0000000u) |
                            ((word & 0x03ffffffu) << 2u);
         break;
@@ -450,7 +518,8 @@ e_step_result c_cpu::step(uint32_t* opcode)
     case 0x08u:
         if (!signed_sum(left, static_cast<uint32_t>(sign16(immediate)), &value))
         {
-            return e_step_result::overflow;
+            return m_guest_exceptions ? guest_trap(12u) :
+                    e_step_result::overflow;
         }
         assign(rt, value);
         break;
@@ -483,7 +552,12 @@ e_step_result c_cpu::step(uint32_t* opcode)
             switch (rd)
             {
             case 12u: m_state.m_cop0_status = right; break;
-            case 13u: m_state.m_cop0_cause = right; break;
+            case 13u:
+                // Only software interrupt pending bits are writable.
+                m_state.m_cop0_cause =
+                    (m_state.m_cop0_cause & ~0x0300u) |
+                    (right & 0x0300u);
+                break;
             case 14u: m_state.m_cop0_epc = right; break;
             default: return e_step_result::unsupported;
             }
@@ -586,8 +660,14 @@ e_step_result c_cpu::step(uint32_t* opcode)
 
     m_state.m_pc = next;
     m_state.m_next_pc = next_after_delay;
+    m_state.m_in_delay_slot = has_delay_slot;
+    m_state.m_branch_pc = has_delay_slot ? pc : 0u;
     m_state.m_gpr[0] = 0u;
     ++m_cycles;
+    if (m_hardware != nullptr)
+    {
+        m_hardware->advance_cycles(1u);
+    }
     return e_step_result::completed;
 }
 
