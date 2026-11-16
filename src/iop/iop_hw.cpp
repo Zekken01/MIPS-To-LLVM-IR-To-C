@@ -25,6 +25,8 @@ void c_hw::reset()
     m_timer5_target = 0u;
     m_timer5_remainder = 0u;
     m_timer5_irq_armed = true;
+    m_dma_icr = 0u;
+    m_dma_icr2 = 0u;
     m_debug_console.clear();
     m_debug_console_truncated = false;
 }
@@ -81,6 +83,12 @@ bool c_hw::read(
 
     switch (address)
     {
+    case k_dma_icr:
+        *value = m_dma_icr;
+        return true;
+    case k_dma_icr2:
+        *value = m_dma_icr2;
+        return true;
     case k_timer5_count:
         *value = m_timer5_count;
         return true;
@@ -154,6 +162,12 @@ bool c_hw::write(
 
     switch (address)
     {
+    case k_dma_icr:
+        m_dma_icr = update_dma_icr(m_dma_icr, value);
+        return true;
+    case k_dma_icr2:
+        m_dma_icr2 = update_dma_icr(m_dma_icr2, value);
+        return true;
     case k_timer5_count:
         m_timer5_count = value;
         m_timer5_remainder = 0u;
@@ -196,6 +210,59 @@ bool c_hw::write(
     default:
         return false;
     }
+}
+
+void c_hw::assert_dma_irq(uint32_t& control, bool sif_channel)
+{
+    const bool force = (control & 0x00008000u) != 0u;
+    const bool enabled = (control & 0x00800000u) != 0u;
+    const bool channel_pending =
+        (((control >> 8u) & control) & 0x007f0000u) != 0u;
+    if (force || (enabled && channel_pending))
+    {
+        control |= 0x80000000u;
+    }
+    else
+    {
+        control &= ~0x80000000u;
+    }
+    if (sif_channel || (control & 0x80000000u) != 0u)
+    {
+        (void)raise_interrupt(k_dma_irq);
+    }
+}
+
+uint32_t c_hw::update_dma_icr(uint32_t previous, uint32_t value)
+{
+    // Low 24 bits are writable control; pending bits 24..30 are
+    // hardware flags acknowledged by write-one-to-clear. Bit 31
+    // reflects the combined force/master/channel interrupt state.
+    uint32_t result =
+        (previous & 0x7f000000u) | (value & 0x00ffffffu);
+    result &= ~(value & 0x7f000000u);
+    assert_dma_irq(result, false);
+    return result;
+}
+
+bool c_hw::complete_dma_channel(uint32_t channel)
+{
+    if (channel > 12u)
+    {
+        return false;
+    }
+    const bool secondary = channel >= 7u;
+    const uint32_t index = secondary ? channel - 7u : channel;
+    uint32_t& control = secondary ? m_dma_icr2 : m_dma_icr;
+    const bool sif_channel = secondary && (index == 2u || index == 3u);
+    const uint32_t enable = uint32_t{1} << (16u + index);
+    // PCSX2 models SIF0/SIF1 end/tag interrupts independently of
+    // the per-channel mask; they do not fabricate any DMA completion.
+    if ((control & enable) != 0u || sif_channel)
+    {
+        control |= uint32_t{1} << (24u + index);
+        assert_dma_irq(control, sif_channel);
+    }
+    return true;
 }
 
 bool c_hw::raise_interrupt(uint32_t line)
