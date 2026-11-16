@@ -61,6 +61,8 @@ public:
     // A controller can be idle/ready without a disc inserted.
     static constexpr uint32_t k_cdvd_ncmd_status = 0x1f402005u;
     static constexpr uint8_t k_cdvd_ncmd_ready = 0x40u;
+    // CDVD I_STAT: byte-wide interrupt-reason register, write-one-to-clear.
+    static constexpr uint32_t k_cdvd_i_stat = 0x1f402008u;
     static constexpr uint32_t k_cdvd_disc_type = 0x1f40200fu;
     static constexpr uint8_t k_cdvd_no_disc = 0x00u;
 
@@ -108,6 +110,9 @@ private:
     void assert_dma_irq(uint32_t& control, bool sif_channel);
 
     uint8_t m_scratchpad[k_scratchpad_size]{};
+    // No CDVD command backend is connected yet, so no command may set
+    // interrupt reasons spontaneously. Acknowledge writes clear bits.
+    uint8_t m_cdvd_i_stat = 0u;
     uint32_t m_i_stat = 0u;
     uint32_t m_i_mask = 0u;
     uint32_t m_i_ctrl = 1u;

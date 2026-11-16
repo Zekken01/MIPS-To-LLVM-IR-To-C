@@ -16,6 +16,7 @@ void c_hw::reset()
         m_scratchpad + k_scratchpad_size,
         static_cast<uint8_t>(0u)
     );
+    m_cdvd_i_stat = 0u;
     m_i_stat = 0u;
     m_i_mask = 0u;
     m_i_ctrl = 1u;
@@ -145,6 +146,14 @@ bool c_hw::read(
     // after reset, independently of whether media is present. Only
     // the observed READ width is supported; N-command writes still
     // fail closed until real command processing exists.
+    // CDVD interrupt reasons are distinct from the IOP I_STAT register.
+    // Firmware can acknowledge only bits previously raised by genuine
+    // CDVD hardware; this model has no CDVD event producer yet.
+    if (address == k_cdvd_i_stat && width == 1u)
+    {
+        *value = m_cdvd_i_stat;
+        return true;
+    }
     if (address == k_cdvd_ncmd_status && width == 1u)
     {
         *value = k_cdvd_ncmd_ready;
@@ -264,6 +273,13 @@ bool c_hw::write(
     // OpenPS2BIOS writes individual characters here. This address is
     // a debug-output convention in emulators, not a PS2 readiness flag.
     // Accept only the observed byte-store operation; fail other MMIO.
+    if (address == k_cdvd_i_stat && width == 1u)
+    {
+        // CDVD I_STAT is W1C. An ack does not generate an IOP IRQ
+        // or mark any CDVD operation as completed.
+        m_cdvd_i_stat &= static_cast<uint8_t>(~value);
+        return true;
+    }
     if (address == k_debug_console && width == 1u)
     {
         if (m_debug_console.size() < k_debug_console_capacity)
