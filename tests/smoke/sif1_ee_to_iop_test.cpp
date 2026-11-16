@@ -100,7 +100,8 @@ int run_case(uint32_t size, bool sender_first)
         return fail("enabling IRQ masks created an interrupt", size);
     }
 
-    ee_ram.write32(k_source, 0x40000000u | k_destination);
+    // IOP DMA10 tag bits: END=31, IRQ=30.
+    ee_ram.write32(k_source, 0xc0000000u | k_destination);
     ee_ram.write32(k_source + 4u, size);
     ee_ram.write32(k_source + 8u, 0u);
     ee_ram.write32(k_source + 12u, 0u);
@@ -246,7 +247,8 @@ int run_case(uint32_t size, bool sender_first)
     return 0;
 }
 
-int run_syscall_case(uint32_t size, uint32_t count)
+int run_syscall_case(uint32_t size, uint32_t count,
+                     uint32_t final_attributes)
 {
     constexpr uint32_t k_descriptor = 0x00110000u;
     constexpr uint32_t k_data = 0x00120000u;
@@ -293,7 +295,8 @@ int run_syscall_case(uint32_t size, uint32_t count)
         memory.write32(k_descriptor + n * 16u, src);
         memory.write32(k_descriptor + n * 16u + 4u, dst);
         memory.write32(k_descriptor + n * 16u + 8u, size);
-        memory.write32(k_descriptor + n * 16u + 12u, 0u);
+        memory.write32(k_descriptor + n * 16u + 12u,
+                       n + 1u == count ? final_attributes : 0u);
         for (uint32_t index = 0u; index < padded + 16u; ++index)
         {
             memory.write8(
@@ -332,7 +335,21 @@ int run_syscall_case(uint32_t size, uint32_t count)
     {
         return fail("invalid attributes committed partial DMA", size);
     }
-    memory.write32(k_descriptor + 12u, 0u);
+    memory.write32(k_descriptor + 12u,
+                   count == 1u ? final_attributes : 0u);
+
+    // A terminal SIFCMD marker is supported only on the final packet.
+    // Rejecting an earlier marker must not submit or partially deliver DMA.
+    if (count > 1u)
+    {
+        memory.write32(k_descriptor + 12u, 0x44u);
+        if (transport.set_dma(k_descriptor, count, &id) ||
+            id != 0xdeadbeefu || dmac.status() != 0u)
+        {
+            return fail("nonterminal SIFCMD marker accepted", size);
+        }
+        memory.write32(k_descriptor + 12u, 0u);
+    }
 
     if (!transport.set_dma(k_descriptor, count, &id) || id != 1u)
     {
@@ -398,9 +415,9 @@ int run_syscall_case(uint32_t size, uint32_t count)
         }
     }
     std::printf(
-        "SifSetDma guest descriptors: PASS size=%u count=%u "
+        "SifSetDma guest descriptors: PASS size=%u count=%u attr=%08x "
         "real_DMA6_DSTAT=%08x queued=%llu delivered=%llu\n",
-        size, count, dmac.status(),
+        size, count, final_attributes, dmac.status(),
         static_cast<unsigned long long>(transport.queued_bytes()),
         static_cast<unsigned long long>(transport.delivered_bytes()));
     return 0;
@@ -418,8 +435,9 @@ int main()
             return 1;
         }
     }
-    if (run_syscall_case(20u, 1u) != 0 ||
-        run_syscall_case(56u, 2u) != 0)
+    if (run_syscall_case(20u, 1u, 0u) != 0 ||
+        run_syscall_case(20u, 1u, 0x44u) != 0 ||
+        run_syscall_case(56u, 2u, 0x44u) != 0)
     {
         return 1;
     }
