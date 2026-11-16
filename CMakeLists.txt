@@ -473,6 +473,12 @@ if(EE_HAVE_LLVM_JIT_TEST)
                 --build-dir ${CMAKE_BINARY_DIR}
                 --work-dir ${CMAKE_BINARY_DIR}/ee-mult-gpr-test)
     set_tests_properties(ee_r5900_mult_gpr PROPERTIES TIMEOUT 180)
+    add_test(NAME ee_sif0_stop_dma
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/tools/test_ee_sif0_stop_dma.py
+                --build-dir ${CMAKE_BINARY_DIR}
+                --work-dir ${CMAKE_BINARY_DIR}/ee-sif0-stop-test)
+    set_tests_properties(ee_sif0_stop_dma PROPERTIES TIMEOUT 180)
 
     add_test(NAME control_flow_ir_runtime
         COMMAND ${Python3_EXECUTABLE}
