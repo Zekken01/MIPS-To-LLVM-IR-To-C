@@ -14,7 +14,7 @@ import sys
 from test_game_runner import make_elf
 
 
-def make_thread_elf(path, blocking=False):
+def make_thread_elf(path, blocking=False, rotate=False):
     make_elf(path)
     image = bytearray(path.read_bytes())
     image.extend(bytes(0x1100 - len(image)))
@@ -39,6 +39,13 @@ def make_thread_elf(path, blocking=False):
         main[-1:] = [
             0x3c080010, 0x35080584, 0x8d130000, 0x0000000d,
         ]
+    if rotate:
+        # Leave the initial and worker threads at the same priority.
+        # StartThread alone cannot preempt the older running main.
+        # RotateThreadReadyQueue(0) must move it behind the READY worker.
+        main = list(main)
+        main[10:14] = [0, 0, 0, 0]
+        main[18:21] = [0x00002021, 0x2403002b, 0x0000000c]
     for index, word in enumerate(main):
         struct.pack_into("<I", image, 0x108 + index * 4, word)
 
@@ -155,6 +162,42 @@ def main():
     assert blocked_state["exit_name"] == "EXCEPTION", blocked_state
     assert (blocked_state["cop0_cause"] >> 2) & 31 == 9, blocked_state
     print("EE blocked WaitSema wakeup: PASS worker=2 signal=1 main_resumed=1")
+
+    # Third fixture: RUN and READY at priority zero. A guest
+    # RotateThreadReadyQueue(0) must dispatch the READY worker; merely
+    # creating/starting the worker must not preempt the older main.
+    rotate_elf = work / "thread-rotate.elf"
+    rotate_report = work / "thread-rotate.json"
+    make_thread_elf(rotate_elf, rotate=True)
+    rotate_command = [
+        sys.executable, str(source / "tools" / "run_game.py"),
+        str(rotate_elf),
+        "--build-dir", str(args.build_dir.resolve()),
+        "--work-dir", str(work / "native-rotate"),
+        "--functions=entry", "--extra-functions=0x00100200",
+        "--max-dispatches=256", "--hle-startup", "--kseg-ram",
+        "--trace", "--report", str(rotate_report),
+    ]
+    rotated = subprocess.run(
+        rotate_command, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, text=True, check=False, timeout=120
+    )
+    (work / "thread-rotate.log").write_text(rotated.stdout)
+    assert rotate_report.is_file(), rotated.stdout[-6000:]
+    rotated_state = json.loads(rotate_report.read_text())
+    assert "HLE RotateThreadReadyQueue: priority=0 result=0" in rotated.stdout, (
+        rotated.stdout[-6000:]
+    )
+    assert "HLE EE thread switch: id=2 pc=0x00100200" in rotated.stdout, (
+        rotated.stdout[-6000:]
+    )
+    assert "HLE EE thread switch: id=1 " in rotated.stdout, (
+        rotated.stdout[-6000:]
+    )
+    assert rotated_state["gpr_lo"][18] == 0x42, rotated_state
+    assert rotated_state["exit_name"] == "EXCEPTION", rotated_state
+    assert (rotated_state["cop0_cause"] >> 2) & 31 == 9, rotated_state
+    print("EE RotateThreadReadyQueue: PASS equal_priority_worker_ran=1")
 
     print(
         "EE native thread scheduler: PASS "

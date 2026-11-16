@@ -1731,7 +1731,7 @@ int main(int argc, char** argv)
             if ((service >= 0x10u && service <= 0x17u) ||
                 (service >= 0x1au && service <= 0x1du) ||
                 (service >= 0x20u && service <= 0x24u) ||
-                service == 0x29u || service == 0x2au ||
+                service == 0x29u || service == 0x2au || service == 0x2bu ||
                 service == 0x2fu || service == 0x30u || service == 0x31u ||
                 service == 0x3cu || service == 0x3du || service == 0x3eu ||
                 (service >= 0x40u && service <= 0x48u) ||
@@ -2123,6 +2123,58 @@ int main(int argc, char** argv)
                                 new_priority
                             );
                         }
+                    }
+                }
+
+                else if (service == 0x2bu)
+                {
+                    // RotateThreadReadyQueue moves the oldest runnable
+                    // thread at the requested priority to that queue's
+                    // tail. Never create a runnable thread or force a
+                    // context switch when there is no peer to run.
+                    const uint32_t priority =
+                        static_cast<uint32_t>(cpu.m_gpr[4].m_lo);
+                    if (priority >= 128u)
+                    {
+                        cpu.m_gpr[2].m_lo =
+                            static_cast<uint64_t>(-1ll);
+                        cpu.m_gpr[2].m_hi = 0u;
+                    }
+                    else
+                    {
+                        uint32_t oldest_id = 0u;
+                        for (uint32_t id = 1u; id < 256u; ++id)
+                        {
+                            const s_kernel_thread& candidate = threads[id];
+                            if (!candidate.m_used ||
+                                (candidate.m_status != 1u &&
+                                 candidate.m_status != 2u) ||
+                                candidate.m_priority != priority)
+                            {
+                                continue;
+                            }
+                            if (oldest_id == 0u ||
+                                candidate.m_order < threads[oldest_id].m_order)
+                            {
+                                oldest_id = id;
+                            }
+                        }
+                        if (oldest_id != 0u)
+                        {
+                            threads[oldest_id].m_order = ++next_thread_order;
+                            reschedule_requested = true;
+                        }
+                        cpu.m_gpr[2].m_lo = 0u;
+                        cpu.m_gpr[2].m_hi = 0u;
+                    }
+                    if (trace)
+                    {
+                        std::printf(
+                            "HLE RotateThreadReadyQueue: priority=%u "
+                            "result=%d\n",
+                            priority,
+                            static_cast<int32_t>(cpu.m_gpr[2].m_lo)
+                        );
                     }
                 }
 
