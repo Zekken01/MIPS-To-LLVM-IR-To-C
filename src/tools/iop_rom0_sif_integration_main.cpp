@@ -152,7 +152,8 @@ bool send_firmware_sifcmd(
     memory.write32(k_ee_tag + 4u, 0u);
     memory.write32(k_ee_tag + 8u, 0u);
     memory.write32(k_ee_tag + 12u, 0u);
-    memory.write32(k_ee_tag + 16u, 0x40000000u | destination);
+    // The firmware receiver must see END and an IRQ-requesting tag.
+    memory.write32(k_ee_tag + 16u, 0xc0000000u | destination);
     memory.write32(k_ee_tag + 20u, padded_bytes);
     memory.write32(k_ee_tag + 24u, 0u);
     memory.write32(k_ee_tag + 28u, 0u);
@@ -215,7 +216,8 @@ bool send_firmware_sifcmd_via_syscall(
     memory.write32(k_descriptor, k_packet);
     memory.write32(k_descriptor + 4u, destination);
     memory.write32(k_descriptor + 8u, packet_bytes);
-    memory.write32(k_descriptor + 12u, 0u);
+    // Normal EE SIFCMD packets request SIF_DMA_ERT | SIF_DMA_INT_O.
+    memory.write32(k_descriptor + 12u, 0x44u);
 
     int32_t completion = 0;
     if (!transport.set_dma(k_descriptor, 1u, dma_id) ||
