@@ -1863,6 +1863,97 @@ def main():
         assert "IOP guest stopped: reason=2" in unknown_service.stderr
         assert "IOP guest published SMFLAG:" not in unknown_service.stdout
 
+        # PR #71 exposes real guest IRX exports, and the EE host must
+        # preserve their order. The provider publishes ordinal 0 as a
+        # relocated guest function returning 0x60000; only the consumer
+        # imports it and uses the returned value for sifman SetSMFlag.
+        assets = root / "iop assets"
+        assets.mkdir()
+        provider = assets / "provider.irx"
+        consumer = assets / "consumer.irx"
+        make_iop_provider_irx(provider)
+        make_iop_consumer_irx(consumer)
+        manifest = root / "iop-modules.txt"
+        manifest.write_text(
+            "# Provider first, IOP entry module last\n"
+            "iop assets/provider.irx\n"
+            "\n"
+            "iop assets/consumer.irx\n",
+            encoding="utf-8",
+        )
+
+        for invocation in (
+            [f"--iop-irx={provider}", f"--iop-irx={consumer}"],
+            [f"--iop-irx-list={manifest}"],
+            [f"--iop-irx-list={manifest}", "--iop-start-all"],
+        ):
+            linked_run = subprocess.run(
+                command + ["--no-recompile", "--iop-quantum=64",
+                           *invocation],
+                capture_output=True, text=True, check=False,
+            )
+            linked_state = json.loads(
+                report_path.read_text(encoding="utf-8")
+            )
+            assert linked_state["gpr_lo"][16] == 0x60000, (
+                invocation, linked_state,
+                linked_run.stdout, linked_run.stderr
+            )
+            assert linked_run.stdout.count("IOP IRX linked:") == 2, (
+                invocation, linked_run.stdout
+            )
+            assert "IOP guest published SMFLAG: value=0x00060000" in (
+                linked_run.stdout
+            ), (invocation, linked_run.stdout, linked_run.stderr)
+            assert "SIF SMFLAG polling stalled" not in linked_run.stderr
+
+        reversed_modules = subprocess.run(
+            command + [
+                "--no-recompile",
+                f"--iop-irx={consumer}", f"--iop-irx={provider}",
+            ],
+            capture_output=True, text=True, check=False,
+        )
+        assert reversed_modules.returncode == 1, (
+            reversed_modules.stdout + reversed_modules.stderr
+        )
+        assert "IOP IRX load failed: index=1" in reversed_modules.stderr
+        assert "IOP guest loaded:" not in reversed_modules.stdout
+
+        # A second copy of a provider must be refused before any guest
+        # thread starts, because its export ordinals already exist.
+        duplicate_module = subprocess.run(
+            command + [
+                "--no-recompile",
+                f"--iop-irx={provider}", f"--iop-irx={provider}",
+            ],
+            capture_output=True, text=True, check=False,
+        )
+        assert duplicate_module.returncode == 1
+        assert "IOP IRX load failed: index=2" in duplicate_module.stderr
+        assert "IOP guest loaded:" not in duplicate_module.stdout
+
+        no_manifest = subprocess.run(
+            command + [
+                "--no-recompile", f"--iop-irx-list={root / 'missing.txt'}",
+            ],
+            capture_output=True, text=True, check=False,
+        )
+        assert no_manifest.returncode == 2, no_manifest
+        assert "cannot read IOP IRX list" in no_manifest.stderr
+
+        ambiguous = subprocess.run(
+            command + [
+                "--no-recompile", f"--iop-irx={provider}",
+                f"--iop-irx-list={manifest}",
+            ],
+            capture_output=True, text=True, check=False,
+        )
+        assert ambiguous.returncode == 2, ambiguous
+        assert "--iop-irx-list and --iop-irx are mutually exclusive" in (
+            ambiguous.stderr
+        )
+
     for invalid_open in (False, True):
         with tempfile.TemporaryDirectory(prefix="ee-native-deci2-") as tmp:
             root = Path(tmp)
