@@ -467,6 +467,12 @@ if(EE_HAVE_LLVM_JIT_TEST)
                 --build-dir ${CMAKE_BINARY_DIR}
                 --work-dir ${CMAKE_BINARY_DIR}/ee-thread-scheduler-test)
     set_tests_properties(ee_native_thread_scheduler PROPERTIES TIMEOUT 180)
+    add_test(NAME ee_r5900_mult_gpr
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/tools/test_ee_mult_gpr.py
+                --build-dir ${CMAKE_BINARY_DIR}
+                --work-dir ${CMAKE_BINARY_DIR}/ee-mult-gpr-test)
+    set_tests_properties(ee_r5900_mult_gpr PROPERTIES TIMEOUT 180)
 
     add_test(NAME control_flow_ir_runtime
         COMMAND ${Python3_EXECUTABLE}
