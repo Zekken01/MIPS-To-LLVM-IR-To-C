@@ -16,7 +16,7 @@ SESSION = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(SESSION)
 
 
-def run_case(passes, initial_reuse=False):
+def run_case(passes, initial_reuse=False, diagnostics=False):
     with tempfile.TemporaryDirectory(prefix="ee-boot-session-") as temp:
         work = Path(temp) / "work"
         report = work / "first-boot.json"
@@ -59,6 +59,11 @@ def run_case(passes, initial_reuse=False):
         ]
         if initial_reuse:
             argv.append("--no-recompile")
+        if diagnostics:
+            argv.extend((
+                "--trace-entry=0x0018cf68",
+                "--watch-word=0x01ffec14",
+            ))
         with patch.object(SESSION.subprocess, "run", side_effect=fake_run):
             code = SESSION.main(argv)
         assert len(calls) == len(passes), calls
@@ -67,6 +72,15 @@ def run_case(passes, initial_reuse=False):
             assert "--trace" in calls[-1], calls
         if initial_reuse:
             assert "--no-recompile" in calls[0], calls
+        if diagnostics:
+            assert all(
+                "--trace-entry=0x0018cf68" in call and
+                "--watch-word=0x01ffec14" in call
+                for call in calls
+            ), calls
+            assert "--trace-entry=0x0018cf68" in (
+                work / "boot.log"
+            ).read_text(), "missing diagnostic in boot command"
         if len(passes) > 2:
             assert "--no-recompile" in calls[1], calls
         assert "--auto-expand=0" in calls[-1] if len(passes) > 1 else True
@@ -88,6 +102,16 @@ def main():
     assert "TRACE FINAL" not in expansion
     assert "TRACE FINAL" in boot
     assert "--no-recompile" not in calls[0]
+
+    # The SDBZ launcher forwards its diagnostic addresses through this
+    # wrapper on both the expansion pass and the final traced replay.
+    code, calls, expansion, boot = run_case([
+        {"trace": False, "replay": 0, "exit_reason": 5},
+        {"trace": True, "replay": 0, "exit_reason": 5},
+    ], initial_reuse=True, diagnostics=True)
+    assert code == 3
+    assert "--watch-word=0x01ffec14" in expansion
+    assert "--trace-entry=0x0018cf68" in boot
 
     # Even if the second pass also hits its cap, stop at the session
     # budget and preserve the translated DLL for next local invocation.
