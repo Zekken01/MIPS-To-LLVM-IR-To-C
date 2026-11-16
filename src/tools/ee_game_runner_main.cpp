@@ -1050,6 +1050,7 @@ int main(int argc, char** argv)
         uint32_t m_count = 0;
         uint32_t m_max_count = 0;
         uint32_t m_initial_count = 0;
+        std::vector<uint32_t> m_waiters;
         uint32_t m_attr = 0;
         uint32_t m_option = 0;
     };
@@ -1065,26 +1066,99 @@ int main(int argc, char** argv)
     struct s_kernel_thread
     {
         bool m_used = false;
+        uint32_t m_status = 16u; // dormant; 1=run, 2=ready, 4=wait
+        uint64_t m_order = 0u;
+        bool m_has_context = false;
+        uint32_t m_wait_semaphore = 0u;
+        ee::s_ee_cpu_state m_context{};
+        ee::s_ee_vu0_state m_vu0_context{};
         uint32_t m_entry = 0u;
         uint32_t m_stack = 0u;
         uint32_t m_stack_size = 0u;
         uint32_t m_gp = 0u;
         uint32_t m_priority = 0u;
+        uint32_t m_initial_priority = 0u;
         uint32_t m_heap_end = 0u;
         uint32_t m_attr = 0u;
         uint32_t m_option = 0u;
     };
     // The loaded executable already runs as the kernel's main thread.
     // Just like ps2-web-recomp::start_main_thread, reserve ID 1.
-    // CreateThread below registers dormant threads only. StartThread and
-    // scheduling remain unsupported until their semantics are implemented.
+    // Only real guest syscalls transition READY/WAIT/DORMANT states.
+    // The scheduler switches full EE contexts at dispatch boundaries.
     s_kernel_thread threads[256]{};
     threads[1].m_used = true;
+    threads[1].m_status = 1u;
     threads[1].m_entry = entry;
     threads[1].m_stack = stack;
-    // No guest scheduler is installed yet: the ELF main thread is running.
-    // Do not confuse a newly created dormant thread with the current one.
     uint32_t current_thread_id = 1u;
+    uint64_t next_thread_order = 1u;
+    constexpr uint32_t k_thread_return_pc = 0xffffffe0u;
+    bool reschedule_requested = false;
+    const auto schedule_threads = [&]() -> bool
+    {
+        uint32_t next_id = 0u;
+        for (uint32_t id = 1u; id < 256u; ++id)
+        {
+            const s_kernel_thread& candidate = threads[id];
+            if (!candidate.m_used ||
+                (candidate.m_status != 1u && candidate.m_status != 2u))
+            {
+                continue;
+            }
+            if (next_id == 0u ||
+                candidate.m_priority < threads[next_id].m_priority ||
+                (candidate.m_priority == threads[next_id].m_priority &&
+                 candidate.m_order < threads[next_id].m_order))
+            {
+                next_id = id;
+            }
+        }
+        if (next_id == 0u)
+        {
+            std::fprintf(stderr,
+                "EE thread scheduler: no runnable guest threads\n");
+            return false;
+        }
+        if (next_id != current_thread_id)
+        {
+            s_kernel_thread& current = threads[current_thread_id];
+            if (current.m_used)
+            {
+                current.m_context = cpu;
+                current.m_vu0_context = vu0;
+                current.m_has_context = true;
+                if (current.m_status == 1u)
+                {
+                    current.m_status = 2u;
+                    current.m_order = ++next_thread_order;
+                }
+            }
+            s_kernel_thread& next = threads[next_id];
+            if (!next.m_has_context)
+            {
+                std::fprintf(stderr,
+                    "EE thread scheduler: thread %u has no CPU context\n",
+                    next_id);
+                return false;
+            }
+            cpu = next.m_context;
+            vu0 = next.m_vu0_context;
+            next.m_status = 1u;
+            current_thread_id = next_id;
+            hardware.intc().bind_cpu(&cpu);
+            hardware.dmac().bind_cpu(&cpu);
+            cpu.m_exit_reason = static_cast<uint32_t>(
+                ee::e_ee_exit_reason::EE_EXIT_DISPATCH);
+            if (trace)
+            {
+                std::printf("HLE EE thread switch: id=%u pc=0x%08x\n",
+                            next_id, cpu.m_pc);
+            }
+        }
+        reschedule_requested = false;
+        return true;
+    };
     // EE kernel OSD configuration word. Defaults to the normal 4:3
     // console configuration until an explicit guest SetOsdConfigParam.
     uint32_t osd_config = 0u;
@@ -1557,6 +1631,26 @@ int main(int argc, char** argv)
             continue;
         }
 
+        // Returning from a worker's entry makes it dormant.
+        if (count != 0u && cpu.m_pc == k_thread_return_pc &&
+            current_thread_id > 1u && !dmac_callback_active &&
+            !callback_active)
+        {
+            s_kernel_thread& finished = threads[current_thread_id];
+            finished.m_status = 16u;
+            finished.m_has_context = false;
+            if (trace)
+            {
+                std::printf("HLE EE thread returned: id=%u\n",
+                            current_thread_id);
+            }
+            if (!schedule_threads())
+            {
+                break;
+            }
+            continue;
+        }
+
         // A translated return to PC zero is an exit from the guest code
         // region. Do not invoke another one-dispatch slice with PC zero:
         // the dispatcher reserves zero as an initial-entry sentinel.
@@ -1636,9 +1730,9 @@ int main(int argc, char** argv)
             }
             if ((service >= 0x10u && service <= 0x17u) ||
                 (service >= 0x1au && service <= 0x1du) ||
-                service == 0x20u ||
+                (service >= 0x20u && service <= 0x24u) ||
                 service == 0x29u || service == 0x2au ||
-                service == 0x2fu ||
+                service == 0x2fu || service == 0x30u || service == 0x31u ||
                 service == 0x3cu || service == 0x3du || service == 0x3eu ||
                 (service >= 0x40u && service <= 0x48u) ||
                 service == 0x4au || service == 0x4bu ||
@@ -1865,6 +1959,7 @@ int main(int argc, char** argv)
                         thread.m_gp = memory->read32(parameter_address + 16u);
                         thread.m_priority =
                             memory->read32(parameter_address + 20u);
+                        thread.m_initial_priority = thread.m_priority;
                         thread.m_attr = memory->read32(parameter_address + 28u);
                         thread.m_option =
                             memory->read32(parameter_address + 32u);
