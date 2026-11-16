@@ -280,6 +280,9 @@ endif()
 
 enable_testing()
 if(Python3_Interpreter_FOUND)
+    add_test(NAME iop_module_path_discovery
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/tools/test_iop_module_paths.py)
     add_test(NAME boot_session_orchestration
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_boot_session.py)
