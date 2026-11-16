@@ -300,6 +300,18 @@ int run_quantum(uint32_t quantum)
 
     for (uint32_t sequence = 1u; sequence <= 3u; ++sequence)
     {
+        if (quantum == 16u)
+        {
+            uint32_t d10 = 0u, d9 = 0u, icr2 = 0u, istat = 0u;
+            (void)f.m_iop.hardware().read(iop::c_hw::k_sif1_dma_base + 8u, 4u, &d10);
+            (void)f.m_iop.hardware().read(iop::c_hw::k_sif0_dma_base + 8u, 4u, &d9);
+            (void)f.m_iop.hardware().read(iop::c_hw::k_dma_icr2, 4u, &icr2);
+            (void)f.m_iop.hardware().read(iop::c_hw::k_i_stat, 4u, &istat);
+            std::fprintf(stderr, "BEGIN seq=%u pc=%08x d10=%08x d9=%08x icr2=%08x istat=%08x delivered0=%llu delivered1=%llu\n",
+                sequence, f.m_iop.cpu().state().m_pc, d10, d9, icr2, istat,
+                static_cast<unsigned long long>(f.m_sif0->delivered_bytes()),
+                static_cast<unsigned long long>(f.m_sif1->delivered_bytes()));
+        }
         const uint32_t p1 = 0xfedcba98u ^ (quantum * 13u + sequence);
         const uint32_t p2 = 0x13579bdfu + sequence * 0x101u;
         const uint32_t p3 = sequence ^ p1 ^ p2;
@@ -340,6 +352,18 @@ int run_quantum(uint32_t quantum)
                         quantum, sequence, f.m_iop.cpu().state().m_pc);
         }
 
+        if (quantum == 16u)
+        {
+            uint32_t d10 = 0u, d9 = 0u, icr2 = 0u, istat = 0u;
+            (void)f.m_iop.hardware().read(iop::c_hw::k_sif1_dma_base + 8u, 4u, &d10);
+            (void)f.m_iop.hardware().read(iop::c_hw::k_sif0_dma_base + 8u, 4u, &d9);
+            (void)f.m_iop.hardware().read(iop::c_hw::k_dma_icr2, 4u, &icr2);
+            (void)f.m_iop.hardware().read(iop::c_hw::k_i_stat, 4u, &istat);
+            std::fprintf(stderr, "AFTER_SEND seq=%u pc=%08x d10=%08x d9=%08x icr2=%08x istat=%08x delivered0=%llu delivered1=%llu\n",
+                sequence, f.m_iop.cpu().state().m_pc, d10, d9, icr2, istat,
+                static_cast<unsigned long long>(f.m_sif0->delivered_bytes()),
+                static_cast<unsigned long long>(f.m_sif1->delivered_bytes()));
+        }
         const uint64_t expected_bytes =
             static_cast<uint64_t>(sequence) * k_payload_bytes;
         bool completed = false;
