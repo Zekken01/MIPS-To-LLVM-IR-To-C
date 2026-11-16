@@ -60,6 +60,7 @@ c_kernel::c_kernel()
 void c_kernel::reset()
 {
     m_cpu.reset();
+    m_rom0_boot_active = false;
     m_allocations.clear();
     m_libraries.clear();
     m_modules.clear();
@@ -70,6 +71,28 @@ void c_kernel::reset()
     m_next_thread_id = 1u;
     m_last_scheduled_id = 0u;
     m_current_thread_id = 0u;
+}
+
+bool c_kernel::start_rom0_boot(const std::vector<uint8_t>& image)
+{
+    // The ROM reset path is exclusive with the experimental module
+    // bootstrap. A real BIOS is never represented as an IRX thread.
+    if (m_rom0_boot_active || !m_modules.empty() ||
+        !m_threads.empty() || !m_libraries.empty() ||
+        !m_allocations.empty() ||
+        !m_cpu.install_rom0(image) || !m_cpu.reset_rom0())
+    {
+        return false;
+    }
+    m_cycles = 0u;
+    m_current_thread_id = 0u;
+    m_rom0_boot_active = true;
+    return true;
+}
+
+bool c_kernel::rom0_boot_active() const
+{
+    return m_rom0_boot_active;
 }
 
 c_cpu& c_kernel::cpu()
@@ -482,6 +505,36 @@ s_kernel_run_result c_kernel::run(
         quantum = 1u;
     }
     m_current_thread_id = 0u;
+
+    // Unlike an IRX entrypoint, the actual IOP firmware begins at the
+    // R3000 reset vector. Execute its own instruction stream directly.
+    // Until BIOS kernel imports, interrupts and IOP MMIO are modeled,
+    // stop at the first unsupported service without inventing a
+    // successful firmware boot.
+    if (m_rom0_boot_active)
+    {
+        uint64_t left = cycle_budget;
+        while (left != 0u)
+        {
+            const uint32_t slice = static_cast<uint32_t>(
+                std::min<uint64_t>(left, quantum)
+            );
+            const s_run_result stepped = m_cpu.run(slice);
+            m_cycles += stepped.m_instructions;
+            result.m_executed += stepped.m_instructions;
+            left -= stepped.m_instructions;
+            if (stepped.m_result == e_step_result::budget_exhausted)
+            {
+                continue;
+            }
+            result.m_stop = stop_for_guest(stepped.m_result);
+            result.m_guest_pc = stepped.m_pc;
+            result.m_opcode = stepped.m_opcode;
+            return result;
+        }
+        result.m_stop = e_kernel_stop::budget_exhausted;
+        return result;
+    }
 
     uint64_t remaining = cycle_budget;
     while (remaining != 0u)
