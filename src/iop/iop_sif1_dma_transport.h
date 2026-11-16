@@ -14,8 +14,9 @@ namespace iop
 //
 // The 128-word FIFO and the IOP's 16-byte destination tags follow
 // PCSX2's Sif1.cpp. This first milestone handles EE normal-mode
-// source DMA and IOP DMA10 destination chains. EE source chain tags,
-// arbitration, per-cycle timing and reverse SIF0 are later milestones.
+// source DMA (normal and bounded source-chain tags) and IOP DMA10
+// destination chains. Arbitration, per-cycle timing and reverse SIF0
+// are later milestones.
 class c_sif1_dma_transport
 {
 public:
