@@ -1432,9 +1432,15 @@ def main():
                 assert registers[17] == 16, state   # size unchanged
                 assert registers[18] == 0x00100260, state  # pointer unchanged
                 assert registers[13] == 0, state    # no unsupported fallthrough
+                # The existing --watch-word probe compares the RAM
+                # before/after *translated* native callbacks only; this
+                # HLE mutation occurs between callbacks. Verify it via
+                # both the HLE trace and real guest LW result above.
                 assert (
-                    "addr=0x0010022c old=0xcafebabe new=0x00000000"
+                    "EE watch initial: addr=0x0010022c "
+                    "value=0xcafebabe"
                 ) in result.stdout, result.stdout
+                assert "EE watch changed:" not in result.stdout, result.stdout
 
     with tempfile.TemporaryDirectory(prefix="ee-native-word-watch-") as tmp:
         root = Path(tmp)
