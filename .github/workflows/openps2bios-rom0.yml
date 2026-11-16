@@ -79,7 +79,7 @@ jobs:
           print("Executed instructions:", report["executed"])
           PY
 
-      - name: Validate official firmware SIF1 DMA reception
+      - name: Validate official firmware SIF1/SIFCMD/SIF0 exchange
         run: |
           set -euo pipefail
           ./build-rom0/iop_rom0_sif_integration OpenPS2BIOS-0.6.bin rom0-sif-integration.json > rom0-sif-integration.log 2>&1 || {
@@ -91,7 +91,7 @@ jobs:
           import json
           with open("rom0-sif-integration.json", encoding="utf-8") as file:
               report = json.load(file)
-          assert report["format"] == "openps2bios-authentic-sif1-v1"
+          assert report["format"] == "openps2bios-authentic-sif1-v2"
           assert report["rom0_bytes"] == 4194304
           assert report["reset_pc"] == 0xBFC00000
           assert report["boot_instructions"] == 10000000
@@ -102,6 +102,9 @@ jobs:
           assert report["direction"] == "SIF1"
           assert report["ee_channel"] == 6 and report["iop_channel"] == 10
           assert report["requested_bytes"] == report["transferred_bytes"] == 16
+          # This is all three genuine DMA10 packets: original probe
+          # (16 B), INIT_CMD address (32 B), RPC INIT_CMD (16 B).
+          assert report["total_sif1_transferred_bytes"] == 64
           assert report["source_checksum"] == report["destination_checksum"]
           assert report["iop_chcr_before"] & 0x01000000
           assert report["iop_chcr_after"] & 0x01000000 == 0
@@ -110,7 +113,16 @@ jobs:
           assert report["iop_dicr2"] & (1 << 27)
           assert report["iop_istat"] & (1 << 3)
           assert report["continuation_stop"] == "BUDGET_EXHAUSTED"
+          assert report["sifcmd_second_received"] == report["sifcmd_first_received"] + 1
+          assert report["sifcmd_last_command"] == 0x80000002
+          assert report["sifcmd_result"] == 0
+          assert report["sifcmd_ee_buffer"] == 0x00180000
+          assert report["sifcmd_rpc_requested"] == 1
+          assert report["sifcmd_rpc_announced"] == 1
+          assert report["sifcmd_sif0_reply_bytes"] == 32
+          assert report["sifcmd_ee_dma5_chcr"] & 0x100 == 0
           print("Official ROM0 DMA6->DMA10 bytes verified:", report["transferred_bytes"])
+          print("Genuine firmware SIFCMD and SIF0 reply bytes:", report["sifcmd_sif0_reply_bytes"])
           print("Guest-published destination: 0x%08X" % report["firmware_receive_buffer"])
           PY
 
