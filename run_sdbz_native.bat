@@ -67,6 +67,17 @@ if errorlevel 1 goto :failed
 git pull --ff-only
 if errorlevel 1 goto :failed
 
+rem Identify candidate IOP module path strings from this *local* game ELF.
+rem This is static evidence only; SIF LOADFILE RPC events will still need
+rem to be traced before declaring a genuine module load sequence.
+if not defined SDBZ_IOP_DISCOVERY set "SDBZ_IOP_DISCOVERY=1"
+if "%SDBZ_IOP_DISCOVERY%"=="1" (
+    echo === Discovering static IOP IRX path candidates from the US ELF ===
+    python tools\analyze_iop_module_paths.py "%ELF%" ^
+        --json "%WORK_DIR%\iop-module-paths.json"
+    if errorlevel 1 goto :failed
+)
+
 rem CMake may have cached cl.exe even if the batch was opened in a
 rem regular console with no MSVC C++ headers configured. Explicitly load
 rem the VS x64 developer environment before compiling.
