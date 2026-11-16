@@ -79,7 +79,7 @@ jobs:
           print("Executed instructions:", report["executed"])
           PY
 
-      - name: Validate official firmware SIFCMD and RPC_BIND through SIF DMA
+      - name: Validate official firmware SIFCMD RPC_BIND and RPC_CALL through SIF DMA
         run: |
           set -euo pipefail
           ./build-rom0/iop_rom0_sif_integration OpenPS2BIOS-0.6.bin rom0-sif-integration.json > rom0-sif-integration.log 2>&1 || {
@@ -91,7 +91,7 @@ jobs:
           import json
           with open("rom0-sif-integration.json", encoding="utf-8") as file:
               report = json.load(file)
-          assert report["format"] == "openps2bios-authentic-sif1-v3"
+          assert report["format"] == "openps2bios-authentic-sif1-v4"
           assert report["rom0_bytes"] == 4194304
           assert report["reset_pc"] == 0xBFC00000
           assert report["boot_instructions"] == 10000000
@@ -105,7 +105,8 @@ jobs:
           # This is all three genuine DMA10 packets: original probe
           # (16 B), INIT_CMD address (32 B), RPC INIT_CMD (16 B).
           assert report["sifcmd_sif1_transferred_bytes"] == 64
-          assert report["total_sif1_transferred_bytes"] == 112
+          assert report["rpc_bind_total_sif1_bytes"] == 112
+          assert report["total_sif1_transferred_bytes"] == 176
           assert report["source_checksum"] == report["destination_checksum"]
           assert report["iop_chcr_before"] & 0x01000000
           assert report["iop_chcr_after"] & 0x01000000 == 0
@@ -121,7 +122,8 @@ jobs:
           assert report["sifcmd_rpc_requested"] == 1
           assert report["sifcmd_rpc_announced"] == 1
           assert report["sifcmd_sif0_reply_bytes"] == 32
-          assert report["total_sif0_transferred_bytes"] == 80
+          assert report["rpc_bind_total_sif0_bytes"] == 80
+          assert report["total_sif0_transferred_bytes"] == 144
           assert report["rpc_bind_received"] == report["sifcmd_second_received"] + 1
           assert report["rpc_bind_command"] == 0x80000009
           assert report["rpc_bind_result"] == 0
@@ -130,11 +132,22 @@ jobs:
           assert report["rpc_bind_reply_bytes"] == 48
           assert report["rpc_bind_iop_dma9_chcr"] & 0x01000000 == 0
           assert report["rpc_bind_ee_dma5_chcr"] & 0x100 == 0
+          assert report["rpc_call_received"] == report["rpc_bind_received"] + 1
+          assert report["rpc_call_command"] == 0x8000000A
+          assert report["rpc_call_result"] == 0
+          assert report["rpc_call_fno"] == 0xFF
+          assert report["rpc_call_version_word"] == 0x30303133
+          assert report["rpc_call_result_bytes"] == 16
+          assert report["rpc_call_end_bytes"] == 48
+          assert report["rpc_call_iop_dma9_chcr"] & 0x01000000 == 0
+          assert report["rpc_call_ee_dma5_chcr"] & 0x100 == 0
           assert report["sifcmd_ee_dma5_chcr"] & 0x100 == 0
           print("Official ROM0 DMA6->DMA10 bytes verified:", report["transferred_bytes"])
           print("Genuine firmware SIFCMD and SIF0 reply bytes:", report["sifcmd_sif0_reply_bytes"])
           print("Real LOADFILE RPC_BIND server:", hex(report["rpc_bind_server"]))
           print("Guest RPC_END bytes:", report["rpc_bind_reply_bytes"])
+          print("LOADFILE GET_VERSION word:", hex(report["rpc_call_version_word"]))
+          print("Real RPC_CALL result and RPC_END bytes:", report["rpc_call_result_bytes"], report["rpc_call_end_bytes"])
           print("Guest-published destination: 0x%08X" % report["firmware_receive_buffer"])
           PY
 

@@ -680,6 +680,153 @@ int main(int argc, char** argv)
                       kernel);
     }
 
+
+    const uint64_t rpc_bind_total_sif0_bytes = sif0.delivered_bytes();
+    const uint64_t rpc_bind_total_sif1_bytes = sif1.delivered_bytes();
+
+    // The known LOADFILE descriptor came from the preceding guest
+    // RPC_END. A real RPC_CALL now requests its public GET_VERSION
+    // function (0xff) with a separate EE result buffer, verifying
+    // two source DMA9 segments and one terminal EE DMA5 interrupt.
+    constexpr uint32_t k_call_rec_id = 0x12345679u;
+    constexpr uint32_t k_call_packet_address = 0x00190040u;
+    constexpr uint32_t k_call_rpc_id = 0x12340002u;
+    constexpr uint32_t k_ee_rpc_data = 0x001b0000u;
+    constexpr uint32_t k_version_word = 0x30303133u; // ASCII "3100"
+
+    for (uint32_t offset = 0u; offset < 80u; offset += 4u)
+    {
+        memory.write32(k_ee_sifcmd_reply - 16u + offset, 0xcdcdcdcdu);
+    }
+    for (uint32_t offset = 0u; offset < 48u; offset += 4u)
+    {
+        memory.write32(k_ee_rpc_data - 16u + offset, 0xcdcdcdcdu);
+    }
+    if (!arm_firmware_sif0_receiver(ee_hardware.dmac()))
+    {
+        return failed("could not arm EE DMA5 for RPC_CALL", kernel);
+    }
+
+    // ob_rpc_parse() uses the 56-byte CALL layout:
+    // header, rec_id/pkt_addr/rpc_id/client, fno, send_size,
+    // recvbuf, recv_size, rmode, server. Padding is via DMA QWC.
+    const uint32_t call_request[14] =
+    {
+        56u, 0u, 0x8000000au, 0u,
+        k_call_rec_id, k_call_packet_address,
+        k_call_rpc_id, k_bind_client,
+        0xffu, 0u, k_ee_rpc_data, 16u,
+        1u, k_expected_loadfile_server
+    };
+    uint32_t received_after_call = 0u;
+    if (!send_firmware_sifcmd(
+            memory, ee_hardware.dmac(), sif1, kernel,
+            ee_subaddr, call_request, 14u) ||
+        !run_until_firmware_receives(
+            kernel, received_after_bind, &received_after_call))
+    {
+        return failed("firmware did not execute LOADFILE RPC_CALL",
+                      kernel);
+    }
+
+    uint32_t call_command = 0u;
+    uint32_t call_result = 0xffffffffu;
+    uint32_t call_argument = 0u;
+    uint32_t call_iop_dma9_chcr = 0u;
+    ee::s_ee_u128 call_ee5_word{};
+    if (!kernel.cpu().read32(
+            k_firmware_sif_status + 8u, &call_command) ||
+        !kernel.cpu().read32(
+            k_firmware_sif_status + 12u, &call_result) ||
+        !kernel.cpu().read32(
+            k_firmware_sif_status + 160u, &call_argument) ||
+        !kernel.hardware().read(
+            iop::c_hw::k_sif0_dma_base + 8u,
+            4u, &call_iop_dma9_chcr) ||
+        !ee::c_ee_dmac::mmio_read(
+            &ee_hardware.dmac(), ee::c_ee_dmac::k_sif0_base,
+            4u, &call_ee5_word))
+    {
+        return failed("could not inspect firmware RPC_CALL status",
+                      kernel);
+    }
+    const uint32_t call_ee_dma5_chcr =
+        static_cast<uint32_t>(call_ee5_word.m_lo);
+
+    // LOADFILE returns its 4-byte SDK release in a 16-byte DMA QWC.
+    // No host callback writes the reply: it comes from the IOP
+    // firmware's native load_file() implementation and SIF0 engine.
+    const uint32_t version = memory.read32(k_ee_rpc_data);
+    if (version != k_version_word ||
+        memory.read32(k_ee_rpc_data + 4u) != 0u ||
+        memory.read32(k_ee_rpc_data + 8u) != 0u ||
+        memory.read32(k_ee_rpc_data + 12u) != 0u)
+    {
+        std::fprintf(stderr,
+            "LOADFILE GET_VERSION: received=%08x expected=%08x\n",
+            version, k_version_word);
+        return failed("firmware GET_VERSION payload mismatch", kernel);
+    }
+    // SIF0's first descriptor writes result data; its second writes
+    // the 48-byte RPC_END into the EE command buffer. Only the final
+    // descriptor carries the completion IRQ / TIE termination.
+    const uint32_t expected_call_end[12] =
+    {
+        48u, 0u, 0x80000008u, 0u,
+        k_call_rec_id, k_call_packet_address,
+        k_call_rpc_id, k_bind_client, 0x8000000au,
+        k_expected_loadfile_server, 0u, 0u
+    };
+    for (uint32_t index = 0u; index < 12u; ++index)
+    {
+        const uint32_t actual = memory.read32(
+            k_ee_sifcmd_reply + index * 4u);
+        if (actual != expected_call_end[index])
+        {
+            std::fprintf(stderr,
+                "RPC_CALL END word %u actual=%08x expected=%08x\n",
+                index, actual, expected_call_end[index]);
+            return failed("firmware RPC_CALL RPC_END mismatch", kernel);
+        }
+    }
+    for (uint32_t offset = 0u; offset < 16u; offset += 4u)
+    {
+        if (memory.read32(
+                k_ee_sifcmd_reply - 16u + offset) != 0xcdcdcdcdu ||
+            memory.read32(
+                k_ee_sifcmd_reply + 48u + offset) != 0xcdcdcdcdu ||
+            memory.read32(
+                k_ee_rpc_data - 16u + offset) != 0xcdcdcdcdu ||
+            memory.read32(
+                k_ee_rpc_data + 16u + offset) != 0xcdcdcdcdu)
+        {
+            return failed("RPC_CALL corrupted EE result/command guards",
+                          kernel);
+        }
+    }
+
+    if (received_after_call != received_after_bind + 1u ||
+        call_command != 0x8000000au ||
+        call_result != 0u || call_argument != 0xffu ||
+        sif0.faulted() || sif1.faulted() ||
+        sif0.delivered_bytes() != 144u ||
+        sif1.delivered_bytes() != 176u ||
+        (call_iop_dma9_chcr & 0x01000000u) != 0u ||
+        (call_ee_dma5_chcr & ee::c_ee_dmac::k_chcr_str) != 0u ||
+        (ee_hardware.dmac().status() & (1u << 5u)) == 0u)
+    {
+        std::fprintf(stderr,
+            "RPC_CALL status cmd=%08x result=%08x fno=%08x "
+            "sif0=%llu sif1=%llu d9=%08x d5=%08x received=%u\n",
+            call_command, call_result, call_argument,
+            static_cast<unsigned long long>(sif0.delivered_bytes()),
+            static_cast<unsigned long long>(sif1.delivered_bytes()),
+            call_iop_dma9_chcr, call_ee_dma5_chcr,
+            received_after_call);
+        return failed("authentic RPC_CALL completion inconsistent",
+                      kernel);
+    }
+
     std::ofstream report(argv[2], std::ios::binary);
     if (!report)
     {
@@ -688,7 +835,7 @@ int main(int argc, char** argv)
     }
     report <<
         "{\n"
-        "  \"format\": \"openps2bios-authentic-sif1-v3\",\n"
+        "  \"format\": \"openps2bios-authentic-sif1-v4\",\n"
         "  \"rom0_bytes\": " << rom.size() << ",\n"
         "  \"reset_pc\": " << reset_pc << ",\n"
         "  \"boot_instructions\": " << boot.m_executed << ",\n"
@@ -704,6 +851,7 @@ int main(int argc, char** argv)
         "  \"requested_bytes\": " << k_payload_bytes << ",\n"
         "  \"transferred_bytes\": " << k_payload_bytes << ",\n"
         "  \"total_sif1_transferred_bytes\": " << sif1.delivered_bytes() << ",\n"
+        "  \"rpc_bind_total_sif1_bytes\": " << rpc_bind_total_sif1_bytes << ",\n"
         "  \"sifcmd_sif1_transferred_bytes\": " << sifcmd_sif1_transferred_bytes << ",\n"
         "  \"source_checksum\": " << source_checksum << ",\n"
         "  \"destination_checksum\": " << destination_checksum << ",\n"
@@ -726,6 +874,7 @@ int main(int argc, char** argv)
         "  \"sifcmd_rpc_announced\": " << rpc_announced << ",\n"
         "  \"sifcmd_sif0_reply_bytes\": " << sifcmd_sif0_reply_bytes << ",\n"
         "  \"total_sif0_transferred_bytes\": " << sif0.delivered_bytes() << ",\n"
+        "  \"rpc_bind_total_sif0_bytes\": " << rpc_bind_total_sif0_bytes << ",\n"
         "  \"sifcmd_ee_dma5_chcr\": " << ee5_chcr << ",\n"
         "  \"rpc_bind_received\": " << received_after_bind << ",\n"
         "  \"rpc_bind_command\": " << bind_command << ",\n"
@@ -734,7 +883,16 @@ int main(int argc, char** argv)
         "  \"rpc_bind_server\": " << k_expected_loadfile_server << ",\n"
         "  \"rpc_bind_reply_bytes\": 48,\n"
         "  \"rpc_bind_iop_dma9_chcr\": " << bind_iop_dma9_chcr << ",\n"
-        "  \"rpc_bind_ee_dma5_chcr\": " << bind_ee_dma5_chcr << "\n"
+        "  \"rpc_bind_ee_dma5_chcr\": " << bind_ee_dma5_chcr << ",\n"
+        "  \"rpc_call_received\": " << received_after_call << ",\n"
+        "  \"rpc_call_command\": " << call_command << ",\n"
+        "  \"rpc_call_result\": " << call_result << ",\n"
+        "  \"rpc_call_fno\": " << call_argument << ",\n"
+        "  \"rpc_call_version_word\": " << version << ",\n"
+        "  \"rpc_call_result_bytes\": 16,\n"
+        "  \"rpc_call_end_bytes\": 48,\n"
+        "  \"rpc_call_iop_dma9_chcr\": " << call_iop_dma9_chcr << ",\n"
+        "  \"rpc_call_ee_dma5_chcr\": " << call_ee_dma5_chcr << "\n"
         "}\n";
     if (!report.good())
     {
@@ -755,6 +913,11 @@ int main(int argc, char** argv)
         "OpenPS2BIOS guest RPC_BIND: PASS sid=%08x server=%08x "
         "reply_bytes=48 total_sif0=%llu\n",
         k_bind_sid, k_expected_loadfile_server,
+        static_cast<unsigned long long>(rpc_bind_total_sif0_bytes));
+    std::printf(
+        "OpenPS2BIOS guest RPC_CALL: PASS server=%08x fno=%02x "
+        "version=%08x result_bytes=16 rpc_end_bytes=48 sif0_total=%llu\n",
+        k_expected_loadfile_server, 0xffu, version,
         static_cast<unsigned long long>(sif0.delivered_bytes()));
     return 0;
 }
