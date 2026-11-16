@@ -66,6 +66,8 @@ add_executable(iop_rom0_boot_test tests/smoke/iop_rom0_boot_test.cpp)
 target_link_libraries(iop_rom0_boot_test PRIVATE iop_cpu)
 add_executable(iop_hw_test tests/smoke/iop_hw_test.cpp)
 target_link_libraries(iop_hw_test PRIVATE iop_cpu)
+add_executable(iop_rom0_runner src/tools/iop_rom0_runner_main.cpp)
+target_link_libraries(iop_rom0_runner PRIVATE iop_cpu)
 add_executable(iop_irx_loader_test tests/smoke/iop_irx_loader_test.cpp)
 target_link_libraries(iop_irx_loader_test PRIVATE iop_cpu)
 add_executable(iop_irx_export_link_test tests/smoke/iop_irx_export_link_test.cpp)
@@ -308,6 +310,10 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME boot_session_orchestration
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_boot_session.py)
+    add_test(NAME iop_rom0_runner
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/tools/test_iop_rom0_runner.py
+                $<TARGET_FILE:iop_rom0_runner>)
     add_test(NAME recomp_discovery_cache
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_recomp_discovery_cache.py
