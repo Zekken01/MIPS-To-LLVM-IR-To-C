@@ -1222,6 +1222,11 @@ def main():
                 "word0=0x00000000 word1=0x00000000") in result.stdout, result.stdout
         assert "EE watch changed: dispatch=1 from_pc=0x00100008 " in result.stdout, result.stdout
         assert "addr=0x00100200 old=0x00000000 new=0x00000007" in result.stdout, result.stdout
+        assert ("EE watch registers: s3_before=00000000 "
+                "s3_after=00000000") in result.stdout, result.stdout
+        assert "fp_before=00000000 fp_after=00000000" in result.stdout, result.stdout
+        assert ("EE watch pair: addr=0x001001fc "
+                "word0=0x00000000 word1=0x00000007") in result.stdout, result.stdout
 
         rejected = subprocess.run(
             args[:-1] + ["--watch-word=0x02000000", "--no-recompile"],
