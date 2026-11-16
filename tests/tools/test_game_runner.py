@@ -225,6 +225,81 @@ def make_sif_guest_irx(path, unknown_import=False, unhandled_syscall=False):
     path.write_bytes(image)
 
 
+def make_iop_provider_irx(path):
+    """Synthetic IRX exporting PROVIDER ordinal 0 returning 0x60000."""
+    image = bytearray(0x2a0)
+    image[0:7] = bytes((0x7f, 0x45, 0x4c, 0x46, 1, 1, 1))
+    struct.pack_into("<HH", image, 16, 0xff80, 8)
+    struct.pack_into("<I", image, 28, 0x34)
+    struct.pack_into("<I", image, 32, 0x240)
+    struct.pack_into("<HHH", image, 40, 52, 32, 2)
+    struct.pack_into("<HH", image, 46, 40, 1)
+    struct.pack_into("<IIIIII", image, 0x34, 1, 0x100, 0, 0, 0x80, 0x80)
+    struct.pack_into("<II", image, 0x54, 0x70000080, 0x200)
+    struct.pack_into("<IIIII", image, 0x204, 0, 0x50, 0x60, 0x10, 0x10)
+    image[0x21a:0x222] = b"PROVIDER"
+
+    # Provider entry is safe to leave dormant or run as an idle loop.
+    struct.pack_into("<II", image, 0x100, 0x08000000, 0)
+    struct.pack_into("<III", image, 0x110,
+                     0x3c020006,  # lui v0,6
+                     0x03e00008,  # jr ra
+                     0)           # delay slot
+    struct.pack_into("<I", image, 0x120, 0x41c00000)
+    image[0x12c:0x134] = b"PROVIDER"
+    struct.pack_into("<II", image, 0x134, 0x10, 0)
+
+    # Export table contains one R_MIPS_32 relocated pointer.
+    struct.pack_into("<I", image, 0x244, 9)
+    struct.pack_into("<II", image, 0x250, 0x280, 8)
+    struct.pack_into("<II", image, 0x280, 0x34, 2)
+    # Idle jump also needs relocation to its allocated module base.
+    struct.pack_into("<I", image, 0x254, 16)
+    struct.pack_into("<II", image, 0x288, 0, 4)
+    path.write_bytes(image)
+
+
+def make_iop_consumer_irx(path):
+    """Calls imported PROVIDER #0, forwards its result to sifman #24."""
+    image = bytearray(0x2c0)
+    image[0:7] = bytes((0x7f, 0x45, 0x4c, 0x46, 1, 1, 1))
+    struct.pack_into("<HH", image, 16, 0xff80, 8)
+    struct.pack_into("<I", image, 28, 0x34)
+    struct.pack_into("<I", image, 32, 0x240)
+    struct.pack_into("<HHH", image, 40, 52, 32, 2)
+    struct.pack_into("<HH", image, 46, 40, 1)
+    struct.pack_into("<IIIIII", image, 0x34, 1, 0x100, 0, 0, 0x90, 0x90)
+    struct.pack_into("<II", image, 0x54, 0x70000080, 0x200)
+    struct.pack_into("<IIIII", image, 0x204, 0, 0x60, 0x80, 0x10, 0x00)
+    image[0x21a:0x223] = b"CONSUMER" + bytes(1)
+
+    instructions = (
+        0x0c00000d,  # jal PROVIDER import stub at module+0x34
+        0x00000000,  # delay slot
+        0x00402021,  # addu a0,v0,zero
+        0x0c000015,  # jal sifman ordinal 24 at module+0x54
+        0x00000000,  # delay slot
+        0x08000005,  # idle loop at module+0x14
+        0x00000000,  # delay slot
+    )
+    for index, opcode in enumerate(instructions):
+        struct.pack_into("<I", image, 0x100 + index * 4, opcode)
+
+    struct.pack_into("<I", image, 0x120, 0x41e00000)
+    image[0x12c:0x134] = b"PROVIDER"
+    struct.pack_into("<II", image, 0x134, 0x03e00008, 0x24000000)
+    struct.pack_into("<I", image, 0x140, 0x41e00000)
+    image[0x14c:0x152] = b"sifman"
+    struct.pack_into("<II", image, 0x154, 0x03e00008, 0x24000018)
+
+    # R_MIPS_26 relocations for both JALs and the idle jump.
+    struct.pack_into("<I", image, 0x244, 9)
+    struct.pack_into("<II", image, 0x250, 0x280, 24)
+    for index, offset in enumerate((0, 12, 20)):
+        struct.pack_into("<II", image, 0x280 + index * 8, offset, 4)
+    path.write_bytes(image)
+
+
 def make_sif_register_elf(path):
     """SifGetReg/SetReg and physical SIF MMIO must share guest-visible state."""
     make_elf(path)
