@@ -121,3 +121,33 @@ priorities, round-robin scheduling, explicit syscalls, and unsupported
 service traps. The standalone kernel is deliberately **not** invoked by
 `run_sdbz_native.bat` yet, so current US boot logs are expected to remain
 at the same `0x001750B4` SIF wait.
+
+
+## Guest-driven IOP SIFMAN register bridge (PR #69)
+
+The new `iop::c_sifman_bridge` registers actual guest-callable MIPS I
+import stubs for `sifman` ordinals 23 (`sceSifGetSMFlag`) and 24
+(`sceSifSetSMFlag`), matching the service table in
+`ps2-web-recomp/SDBZ/runtime/src/iop/sif.cpp`. Only an **executing IOP
+guest thread** can invoke these stubs and reach the explicit HLE syscall
+handler. A call to SetSMFlag publishes the guest's A0 bitmask into the
+existing `ee::c_ee_sif::publish_iop_smflag()`; GetSMFlag reads the same
+EE-visible register, so EE acknowledgement/clearing operates on shared
+state.
+
+Installation itself writes no ready bits and the IOP reset state remains
+SMFLAG=0. Unknown IOP syscalls are still unhandled. This intentionally
+models only two documented `sifman` services, **not** SIF0/SIF1 packet
+DMA, SIFCMD/RPC, real ROM/IOP boot or full `sifman` coverage.
+
+The `iop_sifman_bridge` CTest runs a synthetic IRX whose actual R3000
+instructions call both imported `sifman` functions. The check verifies
+that SMFLAG stays zero until those guest instructions run, then observes
+the published bits from the EE side and EE-only clear/ack behaviour.
+The bridge remains a separate opt-in component, not a synthetic IOP boot
+inside `run_sdbz_native.bat`.
+
+To progress SDBZ beyond `0x001750B4`, load and schedule authentic
+IOP boot services/modules at a defined source of EE cycles, then install
+this SIFMAN bridge for services those modules actually call. Do not
+prepopulate the SMFLAG register on startup merely to satisfy the EE poll.

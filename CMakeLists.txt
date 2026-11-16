@@ -52,6 +52,7 @@ add_library(iop_cpu STATIC
     src/iop/iop_cpu.cpp
     src/iop/irx_loader.cpp
     src/iop/iop_kernel.cpp
+    src/iop/iop_sifman_bridge.cpp
 )
 target_include_directories(iop_cpu PUBLIC ${CMAKE_SOURCE_DIR}/src/iop)
 add_executable(iop_cpu_test tests/smoke/iop_cpu_test.cpp)
@@ -60,6 +61,8 @@ add_executable(iop_irx_loader_test tests/smoke/iop_irx_loader_test.cpp)
 target_link_libraries(iop_irx_loader_test PRIVATE iop_cpu)
 add_executable(iop_kernel_test tests/smoke/iop_kernel_test.cpp)
 target_link_libraries(iop_kernel_test PRIVATE iop_cpu)
+add_executable(iop_sifman_bridge_test tests/smoke/iop_sifman_bridge_test.cpp)
+target_link_libraries(iop_sifman_bridge_test PRIVATE iop_cpu)
 
 add_executable(ee_smoke_test
     tests/smoke/smoke_test.cpp
@@ -309,6 +312,7 @@ endif()
 add_test(NAME iop_cpu COMMAND iop_cpu_test)
 add_test(NAME iop_irx_loader COMMAND iop_irx_loader_test)
 add_test(NAME iop_kernel COMMAND iop_kernel_test)
+add_test(NAME iop_sifman_bridge COMMAND iop_sifman_bridge_test)
 add_test(NAME decoder COMMAND ee_decoder_test)
 add_test(NAME dispatcher COMMAND ee_dispatcher_test)
 add_test(NAME ee_dispatch_interrupt COMMAND ee_dispatch_interrupt_test)
