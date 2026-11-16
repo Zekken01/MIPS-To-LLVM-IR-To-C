@@ -38,6 +38,9 @@ jobs:
       - name: Build
         run: cmake --build build --parallel 2
 
+      # Include the complete source tree: run_game.py fingerprints guest
+      # translation inputs from src/{ee,elf,lift,llvm,tools}, not just
+      # the runtime used to link the translated host objects.
       - name: Upload real-game validation tools
         uses: actions/upload-artifact@v4
         with:
@@ -48,10 +51,8 @@ jobs:
             tools/run_game.py
             tools/verify_ir.py
             tools/link_native_objects.py
-            include/ee/
-            src/runtime/
-            src/ee/ee_dispatcher.cpp
-            src/ee/recompiled_functions.cpp
+            include/
+            src/
           if-no-files-found: error
           retention-days: 1
 
