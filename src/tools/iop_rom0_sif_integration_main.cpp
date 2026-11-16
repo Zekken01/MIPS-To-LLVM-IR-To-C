@@ -68,6 +68,123 @@ int failed(const char* reason, const iop::c_kernel& kernel)
 }
 } // namespace
 
+// Offsets are from the pinned OpenPS2BIOS v0.6 guest's
+// include/openbios/sif.h s_ob_sif_status layout. They are only
+// diagnostic reads: no host code alters the guest service state.
+constexpr uint32_t k_firmware_sif_status = 0x00045000u;
+constexpr uint32_t k_firmware_status_magic = 0x4f425346u;
+constexpr uint32_t k_firmware_status_received = k_firmware_sif_status + 4u;
+constexpr uint32_t k_ee_sifcmd_reply = 0x00180000u;
+
+bool run_until_firmware_receives(
+    iop::c_kernel& kernel, uint32_t baseline,
+    uint32_t* observed)
+{
+    for (uint32_t attempt = 0u; attempt < 128u; ++attempt)
+    {
+        uint32_t count = 0u;
+        if (!kernel.cpu().read32(
+                k_firmware_status_received, &count))
+        {
+            return false;
+        }
+        if (count > baseline)
+        {
+            if (observed != nullptr)
+            {
+                *observed = count;
+            }
+            return true;
+        }
+        const iop::s_kernel_run_result executed =
+            kernel.run(4096u, 256u);
+        if (executed.m_stop !=
+                iop::e_kernel_stop::budget_exhausted)
+        {
+            return false;
+        }
+    }
+    return false;
+}
+
+bool wait_firmware_receiver(iop::c_kernel& kernel)
+{
+    for (uint32_t attempt = 0u; attempt < 128u; ++attempt)
+    {
+        uint32_t chcr = 0u;
+        if (!kernel.hardware().read(
+                iop::c_hw::k_sif1_dma_base + 8u,
+                4u, &chcr))
+        {
+            return false;
+        }
+        if ((chcr & 0x01000000u) != 0u)
+        {
+            return true;
+        }
+        const iop::s_kernel_run_result executed =
+            kernel.run(256u, 64u);
+        if (executed.m_stop !=
+                iop::e_kernel_stop::budget_exhausted)
+        {
+            return false;
+        }
+    }
+    return false;
+}
+
+bool send_firmware_sifcmd(
+    ee::ee_memory& memory, ee::c_ee_dmac& dmac,
+    iop::c_sif1_dma_transport& transport,
+    iop::c_kernel& kernel, uint32_t destination,
+    const uint32_t* words, uint32_t count)
+{
+    if (words == nullptr || count < 4u || count > 28u ||
+        !wait_firmware_receiver(kernel))
+    {
+        return false;
+    }
+    const uint32_t packet_bytes = count * 4u;
+    const uint32_t padded_bytes = (packet_bytes + 15u) & ~15u;
+    const uint32_t source_qwc = 1u + padded_bytes / 16u;
+    const uint64_t delivered_before = transport.delivered_bytes();
+    memory.write32(k_ee_tag, 0x70000000u | source_qwc);
+    memory.write32(k_ee_tag + 4u, 0u);
+    memory.write32(k_ee_tag + 8u, 0u);
+    memory.write32(k_ee_tag + 12u, 0u);
+    memory.write32(k_ee_tag + 16u, 0x40000000u | destination);
+    memory.write32(k_ee_tag + 20u, padded_bytes);
+    memory.write32(k_ee_tag + 24u, 0u);
+    memory.write32(k_ee_tag + 28u, 0u);
+    for (uint32_t index = 0u; index < padded_bytes / 4u; ++index)
+    {
+        memory.write32(
+            k_ee_tag + 32u + index * 4u,
+            index < count ? words[index] : 0u);
+    }
+    if (!write_ee(dmac, 0x20u, 0u) ||
+        !write_ee(dmac, 0x30u, k_ee_tag) ||
+        !write_ee(dmac, 0u, 0x105u) ||
+        transport.faulted() ||
+        transport.delivered_bytes() != delivered_before + padded_bytes)
+    {
+        return false;
+    }
+    return true;
+}
+
+bool arm_firmware_sif0_receiver(ee::c_ee_dmac& dmac)
+{
+    const ee::s_ee_u128 zero{0u, 0u};
+    const ee::s_ee_u128 start{0x184u, 0u};
+    return ee::c_ee_dmac::mmio_write(
+               &dmac, ee::c_ee_dmac::k_sif0_base + 0x20u,
+               4u, &zero) &&
+           ee::c_ee_dmac::mmio_write(
+               &dmac, ee::c_ee_dmac::k_sif0_base,
+               4u, &start);
+}
+
 int main(int argc, char** argv)
 {
     if (argc != 3)
