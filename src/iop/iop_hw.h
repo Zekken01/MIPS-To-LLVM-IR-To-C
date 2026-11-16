@@ -25,6 +25,11 @@ public:
     // CDVD byte register: 0x00 means no inserted disc.
     // Standalone ROM0 boot has no attached media. A media backend
     // must eventually replace this default with detected disc type.
+    // Timer 5 is the IOP kernel's 32-bit periodic clock (IRQ 16).
+    static constexpr uint32_t k_timer5_count = 0x1f8014a0u;
+    static constexpr uint32_t k_timer5_mode = 0x1f8014a4u;
+    static constexpr uint32_t k_timer5_target = 0x1f8014a8u;
+    static constexpr uint32_t k_timer5_irq = 16u;
     static constexpr uint32_t k_cdvd_disc_type = 0x1f40200fu;
     static constexpr uint8_t k_cdvd_no_disc = 0x00u;
 
@@ -42,6 +47,9 @@ public:
     bool raise_interrupt(uint32_t line);
     uint32_t pending_interrupts() const;
     uint32_t cache_control() const;
+    // Advance IOP timer clock by completed guest execution cycles.
+    // The standalone R3000 runtime currently counts one cycle per instruction.
+    void advance_cycles(uint32_t cycles);
     const std::string& debug_console() const;
     bool debug_console_truncated() const;
 
@@ -53,6 +61,11 @@ private:
     uint32_t m_i_mask = 0u;
     uint32_t m_i_ctrl = 1u;
     uint32_t m_cache_control = 0u;
+    uint32_t m_timer5_count = 0u;
+    uint32_t m_timer5_mode = 0u;
+    uint32_t m_timer5_target = 0u;
+    uint32_t m_timer5_remainder = 0u;
+    bool m_timer5_irq_armed = true;
     std::string m_debug_console;
     bool m_debug_console_truncated = false;
 };
