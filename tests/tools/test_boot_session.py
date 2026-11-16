@@ -63,6 +63,7 @@ def run_case(passes, initial_reuse=False, diagnostics=False):
             argv.extend((
                 "--trace-entry=0x0018cf68",
                 "--watch-word=0x01ffec14",
+                "--trace-store=0x01ffec14",
             ))
         with patch.object(SESSION.subprocess, "run", side_effect=fake_run):
             code = SESSION.main(argv)
@@ -75,7 +76,8 @@ def run_case(passes, initial_reuse=False, diagnostics=False):
         if diagnostics:
             assert all(
                 "--trace-entry=0x0018cf68" in call and
-                "--watch-word=0x01ffec14" in call
+                "--watch-word=0x01ffec14" in call and
+                "--trace-store=0x01ffec14" in call
                 for call in calls
             ), calls
             assert "--trace-entry=0x0018cf68" in (
@@ -111,7 +113,9 @@ def main():
     ], initial_reuse=True, diagnostics=True)
     assert code == 3
     assert "--watch-word=0x01ffec14" in expansion
+    assert "--trace-store=0x01ffec14" in expansion
     assert "--trace-entry=0x0018cf68" in boot
+    assert "--trace-store=0x01ffec14" in boot
 
     # Even if the second pass also hits its cap, stop at the session
     # budget and preserve the translated DLL for next local invocation.
