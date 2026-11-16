@@ -63,7 +63,7 @@ int main()
         hardware.read(scratch + 1022u, 4u, &actual) ||
         hardware.read(scratch + 1024u, 1u, &actual) ||
         hardware.read(0x1f801100u, 4u, &actual) ||
-        hardware.write(0x1f8010f0u, 4u, 1u))
+        hardware.write(0x1f8010fcu, 4u, 1u))
     {
         return fail("scratchpad size, subword access or unknown MMIO safety");
     }
