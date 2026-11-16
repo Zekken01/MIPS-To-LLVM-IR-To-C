@@ -49,7 +49,7 @@ int main()
 
     // The guest IOP receiver is genuinely armed, but the first IOP
     // DMA tag requests a 32-byte write across its physical RAM limit.
-    ee_ram.write32(k_src, 0x40000000u | k_near_end);
+    ee_ram.write32(k_src, 0xc0000000u | k_near_end);
     ee_ram.write32(k_src + 4u, 32u);
     ee_ram.write32(k_src + 8u, 0u);
     ee_ram.write32(k_src + 12u, 0u);
