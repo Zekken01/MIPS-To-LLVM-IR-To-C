@@ -33,6 +33,8 @@ void c_hw::reset()
     m_sif_msflag = 0u;
     m_sif_smflag = 0u;
     m_sif_mmio_user = nullptr;
+    m_sif1_user = nullptr;
+    m_sif1_start = nullptr;
     m_sif_mmio_read = nullptr;
     m_sif_mmio_write = nullptr;
     for (uint32_t channel = 0u; channel < 2u; ++channel)
@@ -56,6 +58,12 @@ void c_hw::bind_sif_mmio(
                        write != nullptr) ? user : nullptr;
     m_sif_mmio_read = m_sif_mmio_user != nullptr ? read : nullptr;
     m_sif_mmio_write = m_sif_mmio_user != nullptr ? write : nullptr;
+}
+
+void c_hw::bind_sif1_start(void* user, t_sif1_start_callback callback)
+{
+    m_sif1_user = callback != nullptr ? user : nullptr;
+    m_sif1_start = m_sif1_user != nullptr ? callback : nullptr;
 }
 
 bool c_hw::scratchpad_range(
@@ -255,7 +263,15 @@ bool c_hw::write(
         // CHCR.STR is guest-controlled when starting/stopping DMA, and
         // is NOT cleared merely because the register write succeeded.
         // The transfer backend will clear STR on real completion.
+        const bool was_started =
+            (m_sif_dma[channel][2u] & 0x01000000u) != 0u;
         m_sif_dma[channel][reg] = value;
+        if (channel == 1u && reg == 2u &&
+            !was_started && (value & 0x01000000u) != 0u &&
+            m_sif1_start != nullptr)
+        {
+            m_sif1_start(m_sif1_user);
+        }
         return true;
     }
 
