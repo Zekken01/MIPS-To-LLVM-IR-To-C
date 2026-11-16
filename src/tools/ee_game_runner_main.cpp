@@ -925,6 +925,12 @@ int main(int argc, char** argv)
         }
         const uint32_t watched_before = has_watch_word
             ? memory->read32(watch_word) : 0u;
+        const uint32_t watch_s3_before = has_watch_word
+            ? static_cast<uint32_t>(cpu.m_gpr[19].m_lo) : 0u;
+        const uint32_t watch_s5_before = has_watch_word
+            ? static_cast<uint32_t>(cpu.m_gpr[21].m_lo) : 0u;
+        const uint32_t watch_fp_before = has_watch_word
+            ? static_cast<uint32_t>(cpu.m_gpr[30].m_lo) : 0u;
         uint32_t count = 0;
         uint32_t out_pc = from_pc;
         const uint32_t slice = (trace || report_path != nullptr) ? 1u : remaining;
@@ -967,6 +973,30 @@ int main(int argc, char** argv)
                     static_cast<unsigned long long>(dispatched), from_pc,
                     cpu.m_pc, watch_word, watched_before, watched_after
                 );
+                std::printf(
+                    "EE watch registers: "
+                    "s3_before=%08x s3_after=%08x "
+                    "s5_before=%08x s5_after=%08x "
+                    "fp_before=%08x fp_after=%08x sp=%08x\n",
+                    watch_s3_before,
+                    static_cast<uint32_t>(cpu.m_gpr[19].m_lo),
+                    watch_s5_before,
+                    static_cast<uint32_t>(cpu.m_gpr[21].m_lo),
+                    watch_fp_before,
+                    static_cast<uint32_t>(cpu.m_gpr[30].m_lo),
+                    static_cast<uint32_t>(cpu.m_gpr[29].m_lo)
+                );
+                if (watch_word >= 4u &&
+                    memory->contains(watch_word - 4u, 8u))
+                {
+                    std::printf(
+                        "EE watch pair: addr=0x%08x "
+                        "word0=0x%08x word1=0x%08x\n",
+                        watch_word - 4u,
+                        memory->read32(watch_word - 4u),
+                        watched_after
+                    );
+                }
             }
         }
         if (report_path != nullptr && count != 0)
