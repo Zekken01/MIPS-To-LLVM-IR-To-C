@@ -300,18 +300,6 @@ int run_quantum(uint32_t quantum)
 
     for (uint32_t sequence = 1u; sequence <= 3u; ++sequence)
     {
-        if (quantum == 16u)
-        {
-            uint32_t d10 = 0u, d9 = 0u, icr2 = 0u, istat = 0u;
-            (void)f.m_iop.hardware().read(iop::c_hw::k_sif1_dma_base + 8u, 4u, &d10);
-            (void)f.m_iop.hardware().read(iop::c_hw::k_sif0_dma_base + 8u, 4u, &d9);
-            (void)f.m_iop.hardware().read(iop::c_hw::k_dma_icr2, 4u, &icr2);
-            (void)f.m_iop.hardware().read(iop::c_hw::k_i_stat, 4u, &istat);
-            std::fprintf(stderr, "BEGIN seq=%u pc=%08x d10=%08x d9=%08x icr2=%08x istat=%08x delivered0=%llu delivered1=%llu\n",
-                sequence, f.m_iop.cpu().state().m_pc, d10, d9, icr2, istat,
-                static_cast<unsigned long long>(f.m_sif0->delivered_bytes()),
-                static_cast<unsigned long long>(f.m_sif1->delivered_bytes()));
-        }
         const uint32_t p1 = 0xfedcba98u ^ (quantum * 13u + sequence);
         const uint32_t p2 = 0x13579bdfu + sequence * 0x101u;
         const uint32_t p3 = sequence ^ p1 ^ p2;
@@ -352,18 +340,6 @@ int run_quantum(uint32_t quantum)
                         quantum, sequence, f.m_iop.cpu().state().m_pc);
         }
 
-        if (quantum == 16u)
-        {
-            uint32_t d10 = 0u, d9 = 0u, icr2 = 0u, istat = 0u;
-            (void)f.m_iop.hardware().read(iop::c_hw::k_sif1_dma_base + 8u, 4u, &d10);
-            (void)f.m_iop.hardware().read(iop::c_hw::k_sif0_dma_base + 8u, 4u, &d9);
-            (void)f.m_iop.hardware().read(iop::c_hw::k_dma_icr2, 4u, &icr2);
-            (void)f.m_iop.hardware().read(iop::c_hw::k_i_stat, 4u, &istat);
-            std::fprintf(stderr, "AFTER_SEND seq=%u pc=%08x d10=%08x d9=%08x icr2=%08x istat=%08x delivered0=%llu delivered1=%llu\n",
-                sequence, f.m_iop.cpu().state().m_pc, d10, d9, icr2, istat,
-                static_cast<unsigned long long>(f.m_sif0->delivered_bytes()),
-                static_cast<unsigned long long>(f.m_sif1->delivered_bytes()));
-        }
         const uint64_t expected_bytes =
             static_cast<uint64_t>(sequence) * k_payload_bytes;
         bool completed = false;
@@ -375,27 +351,8 @@ int run_quantum(uint32_t quantum)
                 completed = true;
                 break;
             }
-            const uint32_t pc_before = f.m_iop.cpu().state().m_pc;
             const iop::s_kernel_run_result run =
                 f.m_iop.run(quantum, quantum);
-            if (quantum == 16u && sequence == 2u)
-            {
-                uint32_t d10 = 0u, d9 = 0u, icr2 = 0u, istat = 0u;
-                (void)f.m_iop.hardware().read(
-                    iop::c_hw::k_sif1_dma_base + 8u, 4u, &d10);
-                (void)f.m_iop.hardware().read(
-                    iop::c_hw::k_sif0_dma_base + 8u, 4u, &d9);
-                (void)f.m_iop.hardware().read(
-                    iop::c_hw::k_dma_icr2, 4u, &icr2);
-                (void)f.m_iop.hardware().read(
-                    iop::c_hw::k_i_stat, 4u, &istat);
-                std::fprintf(stderr,
-                    "STEP pc=%08x->%08x d10=%08x d9=%08x icr2=%08x istat=%08x delivered0=%llu delivered1=%llu\n",
-                    pc_before, f.m_iop.cpu().state().m_pc, d10, d9,
-                    icr2, istat,
-                    static_cast<unsigned long long>(f.m_sif0->delivered_bytes()),
-                    static_cast<unsigned long long>(f.m_sif1->delivered_bytes()));
-            }
             if (run.m_stop != iop::e_kernel_stop::budget_exhausted)
             {
                 return fail("guest stopped before valid reply",
@@ -416,28 +373,46 @@ int run_quantum(uint32_t quantum)
         uint32_t source_checksum = 0u;
         uint32_t destination_checksum = 0u;
 
+        // Read all registers before evaluating assertions, so the
+        // diagnostic always contains real MMIO values on failure.
+        const bool registers_read =
+            ee_read(f.m_dmac, ee::c_ee_dmac::k_sif0_base,
+                    0u, &ee_sif0_chcr) &&
+            ee_read(f.m_dmac, ee::c_ee_dmac::k_sif1_base,
+                    0u, &ee_sif1_chcr) &&
+            f.m_iop.hardware().read(
+                iop::c_hw::k_sif0_dma_base + 8u,
+                4u, &iop_sif0_chcr) &&
+            f.m_iop.hardware().read(
+                iop::c_hw::k_sif1_dma_base + 8u,
+                4u, &iop_sif1_chcr) &&
+            f.m_iop.hardware().read(
+                iop::c_hw::k_dma_icr2, 4u, &dicr2) &&
+            f.m_iop.hardware().read(
+                iop::c_hw::k_i_stat, 4u, &istat);
+
+        // With a larger quantum the guest may already have executed
+        // its next DMA10 CHCR start and be waiting at the polling
+        // loop. That STR belongs to the next request, not to the
+        // completed request whose bytes and IRQs are checked here.
+        const uint32_t guest_pc = f.m_iop.cpu().state().m_pc;
+        const bool next_receiver_wait =
+            (iop_sif1_chcr & 0x01000000u) != 0u &&
+            guest_pc >= 0xbfc00018u &&
+            guest_pc <= 0xbfc00024u &&
+            f.m_sif1->fifo_words() == 0u;
+
         if (!completed || f.m_sif0->faulted() || f.m_sif1->faulted() ||
             f.m_sif1->delivered_bytes() != expected_bytes ||
             f.m_sif0->delivered_bytes() != expected_bytes ||
-            !ee_read(f.m_dmac, ee::c_ee_dmac::k_sif0_base,
-                     0u, &ee_sif0_chcr) ||
-            !ee_read(f.m_dmac, ee::c_ee_dmac::k_sif1_base,
-                     0u, &ee_sif1_chcr) ||
+            !registers_read ||
             (ee_sif0_chcr & ee::c_ee_dmac::k_chcr_str) != 0u ||
             (ee_sif1_chcr & ee::c_ee_dmac::k_chcr_str) != 0u ||
             (f.m_dmac.status() & 0x60u) != 0x60u ||
-            !f.m_iop.hardware().read(
-                iop::c_hw::k_sif0_dma_base + 8u,
-                4u, &iop_sif0_chcr) ||
-            !f.m_iop.hardware().read(
-                iop::c_hw::k_sif1_dma_base + 8u,
-                4u, &iop_sif1_chcr) ||
             (iop_sif0_chcr & 0x01000000u) != 0u ||
-            (iop_sif1_chcr & 0x01000000u) != 0u ||
-            !f.m_iop.hardware().read(iop::c_hw::k_dma_icr2,
-                                     4u, &dicr2) ||
+            ((iop_sif1_chcr & 0x01000000u) != 0u &&
+             !next_receiver_wait) ||
             (dicr2 & 0x0c000000u) != 0x0c000000u ||
-            !f.m_iop.hardware().read(iop::c_hw::k_i_stat, 4u, &istat) ||
             (istat & (1u << iop::c_hw::k_dma_irq)) == 0u)
         {
             std::fprintf(stderr,
