@@ -1768,7 +1768,8 @@ int main(int argc, char** argv)
                 (service >= 0x40u && service <= 0x48u) ||
                 service == 0x4au || service == 0x4bu ||
                 service == 0x64u ||
-                service == 0x68u || service == 0x74u ||
+                service == 0x68u || service == 0x6bu ||
+                service == 0x74u ||
                 service == 0x76u || service == 0x77u ||
                 service == 0x78u || service == 0x79u ||
                 service == 0x7au || service == 0x7cu)
@@ -2748,6 +2749,42 @@ int main(int argc, char** argv)
                             service == 0x64u ? "FlushCache" : "iFlushCache",
                             static_cast<uint32_t>(cpu.m_gpr[4].m_lo)
                         );
+                    }
+                }
+
+                else if (service == 0x6bu)
+                {
+                    // sceSifStopDma is void: disable genuine EE SIF0
+                    // (IOP -> EE) channel 5 without claiming a transfer.
+                    // Preserve CHCR mode/TIE bits while clearing STR.
+                    ee::s_ee_u128 chcr{};
+                    if (!ee::c_ee_hw_bus::mmio_read(
+                            &hardware, ee::c_ee_dmac::k_sif0_base,
+                            4u, &chcr))
+                    {
+                        std::fprintf(stderr,
+                            "SifStopDma HLE refused unreadable SIF0 CHCR\n");
+                        break;
+                    }
+                    const uint32_t old_chcr =
+                        static_cast<uint32_t>(chcr.m_lo);
+                    chcr.m_lo &= ~static_cast<uint64_t>(
+                        ee::c_ee_dmac::k_chcr_str);
+                    if (!ee::c_ee_hw_bus::mmio_write(
+                            &hardware, ee::c_ee_dmac::k_sif0_base,
+                            4u, &chcr))
+                    {
+                        std::fprintf(stderr,
+                            "SifStopDma HLE refused unwritable SIF0 CHCR\n");
+                        break;
+                    }
+                    if (trace)
+                    {
+                        std::printf(
+                            "HLE SifStopDma: channel=5 "
+                            "old_chcr=0x%08x new_chcr=0x%08x result=void\n",
+                            old_chcr,
+                            static_cast<uint32_t>(chcr.m_lo));
                     }
                 }
 
