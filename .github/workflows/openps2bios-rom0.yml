@@ -16,6 +16,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Temporary public repository snapshot so the CI-compatible runner
+      # can be rebuilt locally without GitHub network access.
+      - name: Export repository source for offline native debugging
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-snapshot-local-debug
+          path: |
+            CMakeLists.txt
+            include/
+            src/
+            tools/
+            tests/
+          if-no-files-found: error
+          retention-days: 1
+
+
       - name: Configure ROM0 runner
         run: cmake -S . -B build-rom0 -G Ninja -DCMAKE_BUILD_TYPE=Release
 
