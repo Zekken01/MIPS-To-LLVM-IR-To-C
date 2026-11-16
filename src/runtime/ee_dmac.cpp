@@ -64,6 +64,7 @@ void c_ee_dmac::reset()
     {
         channel = {};
     }
+    m_sif0_channel = {};
     sync_interrupt_line();
 }
 
@@ -129,6 +130,12 @@ bool c_ee_dmac::read_spr_channel(uint32_t address, uint32_t* value) const
     {
         channel = &m_device_channels[2];
         offset = address - k_gif_base;
+        device_channel = true;
+    }
+    else if (address >= k_sif0_base && address < k_sif0_base + 0x100u)
+    {
+        channel = &m_sif0_channel;
+        offset = address - k_sif0_base;
         device_channel = true;
     }
     else if (address >= k_from_spr_base && address < k_from_spr_base + 0x100u)
@@ -749,6 +756,13 @@ bool c_ee_dmac::write_spr_channel(uint32_t address, uint32_t value)
         offset = address - k_gif_base;
         device_channel = true;
     }
+    else if (address >= k_sif0_base && address < k_sif0_base + 0x100u)
+    {
+        channel = &m_sif0_channel;
+        channel_index = 5u;
+        offset = address - k_sif0_base;
+        device_channel = true;
+    }
     else if (address >= k_from_spr_base && address < k_from_spr_base + 0x100u)
     {
         channel = &m_spr_channels[0];
@@ -775,7 +789,12 @@ bool c_ee_dmac::write_spr_channel(uint32_t address, uint32_t value)
         if (!was_running && (value & k_chcr_str) != 0u)
         {
             const uint32_t mode = (channel->m_chcr >> 2u) & 3u;
-            if (device_channel)
+            if (channel_index == 5u)
+            {
+                // No IOP/SIF0 producer. Keep CHCR.STR visible and do not
+                // invent a DMA completion, copy, or interrupt.
+            }
+            else if (device_channel)
             {
                 (void)transfer_device_normal(channel_index);
             }
