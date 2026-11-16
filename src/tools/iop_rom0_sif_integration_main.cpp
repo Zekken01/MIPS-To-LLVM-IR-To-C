@@ -173,6 +173,69 @@ bool send_firmware_sifcmd(
     return true;
 }
 
+
+bool send_firmware_sifcmd_via_syscall(
+    ee::ee_memory& memory, iop::c_sif1_dma_transport& transport,
+    iop::c_kernel& kernel, uint32_t destination,
+    const uint32_t* words, uint32_t count, uint32_t* dma_id)
+{
+    constexpr uint32_t k_descriptor = 0x001c0000u;
+    constexpr uint32_t k_packet = 0x001c1000u;
+    constexpr uint32_t k_borrowed_stage = 0x01c00000u;
+    if (words == nullptr || dma_id == nullptr ||
+        count < 4u || count > 28u ||
+        !wait_firmware_receiver(kernel))
+    {
+        return false;
+    }
+
+    const uint32_t packet_bytes = count * 4u;
+    const uint32_t padded = (packet_bytes + 15u) & ~15u;
+    const uint64_t delivered_before = transport.delivered_bytes();
+
+    // The syscall supplies a descriptor, not a prebuilt DMA chain.
+    // Guard the temporary EE staging RAM across a real DMA6->DMA10.
+    constexpr uint32_t guard_addresses[] =
+    {
+        k_borrowed_stage, k_borrowed_stage + 4u,
+        k_borrowed_stage + 16u, k_borrowed_stage + 80u
+    };
+    uint32_t guard_before[4]{};
+    for (uint32_t index = 0u; index < 4u; ++index)
+    {
+        guard_before[index] = memory.read32(guard_addresses[index]);
+    }
+    for (uint32_t index = 0u; index < padded / 4u; ++index)
+    {
+        memory.write32(
+            k_packet + index * 4u,
+            index < count ? words[index] : 0u
+        );
+    }
+    memory.write32(k_descriptor, k_packet);
+    memory.write32(k_descriptor + 4u, destination);
+    memory.write32(k_descriptor + 8u, packet_bytes);
+    memory.write32(k_descriptor + 12u, 0u);
+
+    int32_t completion = 0;
+    if (!transport.set_dma(k_descriptor, 1u, dma_id) ||
+        !transport.dma_stat(*dma_id, &completion) ||
+        completion != -1 ||
+        transport.delivered_bytes() != delivered_before + padded)
+    {
+        return false;
+    }
+    for (uint32_t index = 0u; index < 4u; ++index)
+    {
+        if (memory.read32(guard_addresses[index]) !=
+            guard_before[index])
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool arm_firmware_sif0_receiver(ee::c_ee_dmac& dmac)
 {
     const ee::s_ee_u128 zero{0u, 0u};
@@ -719,9 +782,10 @@ int main(int argc, char** argv)
         1u, k_expected_loadfile_server
     };
     uint32_t received_after_call = 0u;
-    if (!send_firmware_sifcmd(
-            memory, ee_hardware.dmac(), sif1, kernel,
-            ee_subaddr, call_request, 14u) ||
+    uint32_t rpc_call_dma_id = 0u;
+    if (!send_firmware_sifcmd_via_syscall(
+            memory, sif1, kernel, ee_subaddr,
+            call_request, 14u, &rpc_call_dma_id) ||
         !run_until_firmware_receives(
             kernel, received_after_bind, &received_after_call))
     {
@@ -835,7 +899,7 @@ int main(int argc, char** argv)
     }
     report <<
         "{\n"
-        "  \"format\": \"openps2bios-authentic-sif1-v4\",\n"
+        "  \"format\": \"openps2bios-authentic-sif1-v5\",\n"
         "  \"rom0_bytes\": " << rom.size() << ",\n"
         "  \"reset_pc\": " << reset_pc << ",\n"
         "  \"boot_instructions\": " << boot.m_executed << ",\n"
@@ -884,6 +948,7 @@ int main(int argc, char** argv)
         "  \"rpc_bind_reply_bytes\": 48,\n"
         "  \"rpc_bind_iop_dma9_chcr\": " << bind_iop_dma9_chcr << ",\n"
         "  \"rpc_bind_ee_dma5_chcr\": " << bind_ee_dma5_chcr << ",\n"
+        "  \"rpc_call_dma_id\": " << rpc_call_dma_id << ",\n"
         "  \"rpc_call_received\": " << received_after_call << ",\n"
         "  \"rpc_call_command\": " << call_command << ",\n"
         "  \"rpc_call_result\": " << call_result << ",\n"
