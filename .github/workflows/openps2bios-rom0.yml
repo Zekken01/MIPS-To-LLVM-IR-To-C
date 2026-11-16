@@ -22,7 +22,7 @@ jobs:
       - name: Build ROM0 runner and focused regressions
         run: |
           cmake --build build-rom0 --parallel 2 --target \
-            iop_rom0_runner iop_cpu_test iop_rom0_boot_test iop_hw_test iop_timer5_exception_test iop_dma_icr_test iop_dma_global_enable_test iop_dma_sif_channels_test iop_sif_handoff_test
+            iop_rom0_runner iop_rom0_sif_integration iop_cpu_test iop_rom0_boot_test iop_hw_test iop_timer5_exception_test iop_dma_icr_test iop_dma_global_enable_test iop_dma_sif_channels_test iop_sif_handoff_test
           ctest --test-dir build-rom0 --output-on-failure \
             -R '^(iop_cpu|iop_rom0_boot|iop_rom0_runner|iop_hw|iop_timer5_exception|iop_dma_icr|iop_dma_global_enable|iop_dma_sif_channels|iop_sif_handoff)$'
 
@@ -79,6 +79,41 @@ jobs:
           print("Executed instructions:", report["executed"])
           PY
 
+      - name: Validate official firmware SIF1 DMA reception
+        run: |
+          set -euo pipefail
+          ./build-rom0/iop_rom0_sif_integration OpenPS2BIOS-0.6.bin rom0-sif-integration.json > rom0-sif-integration.log 2>&1 || {
+            cat rom0-sif-integration.log
+            exit 1
+          }
+          cat rom0-sif-integration.log
+          python3 - <<'PY'
+          import json
+          with open("rom0-sif-integration.json", encoding="utf-8") as file:
+              report = json.load(file)
+          assert report["format"] == "openps2bios-authentic-sif1-v1"
+          assert report["rom0_bytes"] == 4194304
+          assert report["reset_pc"] == 0xBFC00000
+          assert report["boot_instructions"] == 10000000
+          assert report["boot_stop"] == "BUDGET_EXHAUSTED"
+          assert report["smflag_published"] & 0x30000 == 0x30000
+          assert report["smflag_after_ack"] & 0x30000 == 0
+          assert 0 < report["firmware_receive_buffer"] < 0x200000
+          assert report["direction"] == "SIF1"
+          assert report["ee_channel"] == 6 and report["iop_channel"] == 10
+          assert report["requested_bytes"] == report["transferred_bytes"] == 16
+          assert report["source_checksum"] == report["destination_checksum"]
+          assert report["iop_chcr_before"] & 0x01000000
+          assert report["iop_chcr_after"] & 0x01000000 == 0
+          assert report["ee_chcr_after"] & 0x100 == 0
+          assert report["ee_dstat"] & (1 << 6)
+          assert report["iop_dicr2"] & (1 << 27)
+          assert report["iop_istat"] & (1 << 3)
+          assert report["continuation_stop"] == "BUDGET_EXHAUSTED"
+          print("Official ROM0 DMA6->DMA10 bytes verified:", report["transferred_bytes"])
+          print("Guest-published destination: 0x%08X" % report["firmware_receive_buffer"])
+          PY
+
       - name: Preserve actual guest execution evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -87,5 +122,7 @@ jobs:
           path: |
             rom0-report.json
             rom0-trace.log
+            rom0-sif-integration.json
+            rom0-sif-integration.log
           if-no-files-found: ignore
           retention-days: 7
