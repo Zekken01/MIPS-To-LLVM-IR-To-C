@@ -1,6 +1,7 @@
 #pragma once
 
 #include "iop_cpu.h"
+#include "iop_hw.h"
 #include "irx_loader.h"
 
 #include <cstdint>
@@ -87,6 +88,8 @@ public:
     // This must occur before any IRX imports or modules are installed.
     bool start_rom0_boot(const std::vector<uint8_t>& image);
     bool rom0_boot_active() const;
+    c_hw& hardware();
+    const c_hw& hardware() const;
 
     c_cpu& cpu();
     const c_cpu& cpu() const;
@@ -135,6 +138,7 @@ private:
     void wake_due();
 
     c_cpu m_cpu{};
+    c_hw m_hardware{};
     std::map<uint32_t, uint32_t> m_allocations;
     std::map<std::string, std::map<uint16_t, uint32_t>> m_libraries;
     std::map<uint32_t, s_kernel_module> m_modules;
