@@ -257,7 +257,7 @@ struct s_fixture
         };
         const uint32_t header[4] =
         {
-            0x40000000u | k_iop_request, k_payload_bytes, 0u, 0u
+            0xc0000000u | k_iop_request, k_payload_bytes, 0u, 0u
         };
         for (uint32_t i = 0u; i < 4u; ++i)
         {

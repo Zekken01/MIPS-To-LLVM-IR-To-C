@@ -115,7 +115,17 @@ LOADFILE `GET_VERSION` RPC_CALL using this same syscall adapter and
 requires a firmware-generated SIF0 result. Smoke tests verify a 20-byte
 request with zero-padded QWC, two descriptor transfers, refusal without an
 IOP DMA10 receiver, invalid-attribute rejection, interrupt completion and
-EE RAM restoration.
+EE RAM restoration. The SDBZ US first genuine SifSetDma at EE EPC
+`0x00175064` uses one 20-byte descriptor (source `0x005616c0`, IOP
+receiver `0x00044f00`) with attributes `0x44`, the standard EE
+SIFCMD combination `SIF_DMA_ERT | SIF_DMA_INT_O`. The syscall adapter
+now accepts this terminal command form, emits distinct DMA10 END (bit 31)
+and IRQ-on-tag (bit 30) flags, and still rejects unsupported attributes
+and nonterminal command markers. The official-ROM0 EE syscall and firmware
+SIFCMD tests exercise `0x44`; synthetic tests cover one and two
+descriptors plus rejection without changing DMA state. The game boot must
+be rerun locally to identify the next authentic stop; tests alone do not
+establish complete boot or actual EE DMA5 interrupt delivery.
 
 **This is still not a full SDBZ boot:** guest EE DMA5 interrupt handler
 delivery, complete EE exception and interrupt scheduling, and disc-backed

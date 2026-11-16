@@ -40,7 +40,8 @@ def make_rom0_sifsetdma_elf(path):
         0xad090000,  # sw t1,0(t0)
         0x240a0014,  # t2 = 20 packet bytes
         0xad0a0008,  # sw t2,8(t0), byte count
-        0xad00000c,  # sw zero,12(t0), attributes
+        0x240a0044,  # t2 = SIF_DMA_ERT | SIF_DMA_INT_O
+        0xad0a000c,  # sw t2,12(t0), attributes
         0x01002021,  # addu a0,t0,zero
         0x24050001,  # a1 = one descriptor
         0x24030077,  # v1 = SifSetDma
