@@ -54,6 +54,7 @@ add_library(iop_cpu STATIC
     src/iop/iop_kernel.cpp
     src/iop/iop_sifman_bridge.cpp
     src/iop/iop_sif1_bridge.cpp
+    src/iop/iop_sifcmd_bridge.cpp
 )
 target_include_directories(iop_cpu PUBLIC ${CMAKE_SOURCE_DIR}/src/iop)
 add_executable(iop_cpu_test tests/smoke/iop_cpu_test.cpp)
@@ -70,6 +71,8 @@ add_executable(iop_sif_dma_test tests/smoke/iop_sif_dma_test.cpp)
 target_link_libraries(iop_sif_dma_test PRIVATE iop_cpu ee_core)
 add_executable(iop_sif1_bridge_test tests/smoke/iop_sif1_bridge_test.cpp)
 target_link_libraries(iop_sif1_bridge_test PRIVATE iop_cpu ee_core)
+add_executable(iop_sifcmd_bridge_test tests/smoke/iop_sifcmd_bridge_test.cpp)
+target_link_libraries(iop_sifcmd_bridge_test PRIVATE iop_cpu ee_core)
 
 add_executable(ee_smoke_test
     tests/smoke/smoke_test.cpp
@@ -326,6 +329,7 @@ add_test(NAME iop_kernel COMMAND iop_kernel_test)
 add_test(NAME iop_sifman_bridge COMMAND iop_sifman_bridge_test)
 add_test(NAME iop_sif_dma COMMAND iop_sif_dma_test)
 add_test(NAME iop_sif1_bridge COMMAND iop_sif1_bridge_test)
+add_test(NAME iop_sifcmd_bridge COMMAND iop_sifcmd_bridge_test)
 add_test(NAME decoder COMMAND ee_decoder_test)
 add_test(NAME dispatcher COMMAND ee_dispatcher_test)
 add_test(NAME ee_dispatch_interrupt COMMAND ee_dispatch_interrupt_test)

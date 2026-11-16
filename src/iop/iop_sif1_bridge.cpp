@@ -1,4 +1,5 @@
 #include "iop_sif1_bridge.h"
+#include "iop_sifcmd_bridge.h"
 
 #include <utility>
 #include <vector>
@@ -63,13 +64,17 @@ struct s_transfer
 {
     uint32_t m_destination = 0u;
     std::vector<uint32_t> m_words;
+    bool m_command = false;
+    c_sifcmd_bridge::s_command m_command_effect{};
 };
 } // namespace
 
 c_sif1_bridge::c_sif1_bridge(
-    ee::ee_memory& ee_ram, c_cpu& iop_cpu, ee::c_ee_dmac& dmac
+    ee::ee_memory& ee_ram, c_cpu& iop_cpu, ee::c_ee_dmac& dmac,
+    c_sifcmd_bridge* sifcmd
 )
-    : m_ee_ram(ee_ram), m_iop_cpu(iop_cpu), m_dmac(dmac)
+    : m_ee_ram(ee_ram), m_iop_cpu(iop_cpu), m_dmac(dmac),
+      m_sifcmd(sifcmd)
 {
 }
 
@@ -115,6 +120,13 @@ bool c_sif1_bridge::set_dma(
             iop_destination == 0u ||
             static_cast<uint64_t>(iop_destination) + rounded >
                 c_cpu::k_ram_size ||
+            // The reserved SIFCMD receiving region must not be
+            // overwritten by arbitrary overlapping DMA transfers.
+            (static_cast<uint64_t>(iop_destination) <
+                 c_sifcmd_bridge::k_command_buffer + 0x400u &&
+             static_cast<uint64_t>(iop_destination) + rounded >
+                 c_sifcmd_bridge::k_command_buffer &&
+             iop_destination != c_sifcmd_bridge::k_command_buffer) ||
             !m_ee_ram.contains(ee_source, static_cast<size_t>(rounded)))
         {
             return false;
@@ -130,6 +142,18 @@ bool c_sif1_bridge::set_dma(
                 m_ee_ram.read32(ee_source + offset)
             );
         }
+        if (iop_destination == c_sifcmd_bridge::k_command_buffer)
+        {
+            // Only guest-initialized, implemented system commands may
+            // pass through the reserved IOP command receiver.
+            if (m_sifcmd == nullptr ||
+                !m_sifcmd->prepare_command(
+                    transfer.m_words, size, &transfer.m_command_effect))
+            {
+                return false;
+            }
+            transfer.m_command = true;
+        }
         transfers.push_back(std::move(transfer));
     }
 
@@ -144,6 +168,16 @@ bool c_sif1_bridge::set_dma(
                     static_cast<uint32_t>(index * 4u),
                 transfer.m_words[index]
             );
+        }
+    }
+
+    // Command effects are committed only once every DMA write has
+    // completed. There are no invented SIF replies or readiness bits.
+    for (const s_transfer& transfer : transfers)
+    {
+        if (transfer.m_command)
+        {
+            m_sifcmd->commit_command(transfer.m_command_effect);
         }
     }
 
