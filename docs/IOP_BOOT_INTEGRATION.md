@@ -218,3 +218,50 @@ Next: accept an ordered group of local IOP IRX paths in the EE runner,
 then add the real IOP kernel-service imports and guest clock/event
 scheduling required by SDBZ. The reference project's HLE-installed
 IOP services remain separate from genuinely executed guest IRX exports.
+
+
+## Ordered local IRX module list (PR #72)
+
+The native runner accepts **repeatable** `--iop-irx=FILE` flags, or
+`tools/run_game.py --iop-irx-list=FILE`, a UTF-8 text manifest containing
+one path per line. Relative manifest entries resolve against the manifest's
+directory; blank lines and lines beginning with `#` are ignored. The
+two forms are mutually exclusive. Modules must appear in **dependency
+order**: provider libraries first, consuming/entry IRX last. Missing
+imports and conflicting exports fail before any module starts.
+
+A Windows launcher example:
+
+```bat
+set "IOP_IRX_LIST=PS2_GAME\\iop-modules.txt"
+set "IOP_QUANTUM=256"
+run_sdbz_native.bat
+```
+
+Example `PS2_GAME/iop-modules.txt` contents:
+
+```text
+# Paths relative to this manifest
+IOP/PROVIDER.IRX
+IOP/CONSUMER.IRX
+```
+
+By default the **final listed module** starts as a guest R3000 thread;
+earlier modules are linked so their exported functions can be called,
+but their entrypoints are not executed automatically. Set
+`IOP_START_ALL=1` in the launcher (or pass `--iop-start-all` to the
+Python driver) to start a thread for **each** loaded module. All module
+images are validated and linked before any thread starts. Running all
+module entrypoints does *not* establish a real PS2 IOP boot lifecycle:
+real modules may require kernel imports, initialization ordering, device
+handlers, interrupts, IOP hardware MMIO and SIF RPC services that remain
+unimplemented. A list is capped at 32 modules, with no automatic
+dependency sorting or synthetic success for missing services.
+
+The native end-to-end regression includes synthetic **provider and
+consumer** IRXs. A real function exported by the provider returns
+`0x60000`, which the consumer obtains through an IRX import and passes
+to `sifman` ordinal 24. The EE then observes the guest-published SMFLAG
+at its polling syscall. The test checks repeated arguments, manifest
+paths with spaces, both start modes, reversed dependencies, duplicate
+exports and missing/ambiguous manifests. No game binaries are committed.
