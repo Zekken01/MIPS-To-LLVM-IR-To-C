@@ -12,6 +12,12 @@ namespace iop
 class c_hw
 {
 public:
+    using t_sif_mmio_read = bool (*)(
+        void*, uint32_t, uint32_t, uint32_t*
+    );
+    using t_sif_mmio_write = bool (*)(
+        void*, uint32_t, uint32_t, uint32_t
+    );
     static constexpr uint32_t k_scratchpad_base = 0x1f800000u;
     static constexpr uint32_t k_scratchpad_size = 1024u;
     static constexpr uint32_t k_i_stat = 0x1f801070u;
@@ -51,6 +57,10 @@ public:
 
     c_hw();
     void reset();
+    // Link to the EE's *real* SIF register model only when a live
+    // EE runtime is attached. Local SIF state remains standalone.
+    void bind_sif_mmio(void* user, t_sif_mmio_read read,
+                       t_sif_mmio_write write);
 
     // For the ordinary MMIO/scratchpad range, address is physical.
     // The cache-control register retains its privileged full address.
@@ -106,6 +116,9 @@ private:
     uint32_t m_sif_smcom = 0u;
     uint32_t m_sif_msflag = 0u;
     uint32_t m_sif_smflag = 0u;
+    void* m_sif_mmio_user = nullptr;
+    t_sif_mmio_read m_sif_mmio_read = nullptr;
+    t_sif_mmio_write m_sif_mmio_write = nullptr;
     uint32_t m_dma_icr = 0u;
     uint32_t m_dma_icr2 = 0u;
     std::string m_debug_console;
