@@ -45,6 +45,23 @@ def make_elf(path, startup=False):
     path.write_bytes(image)
 
 
+def make_guest_word_watch_elf(path):
+    """One native function modifies a guest word and returns to PC zero."""
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    words = (
+        0x3c080010,  # lui t0,0x0010
+        0x35080200,  # ori t0,t0,0x0200
+        0x24090007,  # addiu t1,zero,7
+        0xad090000,  # sw t1,0(t0)
+        0x00000008,  # jr zero
+        0x00000000,  # delay-slot nop
+    )
+    for index, word in enumerate(words):
+        struct.pack_into("<I", image, 0x108 + index * 4, word)
+    path.write_bytes(image)
+
+
 def make_create_thread_elf(path):
     make_elf(path)
     image = bytearray(path.read_bytes())
@@ -1178,6 +1195,36 @@ def main():
             assert registers[12] == 0, state          # second Get result
             assert registers[13] == 0, state          # no fallthrough
             assert state["exit_name"] == "EXCEPTION", state
+
+    with tempfile.TemporaryDirectory(prefix="ee-native-word-watch-") as tmp:
+        root = Path(tmp)
+        elf = root / "word-watch.elf"
+        make_guest_word_watch_elf(elf)
+        args = [
+            sys.executable, str(source / "tools" / "run_game.py"),
+            str(elf), "--build-dir", str(build),
+            "--work-dir", str(root / "out"),
+            "--max-dispatches=8",
+            "--trace-entry=0x00100008",
+            "--watch-word=0x00100200",
+        ]
+        result = subprocess.run(args, capture_output=True, text=True,
+                                check=False)
+        assert result.returncode == 3, result.stdout + result.stderr
+        assert "EE watch initial: addr=0x00100200 value=0x00000000" in result.stdout, result.stdout
+        assert "EE trace-entry: dispatch=1 pc=0x00100008" in result.stdout, result.stdout
+        assert "sp=0x01fff000" in result.stdout, result.stdout
+        assert "EE watch changed: dispatch=1 from_pc=0x00100008 " in result.stdout, result.stdout
+        assert "addr=0x00100200 old=0x00000000 new=0x00000007" in result.stdout, result.stdout
+
+        rejected = subprocess.run(
+            args[:-1] + ["--watch-word=0x02000000", "--no-recompile"],
+            capture_output=True, text=True, check=False,
+        )
+        assert rejected.returncode == 2, rejected.stdout + rejected.stderr
+        assert "watch-word address is not backed: 0x02000000" in rejected.stderr, (
+            rejected.stdout + rejected.stderr
+        )
 
     with tempfile.TemporaryDirectory(prefix="ee-native-heap-boundary-") as tmp:
         root = Path(tmp)
