@@ -1600,6 +1600,16 @@ int main(int argc, char** argv)
                             "v0=%d resume=0x%08x\n",
                             dmac_callback_channel, result, cpu.m_pc);
             }
+            // A genuine interrupt-safe SignalSema may have promoted an EE
+            // waiter to READY. The kernel must finish restoring interrupted
+            // EE/VU0 state before scheduling the newly runnable thread.
+            if (reschedule_requested && !schedule_threads())
+            {
+                reason = static_cast<uint32_t>(
+                    ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED);
+                status = 0u;
+                break;
+            }
             continue;
         }
         if (callback_active &&
@@ -1676,10 +1686,16 @@ int main(int argc, char** argv)
             const bool interrupt_sif_service = dmac_callback_active &&
                 (signed_service == -0x76 || signed_service == -0x77 ||
                  signed_service == -0x78);
-            const uint32_t service = interrupt_sif_service
+            // Genuine EE DMA5 SIFCMD handlers signal semaphores via the
+            // kernel's negative interrupt-context iSignalSema number.
+            const bool interrupt_semaphore_service = dmac_callback_active &&
+                signed_service == -0x43;
+            const bool interrupt_safe_service = interrupt_sif_service ||
+                interrupt_semaphore_service;
+            const uint32_t service = interrupt_safe_service
                 ? static_cast<uint32_t>(-signed_service)
                 : static_cast<uint32_t>(signed_service);
-            if (!callback_active && !interrupt_sif_service &&
+            if (!callback_active && !interrupt_safe_service &&
                 service < 256u &&
                 installed_syscall_handlers[service] != 0u)
             {
@@ -3315,7 +3331,8 @@ int main(int argc, char** argv)
                 cpu.m_exit_reason = static_cast<uint32_t>(
                     ee::e_ee_exit_reason::EE_EXIT_DISPATCH
                 );
-                if (reschedule_requested && !schedule_threads())
+                if (reschedule_requested && !dmac_callback_active &&
+                    !callback_active && !schedule_threads())
                 {
                     reason = static_cast<uint32_t>(
                         ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED);

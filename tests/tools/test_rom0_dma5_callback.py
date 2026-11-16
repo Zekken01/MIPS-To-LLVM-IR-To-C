@@ -57,6 +57,13 @@ def make_guest_dma5_callback_elf(path):
     # Handler 0x00100200; descriptor 0x00100300; flag 0x00100480.
     # Distinct packet sources reside at 0x00100600 and 0x00100620.
     program = [addiu(19, 0, 0x1234)]
+    # Real zero-count guest semaphore. Its later count must come from
+    # iSignalSema inside the authentic ROM0-triggered DMA5 callback.
+    program += [
+        lui(4, 0x0010), ori(4, 4, 0x0500),
+        addiu(3, 0, 0x40), 0x0000000c,  # CreateSema
+        move(21, 2),  # record allocated semaphore ID
+    ]
     program += [
         addiu(4, 0, 5), lui(5, 0x0010), ori(5, 5, 0x0200),
         addiu(6, 0, 0), addiu(7, 0, 0x20),
@@ -85,6 +92,10 @@ def make_guest_dma5_callback_elf(path):
         lw(12, 0, 11), beq(12, 0, -2), 0,
         move(16, 12), move(17, 19),
         lw(18, 8, 11), lw(20, 12, 11),
+        addiu(4, 0, 1), lui(5, 0x0010), ori(5, 5, 0x0540),
+        addiu(3, 0, 0x47), 0x0000000c,  # ReferSemaStatus
+        lui(8, 0x0010), ori(8, 8, 0x0540),
+        lw(22, 0, 8),  # s6 observes genuine count=1
         0x0000000d,  # BREAK: deliberately end the guest fixture
     ]
     if 0x108 + len(program) * 4 >= 0x300:
@@ -101,10 +112,15 @@ def make_guest_dma5_callback_elf(path):
         lui(8, 0x0010), ori(8, 8, 0x0480),
         addiu(9, 0, 1), sw(9, 0, 8),
         sw(4, 8, 8), sw(5, 12, 8),
+        addiu(4, 0, 1), addiu(3, 0, -0x43),
+        0x0000000c,  # iSignalSema: genuine guest semaphore state
         addiu(19, 0, 0x7777), move(2, 0), 0x03e00008, 0,
     ]
     for index, word in enumerate(handler):
         struct.pack_into("<I", image, 0x300 + index * 4, word)
+
+    # ee_sema_t: count, max_count, init_count, wait_threads, attr, option.
+    struct.pack_into("<6I", image, 0x600, 0, 1, 0, 0, 0, 0)
 
     # Actual OpenPS2BIOS SIFCMD INIT_CMD option 0 then option 1.
     struct.pack_into("<5I", image, 0x700, 20, 0, 0x80000002, 0, 0x00180000)
@@ -159,17 +175,20 @@ def main():
     assert ("HLE DMAC callback enter: channel=5 handler=0x00100200 "
             "arg=0x00000020") in result.stdout
     assert ("HLE interrupt SIF syscall: pc=0x00100204 "
-            "architectural_epc=0x001000cc resume=0x00100208") in result.stdout, (
+            "architectural_epc=0x001000e0 resume=0x00100208") in result.stdout, (
         result.stdout[-6000:]
     )
     assert ("HLE iSifSetDChain: channel=5 qwc=0 "
             "chcr=0x00000184 result=void") in result.stdout
     assert result.stdout.count("HLE DMAC IRQ: channel=5 pending=") == 1
+    assert "HLE iSignalSema: id=1 old_count=0 new_count=1 result=1" in result.stdout
     assert "HLE DMAC callback returned: channel=5 v0=0" in result.stdout
     assert snapshot["gpr_lo"][16] == 1, snapshot
     assert snapshot["gpr_lo"][17] == 0x1234, snapshot
     assert snapshot["gpr_lo"][18] == 5, snapshot
     assert snapshot["gpr_lo"][20] == 0x20, snapshot
+    assert snapshot["gpr_lo"][21] == 1, snapshot  # CreateSema
+    assert snapshot["gpr_lo"][22] == 1, snapshot  # ReferSemaStatus.count
     assert snapshot["dispatches"] < 1024, snapshot
     assert snapshot["exit_name"] == "EXCEPTION", snapshot
     assert (snapshot["cop0_cause"] & 0x7c) == 0x24, snapshot  # BREAK only
