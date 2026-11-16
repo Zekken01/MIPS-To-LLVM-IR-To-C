@@ -28,6 +28,10 @@ void c_hw::reset()
     m_dma_pcr = 0u;
     m_dma_pcr2 = 0u;
     m_dma_global_enable = 0u;
+    m_sif_mscom = 0u;
+    m_sif_smcom = 0u;
+    m_sif_msflag = 0u;
+    m_sif_smflag = 0u;
     for (uint32_t channel = 0u; channel < 2u; ++channel)
     {
         for (uint32_t reg = 0u; reg < 4u; ++reg)
@@ -127,6 +131,18 @@ bool c_hw::read(
 
     switch (address)
     {
+    case k_sif_mscom:
+        *value = m_sif_mscom;
+        return true;
+    case k_sif_smcom:
+        *value = m_sif_smcom;
+        return true;
+    case k_sif_msflag:
+        *value = m_sif_msflag;
+        return true;
+    case k_sif_smflag:
+        *value = m_sif_smflag;
+        return true;
     case k_dma_pcr:
         *value = m_dma_pcr;
         return true;
@@ -226,6 +242,18 @@ bool c_hw::write(
 
     switch (address)
     {
+    case k_sif_smcom:
+        m_sif_smcom = value;
+        return true;
+    case k_sif_msflag:
+        // IOP writes acknowledge bits asserted by the EE.
+        m_sif_msflag &= ~value;
+        return true;
+    case k_sif_smflag:
+        // Only the guest IOP announces its own readiness. The EE
+        // independently acknowledges flags when it processes them.
+        m_sif_smflag |= value;
+        return true;
     case k_dma_pcr:
         // Each DMA channel's priority and enable nibble is writable,
         // but programming it does not launch or complete a transfer.
@@ -287,6 +315,31 @@ bool c_hw::write(
     default:
         return false;
     }
+}
+
+void c_hw::ee_write_mscom(uint32_t value)
+{
+    m_sif_mscom = value;
+}
+
+void c_hw::ee_set_msflag(uint32_t bits)
+{
+    m_sif_msflag |= bits;
+}
+
+void c_hw::ee_clear_smflag(uint32_t bits)
+{
+    m_sif_smflag &= ~bits;
+}
+
+uint32_t c_hw::sif_smcom() const
+{
+    return m_sif_smcom;
+}
+
+uint32_t c_hw::sif_smflag() const
+{
+    return m_sif_smflag;
 }
 
 void c_hw::assert_dma_irq(uint32_t& control, bool sif_channel)
