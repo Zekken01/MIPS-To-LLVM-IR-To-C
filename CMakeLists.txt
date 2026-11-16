@@ -46,6 +46,13 @@ add_library(ee_core STATIC
     src/runtime/ee_vu0.cpp
 )
 
+# Standalone IOP R3000A interpreter, initially isolated from the EE
+# runner until module loading, timing and SIF transport are integrated.
+add_library(iop_cpu STATIC src/iop/iop_cpu.cpp)
+target_include_directories(iop_cpu PUBLIC ${CMAKE_SOURCE_DIR}/src/iop)
+add_executable(iop_cpu_test tests/smoke/iop_cpu_test.cpp)
+target_link_libraries(iop_cpu_test PRIVATE iop_cpu)
+
 add_executable(ee_smoke_test
     tests/smoke/smoke_test.cpp
     tests/smoke/native_smoke.cpp
@@ -291,6 +298,7 @@ if(Python3_Interpreter_FOUND)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_vu0_differential_x11_config.py)
 endif()
+add_test(NAME iop_cpu COMMAND iop_cpu_test)
 add_test(NAME decoder COMMAND ee_decoder_test)
 add_test(NAME dispatcher COMMAND ee_dispatcher_test)
 add_test(NAME ee_dispatch_interrupt COMMAND ee_dispatch_interrupt_test)
