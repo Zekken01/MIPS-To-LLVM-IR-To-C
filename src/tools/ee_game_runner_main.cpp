@@ -2199,12 +2199,17 @@ int main(int argc, char** argv)
                         break;
                     }
 
+                    // An IOP LOADFILE server may have a validated
+                    // response pending until EE SIF0 is armed.
+                    if (iop_rpc != nullptr)
+                    {
+                        (void)iop_rpc->pump();
+                    }
                     if (trace)
                     {
                         std::printf(
                             "HLE SifSetDChain: channel=5 "
-                            "qwc=0 chcr=0x00000184 "
-                            "result=void (no IOP producer)\n"
+                            "qwc=0 chcr=0x00000184 result=void\n"
                         );
                     }
                 }
