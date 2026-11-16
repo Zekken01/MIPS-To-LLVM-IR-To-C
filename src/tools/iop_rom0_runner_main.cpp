@@ -85,9 +85,11 @@ bool has_romdir_iopboot(const std::vector<uint8_t>& image)
         {
             break;
         }
-        const size_t count = strnlen(
-            reinterpret_cast<const char*>(name), 10u
-        );
+        size_t count = 0u;
+        while (count < 10u && name[count] != 0u)
+        {
+            ++count;
+        }
         if (count == 7u &&
             std::memcmp(name, "IOPBOOT", 7u) == 0 &&
             read32(image, offset + 12u) != 0u)
