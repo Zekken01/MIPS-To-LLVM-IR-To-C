@@ -99,7 +99,7 @@ jobs:
           import json
           with open("rom0-sif-integration.json", encoding="utf-8") as file:
               report = json.load(file)
-          assert report["format"] == "openps2bios-authentic-sif1-v4"
+          assert report["format"] == "openps2bios-authentic-sif1-v5"
           assert report["rom0_bytes"] == 4194304
           assert report["reset_pc"] == 0xBFC00000
           assert report["boot_instructions"] == 10000000
@@ -140,6 +140,7 @@ jobs:
           assert report["rpc_bind_reply_bytes"] == 48
           assert report["rpc_bind_iop_dma9_chcr"] & 0x01000000 == 0
           assert report["rpc_bind_ee_dma5_chcr"] & 0x100 == 0
+          assert report["rpc_call_dma_id"] == 1
           assert report["rpc_call_received"] == report["rpc_bind_received"] + 1
           assert report["rpc_call_command"] == 0x8000000A
           assert report["rpc_call_result"] == 0
