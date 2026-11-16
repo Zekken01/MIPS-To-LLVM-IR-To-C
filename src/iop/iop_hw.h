@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 
 namespace iop
 {
@@ -17,6 +18,10 @@ public:
     static constexpr uint32_t k_i_mask = 0x1f801074u;
     static constexpr uint32_t k_i_ctrl = 0x1f801078u;
     static constexpr uint32_t k_cache_control = 0xfffe0130u;
+    // OpenPS2BIOS emits guest TTY bytes to this emulator-facing port.
+    // It is a write-only diagnostic extension, not IOP boot readiness.
+    static constexpr uint32_t k_debug_console = 0x1f802080u;
+    static constexpr size_t k_debug_console_capacity = 4096u;
 
     c_hw();
     void reset();
@@ -32,6 +37,8 @@ public:
     bool raise_interrupt(uint32_t line);
     uint32_t pending_interrupts() const;
     uint32_t cache_control() const;
+    const std::string& debug_console() const;
+    bool debug_console_truncated() const;
 
 private:
     bool scratchpad_range(uint32_t address, uint32_t width) const;
@@ -41,5 +48,7 @@ private:
     uint32_t m_i_mask = 0u;
     uint32_t m_i_ctrl = 1u;
     uint32_t m_cache_control = 0u;
+    std::string m_debug_console;
+    bool m_debug_console_truncated = false;
 };
 } // namespace iop
