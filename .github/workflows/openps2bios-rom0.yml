@@ -1,0 +1,81 @@
+name: OpenPS2BIOS ROM0 execution
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure ROM0 runner
+        run: cmake -S . -B build-rom0 -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build ROM0 runner and focused regressions
+        run: |
+          cmake --build build-rom0 --parallel 2 --target \
+            iop_rom0_runner iop_cpu_test iop_rom0_boot_test iop_hw_test
+          ctest --test-dir build-rom0 --output-on-failure \
+            -R '^(iop_cpu|iop_rom0_boot|iop_rom0_runner|iop_hw)$'
+
+      - name: Download official OpenPS2BIOS v0.6 ROM0
+        run: |
+          set -euo pipefail
+          url="https://api.github.com/repos/TamaribaEmu/OpenPS2BIOS/releases/assets/715134569"
+          if ! curl --fail --location --retry 3 --retry-all-errors \
+              --header 'Accept: application/octet-stream' \
+              --output OpenPS2BIOS-0.6.bin "$url"; then
+            curl --fail --location --retry 3 --retry-all-errors \
+              --output OpenPS2BIOS-0.6.bin \
+              "https://github.com/TamaribaEmu/OpenPS2BIOS/releases/download/v0.6/OpenPS2BIOS-0.6.bin"
+          fi
+          test "$(wc -c < OpenPS2BIOS-0.6.bin)" -eq 4194304
+          printf '%s  %s\n' \
+            '3702baa508ff40498fab4a95429a2ae1f903d11f5bbcdd4e1a87dbe9f5d21a84' \
+            'OpenPS2BIOS-0.6.bin' | sha256sum --check
+
+      - name: Execute guest IOP reset vector and capture stop
+        run: |
+          set -uo pipefail
+          set +e
+          ./build-rom0/iop_rom0_runner OpenPS2BIOS-0.6.bin \
+            --instructions=200000 --trace-tail=64 \
+            --report=rom0-report.json >rom0-trace.log 2>&1
+          status=$?
+          set -e
+          echo "ROM0 runner exit status: $status"
+          cat rom0-trace.log
+          test "$status" -eq 3 -o "$status" -eq 4
+          python3 - <<'PY'
+          import json
+          with open("rom0-report.json", encoding="utf-8") as file:
+              report = json.load(file)
+          assert report["rom0_bytes"] == 4194304
+          assert report["reset_pc"] == 0xBFC00000
+          assert report["romdir_has_iopboot"]
+          assert report["executed"] > 0
+          print("Observed stop:", report["stop"])
+          print("Guest PC: 0x%08X" % report["pc"])
+          print("Guest opcode: 0x%08X" % report["opcode"])
+          print("Guest memory fault:", report["memory_fault"])
+          print("Executed instructions:", report["executed"])
+          PY
+
+      - name: Preserve actual guest execution evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openps2bios-v06-rom0-execution
+          path: |
+            rom0-report.json
+            rom0-trace.log
+          if-no-files-found: ignore
+          retention-days: 7
