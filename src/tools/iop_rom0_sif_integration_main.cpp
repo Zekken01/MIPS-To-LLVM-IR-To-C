@@ -562,6 +562,9 @@ int main(int argc, char** argv)
     }
 
 
+    const uint64_t sifcmd_sif0_reply_bytes = sif0.delivered_bytes();
+    const uint64_t sifcmd_sif1_transferred_bytes = sif1.delivered_bytes();
+
     // Next exchange: genuine firmware RPC_BIND to the built-in
     // LOADFILE server. ob_rpc_parse() accepts the public 36-byte
     // request and ob_iop_rpc_handle() replies with 48-byte RPC_END.
@@ -685,7 +688,7 @@ int main(int argc, char** argv)
     }
     report <<
         "{\n"
-        "  \"format\": \"openps2bios-authentic-sif1-v2\",\n"
+        "  \"format\": \"openps2bios-authentic-sif1-v3\",\n"
         "  \"rom0_bytes\": " << rom.size() << ",\n"
         "  \"reset_pc\": " << reset_pc << ",\n"
         "  \"boot_instructions\": " << boot.m_executed << ",\n"
@@ -701,6 +704,7 @@ int main(int argc, char** argv)
         "  \"requested_bytes\": " << k_payload_bytes << ",\n"
         "  \"transferred_bytes\": " << k_payload_bytes << ",\n"
         "  \"total_sif1_transferred_bytes\": " << sif1.delivered_bytes() << ",\n"
+        "  \"sifcmd_sif1_transferred_bytes\": " << sifcmd_sif1_transferred_bytes << ",\n"
         "  \"source_checksum\": " << source_checksum << ",\n"
         "  \"destination_checksum\": " << destination_checksum << ",\n"
         "  \"ee_chcr_before\": " << ee_dma6_before << ",\n"
@@ -720,8 +724,17 @@ int main(int argc, char** argv)
         "  \"sifcmd_ee_buffer\": " << command_buffer << ",\n"
         "  \"sifcmd_rpc_requested\": " << rpc_requested << ",\n"
         "  \"sifcmd_rpc_announced\": " << rpc_announced << ",\n"
-        "  \"sifcmd_sif0_reply_bytes\": " << sif0.delivered_bytes() << ",\n"
-        "  \"sifcmd_ee_dma5_chcr\": " << ee5_chcr << "\n"
+        "  \"sifcmd_sif0_reply_bytes\": " << sifcmd_sif0_reply_bytes << ",\n"
+        "  \"total_sif0_transferred_bytes\": " << sif0.delivered_bytes() << ",\n"
+        "  \"sifcmd_ee_dma5_chcr\": " << ee5_chcr << ",\n"
+        "  \"rpc_bind_received\": " << received_after_bind << ",\n"
+        "  \"rpc_bind_command\": " << bind_command << ",\n"
+        "  \"rpc_bind_result\": " << bind_result << ",\n"
+        "  \"rpc_bind_sid\": " << bind_argument << ",\n"
+        "  \"rpc_bind_server\": " << k_expected_loadfile_server << ",\n"
+        "  \"rpc_bind_reply_bytes\": 48,\n"
+        "  \"rpc_bind_iop_dma9_chcr\": " << bind_iop_dma9_chcr << ",\n"
+        "  \"rpc_bind_ee_dma5_chcr\": " << bind_ee_dma5_chcr << "\n"
         "}\n";
     if (!report.good())
     {
@@ -736,7 +749,12 @@ int main(int argc, char** argv)
         "OpenPS2BIOS guest SIFCMD: PASS command=%08x "
         "reply_bytes=%llu ee_buffer=%08x rpc_announced=%u\n",
         command_id,
-        static_cast<unsigned long long>(sif0.delivered_bytes()),
+        static_cast<unsigned long long>(sifcmd_sif0_reply_bytes),
         command_buffer, rpc_announced);
+    std::printf(
+        "OpenPS2BIOS guest RPC_BIND: PASS sid=%08x server=%08x "
+        "reply_bytes=48 total_sif0=%llu\n",
+        k_bind_sid, k_expected_loadfile_server,
+        static_cast<unsigned long long>(sif0.delivered_bytes()));
     return 0;
 }
