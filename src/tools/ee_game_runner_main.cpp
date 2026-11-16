@@ -2209,7 +2209,11 @@ int main(int argc, char** argv)
                     {
                         std::printf(
                             "HLE SifSetDChain: channel=5 "
-                            "qwc=0 chcr=0x00000184 result=void\n"
+                            "qwc=0 chcr=0x00000184 "
+                            "result=void (%s)\n",
+                            iop_rpc == nullptr
+                                ? "no IOP producer"
+                                : "IOP LOADFILE RPC connected"
                         );
                     }
                 }
