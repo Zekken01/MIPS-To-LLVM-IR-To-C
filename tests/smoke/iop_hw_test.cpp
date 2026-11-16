@@ -68,6 +68,32 @@ int main()
         return fail("scratchpad size, subword access or unknown MMIO safety");
     }
 
+    // Official OpenPS2BIOS stores zero to $at=0xBF8010B8 at
+    // PC 0x0001CA00: primary DMA3/CD-ROM CHCR through KSEG1.
+    // Register programming is not an implicit DMA completion.
+    const uint32_t dma3 = iop::c_hw::k_cdrom_dma_base;
+    if (!hardware.read(dma3 + 8u, 4u, &actual) || actual != 0u ||
+        !hardware.write(dma3, 4u, 0x00001000u) ||
+        !hardware.write(dma3 + 4u, 4u, 0x00000020u) ||
+        !hardware.write(dma3 + 8u, 4u, 0u) ||
+        !hardware.read(dma3 + 8u, 4u, &actual) || actual != 0u ||
+        hardware.write(dma3 + 8u, 4u, 0x01000000u) ||
+        !hardware.read(dma3, 4u, &actual) || actual != 0x1000u ||
+        !hardware.read(dma3 + 4u, 4u, &actual) || actual != 0x20u ||
+        !hardware.read(dma3 + 8u, 4u, &actual) || actual != 0u ||
+        hardware.read(dma3 + 12u, 4u, &actual) ||
+        hardware.write(dma3 + 8u, 2u, 0u))
+    {
+        return fail("primary IOP DMA3 CHCR reset/start semantics");
+    }
+    hardware.reset();
+    if (!hardware.read(dma3, 4u, &actual) || actual != 0u ||
+        !hardware.read(dma3 + 4u, 4u, &actual) || actual != 0u ||
+        !hardware.read(dma3 + 8u, 4u, &actual) || actual != 0u)
+    {
+        return fail("primary DMA3 registers survived reset");
+    }
+
     // The standalone ROM0 runner has no mounted disc. The CDVD
     // disk-type register must report no media, not an invented game disc.
     if (!hardware.read(iop::c_hw::k_cdvd_disc_type, 1u, &actual) ||
@@ -174,6 +200,36 @@ int main()
         actual != 0x1234u)
     {
         return fail("guest instruction stream did not access mapped hardware");
+    }
+
+    // Execute original ROM0-style instructions against the KSEG1 DMA3
+    // CHCR alias. This test never starts or completes a transfer.
+    const uint32_t dma3_instructions[] =
+    {
+        0x3c01bf80u, // lui at,0xbf80
+        0x342110b8u, // ori at,at,0x10b8
+        0xac200000u, // sw zero,0(at), observed ROM0 opcode
+        0x8c290000u, // lw t1,0(at)
+        0x0000000du  // break
+    };
+    for (uint32_t index = 0u; index < 5u; ++index)
+    {
+        put32(rom, index * 4u, dma3_instructions[index]);
+    }
+    iop::c_kernel dma3_kernel{};
+    if (!dma3_kernel.start_rom0_boot(rom))
+    {
+        return fail("DMA3 KSEG1 fixture failed to install guest ROM");
+    }
+    const iop::s_kernel_run_result dma3_result =
+        dma3_kernel.run(16u, 4u);
+    if (dma3_result.m_stop != iop::e_kernel_stop::breakpoint ||
+        dma3_result.m_executed != 4u ||
+        dma3_kernel.cpu().state().m_gpr[9u] != 0u ||
+        dma3_kernel.cpu().last_memory_fault().m_valid ||
+        dma3_kernel.hardware().pending_interrupts() != 0u)
+    {
+        return fail("guest DMA3 CHCR reset faulted or created phantom IRQ");
     }
 
     // Actual guest SB from KSEG1 into the diagnostic console, without

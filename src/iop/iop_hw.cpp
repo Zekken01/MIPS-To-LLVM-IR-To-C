@@ -25,6 +25,7 @@ void c_hw::reset()
     m_timer5_target = 0u;
     m_timer5_remainder = 0u;
     m_timer5_irq_armed = true;
+    std::fill(m_cdrom_dma, m_cdrom_dma + 3u, 0u);
     m_dma_pcr = 0u;
     m_dma_pcr2 = 0u;
     m_dma_global_enable = 0u;
@@ -150,6 +151,13 @@ bool c_hw::read(
         return false;
     }
 
+    if (address >= k_cdrom_dma_base &&
+        address < k_cdrom_dma_base + 12u)
+    {
+        *value = m_cdrom_dma[(address - k_cdrom_dma_base) / 4u];
+        return true;
+    }
+
     uint32_t channel = 0u;
     uint32_t reg = 0u;
     if (sif_dma_register(address, &channel, &reg))
@@ -262,6 +270,22 @@ bool c_hw::write(
     if (width != 4u || (address & 3u) != 0u)
     {
         return false;
+    }
+
+    if (address >= k_cdrom_dma_base &&
+        address < k_cdrom_dma_base + 12u)
+    {
+        const uint32_t reg = (address - k_cdrom_dma_base) / 4u;
+        // DMA3.CHCR.STR starts a genuine CD-ROM transfer. No CD-ROM
+        // transport is connected, so fail rather than simulate success.
+        // A zero CHCR store is an authentic register reset and must
+        // not claim completion or raise an interrupt.
+        if (reg == 2u && (value & 0x01000000u) != 0u)
+        {
+            return false;
+        }
+        m_cdrom_dma[reg] = value;
+        return true;
     }
 
     uint32_t channel = 0u;

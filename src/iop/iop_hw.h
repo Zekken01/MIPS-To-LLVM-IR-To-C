@@ -38,6 +38,9 @@ public:
     static constexpr uint32_t k_timer5_mode = 0x1f8014a4u;
     static constexpr uint32_t k_timer5_target = 0x1f8014a8u;
     static constexpr uint32_t k_timer5_irq = 16u;
+    // Primary IOP DMA3 (CD-ROM) register bank, observed through KSEG1.
+    static constexpr uint32_t k_cdrom_dma_base = 0x1f8010b0u;
+    static constexpr uint32_t k_cdrom_dma_chcr = k_cdrom_dma_base + 8u;
     static constexpr uint32_t k_dma_pcr = 0x1f8010f0u;
     static constexpr uint32_t k_dma_pcr2 = 0x1f801570u;
     // Secondary DMA global-enable control, used by the firmware's SIF.
@@ -110,6 +113,8 @@ private:
     uint32_t m_timer5_target = 0u;
     uint32_t m_timer5_remainder = 0u;
     bool m_timer5_irq_armed = true;
+    // MADR/BCR/CHCR; no CD-ROM transfer backend exists yet.
+    uint32_t m_cdrom_dma[3]{};
     uint32_t m_dma_pcr = 0u;
     uint32_t m_dma_pcr2 = 0u;
     uint32_t m_dma_global_enable = 0u;
