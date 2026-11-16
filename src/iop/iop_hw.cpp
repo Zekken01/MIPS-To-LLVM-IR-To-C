@@ -167,8 +167,6 @@ bool c_hw::write(
         // Unknown gate/source/overflow configurations must not run
         // with invented counter behaviour.
         if ((value & ~0x6058u) != 0u ||
-            (value & 0x2000u) != 0u ||
-            (value & 0x4000u) != 0u ||
             (value & 0x0058u) != 0x0058u)
         {
             // Also permit mode 0 to reset an unconfigured counter.
