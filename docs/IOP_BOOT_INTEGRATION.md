@@ -187,3 +187,34 @@ unchanged and continues to report SMFLAG=0 if nothing publishes it.
 The end-to-end `game_runner_end_to_end` test now includes synthetic
 EE and IOP ELF inputs to prove that executed R3000 guest code, rather
 than an HLE reset constant, causes the EE to exit its SIF poll.
+
+
+## Cross-module IOP IRX library exports (PR #71)
+
+The IOP loader now recognizes 0x41C00000 export-library headers in
+relocated module memory. The zero-terminated table at header+20 maps
+ordinal N to a genuine relocated guest R3000 entry address, analogous
+to the export tables used by the `ps2-web-recomp` IOP kernel.
+Exports must have a valid library name and point within the module's
+loaded RAM range. Duplicate ordinals, malformed pointers and unterminated
+tables are rejected before committing the staged image.
+
+`iop::c_kernel::load_module()` checks all discovered entries against
+registered HLE and prior module exports before writing guest RAM. After
+success, the kernel publishes the entries in its import-resolution
+registry, so a *later* module can link against them without a fabricated
+HLE return. It remains a strictly ordered, fail-closed module loader;
+forward references and recursive dependencies require a future
+multi-module linking pass.
+
+The independent `iop_irx_export_link` regression builds two synthetic
+IRX images: a provider with an exported real R3000 function and a
+consumer importing it. The test checks a missing provider failure,
+function-pointer relocation, RAM-safe duplicate/conflict rejection,
+successful import resolution, and executing the provider's function
+through a real consumer guest JAL/import stub.
+
+Next: accept an ordered group of local IOP IRX paths in the EE runner,
+then add the real IOP kernel-service imports and guest clock/event
+scheduling required by SDBZ. The reference project's HLE-installed
+IOP services remain separate from genuinely executed guest IRX exports.
