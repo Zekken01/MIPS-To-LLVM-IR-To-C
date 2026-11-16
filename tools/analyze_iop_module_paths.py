@@ -195,6 +195,12 @@ def find_module_call_candidates(raw, segments, addresses):
             for low_index in range(index - 1, max(-1, index - 17), -1):
                 low_pc, low_word = words[low_index]
                 kind = low_word >> 26
+                # MIPS $a0 is caller-saved. Once a previous JAL/JALR
+                # executes, a still-older string pointer cannot be
+                # assumed to survive into this later call.
+                if kind == 3 or (
+                        kind == 0 and (low_word & 63) == 9):
+                    break
                 if ((low_word >> 16) & 31) != 4:
                     continue
                 if kind not in PAIR_OPS or ((low_word >> 21) & 31) != 4:
