@@ -17,6 +17,7 @@ void c_hw::reset()
         static_cast<uint8_t>(0u)
     );
     m_cdvd_i_stat = 0u;
+    m_cdvd_dec_set = 0u;
     m_i_stat = 0u;
     m_i_mask = 0u;
     m_i_ctrl = 1u;
@@ -154,6 +155,11 @@ bool c_hw::read(
         *value = m_cdvd_i_stat;
         return true;
     }
+    if (address == k_cdvd_dec_set && width == 1u)
+    {
+        *value = m_cdvd_dec_set;
+        return true;
+    }
     if (address == k_cdvd_ncmd_status && width == 1u)
     {
         *value = k_cdvd_ncmd_ready;
@@ -278,6 +284,13 @@ bool c_hw::write(
         // CDVD I_STAT is W1C. An ack does not generate an IOP IRQ
         // or mark any CDVD operation as completed.
         m_cdvd_i_stat &= static_cast<uint8_t>(~value);
+        return true;
+    }
+    if (address == k_cdvd_dec_set && width == 1u)
+    {
+        // Firmware configures the CDVD decryption mode here. Retain
+        // the byte until reset; no sector processing is implied.
+        m_cdvd_dec_set = static_cast<uint8_t>(value);
         return true;
     }
     if (address == k_debug_console && width == 1u)
