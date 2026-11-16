@@ -32,6 +32,9 @@ void c_hw::reset()
     m_sif_smcom = 0u;
     m_sif_msflag = 0u;
     m_sif_smflag = 0u;
+    m_sif_mmio_user = nullptr;
+    m_sif_mmio_read = nullptr;
+    m_sif_mmio_write = nullptr;
     for (uint32_t channel = 0u; channel < 2u; ++channel)
     {
         for (uint32_t reg = 0u; reg < 4u; ++reg)
@@ -43,6 +46,16 @@ void c_hw::reset()
     m_dma_icr2 = 0u;
     m_debug_console.clear();
     m_debug_console_truncated = false;
+}
+
+void c_hw::bind_sif_mmio(
+    void* user, t_sif_mmio_read read, t_sif_mmio_write write
+)
+{
+    m_sif_mmio_user = (user != nullptr && read != nullptr &&
+                       write != nullptr) ? user : nullptr;
+    m_sif_mmio_read = m_sif_mmio_user != nullptr ? read : nullptr;
+    m_sif_mmio_write = m_sif_mmio_user != nullptr ? write : nullptr;
 }
 
 bool c_hw::scratchpad_range(
@@ -129,6 +142,12 @@ bool c_hw::read(
         return true;
     }
 
+    if (m_sif_mmio_user != nullptr &&
+        (address == k_sif_mscom || address == k_sif_smcom ||
+         address == k_sif_msflag || address == k_sif_smflag))
+    {
+        return m_sif_mmio_read(m_sif_mmio_user, address, width, value);
+    }
     switch (address)
     {
     case k_sif_mscom:
@@ -240,6 +259,12 @@ bool c_hw::write(
         return true;
     }
 
+    if (m_sif_mmio_user != nullptr &&
+        (address == k_sif_mscom || address == k_sif_smcom ||
+         address == k_sif_msflag || address == k_sif_smflag))
+    {
+        return m_sif_mmio_write(m_sif_mmio_user, address, width, value);
+    }
     switch (address)
     {
     case k_sif_smcom:
@@ -334,12 +359,26 @@ void c_hw::ee_clear_smflag(uint32_t bits)
 
 uint32_t c_hw::sif_smcom() const
 {
-    return m_sif_smcom;
+    uint32_t value = m_sif_smcom;
+    if (m_sif_mmio_user != nullptr)
+    {
+        (void)m_sif_mmio_read(
+            m_sif_mmio_user, k_sif_smcom, 4u, &value
+        );
+    }
+    return value;
 }
 
 uint32_t c_hw::sif_smflag() const
 {
-    return m_sif_smflag;
+    uint32_t value = m_sif_smflag;
+    if (m_sif_mmio_user != nullptr)
+    {
+        (void)m_sif_mmio_read(
+            m_sif_mmio_user, k_sif_smflag, 4u, &value
+        );
+    }
+    return value;
 }
 
 void c_hw::assert_dma_irq(uint32_t& control, bool sif_channel)
