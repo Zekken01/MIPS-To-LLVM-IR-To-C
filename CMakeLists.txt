@@ -55,6 +55,7 @@ add_library(iop_cpu STATIC
     src/iop/iop_kernel.cpp
     src/iop/iop_sifman_bridge.cpp
     src/iop/iop_sif1_bridge.cpp
+    src/iop/iop_sif1_dma_transport.cpp
     src/iop/iop_sifcmd_bridge.cpp
     src/iop/iop_disc_loader.cpp
     src/iop/iop_sif_rpc_bridge.cpp
@@ -76,6 +77,10 @@ add_executable(iop_dma_sif_channels_test tests/smoke/iop_dma_sif_channels_test.c
 target_link_libraries(iop_dma_sif_channels_test PRIVATE iop_cpu)
 add_executable(sif1_dma_registers_test tests/smoke/sif1_dma_registers_test.cpp)
 target_link_libraries(sif1_dma_registers_test PRIVATE iop_cpu ee_core)
+add_executable(sif1_ee_to_iop_test tests/smoke/sif1_ee_to_iop_test.cpp)
+target_link_libraries(sif1_ee_to_iop_test PRIVATE iop_cpu ee_core)
+add_executable(sif1_dma_invalid_tags_test tests/smoke/sif1_dma_invalid_tags_test.cpp)
+target_link_libraries(sif1_dma_invalid_tags_test PRIVATE iop_cpu ee_core)
 add_executable(iop_sif_handoff_test tests/smoke/iop_sif_handoff_test.cpp)
 target_link_libraries(iop_sif_handoff_test PRIVATE iop_cpu)
 add_executable(iop_sif_mmio_link_test tests/smoke/iop_sif_mmio_link_test.cpp)
@@ -364,6 +369,8 @@ add_test(NAME iop_dma_icr COMMAND iop_dma_icr_test)
 add_test(NAME iop_dma_global_enable COMMAND iop_dma_global_enable_test)
 add_test(NAME iop_dma_sif_channels COMMAND iop_dma_sif_channels_test)
 add_test(NAME sif1_dma_registers COMMAND sif1_dma_registers_test)
+add_test(NAME sif1_ee_to_iop COMMAND sif1_ee_to_iop_test)
+add_test(NAME sif1_dma_invalid_tags COMMAND sif1_dma_invalid_tags_test)
 add_test(NAME iop_sif_handoff COMMAND iop_sif_handoff_test)
 add_test(NAME iop_sif_mmio_link COMMAND iop_sif_mmio_link_test)
 add_test(NAME iop_irx_loader COMMAND iop_irx_loader_test)

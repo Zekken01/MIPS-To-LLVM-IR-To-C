@@ -34,6 +34,13 @@ public:
     void bind_cpu(s_ee_cpu_state* cpu);
     void bind_memory(ee_memory* memory);
 
+    // Genuine SIF1 channel-6 DMA uses an attached hardware FIFO engine.
+    // A CHCR start notifies the engine; it never implies completion.
+    using t_sif1_start_callback = void (*)(void* user);
+    void bind_sif1_start(void* user, t_sif1_start_callback callback);
+    // The FIFO engine has moved exactly qwc complete source quadwords.
+    bool commit_sif1_qwords(uint32_t qwc);
+
     // A host-owned, synchronous data consumer. channel is 0=VIF0,
     // 1=VIF1 (RAM-to-device), 2=GIF PATH3. data is a contiguous,
     // little-endian array of 16*qwc bytes valid only during the call.
@@ -93,6 +100,8 @@ private:
     bool transfer_from_spr_span(s_spr_channel& channel, uint32_t qwc, bool copy_data);
 
     s_ee_cpu_state* m_cpu = nullptr;
+    void* m_sif1_user = nullptr;
+    t_sif1_start_callback m_sif1_start = nullptr;
     ee_memory* m_memory = nullptr;
     void* m_device_user = nullptr;
     t_device_transfer_callback m_device_transfer = nullptr;
