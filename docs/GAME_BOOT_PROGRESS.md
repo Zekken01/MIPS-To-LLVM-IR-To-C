@@ -1347,8 +1347,11 @@ only captured state after the vector was constructed.
 The runner's opt-in `--trace-entry` now additionally emits
 32-bit low halves of `S0-S7`, `FP`, `GP`, `V0`, `V1`,
 and eight guest stack word pairs beginning at `SP+0x10`
-(where mapped). These observations are read-only and
-generic to the runner. The SDBZ launcher now defaults
+(where mapped). When the watched word changes, it also
+records `S3`, `S5`, and `FP` before and after the native
+dispatch, and the adjacent 32-bit word (the associated
+pointer in this particular output-vector layout). These
+observations are read-only and generic to the runner. The SDBZ launcher now defaults
 `EE_TRACE_ENTRY=0x00194478` to capture **before**
 the suspect dispatch segment, retaining
 `EE_WATCH_WORD=0x01FFEC14`. A subsequent user-owned
