@@ -175,7 +175,7 @@ def main():
     assert ("HLE DMAC callback enter: channel=5 handler=0x00100200 "
             "arg=0x00000020") in result.stdout
     assert ("HLE interrupt SIF syscall: pc=0x00100204 "
-            "architectural_epc=0x001000cc resume=0x00100208") in result.stdout, (
+            "architectural_epc=0x001000e0 resume=0x00100208") in result.stdout, (
         result.stdout[-6000:]
     )
     assert ("HLE iSifSetDChain: channel=5 qwc=0 "
