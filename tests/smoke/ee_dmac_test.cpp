@@ -118,6 +118,41 @@ int main()
         return fail("missing VIF1 consumer falsely completed DMA");
     }
 
+    // SIF0 DMA channel 5 has register state but no host IOP producer.
+    // CHCR.STR must remain set; enabling chain mode alone cannot
+    // invent bytes, a DMA completion, or a pending interrupt.
+    constexpr uint32_t sif0 = ee::c_ee_dmac::k_sif0_base;
+    const uint32_t status_before_sif0 = hardware.dmac().status();
+    ee::ee_mem_write32(&runtime, sif0 + 0x10u, 0x00123000u);
+    ee::ee_mem_write32(&runtime, sif0 + 0x20u, 0x12345u);
+    ee::ee_mem_write32(&runtime, sif0, 0x184u);
+    if (ee::ee_mem_read32(&runtime, sif0) != 0x184u ||
+        ee::ee_mem_read32(&runtime, sif0 + 0x10u) != 0x00123000u ||
+        ee::ee_mem_read32(&runtime, sif0 + 0x20u) != 0x2345u ||
+        hardware.dmac().status() != status_before_sif0)
+    {
+        return fail("SIF0 register bank or unimplemented IOP completion");
+    }
+
+    // The SIF0 channel has no scratchpad address register.
+    ee::s_ee_u128 unsupported_sif0{};
+    if (ee::c_ee_hw_bus::mmio_read(
+            &hardware, sif0 + 0x80u, 4u, &unsupported_sif0) ||
+        ee::c_ee_hw_bus::mmio_write(
+            &hardware, sif0 + 0x80u, 4u, &unsupported_sif0))
+    {
+        return fail("SIF0 incorrectly exposes SPR-only SADR");
+    }
+
+    ee::ee_mem_write32(&runtime, sif0 + 0x20u, 0u);
+    ee::ee_mem_write32(&runtime, sif0, 0x184u);
+    if (ee::ee_mem_read32(&runtime, sif0 + 0x20u) != 0u ||
+        ee::ee_mem_read32(&runtime, sif0) != 0x184u ||
+        hardware.dmac().status() != status_before_sif0)
+    {
+        return fail("SifSetDChain SIF0 QWC/CHCR reinitialization");
+    }
+
     // Only 32-bit D_STAT accesses are supported at this milestone.
     ee::ee_mem_write8(&runtime, d_stat, 0xffu);
     ee::ee_mem_write16(&runtime, d_stat, 0xffffu);
@@ -153,6 +188,8 @@ int main()
     if (hardware.dmac().status() != 0 ||
         hardware.dmac().pending() != 0 ||
         hardware.intc().status() != 0 ||
+        ee::ee_mem_read32(&runtime, sif0) != 0u ||
+        ee::ee_mem_read32(&runtime, sif0 + 0x20u) != 0u ||
         (next_cpu.m_cop0[ee::COP0_Cause] & (dmac_ip | intc_ip)) != 0)
     {
         return fail("hardware reset did not release pending interrupts");
