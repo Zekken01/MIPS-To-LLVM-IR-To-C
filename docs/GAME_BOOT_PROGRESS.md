@@ -1281,18 +1281,34 @@ The native runner now supports two **opt-in diagnostics**:
   four guest words at A0 or A1 where backed. It does not
   interpret game-specific C layouts or modify guest state.
 
-For the next local diagnostic run with `run_sdbz_native.bat`:
+The **November 16, 00:38 local run** again stopped at dispatch 6048
+with the same register state. Although `run_sdbz_native.bat`
+had gained optional diagnostic arguments, the command lines in both
+`expansion.log` and `boot.log` contained neither
+`--trace-entry` nor `--watch-word`. The earlier diagnostic
+instructions apparently did not survive into the launcher's
+environment, so that run provided no new state provenance.
+
+Until this specific blocker is fixed, the **SDBZ-only Windows launcher
+now enables both diagnostic arguments by default**, using the known
+guest entry `0x0018CF68` and watched guest word `0x01FFEC1C`.
+It prints the resolved arguments before starting the session, and
+the boot-session wrapper forwards them in both the expansion and
+final traced replay. The generic `run_game.py` and
+`ee_game_runner` keep both options opt-in.
+
+For the next local run, no special shell setup is required:
 
 ```bat
-set "EE_TRACE_ENTRY=0x0018CF68"
-set "EE_WATCH_WORD=0x01FFEC1C"
 run_sdbz_native.bat
 ```
 
-Both variables are optional, passed through
-`run_boot_session.py` to the `run_game.py` driver, and
-require **no translation-cache invalidation**. Compare the
-watchword's first write with the I/O-vector state at
+To turn off the SDBZ launcher defaults for a different experiment,
+set `SDBZ_BOOT_DIAGNOSTICS=0`; explicitly supplied
+`EE_TRACE_ENTRY` and `EE_WATCH_WORD` environment variables
+continue to override their defaults. These options require
+**no guest translation-cache invalidation**. Compare the
+watchword's first change with the I/O-vector state at
 `0x0018CF68`, then trace the producer function rather
 than raising the loop budget.
 
