@@ -463,7 +463,8 @@ e_step_result c_cpu::step(uint32_t* opcode)
         case 0x22u:
             if (!signed_difference(left, right, &value))
             {
-                return e_step_result::overflow;
+                return m_guest_exceptions ? guest_trap(12u) :
+                    e_step_result::overflow;
             }
             assign(rd, value);
             break;
@@ -517,7 +518,8 @@ e_step_result c_cpu::step(uint32_t* opcode)
     case 0x08u:
         if (!signed_sum(left, static_cast<uint32_t>(sign16(immediate)), &value))
         {
-            return e_step_result::overflow;
+            return m_guest_exceptions ? guest_trap(12u) :
+                    e_step_result::overflow;
         }
         assign(rt, value);
         break;
