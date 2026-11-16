@@ -64,6 +64,11 @@ extern "C" uint32_t ee_raise_exception(s_ee_cpu_state* cpu,
     uint32_t& status = cpu->m_cop0[COP0_Status];
     uint32_t& cause  = cpu->m_cop0[COP0_Cause];
     uint32_t& epc    = cpu->m_cop0[COP0_EPC];
+    // Preserve the actual trapping instruction PC for the host HLE kernel.
+    // Architectural EPC must remain unchanged when Status.EXL is already
+    // set (e.g. a syscall within a genuine DMA5 guest callback). Reuse the
+    // previously unused CPU state pad; the guest cannot observe this field.
+    cpu->m_pad = pc;
     // Vector selection depends on the exception level *before* this entry.
     // In particular, the first TLBL/TLBS must use the TLB refill vector.
     const uint32_t pre_entry_status = status;

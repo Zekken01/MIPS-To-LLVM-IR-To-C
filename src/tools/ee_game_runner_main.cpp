@@ -1667,12 +1667,27 @@ int main(int argc, char** argv)
                 ee::e_ee_exit_reason::EE_EXIT_EXCEPTION) &&
             ((cpu.m_cop0[13] >> 2) & 0x1fu) == 8u)
         {
-            const uint32_t service =
-                static_cast<uint32_t>(cpu.m_gpr[3].m_lo);
-            if (!callback_active && service < 256u &&
+            const int32_t signed_service =
+                static_cast<int32_t>(cpu.m_gpr[3].m_lo);
+            // The EE kernel exposes interrupt-context SIF variants with
+            // negative syscall numbers. Only map the genuine DMA/SIF
+            // services when invoked from a registered guest DMAC callback;
+            // keep unknown negative syscalls unsupported.
+            const bool interrupt_sif_service = dmac_callback_active &&
+                (signed_service == -0x76 || signed_service == -0x77 ||
+                 signed_service == -0x78);
+            const uint32_t service = interrupt_sif_service
+                ? static_cast<uint32_t>(-signed_service)
+                : static_cast<uint32_t>(signed_service);
+            if (!callback_active && !interrupt_sif_service &&
+                service < 256u &&
                 installed_syscall_handlers[service] != 0u)
             {
-                const uint32_t epc = cpu.m_cop0[14];
+                // In interrupt context R5900 EPC still refers to the
+                // interrupted thread, not the nested syscall. The runtime
+                // separately records the actual trap instruction PC.
+                const uint32_t epc = dmac_callback_active
+                    ? cpu.m_pad : cpu.m_cop0[14];
                 const uint32_t handler = installed_syscall_handlers[service];
                 uint32_t opcode = 0;
                 if (!image.read32_at(epc, &opcode) ||
@@ -1742,7 +1757,11 @@ int main(int argc, char** argv)
                 service == 0x78u || service == 0x79u ||
                 service == 0x7au || service == 0x7cu)
             {
-                const uint32_t epc = cpu.m_cop0[14];
+                // In interrupt context R5900 EPC still refers to the
+                // interrupted thread, not the nested syscall. The runtime
+                // separately records the actual trap instruction PC.
+                const uint32_t epc = dmac_callback_active
+                    ? cpu.m_pad : cpu.m_cop0[14];
                 uint32_t opcode = 0;
                 if (!image.read32_at(epc, &opcode) ||
                     (opcode & 0x3fu) != 0x0cu ||
@@ -1752,6 +1771,15 @@ int main(int argc, char** argv)
                 {
                     std::fprintf(stderr, "startup HLE refused invalid syscall context\n");
                     break;
+                }
+
+                if (interrupt_sif_service && trace)
+                {
+                    std::printf(
+                        "HLE interrupt SIF syscall: pc=0x%08x "
+                        "architectural_epc=0x%08x resume=0x%08x\n",
+                        epc, cpu.m_cop0[14], epc + 4u
+                    );
                 }
 
                 if (service >= 0x10u && service <= 0x13u)
@@ -2880,9 +2908,10 @@ int main(int argc, char** argv)
                     if (trace)
                     {
                         std::printf(
-                            "HLE SifSetDChain: channel=5 "
+                            "HLE %sSifSetDChain: channel=5 "
                             "qwc=0 chcr=0x00000184 "
                             "result=void (%s)\n",
+                            interrupt_sif_service ? "i" : "",
                             iop_rpc == nullptr
                                 ? "no IOP producer"
                                 : "IOP LOADFILE RPC connected"
@@ -3274,7 +3303,14 @@ int main(int argc, char** argv)
                     cpu.m_gpr[2].m_hi = 0u;
                 }
 
-                cpu.m_cop0[12] &= ~2u; // Clear COP0.Status.EXL.
+                // Syscall HLE returns to the interrupted guest callback.
+                // Do not clear EXL for an interrupt-safe SIF syscall:
+                // the registered DMA5 callback still owns its kernel
+                // context until it returns via the callback sentinel.
+                if (!dmac_callback_active)
+                {
+                    cpu.m_cop0[12] &= ~2u;
+                }
                 cpu.m_pc = epc + 4u;
                 cpu.m_exit_reason = static_cast<uint32_t>(
                     ee::e_ee_exit_reason::EE_EXIT_DISPATCH

@@ -92,9 +92,12 @@ def make_guest_dma5_callback_elf(path):
     for index, word in enumerate(program):
         struct.pack_into("<I", image, 0x108 + index * 4, word)
 
-    # The guest DMA5 callback sets the completion flag, captures a0/a1,
-    # changes s3 as a context-isolation probe, and returns V0=0.
+    # The genuine DMA5 callback must rearm SIF0 through the EE kernel's
+    # interrupt-safe syscall -0x78 before it sets the completion flag.
+    # It then captures a0/a1, changes s3 as a context-isolation probe,
+    # and returns V0=0.
     handler = [
+        addiu(3, 0, -0x78), 0x0000000c,  # iSifSetDChain
         lui(8, 0x0010), ori(8, 8, 0x0480),
         addiu(9, 0, 1), sw(9, 0, 8),
         sw(4, 8, 8), sw(5, 12, 8),
@@ -155,6 +158,13 @@ def main():
     assert "HLE DMAC IRQ: channel=5 pending=0x00000020 handlers=1" in result.stdout
     assert ("HLE DMAC callback enter: channel=5 handler=0x00100200 "
             "arg=0x00000020") in result.stdout
+    assert ("HLE interrupt SIF syscall: pc=0x00100204 "
+            "architectural_epc=0x001000cc resume=0x00100208") in result.stdout, (
+        result.stdout[-6000:]
+    )
+    assert ("HLE iSifSetDChain: channel=5 qwc=0 "
+            "chcr=0x00000184 result=void") in result.stdout
+    assert result.stdout.count("HLE DMAC IRQ: channel=5 pending=") == 1
     assert "HLE DMAC callback returned: channel=5 v0=0" in result.stdout
     assert snapshot["gpr_lo"][16] == 1, snapshot
     assert snapshot["gpr_lo"][17] == 0x1234, snapshot
