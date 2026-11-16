@@ -900,6 +900,14 @@ int main(int argc, char** argv)
             });
         }
 
+        else
+        {
+            std::printf(
+                "IOP ROM0 compatibility bridges: disabled "
+                "(sifcmd/sifman owned by guest firmware)\n"
+            );
+        }
+
         // The optional ROM0 branch has no bootstrap IRX list: the
         // firmware must load and start its own IOP modules.
         // Load the complete explicit IRX list before starting any thread.
