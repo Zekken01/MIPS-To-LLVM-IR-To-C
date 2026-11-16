@@ -446,8 +446,16 @@ def main(argv=None):
         help="Stop after N consecutive unchanged IOP SMFLAG reads at the same syscall (0=off)",
     )
     parser.add_argument(
-        "--iop-irx", type=Path,
-        help="Opt-in IOP ELF/IRX to execute at EE SIF SMFLAG poll boundaries",
+        "--iop-irx", type=Path, action="append", default=[],
+        help="Repeat in provider-before-consumer order; last module runs by default",
+    )
+    parser.add_argument(
+        "--iop-irx-list", type=Path,
+        help="UTF-8 file of ordered IRX paths, one per line (# comments allowed)",
+    )
+    parser.add_argument(
+        "--iop-start-all", action="store_true",
+        help="Start each loaded IRX; default is the final module only",
     )
     parser.add_argument(
         "--iop-quantum", type=int, default=256,
@@ -494,8 +502,30 @@ def main(argv=None):
         parser.error("--sif-poll-limit must fit a uint32")
     if args.iop_quantum < 1 or args.iop_quantum > 65536:
         parser.error("--iop-quantum must be in [1, 65536]")
-    if args.iop_irx is not None and not args.iop_irx.is_file():
-        parser.error(f"--iop-irx file not found: {args.iop_irx}")
+    if args.iop_irx_list is not None and args.iop_irx:
+        parser.error("--iop-irx-list and --iop-irx are mutually exclusive")
+    iop_paths = list(args.iop_irx)
+    if args.iop_irx_list is not None:
+        try:
+            manifest = args.iop_irx_list.resolve(strict=True)
+            for line in manifest.read_text(encoding="utf-8-sig").splitlines():
+                entry = line.strip()
+                if not entry or entry.startswith("#"):
+                    continue
+                item = Path(entry)
+                iop_paths.append(item if item.is_absolute()
+                                 else manifest.parent / item)
+        except (OSError, UnicodeError) as exc:
+            parser.error(f"cannot read IOP IRX list: {exc}")
+    if len(iop_paths) > 32:
+        parser.error("a maximum of 32 IOP IRX modules may be loaded")
+    if args.iop_irx_list is not None and not iop_paths:
+        parser.error("--iop-irx-list contains no IRX paths")
+    if args.iop_start_all and not iop_paths:
+        parser.error("--iop-start-all requires at least one IOP IRX")
+    for irx in iop_paths:
+        if not irx.is_file():
+            parser.error(f"IOP IRX file not found: {irx}")
     for name in ("trace_entry", "watch_word", "trace_store"):
         address = getattr(args, name)
         if address is not None and not (0 <= address <= 0xFFFFFFFF and address % 4 == 0):
@@ -646,9 +676,12 @@ def main(argv=None):
         ]
         if args.stack is not None:
             command.append(f"--stack=0x{args.stack:08x}")
-        if args.iop_irx is not None:
-            command.append(f"--iop-irx={args.iop_irx.resolve(strict=True)}")
+        if iop_paths:
+            for irx in iop_paths:
+                command.append(f"--iop-irx={irx.resolve(strict=True)}")
             command.append(f"--iop-quantum={args.iop_quantum}")
+            if args.iop_start_all:
+                command.append("--iop-start-all")
         if args.trace:
             command.append("--trace")
         if args.trace_entry is not None:
