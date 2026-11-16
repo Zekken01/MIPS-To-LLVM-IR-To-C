@@ -58,6 +58,36 @@ void c_cpu::reset(uint32_t entry)
     std::fill(m_ram.begin(), m_ram.end(), 0u);
 }
 
+bool c_cpu::install_rom0(const std::vector<uint8_t>& image)
+{
+    if (image.size() != k_rom0_size)
+    {
+        return false;
+    }
+    // Installing a new ROM never modifies the current IOP RAM or CPU.
+    // It is persistent across IOP reset, just like hardware ROM0.
+    m_rom0 = image;
+    return true;
+}
+
+bool c_cpu::has_rom0() const
+{
+    return m_rom0.size() == k_rom0_size;
+}
+
+bool c_cpu::reset_rom0()
+{
+    if (!has_rom0())
+    {
+        return false;
+    }
+    reset(k_rom0_reset_pc);
+    // PCSX2 R3000A reset: COP0 enabled, BEV and TS set, PRid 0x1f.
+    m_state.m_cop0_status = 0x10900000u;
+    m_state.m_cop0_prid = 0x0000001fu;
+    return true;
+}
+
 const s_cpu_state& c_cpu::state() const
 {
     return m_state;
@@ -82,9 +112,33 @@ bool c_cpu::read(uint32_t address, uint32_t width, uint32_t* value) const
 
     // RAM is visible through the physical, KSEG0 and KSEG1 aliases.
     // Do not wrap unknown MMIO or unmapped physical addresses into RAM.
+    const uint32_t region = address & 0xe0000000u;
+    if (region != 0u && region != 0x80000000u &&
+        region != 0xa0000000u)
+    {
+        return false;
+    }
     const uint32_t physical = address & 0x1fffffffu;
-    if ((address & (width - 1u)) != 0u ||
-        physical > k_ram_size - width)
+    if ((address & (width - 1u)) != 0u)
+    {
+        return false;
+    }
+
+    const uint8_t* source = nullptr;
+    uint32_t offset = 0u;
+    if (physical <= k_ram_size - width)
+    {
+        source = m_ram.data();
+        offset = physical;
+    }
+    else if (has_rom0() && physical >= k_rom0_physical &&
+             static_cast<uint64_t>(physical - k_rom0_physical) + width <=
+                 k_rom0_size)
+    {
+        source = m_rom0.data();
+        offset = physical - k_rom0_physical;
+    }
+    else
     {
         return false;
     }
@@ -93,7 +147,7 @@ bool c_cpu::read(uint32_t address, uint32_t width, uint32_t* value) const
     for (uint32_t index = 0u; index < width; ++index)
     {
         result |= static_cast<uint32_t>(
-            m_ram[physical + index]
+            source[offset + index]
         ) << (index * 8u);
     }
     *value = result;
@@ -107,6 +161,12 @@ bool c_cpu::write(uint32_t address, uint32_t width, uint32_t value)
         return false;
     }
 
+    const uint32_t region = address & 0xe0000000u;
+    if (region != 0u && region != 0x80000000u &&
+        region != 0xa0000000u)
+    {
+        return false;
+    }
     const uint32_t physical = address & 0x1fffffffu;
     if ((address & (width - 1u)) != 0u ||
         physical > k_ram_size - width)
@@ -354,6 +414,7 @@ e_step_result c_cpu::step(uint32_t* opcode)
             case 12u: assign(rt, m_state.m_cop0_status); break;
             case 13u: assign(rt, m_state.m_cop0_cause); break;
             case 14u: assign(rt, m_state.m_cop0_epc); break;
+            case 15u: assign(rt, m_state.m_cop0_prid); break;
             default: return e_step_result::unsupported;
             }
         }

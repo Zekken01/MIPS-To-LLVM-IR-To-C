@@ -82,6 +82,12 @@ public:
     c_kernel();
     void reset();
 
+    // The authentic R3000 bootstrap runs directly from the caller's
+    // ROM0 image at BFC00000, not as a fabricated kernel thread.
+    // This must occur before any IRX imports or modules are installed.
+    bool start_rom0_boot(const std::vector<uint8_t>& image);
+    bool rom0_boot_active() const;
+
     c_cpu& cpu();
     const c_cpu& cpu() const;
     uint64_t cycles() const;
@@ -135,6 +141,7 @@ private:
     std::map<uint32_t, s_kernel_thread> m_threads;
     t_kernel_syscall m_syscall;
     uint64_t m_cycles = 0u;
+    bool m_rom0_boot_active = false;
     uint32_t m_next_module_id = 1u;
     uint32_t m_next_thread_id = 1u;
     uint32_t m_last_scheduled_id = 0u;

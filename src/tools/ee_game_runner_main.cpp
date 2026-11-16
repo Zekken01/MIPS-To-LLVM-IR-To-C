@@ -145,6 +145,8 @@ void usage(const char* program)
         "  --loop-budget=N       Stop at a guest CFG loop after N header entries (0=off)\n"
         "  --sif-poll-limit=N    Diagnose N repeated IOP SMFLAG zero reads (0=off)\n"
         "  --iop-irx=FILE       Repeat in dependency order; last IRX starts by default\n"
+        "  --iop-rom0=FILE      Boot caller-supplied 4 MiB PS2 BIOS ROM at BFC00000\n"
+        "                        Also accepts SDBZ_IOP_ROM0 environment variable\n"
         "  --iop-start-all      Start all loaded IOP modules (default: last only)\n"
         "  --iop-quantum=N      Max R3000 instructions per SIF poll (default 256)\n"
         "  --trace              Print guest PC, reason and dispatch count per step\n"
@@ -463,6 +465,7 @@ int main(int argc, char** argv)
     const char* kernel_ram_path = nullptr;
     const char* report_path = nullptr;
     std::vector<std::string> iop_irx_paths;
+    const char* iop_rom0_path = nullptr;
     bool iop_start_all = false;
     uint32_t budget = k_default_dispatch_budget;
     uint32_t loop_budget = 0u;
@@ -533,6 +536,16 @@ int main(int argc, char** argv)
                 return 2;
             }
             iop_irx_paths.push_back(argument.substr(10));
+            continue;
+        }
+        if (argument.compare(0, 11, "--iop-rom0=") == 0)
+        {
+            if (argument.size() == 11u || iop_rom0_path != nullptr)
+            {
+                std::fprintf(stderr, "invalid or duplicate IOP ROM0 path\n");
+                return 2;
+            }
+            iop_rom0_path = argv[i] + 11;
             continue;
         }
         if (argument == "--iop-start-all")
@@ -650,9 +663,22 @@ int main(int argc, char** argv)
         }
     }
 
+    if (iop_rom0_path == nullptr)
+    {
+        // Host-only boot configuration: run_game.py can pass this
+        // through unchanged without invalidating the existing EE
+        // translation provenance / --no-recompile cache.
+        iop_rom0_path = std::getenv("SDBZ_IOP_ROM0");
+    }
+    if (iop_rom0_path != nullptr && iop_rom0_path[0] == '\0')
+    {
+        std::fprintf(stderr, "empty SDBZ_IOP_ROM0 path\n");
+        return 2;
+    }
     if (elf_path == nullptr || library_path == nullptr || budget == 0 ||
         iop_quantum == 0u || iop_quantum > 65536u ||
         (iop_start_all && iop_irx_paths.empty()) ||
+        (iop_rom0_path != nullptr && !iop_irx_paths.empty()) ||
         stack >= k_ee_ram_size ||
         (has_trace_entry && (trace_entry & 3u) != 0u) ||
         (has_watch_word && (watch_word & 3u) != 0u) ||
@@ -743,9 +769,44 @@ int main(int argc, char** argv)
     std::unique_ptr<iop::c_sifcmd_bridge> iop_sifcmd;
     std::unique_ptr<iop::c_disc_loader> iop_disc;
     std::unique_ptr<iop::c_sif_rpc_bridge> iop_rpc;
-    if (!iop_irx_paths.empty())
+    if (!iop_irx_paths.empty() || iop_rom0_path != nullptr)
     {
         iop_kernel = std::make_unique<iop::c_kernel>();
+        if (iop_rom0_path != nullptr)
+        {
+            std::ifstream rom(
+                iop_rom0_path, std::ios::binary | std::ios::ate
+            );
+            if (!rom || rom.tellg() !=
+                    static_cast<std::streampos>(iop::c_cpu::k_rom0_size))
+            {
+                std::fprintf(
+                    stderr, "IOP ROM0 must be a readable, exact 4 MiB "
+                    "primary BIOS image: %s\n", iop_rom0_path
+                );
+                return 1;
+            }
+            std::vector<uint8_t> image(iop::c_cpu::k_rom0_size);
+            rom.seekg(0, std::ios::beg);
+            if (!rom.read(
+                    reinterpret_cast<char*>(image.data()),
+                    static_cast<std::streamsize>(image.size())) ||
+                !iop_kernel->start_rom0_boot(image))
+            {
+                std::fprintf(
+                    stderr, "IOP BIOS ROM0 load/reset failed: %s\n",
+                    iop_rom0_path
+                );
+                return 1;
+            }
+            const iop::s_cpu_state& boot =
+                iop_kernel->cpu().state();
+            std::printf(
+                "IOP ROM0 reset: pc=0x%08x cp0_status=0x%08x "
+                "cp0_prid=0x%08x (real firmware, not an IRX thread)\n",
+                boot.m_pc, boot.m_cop0_status, boot.m_cop0_prid
+            );
+        }
         iop_sifcmd = std::make_unique<iop::c_sifcmd_bridge>(
             *iop_kernel, hardware.sif()
         );
@@ -782,7 +843,9 @@ int main(int argc, char** argv)
                    iop_sifcmd->handle_syscall(active, service);
         });
 
-        // Load the complete list before starting *any* IOP thread.
+        // The optional ROM0 branch has no bootstrap IRX list: the
+        // firmware must load and start its own IOP modules.
+        // Load the complete explicit IRX list before starting any thread.
         // Each provider registers its relocated guest exports for the next
         // module's import resolver. Nothing runs if a later import fails.
         std::vector<uint32_t> iop_module_ids;
