@@ -183,7 +183,7 @@ def make_sif_handshake_elf(path):
 def make_sif_guest_irx(path, unknown_import=False, unhandled_syscall=False):
     """Non-copyrighted IOP IRX: guest code calls sifman #24 then #23."""
     image = bytearray(0x200)
-    image[0:7] = b"\\x7fELF\\x01\\x01\\x01"
+    image[0:7] = bytes((0x7f, 0x45, 0x4c, 0x46, 1, 1, 1))
     struct.pack_into("<HH", image, 16, 0xff80, 8)
     struct.pack_into("<I", image, 28, 0x34)
     struct.pack_into("<HHH", image, 40, 52, 32, 2)
@@ -192,7 +192,7 @@ def make_sif_guest_irx(path, unknown_import=False, unhandled_syscall=False):
     struct.pack_into("<IIIIII", image, 0x34, 1, 0x100, 0, 0, 0x70, 0x80)
     struct.pack_into("<II", image, 0x54, 0x70000080, 0x180)
     struct.pack_into("<IIIII", image, 0x184, 0, 0x60, 0x40, 0x20, 0x20)
-    image[0x19a:0x19a + 8] = b"SIFTEST\\0"
+    image[0x19a:0x19a + 8] = b"SIFTEST" + bytes(1)
 
     if unhandled_syscall:
         instructions = (
