@@ -161,6 +161,12 @@ bool run_multitag_chain()
         f.m_transport.queued_bytes() != 64u ||
         f.m_transport.delivered_bytes() != 0u)
     {
+        std::fprintf(stderr,
+            "EE chain pre-receiver: fault=%u queued=%llu delivered=%llu status=%08x\n",
+            f.m_transport.faulted() ? 1u : 0u,
+            static_cast<unsigned long long>(f.m_transport.queued_bytes()),
+            static_cast<unsigned long long>(f.m_transport.delivered_bytes()),
+            f.m_dmac.status());
         return false;
     }
 
@@ -174,6 +180,9 @@ bool run_multitag_chain()
         f.m_kernel.hardware().pending_interrupts() != 0u ||
         !arm_iop_guest(f.m_kernel))
     {
+        std::fprintf(stderr, "EE chain before receiver: chcr=%08x tadr=%08x expected=%08x dstat=%08x irq=%08x\n",
+            chcr, tadr, k_chain + 0x90u, f.m_dmac.status(),
+            f.m_kernel.hardware().pending_interrupts());
         return false;
     }
 
@@ -181,6 +190,10 @@ bool run_multitag_chain()
         f.m_transport.fifo_words() != 0u ||
         f.m_transport.delivered_bytes() != 48u)
     {
+        std::fprintf(stderr, "EE chain post-receiver: fault=%u fifo=%u delivered=%llu\n",
+            f.m_transport.faulted() ? 1u : 0u,
+            f.m_transport.fifo_words(),
+            static_cast<unsigned long long>(f.m_transport.delivered_bytes()));
         return false;
     }
 
@@ -192,6 +205,8 @@ bool run_multitag_chain()
         !f.m_kernel.hardware().read(iop::c_hw::k_i_stat, 4u, &iop_stat) ||
         (iop_stat & (1u << iop::c_hw::k_dma_irq)) == 0u)
     {
+        std::fprintf(stderr, "EE chain receiver status: chcr=%08x istat=%08x\n",
+            iop_chcr, iop_stat);
         return false;
     }
 
@@ -207,6 +222,7 @@ bool run_multitag_chain()
         {
             if (actual != 0xcdcdcdcdu)
             {
+                std::fprintf(stderr, "EE chain guard mismatch at %08x actual %08x\n", at, actual);
                 return false;
             }
         }
@@ -222,6 +238,8 @@ bool run_multitag_chain()
             if (actual != expected ||
                 f.m_ram.read32(source) != expected)
             {
+                std::fprintf(stderr, "EE chain payload mismatch at %08x actual=%08x expected=%08x source=%08x srcword=%08x\n",
+                    at, actual, expected, source, f.m_ram.read32(source));
                 return false;
             }
         }
