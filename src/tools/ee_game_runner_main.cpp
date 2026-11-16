@@ -759,6 +759,12 @@ int main(int argc, char** argv)
     };
     s_kernel_semaphore semaphores[64]{};
 
+    // DECI2 is a kernel debug channel. Only OPEN and CLOSE are modeled;
+    // requests that require an actual debug transport still fail closed.
+    // No guest callback is invoked merely because it was registered.
+    uint32_t deci2_descriptor_address = 0u;
+    uint32_t deci2_handler_pc = 0u;
+
     struct s_kernel_thread
     {
         bool m_used = false;
@@ -1212,7 +1218,8 @@ int main(int argc, char** argv)
                 (service >= 0x40u && service <= 0x48u) ||
                 service == 0x4au || service == 0x4bu ||
                 service == 0x64u ||
-                service == 0x68u || service == 0x74u)
+                service == 0x68u || service == 0x74u ||
+                service == 0x7cu)
             {
                 const uint32_t epc = cpu.m_cop0[14];
                 uint32_t opcode = 0;
@@ -1932,6 +1939,73 @@ int main(int argc, char** argv)
                             static_cast<uint32_t>(cpu.m_gpr[4].m_lo)
                         );
                     }
+                }
+
+                else if (service == 0x7cu)
+                {
+                    // DECI2 (syscall 0x7C) is the EE debug transport.
+                    // Per PCSX2's reference implementation, operation 1
+                    // (open) reads four guest words and remembers addr[1]
+                    // and addr[2], while operation 2 (close) clears both.
+                    // Both return 1. There is deliberately NO simulated
+                    // send/poll/receive success without a transport model.
+                    const uint32_t operation =
+                        static_cast<uint32_t>(cpu.m_gpr[4].m_lo);
+                    const uint32_t argument_address =
+                        static_cast<uint32_t>(cpu.m_gpr[5].m_lo);
+
+                    if (operation == 1u)
+                    {
+                        if (argument_address == 0u ||
+                            (argument_address & 3u) != 0u ||
+                            !memory->contains(argument_address, 16u))
+                        {
+                            std::fprintf(
+                                stderr,
+                                "Deci2Call OPEN HLE refused unbacked or "
+                                "unaligned descriptor 0x%08x\n",
+                                argument_address
+                            );
+                            break;
+                        }
+
+                        deci2_descriptor_address =
+                            memory->read32(argument_address + 4u);
+                        deci2_handler_pc =
+                            memory->read32(argument_address + 8u);
+                        if (trace)
+                        {
+                            std::printf(
+                                "HLE Deci2Call OPEN: descriptor=0x%08x "
+                                "channel=0x%08x handler=0x%08x result=1\n",
+                                argument_address, deci2_descriptor_address,
+                                deci2_handler_pc
+                            );
+                        }
+                    }
+                    else if (operation == 2u)
+                    {
+                        deci2_descriptor_address = 0u;
+                        deci2_handler_pc = 0u;
+                        if (trace)
+                        {
+                            std::printf("HLE Deci2Call CLOSE: result=1\n");
+                        }
+                    }
+                    else
+                    {
+                        std::fprintf(
+                            stderr,
+                            "Deci2Call HLE refused unsupported operation=%u "
+                            "descriptor=0x%08x handler=0x%08x\n",
+                            operation, deci2_descriptor_address,
+                            deci2_handler_pc
+                        );
+                        break;
+                    }
+
+                    cpu.m_gpr[2].m_lo = 1u;
+                    cpu.m_gpr[2].m_hi = 0u;
                 }
 
                 else
