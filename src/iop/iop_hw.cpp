@@ -28,6 +28,7 @@ void c_hw::reset()
     m_dma_pcr = 0u;
     m_dma_pcr2 = 0u;
     m_dma_global_enable = 0u;
+    std::fill(&m_sif_dma[0][0], &m_sif_dma[0][0] + 8u, 0u);
     m_dma_icr = 0u;
     m_dma_icr2 = 0u;
     m_debug_console.clear();
@@ -46,6 +47,32 @@ bool c_hw::scratchpad_range(
            static_cast<uint64_t>(address - k_scratchpad_base) +
                width <= k_scratchpad_size &&
            (address & (width - 1u)) == 0u;
+}
+
+bool c_hw::sif_dma_register(uint32_t address, uint32_t* channel,
+                            uint32_t* reg) const
+{
+    if (channel == nullptr || reg == nullptr)
+    {
+        return false;
+    }
+    if (address >= k_sif0_dma_base &&
+        address < k_sif0_dma_base + 16u &&
+        (address & 3u) == 0u)
+    {
+        *channel = 0u;
+        *reg = (address - k_sif0_dma_base) / 4u;
+        return true;
+    }
+    if (address >= k_sif1_dma_base &&
+        address < k_sif1_dma_base + 16u &&
+        (address & 3u) == 0u)
+    {
+        *channel = 1u;
+        *reg = (address - k_sif1_dma_base) / 4u;
+        return true;
+    }
+    return false;
 }
 
 bool c_hw::read(
@@ -82,6 +109,14 @@ bool c_hw::read(
     if (width != 4u || (address & 3u) != 0u)
     {
         return false;
+    }
+
+    uint32_t channel = 0u;
+    uint32_t reg = 0u;
+    if (sif_dma_register(address, &channel, &reg))
+    {
+        *value = m_sif_dma[channel][reg];
+        return true;
     }
 
     switch (address)
@@ -170,6 +205,17 @@ bool c_hw::write(
     if (width != 4u || (address & 3u) != 0u)
     {
         return false;
+    }
+
+    uint32_t channel = 0u;
+    uint32_t reg = 0u;
+    if (sif_dma_register(address, &channel, &reg))
+    {
+        // CHCR.STR is guest-controlled when starting/stopping DMA, and
+        // is NOT cleared merely because the register write succeeded.
+        // The transfer backend will clear STR on real completion.
+        m_sif_dma[channel][reg] = value;
+        return true;
     }
 
     switch (address)
@@ -277,6 +323,12 @@ bool c_hw::complete_dma_channel(uint32_t channel)
     }
     const bool secondary = channel >= 7u;
     const uint32_t index = secondary ? channel - 7u : channel;
+    if (channel == 9u || channel == 10u)
+    {
+        // CHCR.STR clears only at a real completion supplied by the
+        // DMA engine. Do not move bytes or synthesize a transfer here.
+        m_sif_dma[channel - 9u][2u] &= ~0x01000000u;
+    }
     uint32_t& control = secondary ? m_dma_icr2 : m_dma_icr;
     const bool sif_channel = secondary && (index == 2u || index == 3u);
     const uint32_t enable = uint32_t{1} << (16u + index);
