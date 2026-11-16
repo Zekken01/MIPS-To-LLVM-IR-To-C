@@ -111,7 +111,8 @@ struct s_fixture
 
     void make_iop_header(uint32_t at, uint32_t count)
     {
-        m_ram.write32(at, 0x40000000u | k_destination);
+        // Final IOP chain tag must set END (bit 31); bit 30 is IRQ.
+        m_ram.write32(at, 0xc0000000u | k_destination);
         m_ram.write32(at + 4u, count);
         m_ram.write32(at + 8u, 0u);
         m_ram.write32(at + 12u, 0u);
