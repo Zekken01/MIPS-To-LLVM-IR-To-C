@@ -96,6 +96,62 @@ def test_negative_low_and_branch_barrier():
     assert report["module_paths"][0]["references"] == [], report
 
 
+def test_irx_callsite_recovery():
+    # Direct LUI+ADDIU->JAL, then a second static call with a branch
+    # between the high and low pieces (association is not a CFG proof).
+    raw = make_elf(size=0x200)
+    direct_target = 0x00123450
+    indirect_target = 0x0017dea0
+    instructions = (
+        0x3c040010,  # lui a0,0x10
+        0x24840080,  # addiu a0,a0,0x80
+        (3 << 26) | (direct_target >> 2),
+        0,
+        0x3c040010,  # lui a0,0x10
+        0x10000001,  # beq zero,zero,+1
+        0x248400c0,  # addiu a0,a0,0xc0 (delay slot)
+        (3 << 26) | (indirect_target >> 2),
+        0,
+        (3 << 26) | (0x00123470 >> 2),  # unrelated subsequent JAL
+        0,
+    )
+    for i, word in enumerate(instructions):
+        struct.pack_into("<I", raw, 0x100 + i * 4, word)
+    raw[0x180:0x180 + 14] = b"rom0:TEST.IRX\0"
+    raw[0x1c0:0x1c0 + 16] = b"host0:TEST2.IRX\0"
+    report = analyzer.analyze_elf(bytes(raw))
+    assert len(report["module_paths"]) == 2, report
+    calls0 = report["module_paths"][0]["call_candidates"]
+    calls1 = report["module_paths"][1]["call_candidates"]
+    assert len(calls0) == 1 and len(calls1) == 1, report
+    assert calls0[0]["call_pc"] == 0x00100008
+    assert calls0[0]["call_target"] == direct_target
+    assert calls0[0]["control_flow_ambiguous"] is False
+    assert calls1[0]["call_pc"] == 0x0010001c
+    assert calls1[0]["call_target"] == indirect_target
+    assert calls1[0]["control_flow_ambiguous"] is True
+
+    # Reuse the same high half through unrelated control flow, as the
+    # US ELF does for the MCSERV and LIBSD path constants.
+    raw = make_elf(base=0x004dce00, size=0x200)
+    instructions = (
+        0x3c04004e,  # lui a0,0x4e
+        0x10000001,  # branch; static pairing is ambiguous
+        0,
+        0x2484ce50,  # addiu a0,a0,-0x31b0
+        (3 << 26) | (indirect_target >> 2),
+        0,
+    )
+    for i, word in enumerate(instructions):
+        struct.pack_into("<I", raw, 0x100 + i * 4, word)
+    raw[0x150:0x150 + 21] = b"cdrom0:\\MCSERV.IRX;1\0"
+    report = analyzer.analyze_elf(bytes(raw))
+    call = report["module_paths"][0]["call_candidates"][0]
+    assert call["computed_address"] == 0x004dce50, call
+    assert call["call_pc"] == 0x004dce10, call
+    assert call["control_flow_ambiguous"] is True, call
+
+
 def test_bad_headers_and_absent_strings():
     raw = make_elf()
     assert analyzer.analyze_elf(bytes(raw))["module_paths"] == []
@@ -120,5 +176,6 @@ def test_bad_headers_and_absent_strings():
 if __name__ == "__main__":
     test_discovery()
     test_negative_low_and_branch_barrier()
+    test_irx_callsite_recovery()
     test_bad_headers_and_absent_strings()
     print("IOP module ELF path discovery: PASS")

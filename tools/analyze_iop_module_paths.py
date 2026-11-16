@@ -165,14 +165,93 @@ def find_address_constructions(raw, segments, targets):
     return sites
 
 
+def find_module_call_candidates(raw, segments, addresses):
+    """Associate a nearby constant $a0 path with a direct MIPS JAL.
+
+    This is a *linear backward-slice heuristic*, not a CFG proof. In
+    particular, source LUI instructions can be separated from ADDIU/ORI
+    by conditional branches, as they are in the US game. Such results
+    carry a control-flow warning and never establish runtime load order.
+    """
+    sites = {address: [] for address in addresses}
+    for segment in segments:
+        if not (segment.flags & 1):
+            continue
+        section = raw[segment.file_offset:
+                      segment.file_offset + segment.file_size]
+        align = (4 - segment.address % 4) % 4
+        words = [
+            (segment.address + at,
+             struct.unpack_from("<I", section, at)[0])
+            for at in range(align, len(section) - 3, 4)
+        ]
+        for index, (pc, opcode) in enumerate(words):
+            if opcode >> 26 != 3:  # direct JAL
+                continue
+            callee = ((pc + 4) & 0xf0000000) | (
+                (opcode & 0x03ffffff) << 2)
+            # Last nearby direct write to $a0 must use $a0 as its
+            # source, making the preceding LUI the high-part candidate.
+            for low_index in range(index - 1, max(-1, index - 17), -1):
+                low_pc, low_word = words[low_index]
+                kind = low_word >> 26
+                # MIPS $a0 is caller-saved. Once a previous JAL/JALR
+                # executes, a still-older string pointer cannot be
+                # assumed to survive into this later call.
+                if kind == 3 or (
+                        kind == 0 and (low_word & 63) == 9):
+                    break
+                if ((low_word >> 16) & 31) != 4:
+                    continue
+                if kind not in PAIR_OPS or ((low_word >> 21) & 31) != 4:
+                    if writes_register(low_word, 4):
+                        break
+                    continue
+                low = low_word & 0xffff
+                if kind == 9 and low >= 0x8000:
+                    low -= 0x10000
+                for high_index in range(
+                        low_index - 1, max(-1, low_index - 25), -1):
+                    high_pc, high_word = words[high_index]
+                    if (high_word >> 26 != 15 or
+                            ((high_word >> 21) & 31) != 0 or
+                            ((high_word >> 16) & 31) != 4):
+                        continue
+                    high = (high_word & 0xffff) << 16
+                    computed = (
+                        (high + low) if kind == 9 else (high | low)
+                    ) & MASK32
+                    for address in addresses:
+                        if addresses_match(computed, address):
+                            across_branch = any(
+                                branch_instruction(words[t][1])
+                                for t in range(high_index + 1, index)
+                            )
+                            sites[address].append({
+                                "call_pc": pc,
+                                "call_target": callee,
+                                "high_pc": high_pc,
+                                "low_pc": low_pc,
+                                "computed_address": computed,
+                                "control_flow_ambiguous": across_branch,
+                                "evidence": "linear_backward_slice",
+                            })
+                    break
+                break
+    return sites
+
+
 def analyze_elf(raw):
     segments = parse_elf(raw)
     paths = find_module_paths(raw, segments)
     addresses = {entry["guest_address"] for entry in paths}
     addresses.add(LOADFILE_SERVER_ID)
     references = find_address_constructions(raw, segments, addresses)
+    calls = find_module_call_candidates(
+        raw, segments, {entry["guest_address"] for entry in paths})
     for entry in paths:
         entry["references"] = references[entry["guest_address"]]
+        entry["call_candidates"] = calls[entry["guest_address"]]
     return {
         "schema": 1,
         "elf_sha256": hashlib.sha256(raw).hexdigest(),
@@ -182,6 +261,7 @@ def analyze_elf(raw):
         "limitations": [
             "Embedded IRX strings are candidates, not confirmed runtime loads.",
             "A MIPS LUI+ADDIU/ORI pointer is a static reference, not a call.",
+            "Nearby JAL associations are conservative linear backtraces; they do not prove control-flow reachability or that the callee loads the module.",
             "Dynamically constructed paths and IOP-originated loads are not discoverable from ELF strings alone.",
             "Actual SifLoadModule requests use LOADFILE SIF RPC (server 0x80000006); capture RPC packets to confirm requests and ordering.",
         ],
@@ -213,6 +293,13 @@ def main(argv=None):
                   f"{site['construction']} = 0x{site['computed_address']:08X}")
         if len(item["references"]) > 8:
             print(f"    ... {len(item['references']) - 8} more references in JSON")
+        for call in item["call_candidates"][:8]:
+            ambiguous = " (conditional / verify CFG)" if (
+                call["control_flow_ambiguous"]) else ""
+            print(f"    candidate JAL 0x{call['call_pc']:08X} "
+                  f"-> 0x{call['call_target']:08X}{ambiguous}")
+        if len(item["call_candidates"]) > 8:
+            print(f"    ... {len(item['call_candidates']) - 8} more calls in JSON")
     print("LOADFILE RPC server constant 0x80000006: "
           f"{len(report['loadfile_rpc_server_references'])} static references")
     print("Note: these are static candidates, NOT a confirmed load order.")
