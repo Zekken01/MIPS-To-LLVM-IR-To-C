@@ -54,6 +54,11 @@ private:
 
     void header();
     void declare_memory_helpers();
+    void emit_guest_store_trace(const ee::s_ee_instruction& ins,
+                                const std::string& effective_address,
+                                const std::string& affected_address,
+                                uint32_t width, const std::string& source_value,
+                                uint32_t source_lane);
     void begin_function(const char* func_name);
     void end_function();
 
