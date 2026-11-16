@@ -62,7 +62,107 @@ def translation_inputs(elf, recomp, source_root):
     return {name: sha256_path(path) for name, path in paths}
 
 
-def write_translation_cache(path, inputs, emit_opt, metadata_path, library):
+
+def ir_generation_inputs(elf, source_root):
+    """Separate guest lowering source fingerprints from host-only runtime code."""
+    paths = [("ELF", elf)]
+    ir_ee_sources = {
+        "decoder.cpp", "opcode_tables.cpp",
+        "function_analyzer.cpp", "ee_recomp.cpp"
+    }
+    for directory in ("include/ee", "src/ee", "src/elf",
+                      "src/lift", "src/llvm"):
+        for item in sorted((source_root / directory).rglob("*")):
+            if not item.is_file() or item.suffix not in (".h", ".hpp", ".cpp"):
+                continue
+            if directory == "src/ee" and item.suffix == ".cpp" and (
+                item.name not in ir_ee_sources
+            ):
+                # Dispatch glue and runtime linking do not affect IR text.
+                continue
+            paths.append((item.relative_to(source_root).as_posix(), item))
+    paths.append((
+        "src/tools/ee_recomp_main.cpp",
+        source_root / "src/tools/ee_recomp_main.cpp"
+    ))
+    return {name: sha256_path(item) for name, item in paths}
+
+
+def translated_ir_hashes(metadata_path):
+    """Record the exact translated modules owned by the function map."""
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    functions = metadata.get("functions")
+    if not isinstance(functions, list) or not functions:
+        raise ValueError("cached translation has no functions")
+    hashes = {}
+    for function in functions:
+        module = Path(function["ir_path"]).resolve(strict=True)
+        if module.name in hashes:
+            raise ValueError(f"duplicate cached IR filename: {module.name}")
+        hashes[module.name] = sha256_path(module)
+    return hashes
+
+
+def validate_preserved_translation(path, inputs, ir_sources,
+                                   emit_opt, metadata_path, object_dir):
+    """Never relink modified guest IR or an untrusted function map.
+
+    Historical v1 cache records can be migrated only when the exact ELF
+    and original ee_recomp executable are unchanged.
+    """
+    if not path.is_file() or not metadata_path.is_file():
+        raise ValueError("preserved translation metadata/cache missing")
+    snapshot = json.loads(path.read_text(encoding="utf-8"))
+    if snapshot.get("schema") != CACHE_SCHEMA:
+        raise ValueError("preserved translation has unknown provenance")
+    if snapshot.get("emit_opt") != emit_opt:
+        raise ValueError("preserved translation uses a different --emit-opt")
+    if snapshot.get("metadata_sha256") != sha256_path(metadata_path):
+        raise ValueError("preserved function metadata was modified")
+    saved_sources = snapshot.get("ir_sources")
+    if saved_sources is not None:
+        if not isinstance(saved_sources, dict) or saved_sources != ir_sources:
+            changed = next((
+                name for name in sorted(
+                    set(saved_sources if isinstance(saved_sources, dict) else {}) |
+                    set(ir_sources)
+                )
+                if (saved_sources.get(name) if isinstance(saved_sources, dict) else None)
+                   != ir_sources.get(name)
+            ), "unknown")
+            raise ValueError(f"guest IR generation input changed: {changed}")
+    else:
+        # Older snapshots did not separately fingerprint guest-generator
+        # sources. Byte equality of the complete generator binary plus the
+        # input ELF is sufficient for an unchanged translated-code result.
+        old_inputs = snapshot.get("inputs", {})
+        for name in ("ELF", "ee_recomp"):
+            if not isinstance(old_inputs, dict) or old_inputs.get(name) != inputs.get(name):
+                raise ValueError(
+                    f"legacy guest IR cache cannot be reused: {name} changed"
+                )
+
+    current_ir = translated_ir_hashes(metadata_path)
+    recorded_ir = snapshot.get("ir_hashes")
+    if recorded_ir is not None and recorded_ir != current_ir:
+        raise ValueError("preserved LLVM IR module was modified")
+    manifest_path = object_dir / "objects.json"
+    if not manifest_path.is_file():
+        raise ValueError("preserved object manifest missing")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not manifest.get("complete") or manifest.get("optimization_level") != emit_opt:
+        raise ValueError("preserved object manifest incomplete or incompatible")
+    objects = manifest.get("objects")
+    if not isinstance(objects, list) or len(objects) != len(current_ir):
+        raise ValueError("preserved object manifest count mismatch")
+    expected = {Path(item["input"]).name: item.get("ir_sha256")
+                for item in objects}
+    if expected != current_ir:
+        raise ValueError("preserved IR does not match compiled object manifest")
+
+
+def write_translation_cache(path, inputs, emit_opt, metadata_path, library,
+                            ir_sources=None):
     """Commit provenance only after the complete translated library is linked."""
     snapshot = {
         "schema": CACHE_SCHEMA,
@@ -70,6 +170,8 @@ def write_translation_cache(path, inputs, emit_opt, metadata_path, library):
         "emit_opt": emit_opt,
         "metadata_sha256": sha256_path(metadata_path),
         "library_sha256": sha256_path(library),
+        "ir_sources": ir_sources,
+        "ir_hashes": translated_ir_hashes(metadata_path),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
@@ -364,6 +466,8 @@ def main(argv=None):
                         help="Experimental SetupThread and SetupHeap HLE")
     parser.add_argument("--no-recompile", action="store_true",
                         help="Reuse existing metadata and linked library; --auto-expand may still add functions")
+    parser.add_argument("--relink-existing", action="store_true",
+                        help="Rebuild host DLL from verified, preserved guest IR/objects")
     parser.add_argument("--link-only", action="store_true",
                         help="Stop after generating/linking the native DLL (and PDB if requested)")
     args = parser.parse_args(argv)
@@ -386,6 +490,10 @@ def main(argv=None):
         parser.error("--pdb requires a Windows Clang/LLD host toolchain")
     if args.no_recompile and args.extra_functions:
         parser.error("--no-recompile cannot combine with --extra-functions")
+    if args.no_recompile and args.relink_existing:
+        parser.error("--relink-existing cannot be combined with --no-recompile")
+    if args.relink_existing and args.extra_functions:
+        parser.error("--relink-existing cannot be combined with --extra-functions")
     if args.link_only and args.auto_expand:
         parser.error("--link-only cannot be combined with --auto-expand")
     try:
@@ -420,8 +528,9 @@ def main(argv=None):
         recomp = native_executable(build, "ee_recomp", args.config)
         cache_path = work / "translation-cache.json"
         inputs = translation_inputs(elf, recomp, source_root)
+        ir_sources = ir_generation_inputs(elf, source_root)
 
-        if not args.no_recompile:
+        if not (args.no_recompile or args.relink_existing):
             (work / "ir").mkdir(parents=True, exist_ok=True)
             for stale in (work / "ir").glob("*.ll"):
                 stale.unlink()
@@ -447,12 +556,14 @@ def main(argv=None):
                 args.emit_opt, pdb=args.pdb, emit_jobs=args.emit_jobs
             )
             write_translation_cache(cache_path, inputs, args.emit_opt,
-                                    metadata_path, library)
+                                    metadata_path, library, ir_sources)
         else:
-            if not library.is_file() or not metadata_path.is_file():
+            if not metadata_path.is_file() or (
+                args.no_recompile and not library.is_file()
+            ):
                 raise ValueError(
-                    f"--no-recompile needs an existing linked library and metadata: "
-                    f"{library}, {metadata_path}"
+                    "reuse requires existing function metadata and "
+                    "(for --no-recompile) the linked guest library"
                 )
             metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
             source_elf = Path(metadata.get("elf", "")).resolve()
@@ -465,15 +576,36 @@ def main(argv=None):
                 raise ValueError(
                     f"--no-recompile entry 0x{entry:08x} has no translated block"
                 )
-            validate_translation_cache(cache_path, inputs, args.emit_opt,
-                                       metadata_path, library)
-            if args.pdb:
+            if args.relink_existing:
+                validate_preserved_translation(
+                    cache_path, inputs, ir_sources,
+                    args.emit_opt, metadata_path, object_dir
+                )
+                print(
+                    "run_game: preserving guest IR and objects; "
+                    "rebuilding host DLL only", flush=True
+                )
                 build_linked_library(
                     source_root, work, metadata_path, object_dir, library,
-                    args.emit_opt, pdb=True, reuse_objects=True, emit_jobs=args.emit_jobs
+                    args.emit_opt, pdb=args.pdb, emit_jobs=args.emit_jobs
                 )
-                write_translation_cache(cache_path, inputs, args.emit_opt,
-                                        metadata_path, library)
+                write_translation_cache(
+                    cache_path, inputs, args.emit_opt,
+                    metadata_path, library, ir_sources
+                )
+            else:
+                validate_translation_cache(
+                    cache_path, inputs, args.emit_opt, metadata_path, library
+                )
+                if args.pdb:
+                    build_linked_library(
+                        source_root, work, metadata_path, object_dir, library,
+                        args.emit_opt, pdb=True, reuse_objects=True, emit_jobs=args.emit_jobs
+                    )
+                    write_translation_cache(
+                        cache_path, inputs, args.emit_opt,
+                        metadata_path, library, ir_sources
+                    )
             if args.auto_expand:
                 recomp = native_executable(build, "ee_recomp", args.config)
                 if not object_dir.is_dir():
@@ -619,7 +751,7 @@ def main(argv=None):
                 args.emit_opt, pdb=args.pdb, emit_jobs=args.emit_jobs
             )
             write_translation_cache(cache_path, inputs, args.emit_opt,
-                                    metadata_path, library)
+                                    metadata_path, library, ir_sources)
         return 3
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
         print(f"run_game: {error}", file=sys.stderr)
