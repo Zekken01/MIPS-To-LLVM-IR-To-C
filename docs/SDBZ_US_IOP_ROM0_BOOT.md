@@ -95,10 +95,30 @@ The direct `ee_game_runner` command also accepts
 environment variable. The existing `run_game.py` script intentionally
 does not forward this option for ROM0; use the environment variable instead.
 
-Even when firmware publishes SMFLAG successfully, **this is not yet a full
-SDBZ boot**: real EE `SifSetDma` syscall routing to guest EE DMA6 source
- chains, SIF0 reply interrupts, and real LOADFILE module requests still need
-EE integration. Never replace IOP readiness with host-injected bits.
+With ROM0 enabled, guest EE `sceSifSetDma` (syscall `0x77`)
+now accepts bounded, prevalidated 16-byte descriptor lists. Its host
+kernel boundary builds a real EE DMA6 source chain with the IOP DMA10
+destination tags and quadword-padded snapshots of guest EE source bytes.
+The existing DMA6 registers, FIFO and genuine IOP DMA10 receiver move
+the bytes; there is no HLE command response or injected readiness.
+
+Temporary staging borrows EE RAM at `0x01c00000` and restores its original
+bytes before guest execution resumes. Each request is bounded to 64
+descriptors and 64 KiB of staged packet data; only completed DMA IDs
+return `SifDmaStat=-1`. This is synchronous host kernel marshalling,
+**not** EE/IOP cycle-accurate scheduling.
+
+The official OpenPS2BIOS v0.6 integration test now sends its genuine
+LOADFILE `GET_VERSION` RPC_CALL using this same syscall adapter and
+requires a firmware-generated SIF0 result. Smoke tests verify a 20-byte
+request with zero-padded QWC, two descriptor transfers, refusal without an
+IOP DMA10 receiver, invalid-attribute rejection, interrupt completion and
+EE RAM restoration.
+
+**This is still not a full SDBZ boot:** guest EE DMA5 interrupt handler
+delivery, complete EE exception and interrupt scheduling, and disc-backed
+LOADFILE module requests remain incomplete. Never replace guest firmware
+readiness or replies with host-injected flags or synthetic packets.
 
 ## Remaining work
 
