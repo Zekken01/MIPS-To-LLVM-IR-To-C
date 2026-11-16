@@ -18,6 +18,14 @@ void c_hw::reset()
     );
     m_cdvd_i_stat = 0u;
     m_cdvd_dec_set = 0u;
+    m_cdvd_ncmd_command = 0u;
+    std::fill(
+        m_cdvd_ncmd_params,
+        m_cdvd_ncmd_params + k_cdvd_ncmd_param_capacity,
+        static_cast<uint8_t>(0u)
+    );
+    m_cdvd_ncmd_param_count = 0u;
+    m_cdvd_ncmd_pending = false;
     m_i_stat = 0u;
     m_i_mask = 0u;
     m_i_ctrl = 1u;
@@ -144,9 +152,9 @@ bool c_hw::read(
     // diagnostic runner does not mount a disc. This deliberately does
     // not claim a successful CD read, device initialization, or SIF.
     // The physical controller is idle and ready to receive a command
-    // after reset, independently of whether media is present. Only
-    // the observed READ width is supported; N-command writes still
-    // fail closed until real command processing exists.
+    // after reset, independently of whether media is present.
+    // Parameter and command writes are accepted; no disc producer
+    // is attached, so commands remain pending without a fake IRQ.
     // CDVD interrupt reasons are distinct from the IOP I_STAT register.
     // Firmware can acknowledge only bits previously raised by genuine
     // CDVD hardware; this model has no CDVD event producer yet.
@@ -160,9 +168,15 @@ bool c_hw::read(
         *value = m_cdvd_dec_set;
         return true;
     }
+    if (address == k_cdvd_ncmd_command && width == 1u)
+    {
+        *value = m_cdvd_ncmd_command;
+        return true;
+    }
     if (address == k_cdvd_ncmd_status && width == 1u)
     {
-        *value = k_cdvd_ncmd_ready;
+        *value = m_cdvd_ncmd_pending ?
+            k_cdvd_ncmd_busy : k_cdvd_ncmd_ready;
         return true;
     }
     if (address == k_cdvd_disc_type && width == 1u)
@@ -291,6 +305,31 @@ bool c_hw::write(
         // Firmware configures the CDVD decryption mode here. Retain
         // the byte until reset; no sector processing is implied.
         m_cdvd_dec_set = static_cast<uint8_t>(value);
+        return true;
+    }
+    if (address == k_cdvd_ncmd_status && width == 1u)
+    {
+        // This physical address is N_READY when read, N_DATAIN when
+        // written. Keep the original ordered parameters for CDVD.
+        if (m_cdvd_ncmd_pending ||
+            m_cdvd_ncmd_param_count >= k_cdvd_ncmd_param_capacity)
+        {
+            return false;
+        }
+        m_cdvd_ncmd_params[m_cdvd_ncmd_param_count++] =
+            static_cast<uint8_t>(value);
+        return true;
+    }
+    if (address == k_cdvd_ncmd_command && width == 1u)
+    {
+        if (m_cdvd_ncmd_pending)
+        {
+            return false;
+        }
+        m_cdvd_ncmd_command = static_cast<uint8_t>(value);
+        m_cdvd_ncmd_pending = true;
+        // An actual sector provider must consume/complete this request.
+        // Do not supply empty sector data or clear DMA3 STR here.
         return true;
     }
     if (address == k_debug_console && width == 1u)
@@ -594,6 +633,26 @@ void c_hw::advance_cycles(uint32_t cycles)
         // target: normal 32-bit rollover without an invented IRQ.
         m_timer5_count = static_cast<uint32_t>(count);
     }
+}
+
+bool c_hw::cdvd_ncmd_pending() const
+{
+    return m_cdvd_ncmd_pending;
+}
+
+uint32_t c_hw::cdvd_ncmd_parameter_count() const
+{
+    return m_cdvd_ncmd_param_count;
+}
+
+bool c_hw::cdvd_ncmd_parameter(uint32_t index, uint8_t* value) const
+{
+    if (value == nullptr || index >= m_cdvd_ncmd_param_count)
+    {
+        return false;
+    }
+    *value = m_cdvd_ncmd_params[index];
+    return true;
 }
 
 const std::string& c_hw::debug_console() const
