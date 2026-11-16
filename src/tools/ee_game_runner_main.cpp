@@ -134,6 +134,7 @@ void usage(const char* program)
         "  --entry=0xADDR       Override ELF entry PC\n"
         "  --stack=0xADDR       Initial EE stack pointer (default 0x01fff000)\n"
         "  --loop-budget=N       Stop at a guest CFG loop after N header entries (0=off)\n"
+        "  --sif-poll-limit=N    Diagnose N repeated IOP SMFLAG zero reads (0=off)\n"
         "  --trace              Print guest PC, reason and dispatch count per step\n"
         "  --trace-entry=0xPC   Print arguments and pointed-to words at a guest entry\n"
         "  --watch-word=0xADDR  Report guest word changes between native dispatches\n"
@@ -451,6 +452,7 @@ int main(int argc, char** argv)
     const char* report_path = nullptr;
     uint32_t budget = k_default_dispatch_budget;
     uint32_t loop_budget = 0u;
+    uint32_t sif_poll_limit = 0u;
     uint32_t trace_entry = 0u;
     uint32_t watch_word = 0u;
     uint32_t trace_store = 0u;
@@ -543,6 +545,10 @@ int main(int argc, char** argv)
         if (parsed == 0)
         {
             parsed = parse_option("--loop-budget=", &loop_budget);
+        }
+        if (parsed == 0)
+        {
+            parsed = parse_option("--sif-poll-limit=", &sif_poll_limit);
         }
         if (parsed == 0)
         {
@@ -812,6 +818,12 @@ int main(int argc, char** argv)
 
     uint32_t remaining = budget;
     uint64_t dispatched = 0;
+    // Diagnostic-only guard: the native runner does not execute an IOP.
+    // A tight polling loop cannot advance IOP-owned SIF SMFLAG. Keep the
+    // guard optional so other hosts retain the original dispatch behavior.
+    uint32_t last_sif_smflag_epc = 0u;
+    uint64_t last_sif_smflag_dispatch = 0u;
+    uint32_t repeated_sif_smflag_reads = 0u;
     std::vector<s_dispatch_sample> history;
     if (report_path != nullptr)
     {
@@ -2040,6 +2052,53 @@ int main(int argc, char** argv)
                                 "HLE SifGetReg: register=0x%08x "
                                 "result=0x%08x\n", id, value
                             );
+                        }
+
+                        if (sif_poll_limit != 0u && id == 4u && value == 0u)
+                        {
+                            // One SIF get-reg call can be separated from
+                            // the next by several native dispatches. Require
+                            // the same guest syscall PC and a tight replay
+                            // cadence before treating the read as a stall.
+                            if (repeated_sif_smflag_reads != 0u &&
+                                last_sif_smflag_epc == epc &&
+                                dispatched >= last_sif_smflag_dispatch &&
+                                dispatched - last_sif_smflag_dispatch <= 64u)
+                            {
+                                ++repeated_sif_smflag_reads;
+                            }
+                            else
+                            {
+                                repeated_sif_smflag_reads = 1u;
+                            }
+
+                            last_sif_smflag_epc = epc;
+                            last_sif_smflag_dispatch = dispatched;
+                            if (repeated_sif_smflag_reads >= sif_poll_limit)
+                            {
+                                std::fprintf(
+                                    stderr,
+                                    "SIF SMFLAG polling stalled: "
+                                    "guest_epc=0x%08x register=4 value=0 "
+                                    "reads=%u (IOP producer not running)\n",
+                                    epc, repeated_sif_smflag_reads
+                                );
+                                // Fail closed at the observed guest syscall,
+                                // not at an arbitrary later dispatch budget.
+                                // No IOP-owned status bits are synthesized.
+                                cpu.m_cop0[12] &= ~2u;
+                                cpu.m_pc = epc;
+                                reason = static_cast<uint32_t>(
+                                    ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED
+                                );
+                                cpu.m_exit_reason = reason;
+                                status = 0u;
+                                break;
+                            }
+                        }
+                        else
+                        {
+                            repeated_sif_smflag_reads = 0u;
                         }
                     }
                 }

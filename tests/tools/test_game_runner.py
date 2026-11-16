@@ -146,6 +146,22 @@ def make_sif_set_dchain_elf(path):
     path.write_bytes(image)
 
 
+def make_sif_poll_elf(path):
+    """Spin on unserved SIF SMFLAG, without any synthetic IOP producer."""
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    instructions = (
+        0x24040004,  # addiu a0, zero, 4: SIF_REG_SMFLAG
+        0x2403007a,  # addiu v1, zero, 0x7a: sceSifGetReg
+        0x0000000c,  # syscall, guest PC 0x00100010
+        0x1000fffe,  # beq zero,zero,-2: return to same syscall
+        0x00000000,  # delay slot
+    )
+    for index, opcode in enumerate(instructions):
+        struct.pack_into("<I", image, 0x108 + index * 4, opcode)
+    path.write_bytes(image)
+
+
 def make_sif_register_elf(path):
     """SifGetReg/SetReg and physical SIF MMIO must share guest-visible state."""
     make_elf(path)
@@ -1586,6 +1602,44 @@ def main():
             "SifGetReg HLE refused unsupported register=0x7fff0000"
         ) in enabled.stderr, enabled.stdout + enabled.stderr
 
+
+    # When no IOP is running, repeated reads of IOP-owned SMFLAG must
+    # report a bounded diagnostic rather than consuming the whole replay.
+    # Default (0) intentionally leaves ordinary execution untouched.
+    with tempfile.TemporaryDirectory(prefix="ee-native-sif-poll-") as tmp:
+        root = Path(tmp)
+        elf = root / "sif-poll.elf"
+        make_sif_poll_elf(elf)
+        report_path = root / "sif-poll.json"
+        command = [
+            sys.executable, str(source / "tools" / "run_game.py"),
+            str(elf), "--build-dir", str(build),
+            "--work-dir", str(root / "out"),
+            "--max-dispatches=48", "--hle-startup", "--trace",
+            "--report", str(report_path),
+        ]
+        baseline = subprocess.run(
+            command + ["--sif-poll-limit=0"],
+            capture_output=True, text=True, check=False,
+        )
+        # The last handled syscall can retain EXCEPTION/status=0 when
+        # the native dispatch budget ends at that very boundary.
+        assert baseline.returncode == 3, baseline.stdout + baseline.stderr
+        baseline_state = json.loads(report_path.read_text(encoding="utf-8"))
+        assert baseline_state["dispatches"] == 48, baseline_state
+        assert "SIF SMFLAG polling stalled" not in baseline.stderr
+
+        bounded = subprocess.run(
+            command + ["--no-recompile", "--sif-poll-limit=6"],
+            capture_output=True, text=True, check=False,
+        )
+        assert bounded.returncode == 3, bounded.stdout + bounded.stderr
+        bounded_state = json.loads(report_path.read_text(encoding="utf-8"))
+        assert bounded_state["dispatches"] < 48, bounded_state
+        assert bounded_state["final_pc"] == 0x00100010, bounded_state
+        assert bounded_state["exit_name"] == "UNSUPPORTED", bounded_state
+        assert "SIF SMFLAG polling stalled:" in bounded.stderr, bounded.stderr
+        assert "guest_epc=0x00100010 register=4 value=0 reads=6" in bounded.stderr, bounded.stderr
 
     for invalid_open in (False, True):
         with tempfile.TemporaryDirectory(prefix="ee-native-deci2-") as tmp:

@@ -442,6 +442,10 @@ def main(argv=None):
         help="Optional translated CFG loop-header watchdog limit per native dispatch (0=off)",
     )
     parser.add_argument(
+        "--sif-poll-limit", type=int, default=0,
+        help="Stop after N consecutive unchanged IOP SMFLAG reads at the same syscall (0=off)",
+    )
+    parser.add_argument(
         "--timeout-seconds", type=int, default=10,
         help="hard wall-time limit for each guest replay (default: 10)",
     )
@@ -478,6 +482,8 @@ def main(argv=None):
         parser.error("--max-dispatches must fit a positive uint32")
     if args.loop_budget < 0 or args.loop_budget > 0xFFFFFFFF:
         parser.error("--loop-budget must fit a uint32")
+    if args.sif_poll_limit < 0 or args.sif_poll_limit > 0xFFFFFFFF:
+        parser.error("--sif-poll-limit must fit a uint32")
     for name in ("trace_entry", "watch_word", "trace_store"):
         address = getattr(args, name)
         if address is not None and not (0 <= address <= 0xFFFFFFFF and address % 4 == 0):
@@ -623,6 +629,7 @@ def main(argv=None):
             runner, elf, library,
             f"--max-dispatches={args.max_dispatches}",
             f"--loop-budget={args.loop_budget}",
+            f"--sif-poll-limit={args.sif_poll_limit}",
             f"--entry=0x{entry:08x}",
         ]
         if args.stack is not None:
