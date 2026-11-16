@@ -201,8 +201,9 @@ bool c_sif1_dma_transport::consume_one_iop_word_or_tag()
         }
         m_iop_destination = destination;
         m_iop_words_remaining = count / 4u;
-        m_iop_final_tag = (tag & 0x80000000u) != 0u ||
-                          (tag & 0x40000000u) != 0u;
+        // IOP DMA tag bit 31 ends the chain. Bit 30 requests a tag
+        // interrupt and must not independently terminate DMA10.
+        m_iop_final_tag = (tag & 0x80000000u) != 0u;
         return true;
     }
 
@@ -311,7 +312,15 @@ bool c_sif1_dma_transport::set_dma(
         const uint32_t destination_address = destination & 0x1fffffffu;
         const uint64_t padded =
             (static_cast<uint64_t>(size) + 15u) & ~uint64_t(15u);
-        if (attributes != 0u || size == 0u || size > 65536u ||
+        // SIFCMD's final command packet uses
+        // SIF_DMA_ERT | SIF_DMA_INT_O (0x40 | 0x04). Accept the
+        // observed terminal command form and plain DMA descriptors;
+        // other attribute combinations still fail closed until their
+        // precise kernel tag behavior is implemented.
+        const bool supported_attributes =
+            attributes == 0u ||
+            (attributes == 0x44u && index + 1u == count);
+        if (!supported_attributes || size == 0u || size > 65536u ||
             (source & 15u) != 0u ||
             (destination & 15u) != 0u ||
             (destination_region != 0u &&
@@ -330,9 +339,14 @@ bool c_sif1_dma_transport::set_dma(
 
         const size_t tag_offset = packet.size();
         packet.resize(tag_offset + 16u + static_cast<size_t>(padded), 0u);
+        // IOP DMA10 tag: bit 31 = END, bit 30 = IRQ-on-tag.
+        // The bounded syscall transfer ends at its final descriptor.
+        // SIF_DMA_INT_O requests a tag IRQ on the terminal SIFCMD
+        // packet; it is distinct from ending the destination chain.
         const uint32_t destination_tag =
             destination_address |
-            (index + 1u == count ? 0x40000000u : 0u);
+            (index + 1u == count ? 0x80000000u : 0u) |
+            ((attributes & 0x04u) != 0u ? 0x40000000u : 0u);
         for (uint32_t lane = 0u; lane < 4u; ++lane)
         {
             packet[tag_offset + lane] =
