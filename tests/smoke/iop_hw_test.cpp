@@ -229,6 +229,59 @@ int main()
         return fail("Guest LBU did not read CDVD no-media state");
     }
 
+    // OpenPS2BIOS resets CDVD DMA3 via an actual SW through KSEG1.
+    const uint32_t dma3_guest[] =
+    {
+        0x3c01bf80u, // lui at,0xbf80
+        0x342110b8u, // ori at,at,0x10b8: CDVD DMA3 CHCR
+        0xac200000u, // sw zero,0(at)
+        0x8c280000u, // lw t0,0(at)
+        0x0000000du  // guest BREAK
+    };
+    for (uint32_t index = 0u; index < 5u; ++index)
+    {
+        put32(rom, index * 4u, dma3_guest[index]);
+    }
+    iop::c_kernel primary_dma_kernel{};
+    if (!primary_dma_kernel.start_rom0_boot(rom))
+    {
+        return fail("IOP primary DMA ROM0 fixture did not start");
+    }
+    const iop::s_kernel_run_result dma3_run =
+        primary_dma_kernel.run(16u, 4u);
+    if (dma3_run.m_stop != iop::e_kernel_stop::breakpoint ||
+        dma3_run.m_executed != 4u ||
+        primary_dma_kernel.cpu().state().m_gpr[8u] != 0u)
+    {
+        return fail("Guest DMA3 reset SW/LW failed or faulted");
+    }
+    iop::c_hw& primary_dma_hw = primary_dma_kernel.hardware();
+    const uint32_t dma3 = iop::c_hw::k_primary_dma_base + 0x30u;
+    if (!primary_dma_hw.write(dma3, 4u, 0x00123450u) ||
+        !primary_dma_hw.write(dma3 + 4u, 4u, 0x00010020u) ||
+        !primary_dma_hw.write(dma3 + 8u, 4u, 0x01000000u) ||
+        !primary_dma_hw.read(dma3 + 8u, 4u, &actual) ||
+        actual != 0x01000000u ||
+        primary_dma_hw.pending_interrupts() != 0u)
+    {
+        return fail("Primary DMA3 register write fabricated completion");
+    }
+    if (!primary_dma_hw.write(dma3 + 8u, 4u, 0u) ||
+        !primary_dma_hw.read(dma3 + 8u, 4u, &actual) ||
+        actual != 0u ||
+        primary_dma_hw.write(dma3 + 12u, 4u, 0u) ||
+        primary_dma_hw.read(dma3 + 12u, 4u, &actual) ||
+        primary_dma_hw.write(dma3 + 8u, 1u, 0u))
+    {
+        return fail("Primary DMA CHCR stop or MMIO bounds failed");
+    }
+    primary_dma_kernel.reset();
+    if (!primary_dma_hw.read(dma3, 4u, &actual) || actual != 0u ||
+        !primary_dma_hw.read(dma3 + 4u, 4u, &actual) || actual != 0u)
+    {
+        return fail("IOP primary DMA registers survived reset");
+    }
+
     // The cache-control register is address-specific. The IOP bus
     // must not turn all of KSEG2/KSEG3 into a permissive RAM alias.
     if (kernel.cpu().write32(0xfffe0134u, 0u) ||
