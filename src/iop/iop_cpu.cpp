@@ -1,4 +1,5 @@
 #include "iop_cpu.h"
+#include "iop_hw.h"
 
 #include <algorithm>
 #include <cstring>
@@ -56,6 +57,15 @@ void c_cpu::reset(uint32_t entry)
     m_state.m_next_pc = entry + 4u;
     m_cycles = 0u;
     std::fill(m_ram.begin(), m_ram.end(), 0u);
+    if (m_hardware != nullptr)
+    {
+        m_hardware->reset();
+    }
+}
+
+void c_cpu::bind_hardware(c_hw* hardware)
+{
+    m_hardware = hardware;
 }
 
 bool c_cpu::install_rom0(const std::vector<uint8_t>& image)
@@ -110,8 +120,15 @@ bool c_cpu::read(uint32_t address, uint32_t width, uint32_t* value) const
         return false;
     }
 
-    // RAM is visible through the physical, KSEG0 and KSEG1 aliases.
-    // Do not wrap unknown MMIO or unmapped physical addresses into RAM.
+    // The R3000 cache-control register lives above KSEG1 and does
+    // not use the ordinary 29-bit physical bus mask.
+    if (address == c_hw::k_cache_control)
+    {
+        return m_hardware != nullptr &&
+            m_hardware->read(address, width, value);
+    }
+    // RAM, ROM and ordinary MMIO are accessed through physical or
+    // direct-mapped KSEG0/KSEG1, never arbitrary KSEG2/TLB aliases.
     const uint32_t region = address & 0xe0000000u;
     if (region != 0u && region != 0x80000000u &&
         region != 0xa0000000u)
@@ -140,7 +157,8 @@ bool c_cpu::read(uint32_t address, uint32_t width, uint32_t* value) const
     }
     else
     {
-        return false;
+        return m_hardware != nullptr &&
+            m_hardware->read(physical, width, value);
     }
 
     uint32_t result = 0u;
@@ -160,6 +178,11 @@ bool c_cpu::write(uint32_t address, uint32_t width, uint32_t value)
     {
         return false;
     }
+    if (address == c_hw::k_cache_control)
+    {
+        return m_hardware != nullptr &&
+            m_hardware->write(address, width, value);
+    }
 
     const uint32_t region = address & 0xe0000000u;
     if (region != 0u && region != 0x80000000u &&
@@ -168,10 +191,14 @@ bool c_cpu::write(uint32_t address, uint32_t width, uint32_t value)
         return false;
     }
     const uint32_t physical = address & 0x1fffffffu;
-    if ((address & (width - 1u)) != 0u ||
-        physical > k_ram_size - width)
+    if ((address & (width - 1u)) != 0u)
     {
         return false;
+    }
+    if (physical > k_ram_size - width)
+    {
+        return m_hardware != nullptr &&
+            m_hardware->write(physical, width, value);
     }
 
     for (uint32_t index = 0u; index < width; ++index)
