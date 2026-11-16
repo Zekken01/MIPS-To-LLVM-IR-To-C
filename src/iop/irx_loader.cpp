@@ -414,17 +414,17 @@ e_irx_load_result load_irx(
         }
     }
 
-    std::string name = "IRX";
+    std::string name;
     for (size_t offset = static_cast<size_t>(iopmod_offset) + 26u;
          offset < bytes.size() && offset <
          static_cast<size_t>(iopmod_offset) + 82u &&
          bytes[offset] != 0u; ++offset)
     {
-        if (name == "IRX")
-        {
-            name.clear();
-        }
         name.push_back(static_cast<char>(bytes[offset]));
+    }
+    if (name.empty())
+    {
+        name = "IRX";
     }
     module->m_name = name;
     module->m_base = base;
