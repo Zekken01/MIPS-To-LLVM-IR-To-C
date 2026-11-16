@@ -18,7 +18,16 @@ enum class e_irx_load_result
     unsupported_relocation,
     unresolved_import,
     invalid_import_target,
-    insufficient_ram
+    insufficient_ram,
+    invalid_export,
+    duplicate_export
+};
+
+struct s_irx_export
+{
+    std::string m_library;
+    uint16_t m_ordinal = 0u;
+    uint32_t m_entry = 0u;
 };
 
 struct s_irx_module
@@ -28,12 +37,19 @@ struct s_irx_module
     uint32_t m_size = 0u;
     uint32_t m_entry = 0u;
     uint32_t m_gp = 0u;
+    std::vector<s_irx_export> m_exports;
 };
 
 // The registered IOP kernel/IRX libraries will supply import targets.
 // An absent resolver never invents HLE implementations.
 using t_irx_import_resolver = std::function<bool(
     const std::string& library, uint16_t ordinal, uint32_t* target
+)>;
+
+// Called after relocation and export validation, before any IOP RAM is
+// modified. The kernel refuses collisions with already registered exports.
+using t_irx_export_validator = std::function<bool(
+    const std::vector<s_irx_export>& exports
 )>;
 
 // Load one Sony IOP ELF32 MIPS IRX at an explicitly allocated, aligned IOP
@@ -47,6 +63,7 @@ e_irx_load_result load_irx(
     const std::vector<uint8_t>& bytes,
     uint32_t base,
     s_irx_module* module,
-    const t_irx_import_resolver& resolver = {}
+    const t_irx_import_resolver& resolver = {},
+    const t_irx_export_validator& validate_exports = {}
 );
 } // namespace iop
