@@ -306,7 +306,8 @@ int main()
     // The linked guest entrypoint must actually run on the R3000.
     const iop::s_kernel_run_result executed = kernel.run(64u);
     if (executed.m_stop != iop::e_kernel_stop::breakpoint ||
-        executed.m_guest_pc != 0x20000u)
+        kernel.module(1u) == nullptr ||
+        executed.m_guest_pc != kernel.module(1u)->m_irx.m_entry)
     {
         return fail("LOADFILE module entrypoint never ran");
     }
