@@ -20,6 +20,8 @@ void c_hw::reset()
     m_i_mask = 0u;
     m_i_ctrl = 1u;
     m_cache_control = 0u;
+    m_debug_console.clear();
+    m_debug_console_truncated = false;
 }
 
 bool c_hw::scratchpad_range(
@@ -106,6 +108,21 @@ bool c_hw::write(
         }
         return true;
     }
+    // OpenPS2BIOS writes individual characters here. This address is
+    // a debug-output convention in emulators, not a PS2 readiness flag.
+    // Accept only the observed byte-store operation; fail other MMIO.
+    if (address == k_debug_console && width == 1u)
+    {
+        if (m_debug_console.size() < k_debug_console_capacity)
+        {
+            m_debug_console.push_back(static_cast<char>(value & 0xffu));
+        }
+        else
+        {
+            m_debug_console_truncated = true;
+        }
+        return true;
+    }
     if (width != 4u || (address & 3u) != 0u)
     {
         return false;
@@ -149,5 +166,15 @@ uint32_t c_hw::pending_interrupts() const
 uint32_t c_hw::cache_control() const
 {
     return m_cache_control;
+}
+
+const std::string& c_hw::debug_console() const
+{
+    return m_debug_console;
+}
+
+bool c_hw::debug_console_truncated() const
+{
+    return m_debug_console_truncated;
 }
 } // namespace iop
