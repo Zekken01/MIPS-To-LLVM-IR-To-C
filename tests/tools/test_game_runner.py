@@ -114,6 +114,38 @@ def make_deci2_open_close_elf(path, invalid_open=False):
     path.write_bytes(image)
 
 
+def make_sif_set_dchain_elf(path):
+    """SIF0 kernel initialization must set real guest-visible DMAC MMIO."""
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    image.extend(bytes(max(0, 0x200 - len(image))))
+    struct.pack_into("<I", image, 52 + 16, 0x100)
+    struct.pack_into("<I", image, 52 + 20, 0x100)
+
+    instructions = (
+        0x3c081000,  # lui t0,0x1000 (SIF0 CHCR 0x1000c000)
+        0x3508c000,  # ori t0,t0,0xc000
+        0x24090055,  # addiu t1,zero,0x55
+        0xad090020,  # sw t1,0x20(t0): initial nonzero QWC
+        0xad000000,  # sw zero,0(t0): reset CHCR to idle
+        0x3c021000,  # lui v0,0x1000 (must survive void syscall)
+        0x3442c000,  # ori v0,v0,0xc000
+        0x24030078,  # addiu v1,zero,SifSetDChain
+        0x0000000c,  # syscall
+        0x00408021,  # addu s0,v0,zero (preserved)
+        0x8d110020,  # lw s1,0x20(t0): QWC=0
+        0x8d120000,  # lw s2,0(t0): CHCR=0x184
+        0x8d130010,  # lw s3,0x10(t0): MADR not fabricated
+        0x24030079,  # addiu v1,zero,SifSetReg (not yet supported)
+        0x0000000c,  # syscall: must fail closed
+        0x00000008,  # jr zero
+        0x00000000,
+    )
+    for index, opcode in enumerate(instructions):
+        struct.pack_into("<I", image, 0x108 + index * 4, opcode)
+    path.write_bytes(image)
+
+
 def make_deci2_reqsend_elf(path, invalid_channel=False):
     """Exercise the reference DECI2 channel acknowledgement in real MIPS."""
     make_elf(path)
@@ -1309,6 +1341,49 @@ def main():
             assert registers[12] == 0, state          # second Get result
             assert registers[13] == 0, state          # no fallthrough
             assert state["exit_name"] == "EXCEPTION", state
+
+    with tempfile.TemporaryDirectory(prefix="ee-native-sif-dchain-") as tmp:
+        root = Path(tmp)
+        elf = root / "sif-dchain.elf"
+        make_sif_set_dchain_elf(elf)
+        report_path = root / "sif-dchain.json"
+        command = [
+            sys.executable, str(source / "tools" / "run_game.py"),
+            str(elf), "--build-dir", str(build),
+            "--work-dir", str(root / "out"),
+            "--max-dispatches=16", "--trace",
+            "--report", str(report_path),
+        ]
+
+        # No HLE means the first syscall remains an exception.
+        disabled = subprocess.run(
+            command, capture_output=True, text=True, check=False,
+        )
+        assert disabled.returncode == 3, disabled.stdout + disabled.stderr
+        disabled_state = json.loads(report_path.read_text(encoding="utf-8"))
+        assert disabled_state["cop0_epc"] == 0x00100028, disabled_state
+        assert "HLE SifSetDChain" not in disabled.stdout
+        assert disabled_state["gpr_lo"][2] == 0x1000c000, disabled_state
+
+        enabled = subprocess.run(
+            command + ["--no-recompile", "--hle-startup"],
+            capture_output=True, text=True, check=False,
+        )
+        assert enabled.returncode == 3, enabled.stdout + enabled.stderr
+        assert (
+            "HLE SifSetDChain: channel=5 qwc=0 "
+            "chcr=0x00000184 result=void (no IOP producer)"
+        ) in enabled.stdout, enabled.stdout + enabled.stderr
+        state = json.loads(report_path.read_text(encoding="utf-8"))
+        assert state["exit_name"] == "EXCEPTION", state
+        assert state["cop0_epc"] == 0x00100040, state
+        assert state["gpr_lo"][2] == 0x1000c000, state
+        assert state["gpr_lo"][16] == 0x1000c000, state  # V0 preserved
+        assert state["gpr_lo"][17] == 0, state           # SIF0 QWC
+        assert state["gpr_lo"][18] == 0x184, state       # SIF0 CHCR
+        assert state["gpr_lo"][19] == 0, state           # SIF0 MADR
+        assert "guest blocked by an unsupported operation" in enabled.stderr
+
 
     for invalid_open in (False, True):
         with tempfile.TemporaryDirectory(prefix="ee-native-deci2-") as tmp:
