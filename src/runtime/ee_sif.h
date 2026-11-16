@@ -100,6 +100,13 @@ public:
         m_smflag |= bits;
     }
 
+    // The IOP acknowledges EE-originated MSFLAG bits. Only a real
+    // IOP register write may call this; the EE SifSetReg path sets.
+    void acknowledge_ee_msflag(uint32_t bits)
+    {
+        m_msflag &= ~bits;
+    }
+
     static bool mmio_read(
         void* user, uint32_t address, uint32_t width, s_ee_u128* result
     )
