@@ -448,7 +448,7 @@ int main(int argc, char** argv)
     // Arm EE DMA5 before requesting RPC initialization. OpenPS2BIOS
     // itself will build SET_SREG(RPCINIT,1) and send it through IOP
     // DMA9/SIF0; no host packet is placed into the EE reply buffer.
-    for (uint32_t offset = 0u; offset < 48u; offset += 4u)
+    for (uint32_t offset = 0u; offset < 64u; offset += 4u)
     {
         memory.write32(k_ee_sifcmd_reply - 16u + offset, 0xcdcdcdcdu);
     }
@@ -569,7 +569,7 @@ int main(int argc, char** argv)
     }
     report <<
         "{\n"
-        "  \"format\": \"openps2bios-authentic-sif1-v1\",\n"
+        "  \"format\": \"openps2bios-authentic-sif1-v2\",\n"
         "  \"rom0_bytes\": " << rom.size() << ",\n"
         "  \"reset_pc\": " << reset_pc << ",\n"
         "  \"boot_instructions\": " << boot.m_executed << ",\n"
@@ -615,5 +615,11 @@ int main(int argc, char** argv)
         "OpenPS2BIOS ROM0 guest SIF1: PASS "
         "smflag=%08x subaddr=%08x payload=%u IOP_DICR2=%08x\n",
         ee_smflag, ee_subaddr, k_payload_bytes, dicr2);
+    std::printf(
+        "OpenPS2BIOS guest SIFCMD: PASS command=%08x "
+        "reply_bytes=%llu ee_buffer=%08x rpc_announced=%u\n",
+        command_id,
+        static_cast<unsigned long long>(sif0.delivered_bytes()),
+        command_buffer, rpc_announced);
     return 0;
 }
