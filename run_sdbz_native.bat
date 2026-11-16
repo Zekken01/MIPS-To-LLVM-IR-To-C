@@ -99,10 +99,28 @@ if exist "%WORK_DIR%\translation-cache.json" (
     if not errorlevel 1 set "REUSE_FLAG=--no-recompile"
 )
 
+if not defined REUSE_FLAG (
+    if exist "%WORK_DIR%\translation-cache.json" (
+        rem Runtime or linker changes do not require rediscovering the ELF or
+        rem retranslating the already reached guest functions. Repair the
+        rem host DLL from the verified IR/object set when the guest generator
+        rem and ELF are unchanged.
+        echo === Checking preserved guest IR for a host-only relink ===
+        python tools\run_game.py "%ELF%" ^
+            --build-dir build ^
+            --config Release ^
+            --work-dir "%WORK_DIR%" ^
+            --emit-opt=0 ^
+            --emit-jobs=%EMIT_JOBS% ^
+            --relink-existing ^
+            --link-only >nul 2>&1
+        if not errorlevel 1 set "REUSE_FLAG=--no-recompile"
+    )
+)
 if defined REUSE_FLAG (
     echo === Reusing validated guest translation cache ===
 ) else (
-    echo === First translation or changed inputs: full guest translation ===
+    echo === First translation or changed guest generator: full guest translation ===
 )
 
 rem Temporary SDBZ-specific default diagnostics for the reproducible
