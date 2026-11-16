@@ -139,7 +139,8 @@ void usage(const char* program)
         "  --stack=0xADDR       Initial EE stack pointer (default 0x01fff000)\n"
         "  --loop-budget=N       Stop at a guest CFG loop after N header entries (0=off)\n"
         "  --sif-poll-limit=N    Diagnose N repeated IOP SMFLAG zero reads (0=off)\n"
-        "  --iop-irx=FILE       Opt-in: load and execute an IOP guest IRX on SIF polling\n"
+        "  --iop-irx=FILE       Repeat in dependency order; last IRX starts by default\n"
+        "  --iop-start-all      Start all loaded IOP modules (default: last only)\n"
         "  --iop-quantum=N      Max R3000 instructions per SIF poll (default 256)\n"
         "  --trace              Print guest PC, reason and dispatch count per step\n"
         "  --trace-entry=0xPC   Print arguments and pointed-to words at a guest entry\n"
@@ -456,7 +457,8 @@ int main(int argc, char** argv)
     bool kseg_ram = false;
     const char* kernel_ram_path = nullptr;
     const char* report_path = nullptr;
-    const char* iop_irx_path = nullptr;
+    std::vector<std::string> iop_irx_paths;
+    bool iop_start_all = false;
     uint32_t budget = k_default_dispatch_budget;
     uint32_t loop_budget = 0u;
     uint32_t sif_poll_limit = 0u;
@@ -519,12 +521,18 @@ int main(int argc, char** argv)
         }
         if (argument.compare(0, 10, "--iop-irx=") == 0)
         {
-            if (argument.size() == 10u)
+            if (argument.size() == 10u ||
+                iop_irx_paths.size() >= 32u)
             {
-                std::fprintf(stderr, "empty IOP IRX path\n");
+                std::fprintf(stderr, "empty IOP IRX path or more than 32 modules\n");
                 return 2;
             }
-            iop_irx_path = argv[i] + 10;
+            iop_irx_paths.push_back(argument.substr(10));
+            continue;
+        }
+        if (argument == "--iop-start-all")
+        {
+            iop_start_all = true;
             continue;
         }
 
@@ -639,6 +647,7 @@ int main(int argc, char** argv)
 
     if (elf_path == nullptr || library_path == nullptr || budget == 0 ||
         iop_quantum == 0u || iop_quantum > 65536u ||
+        (iop_start_all && iop_irx_paths.empty()) ||
         stack >= k_ee_ram_size ||
         (has_trace_entry && (trace_entry & 3u) != 0u) ||
         (has_watch_word && (watch_word & 3u) != 0u) ||
@@ -725,30 +734,8 @@ int main(int argc, char** argv)
     // dispatcher does not yet expose an accurate EE-cycle clock.
     std::unique_ptr<iop::c_kernel> iop_kernel;
     std::unique_ptr<iop::c_sifman_bridge> iop_sifman;
-    if (iop_irx_path != nullptr)
+    if (!iop_irx_paths.empty())
     {
-        std::ifstream input(iop_irx_path, std::ios::binary | std::ios::ate);
-        if (!input)
-        {
-            std::fprintf(stderr, "IOP IRX cannot be opened: %s\n", iop_irx_path);
-            return 1;
-        }
-        const std::streampos file_end = input.tellg();
-        if (file_end <= 0 || file_end > static_cast<std::streampos>(
-                iop::c_cpu::k_ram_size))
-        {
-            std::fprintf(stderr, "IOP IRX invalid file size: %s\n", iop_irx_path);
-            return 1;
-        }
-        std::vector<uint8_t> bytes(static_cast<size_t>(file_end));
-        input.seekg(0, std::ios::beg);
-        if (!input.read(reinterpret_cast<char*>(bytes.data()),
-                        static_cast<std::streamsize>(bytes.size())))
-        {
-            std::fprintf(stderr, "IOP IRX read failed: %s\n", iop_irx_path);
-            return 1;
-        }
-
         iop_kernel = std::make_unique<iop::c_kernel>();
         iop_sifman = std::make_unique<iop::c_sifman_bridge>(
             *iop_kernel, hardware.sif()
@@ -762,24 +749,72 @@ int main(int argc, char** argv)
         {
             return iop_sifman->handle_syscall(active, service);
         });
-        const iop::s_module_load_result loaded = iop_kernel->load_module(bytes);
-        if (loaded.m_status != iop::e_irx_load_result::success)
+
+        // Load the complete list before starting *any* IOP thread.
+        // Each provider registers its relocated guest exports for the next
+        // module's import resolver. Nothing runs if a later import fails.
+        std::vector<uint32_t> iop_module_ids;
+        for (size_t index = 0u; index < iop_irx_paths.size(); ++index)
         {
-            std::fprintf(stderr, "IOP IRX load failed: %s status=%u\n",
-                         iop_irx_path, static_cast<uint32_t>(loaded.m_status));
-            return 1;
+            const std::string& path = iop_irx_paths[index];
+            std::ifstream input(path.c_str(), std::ios::binary | std::ios::ate);
+            if (!input)
+            {
+                std::fprintf(stderr, "IOP IRX cannot be opened: %s\n", path.c_str());
+                return 1;
+            }
+            const std::streampos file_end = input.tellg();
+            if (file_end <= 0 ||
+                file_end > static_cast<std::streampos>(iop::c_cpu::k_ram_size))
+            {
+                std::fprintf(stderr, "IOP IRX invalid file size: %s\n", path.c_str());
+                return 1;
+            }
+            std::vector<uint8_t> bytes(static_cast<size_t>(file_end));
+            input.seekg(0, std::ios::beg);
+            if (!input.read(reinterpret_cast<char*>(bytes.data()),
+                            static_cast<std::streamsize>(bytes.size())))
+            {
+                std::fprintf(stderr, "IOP IRX read failed: %s\n", path.c_str());
+                return 1;
+            }
+            const iop::s_module_load_result loaded = iop_kernel->load_module(bytes);
+            if (loaded.m_status != iop::e_irx_load_result::success)
+            {
+                std::fprintf(stderr,
+                             "IOP IRX load failed: index=%zu path=%s status=%u\n",
+                             index + 1u, path.c_str(),
+                             static_cast<uint32_t>(loaded.m_status));
+                return 1;
+            }
+            iop_module_ids.push_back(loaded.m_id);
+            std::printf("IOP IRX linked: %zu/%zu path=%s module=%u\n",
+                        index + 1u, iop_irx_paths.size(),
+                        path.c_str(), loaded.m_id);
         }
-        const uint32_t thread_id = iop_kernel->create_module_thread(
-            loaded.m_id, 1u
-        );
-        if (thread_id == 0u || !iop_kernel->start_thread(thread_id))
+
+        // The final IRX is the entry module. Providers are linked but not
+        // run by default; authentic module startup requires explicit HLE
+        // services and the opt-in --iop-start-all mode.
+        for (size_t index = 0u; index < iop_irx_paths.size(); ++index)
         {
-            std::fprintf(stderr, "IOP IRX thread start failed: %s\n", iop_irx_path);
-            return 1;
+            if (!iop_start_all && index + 1u != iop_irx_paths.size())
+            {
+                continue;
+            }
+            const uint32_t thread_id = iop_kernel->create_module_thread(
+                iop_module_ids[index], 1u
+            );
+            if (thread_id == 0u || !iop_kernel->start_thread(thread_id))
+            {
+                std::fprintf(stderr, "IOP IRX thread start failed: %s\n",
+                             iop_irx_paths[index].c_str());
+                return 1;
+            }
+            std::printf("IOP guest loaded: %s thread=%u quantum=%u "
+                        "(SIF-poll rendezvous, not cycle accurate)\n",
+                        iop_irx_paths[index].c_str(), thread_id, iop_quantum);
         }
-        std::printf("IOP guest loaded: %s thread=%u quantum=%u "
-                    "(SIF-poll rendezvous, not cycle accurate)\n",
-                    iop_irx_path, thread_id, iop_quantum);
     }
 
     ee::s_ee_runtime runtime{};
