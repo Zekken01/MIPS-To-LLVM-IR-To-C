@@ -34,6 +34,10 @@ public:
     static constexpr uint32_t k_dma_pcr2 = 0x1f801570u;
     // Secondary DMA global-enable control, used by the firmware's SIF.
     static constexpr uint32_t k_dma_global_enable = 0x1f801578u;
+    // Secondary controller DMA9 (IOP -> EE SIF0) and
+    // DMA10 (EE -> IOP SIF1) channel registers.
+    static constexpr uint32_t k_sif0_dma_base = 0x1f801520u;
+    static constexpr uint32_t k_sif1_dma_base = 0x1f801530u;
     static constexpr uint32_t k_dma_icr = 0x1f8010f4u;
     static constexpr uint32_t k_dma_icr2 = 0x1f801574u;
     static constexpr uint32_t k_dma_irq = 3u;
@@ -65,6 +69,8 @@ public:
 
 private:
     bool scratchpad_range(uint32_t address, uint32_t width) const;
+    bool sif_dma_register(uint32_t address, uint32_t* channel,
+                          uint32_t* reg) const;
     uint32_t update_dma_icr(uint32_t previous, uint32_t value);
     void assert_dma_irq(uint32_t& control, bool sif_channel);
 
@@ -81,6 +87,9 @@ private:
     uint32_t m_dma_pcr = 0u;
     uint32_t m_dma_pcr2 = 0u;
     uint32_t m_dma_global_enable = 0u;
+    // MADR, BCR, CHCR and TADR; transfers remain active until the
+    // connected DMA backend explicitly completes them.
+    uint32_t m_sif_dma[2][4]{};
     uint32_t m_dma_icr = 0u;
     uint32_t m_dma_icr2 = 0u;
     std::string m_debug_console;
