@@ -77,14 +77,18 @@ int main()
         !hardware.write(dma3 + 4u, 4u, 0x00000020u) ||
         !hardware.write(dma3 + 8u, 4u, 0u) ||
         !hardware.read(dma3 + 8u, 4u, &actual) || actual != 0u ||
-        hardware.write(dma3 + 8u, 4u, 0x01000000u) ||
+        !hardware.write(dma3 + 8u, 4u, 0x41000200u) ||
+        !hardware.read(dma3 + 8u, 4u, &actual) ||
+        actual != 0x41000200u ||
+        hardware.pending_interrupts() != 0u ||
+        !hardware.write(dma3 + 8u, 4u, 0u) ||
         !hardware.read(dma3, 4u, &actual) || actual != 0x1000u ||
         !hardware.read(dma3 + 4u, 4u, &actual) || actual != 0x20u ||
         !hardware.read(dma3 + 8u, 4u, &actual) || actual != 0u ||
         hardware.read(dma3 + 12u, 4u, &actual) ||
         hardware.write(dma3 + 8u, 2u, 0u))
     {
-        return fail("primary IOP DMA3 CHCR reset/start semantics");
+        return fail("primary IOP DMA3 CHCR pending start/reset semantics");
     }
     hardware.reset();
     if (!hardware.read(dma3, 4u, &actual) || actual != 0u ||
@@ -277,6 +281,42 @@ int main()
         dma3_kernel.hardware().pending_interrupts() != 0u)
     {
         return fail("guest DMA3 CHCR reset faulted or created phantom IRQ");
+    }
+
+    // Actual ROM0-style CDVD DMA3 CHCR start (0x41000200). This is
+    // a *pending* request: STR remains set until a real transport
+    // completes the work. Neither data nor an IRQ may be fabricated.
+    const uint32_t dma3_start_instructions[] =
+    {
+        0x3c08bf80u, // lui t0,0xbf80
+        0x350810b8u, // ori t0,t0,0x10b8
+        0x3c094100u, // lui t1,0x4100
+        0x35290200u, // ori t1,t1,0x0200
+        0xad090000u, // sw t1,0(t0)
+        0x8d0a0000u, // lw t2,0(t0)
+        0xad000000u, // sw zero,0(t0), guest stop
+        0x8d0b0000u, // lw t3,0(t0)
+        0x0000000du  // break
+    };
+    for (uint32_t index = 0u; index < 9u; ++index)
+    {
+        put32(rom, index * 4u, dma3_start_instructions[index]);
+    }
+    iop::c_kernel dma3_start_kernel{};
+    if (!dma3_start_kernel.start_rom0_boot(rom))
+    {
+        return fail("DMA3 start KSEG1 fixture failed to install guest ROM");
+    }
+    const iop::s_kernel_run_result dma3_start =
+        dma3_start_kernel.run(16u, 4u);
+    if (dma3_start.m_stop != iop::e_kernel_stop::breakpoint ||
+        dma3_start.m_executed != 8u ||
+        dma3_start_kernel.cpu().state().m_gpr[10u] != 0x41000200u ||
+        dma3_start_kernel.cpu().state().m_gpr[11u] != 0u ||
+        dma3_start_kernel.cpu().last_memory_fault().m_valid ||
+        dma3_start_kernel.hardware().pending_interrupts() != 0u)
+    {
+        return fail("guest DMA3 CHCR start/stop fabricated DMA or IRQ");
     }
 
     // Actual guest SB from KSEG1 into the diagnostic console, without
