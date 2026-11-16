@@ -27,6 +27,7 @@ void c_hw::reset()
     m_timer5_irq_armed = true;
     m_dma_pcr = 0u;
     m_dma_pcr2 = 0u;
+    m_dma_global_enable = 0u;
     m_dma_icr = 0u;
     m_dma_icr2 = 0u;
     m_debug_console.clear();
@@ -90,6 +91,9 @@ bool c_hw::read(
         return true;
     case k_dma_pcr2:
         *value = m_dma_pcr2;
+        return true;
+    case k_dma_global_enable:
+        *value = m_dma_global_enable;
         return true;
     case k_dma_icr:
         *value = m_dma_icr;
@@ -177,6 +181,11 @@ bool c_hw::write(
         return true;
     case k_dma_pcr2:
         m_dma_pcr2 = value;
+        return true;
+    case k_dma_global_enable:
+        // This permits an explicitly started secondary DMA controller,
+        // but never asserts a DMA completion or a SIF handshake.
+        m_dma_global_enable = value;
         return true;
     case k_dma_icr:
         m_dma_icr = update_dma_icr(m_dma_icr, value);

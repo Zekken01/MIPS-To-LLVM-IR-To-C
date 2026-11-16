@@ -104,7 +104,7 @@ int main()
     }
     if (hw.read(iop::c_hw::k_dma_icr, 1u, &actual) ||
         hw.write(iop::c_hw::k_dma_icr2, 2u, 0u) ||
-        hw.read(iop::c_hw::k_dma_icr2 + 4u, 4u, &actual) ||
+        hw.read(iop::c_hw::k_dma_icr2 + 12u, 4u, &actual) ||
         hw.write(0x1f8010f2u, 2u, 0u))
     {
         return fail("Unsupported DMA MMIO register/width did not fail");
