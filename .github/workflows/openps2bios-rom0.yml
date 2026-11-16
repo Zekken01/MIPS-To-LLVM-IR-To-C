@@ -16,21 +16,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Temporary public repository snapshot so the CI-compatible runner
-      # can be rebuilt locally without GitHub network access.
-      - name: Export repository source for offline native debugging
-        uses: actions/upload-artifact@v4
-        with:
-          name: source-snapshot-local-debug
-          path: |
-            CMakeLists.txt
-            include/
-            src/
-            tools/
-            tests/
-          if-no-files-found: error
-          retention-days: 1
-
 
       - name: Configure ROM0 runner
         run: cmake -S . -B build-rom0 -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -68,16 +53,6 @@ jobs:
           printf '%s  %s\n' \
             '3702baa508ff40498fab4a95429a2ae1f903d11f5bbcdd4e1a87dbe9f5d21a84' \
             'OpenPS2BIOS-0.6.bin' | sha256sum --check
-
-      # Temporary verified upstream firmware artifact for local debugging.
-      # No game files, proprietary BIOS or generated code are uploaded.
-      - name: Export verified official ROM0 for local integration
-        uses: actions/upload-artifact@v4
-        with:
-          name: official-openps2bios-v06-local-fixture
-          path: OpenPS2BIOS-0.6.bin
-          if-no-files-found: error
-          retention-days: 1
 
       - name: Execute guest IOP reset vector and capture stop
         run: |
@@ -204,6 +179,17 @@ jobs:
           tail -n 16 rom0-ee-smflag.log
           tail -n 24 rom0-ee-sifsetdma.log
 
+      - name: Verify genuine ROM0 SIF0 reply invokes EE DMA5 guest handler
+        run: |
+          set -euo pipefail
+          .venv-rom0/bin/python tests/tools/test_rom0_dma5_callback.py \
+            --rom0 OpenPS2BIOS-0.6.bin \
+            --build-dir build-rom0 \
+            --work-dir build-rom0/ee-rom0-dma5-callback || {
+              cat build-rom0/ee-rom0-dma5-callback/ee-dma5-callback.log || true
+              exit 1
+            }
+
       - name: Preserve actual guest execution evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -215,6 +201,8 @@ jobs:
             rom0-ee-smflag.log
             rom0-ee-sifsetdma.json
             rom0-ee-sifsetdma.log
+            build-rom0/ee-rom0-dma5-callback/ee-dma5-callback.json
+            build-rom0/ee-rom0-dma5-callback/ee-dma5-callback.log
             rom0-trace.log
             rom0-sif-integration.json
             rom0-sif-integration.log
