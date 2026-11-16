@@ -102,10 +102,21 @@ bool c_sif1_dma_transport::move_one_ee_quadword()
         return false;
     }
 
-    // Only verified normal EE-to-SIF1 mode is supported here. The
-    // EE channel's chain tags are not IOP destination tags and must
-    // not be mistaken for one another.
-    if ((chcr & 1u) == 0u || ((chcr >> 2u) & 3u) != 0u ||
+    // EE source tags are distinct from the 16-byte IOP destination
+    // tags carried in the FIFO. Advance one source tag at a time,
+    // without generating a completion on intermediate segments.
+    const uint32_t mode = (chcr >> 2u) & 3u;
+    if (mode == 1u && qwc == 0u)
+    {
+        if (!m_ee_dmac.prepare_sif1_chain_tag())
+        {
+            m_faulted = true;
+            return false;
+        }
+        return true;
+    }
+
+    if ((chcr & 1u) == 0u || (mode != 0u && mode != 1u) ||
         qwc == 0u || (madr & 15u) != 0u ||
         madr >= 0x02000000u ||
         static_cast<uint64_t>(madr) + uint64_t(qwc) * 16u >
