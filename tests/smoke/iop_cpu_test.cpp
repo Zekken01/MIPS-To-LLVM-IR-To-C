@@ -165,6 +165,12 @@ int main()
     {
         return fail("unmapped IOP MMIO did not fail closed");
     }
+    const iop::s_memory_fault& fault = cpu.last_memory_fault();
+    if (!fault.m_valid || fault.m_address != 0x1f801000u ||
+        fault.m_width != 4u || fault.m_write)
+    {
+        return fail("R3000 MMIO fault address/width/access was lost");
+    }
 
     cpu.reset(0u);
     if (!cpu.write32(0u, 0xffffffffu) ||
