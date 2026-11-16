@@ -38,6 +38,11 @@ public:
     // DMA10 (EE -> IOP SIF1) channel registers.
     static constexpr uint32_t k_sif0_dma_base = 0x1f801520u;
     static constexpr uint32_t k_sif1_dma_base = 0x1f801530u;
+    // IOP-side SIF bus mirror of the EE's SBUS F200-F230 registers.
+    static constexpr uint32_t k_sif_mscom = 0x1d000000u;
+    static constexpr uint32_t k_sif_smcom = 0x1d000010u;
+    static constexpr uint32_t k_sif_msflag = 0x1d000020u;
+    static constexpr uint32_t k_sif_smflag = 0x1d000030u;
     static constexpr uint32_t k_dma_icr = 0x1f8010f4u;
     static constexpr uint32_t k_dma_icr2 = 0x1f801574u;
     static constexpr uint32_t k_dma_irq = 3u;
@@ -64,6 +69,13 @@ public:
     // A future actual DMA channel completion may assert its flag.
     // Merely writing ICR enables must never complete any transfer.
     bool complete_dma_channel(uint32_t channel);
+    // The EE side can announce a real request and acknowledge IOP
+    // flag bits. Standalone ROM0 never invokes these operations.
+    void ee_write_mscom(uint32_t value);
+    void ee_set_msflag(uint32_t bits);
+    void ee_clear_smflag(uint32_t bits);
+    uint32_t sif_smcom() const;
+    uint32_t sif_smflag() const;
     const std::string& debug_console() const;
     bool debug_console_truncated() const;
 
@@ -90,6 +102,10 @@ private:
     // MADR, BCR, CHCR and TADR; transfers remain active until the
     // connected DMA backend explicitly completes them.
     uint32_t m_sif_dma[2][4]{};
+    uint32_t m_sif_mscom = 0u;
+    uint32_t m_sif_smcom = 0u;
+    uint32_t m_sif_msflag = 0u;
+    uint32_t m_sif_smflag = 0u;
     uint32_t m_dma_icr = 0u;
     uint32_t m_dma_icr2 = 0u;
     std::string m_debug_console;
