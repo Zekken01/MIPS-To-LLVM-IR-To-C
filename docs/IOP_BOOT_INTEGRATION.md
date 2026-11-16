@@ -265,3 +265,53 @@ to `sifman` ordinal 24. The EE then observes the guest-published SMFLAG
 at its polling syscall. The test checks repeated arguments, manifest
 paths with spaces, both start modes, reversed dependencies, duplicate
 exports and missing/ambiguous manifests. No game binaries are committed.
+
+
+## Source-grounded US ELF module-path discovery (PR #73)
+
+Do **not** infer IOP module names or a load order from our existing
+`IOP_IRX_LIST` testing manifest. The real game should request modules,
+and the load order must ultimately come from runtime execution.
+
+`tools/analyze_iop_module_paths.py` now reads the **local**
+`PS2_GAME/SLUS_214.42` as a little-endian MIPS ELF32 executable. It
+extracts printable NUL-terminated strings ending with `.IRX` (including
+`cdrom0:` and `rom0:` device prefixes and optional `;1` version
+suffixes) from file-backed PT_LOAD segments. It records each exact
+string, ELF file offset and guest virtual address. An executable
+PT_LOAD scan also identifies local `LUI`+`ADDIU/ORI` address
+constructions targeting those strings, as well as the known LOADFILE
+RPC server identifier `0x80000006` where statically constructed.
+Guest pointer aliases are handled conservatively, and branches block
+unsound address-construction pairing.
+
+Example manual use:
+
+```bat
+python tools\analyze_iop_module_paths.py PS2_GAME\SLUS_214.42 --json build\sdbz-thread-pr38\iop-module-paths.json
+```
+
+`run_sdbz_native.bat` generates this JSON automatically on each
+local boot unless `SDBZ_IOP_DISCOVERY=0` is set. This scans the user's
+own ELF and **does not require uploading or committing game data**.
+The CI test generates a non-copyrighted synthetic ELF to verify
+filename extraction, both address-construction forms, negative
+ADDIU low halves, ELF bounds and refusal to infer cross-branch xrefs.
+
+**Interpretation:** these are *candidate embedded IRX paths*, not a
+confirmed set or sequence of `sceSifLoadModule` calls. A path may be
+unreferenced, used only for logging, or constructed dynamically. IOP
+modules may request other IRX modules, and module calls may be made
+through pointers or routines not recognized by this narrow static pass.
+
+The SDBZ reference implementation
+`ps2-web-recomp/SDBZ/runtime/src/iop/sif.cpp::install_servers()`
+handles LOADFILE SIF RPC server ID `0x80000006`: method `0x00`
+reads the module path at request-buffer offset `+8` and argument
+length at offset `+0`. Method `0x06` loads a module from an IOP
+memory buffer rather than a path. **The actual next milestone is to
+observe these RPC requests in the EE SIF transport**, record method,
+path/buffer, arguments, guest caller and request ordering, and use
+those *observed* requests to drive `c_kernel::load_module()`.
+Simply scanning the ELF cannot complete this step; native SIF
+DMA/CMD/RPC delivery is still required.
