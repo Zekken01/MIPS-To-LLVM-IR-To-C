@@ -190,6 +190,18 @@ jobs:
               exit 1
             }
 
+      # The release image is downloaded and SHA-256 checked above. Save
+      # only successful verified builds for reproducing real guest ROM0
+      # execution outside the CI runner, without storing firmware in git.
+      - name: Preserve verified official ROM0 for native boot diagnostics
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openps2bios-v06-verified-rom0
+          path: OpenPS2BIOS-0.6.bin
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Preserve actual guest execution evidence
         if: always()
         uses: actions/upload-artifact@v4
