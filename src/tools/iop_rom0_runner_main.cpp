@@ -1,4 +1,5 @@
 #include "iop_kernel.h"
+#include "iop_hw.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -179,7 +180,16 @@ bool write_report(
         output << (index == 0u ? "" : ", ")
                << cpu.m_gpr[index];
     }
-    output << "],\n  \"trace_tail\": [";
+    output << "],\n  \"console_output_hex\": \"";
+    const char* digits = "0123456789abcdef";
+    for (unsigned char byte : kernel.hardware().debug_console())
+    {
+        output << digits[byte >> 4u] << digits[byte & 0x0fu];
+    }
+    output << "\",\n  \"console_truncated\": "
+           << (kernel.hardware().debug_console_truncated()
+               ? "true" : "false")
+           << ",\n  \"trace_tail\": [";
     for (size_t index = 0u; index < tail.size(); ++index)
     {
         output << (index == 0u ? "" : ", ")
@@ -359,6 +369,20 @@ int main(int argc, char** argv)
             fault.m_write ? "write" : "read",
             fault.m_address, fault.m_width, cpu.m_pc
         );
+    }
+    const std::string& console = kernel.hardware().debug_console();
+    if (!console.empty())
+    {
+        std::printf(
+            "IOP console: %zu bytes (truncated=%s)\n",
+            console.size(),
+            kernel.hardware().debug_console_truncated() ? "yes" : "no"
+        );
+        (void)std::fwrite(console.data(), 1u, console.size(), stdout);
+        if (console.back() != '\n')
+        {
+            std::putchar('\n');
+        }
     }
     for (const s_trace_sample& item : tail)
     {
