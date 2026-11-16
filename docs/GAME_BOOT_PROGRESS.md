@@ -1566,6 +1566,58 @@ guest translation cache is reusable.
 
 Reference: https://github.com/PCSX2/pcsx2/blob/master/pcsx2/R5900OpcodeImpl.cpp
 
+### SDBZ US 02:32 trace: SIF0 DMA initialization at dispatch 6,162
+
+After PR #59 (DECI2 REQSEND), the user's US SDBZ ELF trace
+advanced to **6,162 dispatches** with no other unknown
+instruction. The last instruction is `SYSCALL` at guest EPC
+`0x00175084`; `V1=0x78` identifies
+`sceSifSetDChain` (SifSetDChain), the EE kernel service
+that starts the IOP-to-EE SIF0 DMA channel 5 in chain mode.
+At the syscall, `V0=0x1000C000`, which is precisely
+the physical base of channel-5 DMA registers.
+`A0=0`, `A1=0x00180000`, `A2=0x20561600`,
+`A3=0x20`. Unlike SIFSetDma, SifSetDChain is
+**void** and does not have a meaningful return value;
+the HLE preserves guest V0 rather than arbitrarily
+setting it to zero.
+
+PS2SDK's `ee/kernel/include/kernel.h` documents the
+expected register sequence: clear SIF0 `QWC`
+(physical `0x1000C020`) and set `CHCR=0x184`
+(physical `0x1000C000`) for chain, TIE and STR.
+The SIF0 register bank did not previously exist in
+`c_ee_dmac`. This milestone adds stateful channel-5
+CHCR/MADR/QWC/TADR/ASR registers to the EE host MMIO
+bus, and makes the opt-in HLE write through that bus.
+Starting SIF0 without an IOP producer **does not**
+copy bytes, fire a fictitious DMA interrupt, or
+clear STR. It remains busy until the missing producer
+or another explicit register write handles it.
+Unsupported access widths and scratchpad-specific
+registers are still refused.
+
+Unit tests verify SIF0 MMIO register reads and
+writes, the absence of spurious DMAC completion,
+preserved STR, unsupported SADR and reset semantics.
+End-to-end synthetic ELF tests validate the
+actual guest `LW` results for QWC/CHCR/MADR,
+V0 preservation, opt-in isolation and refusal of
+the next unsupported syscall.
+
+References:
+- https://github.com/ps2dev/ps2sdk/blob/master/ee/kernel/include/kernel.h
+- https://psi-rockin.github.io/ps2tek/
+
+Caveat: this implements the kernel's *register
+initialization*, not IOP-to-EE SIF traffic, SIF
+register handshake or an IOP RPC backend. It should
+be tested with the user's local US ELF; reaching
+later callsites would not establish full IOP
+compatibility. The prior branch divergence near
+dispatch 5,874 and formatter V0/store issue remain
+open.
+
 ## Validation limits
 
 CTest contains `game_runner_end_to_end` which creates small synthetic MIPS
