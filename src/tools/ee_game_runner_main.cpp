@@ -1981,6 +1981,98 @@ int main(int argc, char** argv)
                     }
                 }
 
+                else if (service == 0x22u)
+                {
+                    const uint32_t id =
+                        static_cast<uint32_t>(cpu.m_gpr[4].m_lo);
+                    const uint32_t argument =
+                        static_cast<uint32_t>(cpu.m_gpr[5].m_lo);
+                    s_kernel_thread* thread = id > 1u && id < 256u &&
+                        threads[id].m_used ? &threads[id] : nullptr;
+                    if (thread == nullptr || thread->m_status != 16u)
+                    {
+                        cpu.m_gpr[2].m_lo = static_cast<uint64_t>(-1ll);
+                        cpu.m_gpr[2].m_hi = 0u;
+                    }
+                    else
+                    {
+                        const uint64_t stack_end =
+                            static_cast<uint64_t>(thread->m_stack) +
+                            thread->m_stack_size;
+                        if (thread->m_stack_size < 0x2a0u ||
+                            stack_end > UINT32_MAX ||
+                            !memory->contains(thread->m_stack,
+                                              thread->m_stack_size) ||
+                            !image.is_executable_address(thread->m_entry))
+                        {
+                            std::fprintf(stderr,
+                                "StartThread HLE refused invalid entry/stack "
+                                "id=%u pc=0x%08x stack=0x%08x size=%u\n",
+                                id, thread->m_entry, thread->m_stack,
+                                thread->m_stack_size);
+                            break;
+                        }
+                        thread->m_context = {};
+                        thread->m_context.m_pc = thread->m_entry;
+                        thread->m_context.m_cop0[12] =
+                            cpu.m_cop0[12] & ~2u;
+                        thread->m_context.m_gpr[4].m_lo = argument;
+                        thread->m_context.m_gpr[28].m_lo =
+                            static_cast<uint64_t>(static_cast<int64_t>(
+                                static_cast<int32_t>(thread->m_gp)));
+                        thread->m_context.m_gpr[29].m_lo =
+                            static_cast<uint64_t>(stack_end - 0x2a0u);
+                        thread->m_context.m_gpr[31].m_lo =
+                            static_cast<uint64_t>(static_cast<int64_t>(
+                                static_cast<int32_t>(k_thread_return_pc)));
+                        thread->m_context.m_exit_reason =
+                            static_cast<uint32_t>(
+                                ee::e_ee_exit_reason::EE_EXIT_DISPATCH);
+                        thread->m_vu0_context = vu0;
+                        thread->m_priority = thread->m_initial_priority;
+                        thread->m_has_context = true;
+                        thread->m_status = 2u;
+                        thread->m_order = ++next_thread_order;
+                        cpu.m_gpr[2].m_lo = id;
+                        cpu.m_gpr[2].m_hi = 0u;
+                        reschedule_requested = true;
+                        if (trace)
+                        {
+                            std::printf("HLE StartThread: id=%u entry=0x%08x "
+                                        "arg=0x%08x stack=0x%08x priority=%u\n",
+                                        id, thread->m_entry, argument,
+                                        static_cast<uint32_t>(
+                                            thread->m_context.m_gpr[29].m_lo),
+                                        thread->m_priority);
+                        }
+                    }
+                }
+
+                else if (service == 0x23u || service == 0x24u)
+                {
+                    if (current_thread_id == 0u ||
+                        current_thread_id >= 256u ||
+                        !threads[current_thread_id].m_used)
+                    {
+                        break;
+                    }
+                    s_kernel_thread& thread = threads[current_thread_id];
+                    thread.m_status = 16u;
+                    thread.m_has_context = false;
+                    if (service == 0x24u)
+                    {
+                        thread.m_used = false;
+                    }
+                    reschedule_requested = true;
+                    if (trace)
+                    {
+                        std::printf("HLE %s: id=%u\n",
+                                    service == 0x24u ? "ExitDeleteThread"
+                                                     : "ExitThread",
+                                    current_thread_id);
+                    }
+                }
+
                 else if (service == 0x29u || service == 0x2au)
                 {
                     // ChangeThreadPriority / iChangeThreadPriority.
@@ -2018,6 +2110,7 @@ int main(int argc, char** argv)
                         const uint32_t previous_priority =
                             thread.m_priority;
                         thread.m_priority = new_priority;
+                        reschedule_requested = true;
                         cpu.m_gpr[2].m_lo = previous_priority;
                         cpu.m_gpr[2].m_hi = 0u;
                         if (trace)
@@ -2053,6 +2146,59 @@ int main(int argc, char** argv)
                         std::printf(
                             "HLE GetThreadId: id=%u\n", current_thread_id
                         );
+                    }
+                }
+
+                else if (service == 0x30u || service == 0x31u)
+                {
+                    const uint32_t requested_id =
+                        static_cast<uint32_t>(cpu.m_gpr[4].m_lo);
+                    const uint32_t address =
+                        static_cast<uint32_t>(cpu.m_gpr[5].m_lo);
+                    const uint32_t thread_id = requested_id == 0u
+                        ? current_thread_id : requested_id;
+                    const bool valid_id = thread_id > 0u &&
+                        thread_id < 256u;
+                    const s_kernel_thread* thread =
+                        valid_id && threads[thread_id].m_used
+                            ? &threads[thread_id] : nullptr;
+                    if (address != 0u &&
+                        ((address & 3u) != 0u ||
+                         !memory->contains(address, 48u)))
+                    {
+                        std::fprintf(stderr,
+                            "ReferThreadStatus HLE refused invalid output "
+                            "address=0x%08x\n", address);
+                        break;
+                    }
+                    if (thread != nullptr && address != 0u)
+                    {
+                        const uint32_t fields[] =
+                        {
+                            thread->m_status,
+                            thread->m_entry, thread->m_stack,
+                            thread->m_stack_size, thread->m_gp,
+                            thread->m_initial_priority, thread->m_priority,
+                            thread->m_attr, thread->m_option, 0u, 0u, 0u
+                        };
+                        for (uint32_t index = 0u; index < 12u; ++index)
+                        {
+                            memory->write32(address + index * 4u, fields[index]);
+                        }
+                    }
+                    const int32_t return_code = thread != nullptr
+                        ? static_cast<int32_t>(thread->m_status)
+                        : (valid_id ? 0 : -1);
+                    cpu.m_gpr[2].m_lo = static_cast<uint64_t>(
+                        static_cast<int64_t>(return_code));
+                    cpu.m_gpr[2].m_hi = 0u;
+                    if (trace)
+                    {
+                        std::printf(
+                            "HLE %sReferThreadStatus: id=%u "
+                            "address=0x%08x status=%d\n",
+                            service == 0x31u ? "i" : "",
+                            requested_id, address, return_code);
                     }
                 }
 
@@ -3035,6 +3181,13 @@ int main(int argc, char** argv)
                 cpu.m_exit_reason = static_cast<uint32_t>(
                     ee::e_ee_exit_reason::EE_EXIT_DISPATCH
                 );
+                if (reschedule_requested && !schedule_threads())
+                {
+                    reason = static_cast<uint32_t>(
+                        ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED);
+                    status = 0u;
+                    break;
+                }
                 continue;
             }
         }
