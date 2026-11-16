@@ -1618,6 +1618,67 @@ compatibility. The prior branch divergence near
 dispatch 5,874 and formatter V0/store issue remain
 open.
 
+### SDBZ US 02:54 trace: SIF register syscall at dispatch 6,177
+
+After PR #60's `SifSetDChain` support, the user's 2026-11-16
+02:54 local replay advanced from 6,162 to **6,177 dispatches**.
+The game installed a DMA channel-5 interrupt handler,
+enabled that DMAC interrupt and reached `SYSCALL` at
+`EPC=0x001750B4`, `V1=0x7A`, `A0=0x80000000`.
+That is `sceSifGetReg(SIF_SYSREG_SUBADDR)`, not a
+hardware-register read. This register is part of
+the EE kernel's software-maintained SIF state. The
+query occurs during the command-layer startup.
+Neither the translated instruction decoder nor a
+GS DMA transfer failed here.
+
+The opt-in EE kernel HLE now supports:
+- `sceSifGetReg` (0x7A) for physical mailbox register
+  IDs 1 (MSCOM), 2 (SMCOM), 3 (MSFLAG), 4 (SMFLAG)
+  and software-only system IDs `0x80000000`
+  (SUBADDR), `0x80000001` (MAINADDR) and
+  `0x80000002` (RPCINIT).
+- `sceSifSetReg` (0x79) against the same register
+  owner; EE-owned MSCOM writes replace the value,
+  MSFLAG writes set bits, SMFLAG writes clear bits,
+  and software system IDs retain their values.
+  The IOP-owned SMCOM register cannot be written by
+  the EE. Unsupported IDs fail closed.
+- Exact 32-bit physical MMIO reads/writes at
+  `0x1000F200`, `0x1000F210`, `0x1000F220`,
+  and `0x1000F230` through the same state object.
+  Unsupported widths are refused.
+- Reset and explicit future IOP-side mailbox publishing
+  hooks. An IOP-side boot, SIF DMA payload transport,
+  command-buffer delivery, readiness flags and RPC
+  replies are **not** simulated by EE register reads.
+  In particular, `SIF_SYSREG_SUBADDR=0` and
+  `SMFLAG=0` initially, reflecting the absence
+  of an IOP producer rather than inventing one.
+
+A native synthetic MIPS test exercises software
+SIF system-register roundtrips, EE mailbox visibility
+through guest `LW`, MSFLAG, read of IOP-owned
+SUBADDR, unsupported-ID refusal, and the opt-in
+isolation of HLE. Hardware model unit tests also
+verify EE/IOP register ownership, OR/clear behavior,
+width restriction and reset.
+
+Reference behavior: ps2dev/ps2sdk
+`ee/kernel/include/sifdma.h`, `ee/kernel/src/sifcmd.c`,
+and ps2tek's SIF mailbox descriptions. The
+`snuri00/ps2-web-recomp` runtime uses a preinitialized
+IOP command buffer, SMFLAG readiness and RPCINIT=1;
+this project **does not** copy those constants without
+implementing the corresponding IOP functionality.
+The follow-up game replay may therefore stall in
+a command-init wait loop; if so that is evidence of the
+missing IOP/EE transport, not a license to fake readiness.
+
+The older V0 formatter/dispatch divergence around
+5,874 remains unresolved and should be compared
+against a PCSX2 reference independently.
+
 ## Validation limits
 
 CTest contains `game_runner_end_to_end` which creates small synthetic MIPS
