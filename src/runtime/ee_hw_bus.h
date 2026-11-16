@@ -2,6 +2,7 @@
 
 #include "ee_dmac.h"
 #include "ee_intc.h"
+#include "ee_sif.h"
 
 namespace ee
 {
@@ -37,6 +38,7 @@ public:
     {
         m_intc.reset();
         m_dmac.reset();
+        m_sif.reset();
     }
 
     c_ee_intc& intc()
@@ -49,6 +51,11 @@ public:
         return m_dmac;
     }
 
+    c_ee_sif& sif()
+    {
+        return m_sif;
+    }
+
     static bool mmio_read(void* user, uint32_t address,
                           uint32_t width, s_ee_u128* value)
     {
@@ -59,7 +66,8 @@ public:
 
         c_ee_hw_bus* bus = static_cast<c_ee_hw_bus*>(user);
         return c_ee_intc::mmio_read(&bus->m_intc, address, width, value) ||
-               c_ee_dmac::mmio_read(&bus->m_dmac, address, width, value);
+               c_ee_dmac::mmio_read(&bus->m_dmac, address, width, value) ||
+               c_ee_sif::mmio_read(&bus->m_sif, address, width, value);
     }
 
     static bool mmio_write(void* user, uint32_t address,
@@ -72,11 +80,13 @@ public:
 
         c_ee_hw_bus* bus = static_cast<c_ee_hw_bus*>(user);
         return c_ee_intc::mmio_write(&bus->m_intc, address, width, value) ||
-               c_ee_dmac::mmio_write(&bus->m_dmac, address, width, value);
+               c_ee_dmac::mmio_write(&bus->m_dmac, address, width, value) ||
+               c_ee_sif::mmio_write(&bus->m_sif, address, width, value);
     }
 
 private:
     c_ee_intc m_intc;
     c_ee_dmac m_dmac;
+    c_ee_sif m_sif;
 };
 } // namespace ee
