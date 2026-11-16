@@ -102,6 +102,9 @@ jobs:
           assert report["direction"] == "SIF1"
           assert report["ee_channel"] == 6 and report["iop_channel"] == 10
           assert report["requested_bytes"] == report["transferred_bytes"] == 16
+          # This is all three genuine DMA10 packets: original probe
+          # (16 B), INIT_CMD address (32 B), RPC INIT_CMD (16 B).
+          assert report["total_sif1_transferred_bytes"] == 64
           assert report["source_checksum"] == report["destination_checksum"]
           assert report["iop_chcr_before"] & 0x01000000
           assert report["iop_chcr_after"] & 0x01000000 == 0
