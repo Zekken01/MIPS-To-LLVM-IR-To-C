@@ -30,7 +30,7 @@ Optional explicit bootstrapping can select a disc filename without
 manually writing its host path:
 
 ```powershell
-python tools/run_boot_session.py PS2_GAME/SLUS_214.42 --work-dir=build/sdbz-thread-pr38 --report=build/sdbz-thread-pr38/first-boot.json --iop-auto-irx=PADMAN.IRX --no-recompile
+python tools/run_boot_session.py PS2_GAME/SLUS_214.42 --work-dir=build/sdbz --report=build/sdbz/first-boot.json --iop-auto-irx=PADMAN.IRX --no-recompile
 ```
 
 **Caution:** that option loads and starts the selected module using

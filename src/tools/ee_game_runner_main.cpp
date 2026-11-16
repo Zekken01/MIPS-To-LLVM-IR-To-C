@@ -2244,8 +2244,12 @@ int main(int argc, char** argv)
                     const uint32_t id =
                         static_cast<uint32_t>(cpu.m_gpr[4].m_lo);
                     int32_t dma_status = 0;
-                    if (iop_sif1 == nullptr ||
-                        !iop_sif1->dma_stat(id, &dma_status))
+                    const bool known_id = iop_rom0_path != nullptr
+                        ? iop_sif1_transport != nullptr &&
+                          iop_sif1_transport->dma_stat(id, &dma_status)
+                        : iop_sif1 != nullptr &&
+                          iop_sif1->dma_stat(id, &dma_status);
+                    if (!known_id)
                     {
                         std::fprintf(
                             stderr,
@@ -2276,8 +2280,13 @@ int main(int argc, char** argv)
                     const uint32_t count =
                         static_cast<uint32_t>(cpu.m_gpr[5].m_lo);
                     uint32_t dma_id = 0u;
-                    if (iop_sif1 == nullptr ||
-                        !iop_sif1->set_dma(descriptors, count, &dma_id))
+                    const bool transferred = iop_rom0_path != nullptr
+                        ? iop_sif1_transport != nullptr &&
+                          iop_sif1_transport->set_dma(
+                              descriptors, count, &dma_id)
+                        : iop_sif1 != nullptr &&
+                          iop_sif1->set_dma(descriptors, count, &dma_id);
+                    if (!transferred)
                     {
                         std::fprintf(
                             stderr,
@@ -2285,6 +2294,31 @@ int main(int argc, char** argv)
                             "IOP transfer: descriptors=0x%08x count=%u\n",
                             descriptors, count
                         );
+                        if (iop_rom0_path != nullptr && count != 0u &&
+                            memory->contains(descriptors, 16u))
+                        {
+                            const uint32_t source =
+                                memory->read32(descriptors);
+                            const uint32_t destination =
+                                memory->read32(descriptors + 4u);
+                            const uint32_t bytes =
+                                memory->read32(descriptors + 8u);
+                            const uint32_t attributes =
+                                memory->read32(descriptors + 12u);
+                            uint32_t receiver_chcr = 0u;
+                            (void)iop_kernel->hardware().read(
+                                iop::c_hw::k_sif1_dma_base + 8u,
+                                4u, &receiver_chcr);
+                            std::fprintf(
+                                stderr,
+                                "IOP ROM0 SifSetDma diagnostic: "
+                                "src=%08x dst=%08x bytes=%u attr=%08x "
+                                "receiver_chcr=%08x sif1_faulted=%u\n",
+                                source, destination, bytes, attributes,
+                                receiver_chcr,
+                                iop_sif1_transport->faulted() ? 1u : 0u
+                            );
+                        }
                         break;
                     }
                     cpu.m_gpr[2].m_lo = dma_id;
@@ -2293,9 +2327,49 @@ int main(int argc, char** argv)
                     {
                         std::printf(
                             "HLE SifSetDma: descriptors=0x%08x "
-                            "count=%u id=%u (synchronous SIF1)\n",
-                            descriptors, count, dma_id
+                            "count=%u id=%u (%s)\n",
+                            descriptors, count, dma_id,
+                            iop_rom0_path != nullptr
+                                ? "real DMA6/FIFO/DMA10"
+                                : "synchronous IRX SIF1"
                         );
+                    }
+                    if (iop_rom0_path != nullptr)
+                    {
+                        // Only guest R3000 instructions may process the
+                        // packet. Advance a deterministic, bounded IOP
+                        // slice after the DMA completes; no host LOADFILE
+                        // implementation or fabricated RPC reply runs.
+                        const iop::s_kernel_run_result progressed =
+                            iop_kernel->run(iop_quantum, 128u);
+                        if (progressed.m_stop !=
+                                iop::e_kernel_stop::budget_exhausted &&
+                            progressed.m_stop != iop::e_kernel_stop::idle)
+                        {
+                            std::fprintf(
+                                stderr,
+                                "IOP ROM0 stopped after SifSetDma: "
+                                "reason=%u pc=0x%08x opcode=0x%08x\n",
+                                static_cast<uint32_t>(progressed.m_stop),
+                                progressed.m_guest_pc, progressed.m_opcode
+                            );
+                            break;
+                        }
+                        if (trace)
+                        {
+                            std::printf(
+                                "IOP ROM0 processed SIF1 turn: "
+                                "instructions=%llu pc=0x%08x "
+                                "sif1_delivered=%llu sif0_delivered=%llu\n",
+                                static_cast<unsigned long long>(
+                                    progressed.m_executed),
+                                iop_kernel->cpu().state().m_pc,
+                                static_cast<unsigned long long>(
+                                    iop_sif1_transport->delivered_bytes()),
+                                static_cast<unsigned long long>(
+                                    iop_sif0_transport->delivered_bytes())
+                            );
+                        }
                     }
                 }
 

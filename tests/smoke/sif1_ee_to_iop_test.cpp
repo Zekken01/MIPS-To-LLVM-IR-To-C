@@ -245,6 +245,167 @@ int run_case(uint32_t size, bool sender_first)
         sender_first ? "true" : "false");
     return 0;
 }
+
+int run_syscall_case(uint32_t size, uint32_t count)
+{
+    constexpr uint32_t k_descriptor = 0x00110000u;
+    constexpr uint32_t k_data = 0x00120000u;
+    constexpr uint32_t k_borrowed_stage = 0x01c00000u;
+    ee::ee_memory memory(32u * 1024u * 1024u);
+    ee::s_ee_cpu_state ee_cpu{};
+    ee::c_ee_dmac dmac{};
+    dmac.bind_memory(&memory);
+    dmac.bind_cpu(&ee_cpu);
+    dmac.reset();
+
+    iop::c_kernel kernel{};
+    std::vector<uint8_t> rom(iop::c_cpu::k_rom0_size, 0u);
+    constexpr uint32_t receiver_program[] =
+    {
+        0x3c08bf80u, // lui t0,0xbf80
+        0x35081538u, // ori t0,t0,0x1538 (DMA10 CHCR)
+        0x3c090100u, // lui t1,0x0100
+        0x35290700u, // ori t1,t1,0x0700
+        0xad090000u, // sw t1,0(t0), genuine DMA10 start
+        0x0000000du  // break
+    };
+    for (uint32_t index = 0u; index < 6u; ++index)
+    {
+        put32(rom, index * 4u, receiver_program[index]);
+    }
+    if (!kernel.start_rom0_boot(rom))
+    {
+        return fail("syscall ROM0 fixture failed to reset", size);
+    }
+    iop::c_sif1_dma_transport transport(
+        memory, dmac, kernel.cpu(), kernel.hardware());
+
+    const uint32_t padded = (size + 15u) & ~15u;
+    for (uint32_t index = 0u; index < 256u; ++index)
+    {
+        memory.write8(k_borrowed_stage + index,
+                      static_cast<uint8_t>(index ^ 0x5au));
+    }
+    for (uint32_t n = 0u; n < count; ++n)
+    {
+        const uint32_t src = k_data + n * 0x1000u;
+        const uint32_t dst = k_destination + n * 0x1000u;
+        memory.write32(k_descriptor + n * 16u, src);
+        memory.write32(k_descriptor + n * 16u + 4u, dst);
+        memory.write32(k_descriptor + n * 16u + 8u, size);
+        memory.write32(k_descriptor + n * 16u + 12u, 0u);
+        for (uint32_t index = 0u; index < padded + 16u; ++index)
+        {
+            memory.write8(
+                src + index,
+                index < size ? pattern(index + n, size) : 0xa5u);
+        }
+        for (uint32_t offset = 0u; offset < padded + 16u;
+             offset += 4u)
+        {
+            if (!kernel.cpu().write32(
+                    dst + offset, 0xcdcdcdcdu))
+            {
+                return fail("could not arm destination guards", size);
+            }
+        }
+    }
+
+    uint32_t id = 0xdeadbeefu;
+    if (transport.set_dma(k_descriptor, count, &id) ||
+        id != 0xdeadbeefu || dmac.status() != 0u)
+    {
+        return fail("unarmed DMA10 accepted a guest descriptor", size);
+    }
+
+    const iop::s_kernel_run_result run = kernel.run(32u, 1u);
+    if (run.m_stop != iop::e_kernel_stop::breakpoint ||
+        run.m_executed != 5u ||
+        run.m_guest_pc != 0xbfc00014u)
+    {
+        return fail("IOP receiver MMIO setup not executed", size);
+    }
+
+    memory.write32(k_descriptor + 12u, 1u);
+    if (transport.set_dma(k_descriptor, count, &id) ||
+        id != 0xdeadbeefu || dmac.status() != 0u)
+    {
+        return fail("invalid attributes committed partial DMA", size);
+    }
+    memory.write32(k_descriptor + 12u, 0u);
+
+    if (!transport.set_dma(k_descriptor, count, &id) || id != 1u)
+    {
+        return fail("real syscall DMA6->DMA10 failed", size);
+    }
+    int32_t dma_status = 0;
+    if (!transport.dma_stat(id, &dma_status) ||
+        dma_status != -1 ||
+        transport.dma_stat(0u, &dma_status) ||
+        transport.dma_stat(id + 1u, &dma_status) ||
+        transport.queued_bytes() !=
+            static_cast<uint64_t>(count) * (16u + padded) ||
+        transport.delivered_bytes() !=
+            static_cast<uint64_t>(count) * padded ||
+        transport.fifo_words() != 0u ||
+        transport.faulted() ||
+        (dmac.status() & (1u << 6u)) == 0u)
+    {
+        return fail("DMA stat, completion or byte counters mismatch", size);
+    }
+
+    uint32_t ee_chcr = 0u;
+    uint32_t iop_chcr = 0u;
+    if (!read_ee(dmac, 0u, &ee_chcr) ||
+        (ee_chcr & ee::c_ee_dmac::k_chcr_str) != 0u ||
+        !kernel.hardware().read(
+            iop::c_hw::k_sif1_dma_base + 8u, 4u, &iop_chcr) ||
+        (iop_chcr & 0x01000000u) != 0u)
+    {
+        return fail("guest DMA channel STR did not complete", size);
+    }
+    for (uint32_t index = 0u; index < 256u; ++index)
+    {
+        if (memory.read8(k_borrowed_stage + index) !=
+            static_cast<uint8_t>(index ^ 0x5au))
+        {
+            return fail("host staging altered guest EE RAM", size);
+        }
+    }
+    for (uint32_t n = 0u; n < count; ++n)
+    {
+        const uint32_t src = k_data + n * 0x1000u;
+        const uint32_t dst = k_destination + n * 0x1000u;
+        for (uint32_t index = 0u; index < padded + 16u; ++index)
+        {
+            uint32_t read_word = 0u;
+            if (!kernel.cpu().read32(dst + (index & ~3u),
+                                     &read_word))
+            {
+                return fail("IOP payload read fault", size);
+            }
+            const uint8_t actual = static_cast<uint8_t>(
+                read_word >> ((index & 3u) * 8u));
+            const uint8_t expected = index < size
+                ? pattern(index + n, size)
+                : index < padded ? 0u : 0xcdu;
+            if (actual != expected ||
+                memory.read8(src + index) !=
+                    (index < size ? pattern(index + n, size) : 0xa5u))
+            {
+                return fail("guest payload, padding or guard mismatch", size);
+            }
+        }
+    }
+    std::printf(
+        "SifSetDma guest descriptors: PASS size=%u count=%u "
+        "real_DMA6_DSTAT=%08x queued=%llu delivered=%llu\n",
+        size, count, dmac.status(),
+        static_cast<unsigned long long>(transport.queued_bytes()),
+        static_cast<unsigned long long>(transport.delivered_bytes()));
+    return 0;
+}
+
 } // namespace
 
 int main()
@@ -256,6 +417,11 @@ int main()
         {
             return 1;
         }
+    }
+    if (run_syscall_case(20u, 1u) != 0 ||
+        run_syscall_case(56u, 2u) != 0)
+    {
+        return 1;
     }
     std::printf("SIF1 EE-to-IOP hardware FIFO: PASS\n");
     return 0;

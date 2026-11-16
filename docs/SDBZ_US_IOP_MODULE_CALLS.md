@@ -8,7 +8,7 @@
 - This document contains derived addresses, control-flow descriptions and
   factual module-name strings. The copyrighted ELF and IRXs are not committed.
 - Reproduce or compare with
-  `python tools/analyze_iop_module_paths.py PS2_GAME/SLUS_214.42 --json build/sdbz-thread-pr38/iop-module-paths.json`.
+  `python tools/analyze_iop_module_paths.py PS2_GAME/SLUS_214.42 --json build/sdbz/iop-module-paths.json`.
 
 ## Seven static candidate paths and loader calls
 
