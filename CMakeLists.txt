@@ -461,6 +461,12 @@ if(EE_HAVE_LLVM_JIT_TEST)
                 ${CMAKE_SOURCE_DIR}
                 ${CMAKE_BINARY_DIR}
                 $<TARGET_FILE:ee_game_runner>)
+    add_test(NAME ee_native_thread_scheduler
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/tools/test_ee_thread_scheduler.py
+                --build-dir ${CMAKE_BINARY_DIR}
+                --work-dir ${CMAKE_BINARY_DIR}/ee-thread-scheduler-test)
+    set_tests_properties(ee_native_thread_scheduler PROPERTIES TIMEOUT 180)
 
     add_test(NAME control_flow_ir_runtime
         COMMAND ${Python3_EXECUTABLE}
