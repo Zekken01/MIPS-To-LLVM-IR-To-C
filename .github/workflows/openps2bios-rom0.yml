@@ -34,6 +34,9 @@ jobs:
           python3 -m venv .venv-rom0
           .venv-rom0/bin/python -m pip install llvmlite
 
+      - name: Verify latest-release bootstrap and cache logic offline
+        run: python3 tests/tools/test_ensure_openps2bios.py
+
       - name: Download official OpenPS2BIOS v0.6 ROM0
         run: |
           set -euo pipefail
