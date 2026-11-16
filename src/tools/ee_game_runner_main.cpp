@@ -474,6 +474,7 @@ int main(int argc, char** argv)
     uint32_t loop_budget = 0u;
     uint32_t sif_poll_limit = 0u;
     uint32_t iop_quantum = 256u;
+    bool iop_quantum_explicit = false;
     uint32_t trace_entry = 0u;
     uint32_t watch_word = 0u;
     uint32_t trace_store = 0u;
@@ -600,6 +601,10 @@ int main(int argc, char** argv)
         if (parsed == 0)
         {
             parsed = parse_option("--iop-quantum=", &iop_quantum);
+            if (parsed == 1)
+            {
+                iop_quantum_explicit = true;
+            }
         }
         if (parsed == 0)
         {
@@ -677,6 +682,24 @@ int main(int argc, char** argv)
     {
         std::fprintf(stderr, "empty SDBZ_IOP_ROM0 path\n");
         return 2;
+    }
+    if (iop_rom0_path != nullptr && !iop_quantum_explicit)
+    {
+        // The standalone official OpenPS2BIOS test grants 10 million
+        // guest instructions for ROM0 readiness. 256 instructions per
+        // SMFLAG poll gave the game only 65,536 before its 256-read guard.
+        // This bounded quantum gives firmware time to actually execute;
+        // it does not invent SIF register values or claim cycle accuracy.
+        iop_quantum = 65536u;
+        const char* configured = std::getenv("SDBZ_IOP_ROM0_QUANTUM");
+        if (configured != nullptr &&
+            !parse_u32(configured, &iop_quantum))
+        {
+            std::fprintf(stderr,
+                         "invalid SDBZ_IOP_ROM0_QUANTUM value: %s\n",
+                         configured);
+            return 2;
+        }
     }
     if (elf_path == nullptr || library_path == nullptr || budget == 0 ||
         iop_quantum == 0u || iop_quantum > 65536u ||
@@ -829,42 +852,61 @@ int main(int argc, char** argv)
                 "cp0_prid=0x%08x (real firmware, not an IRX thread)\n",
                 boot.m_pc, boot.m_cop0_status, boot.m_cop0_prid
             );
+            std::printf(
+                "IOP ROM0 schedule: quantum=%u guest instructions per "
+                "unready SMFLAG poll (deterministic, not cycle-accurate)\n",
+                iop_quantum
+            );
         }
-        iop_sifcmd = std::make_unique<iop::c_sifcmd_bridge>(
-            *iop_kernel, hardware.sif()
-        );
-        if (!iop_sifcmd->install())
+        // Authentic ROM0 has its own sifcmd/sifman implementations in
+        // guest RAM. Installing the IRX compatibility stubs here would
+        // overwrite firmware-owned memory and create competing services.
+        if (iop_rom0_path == nullptr)
         {
-            std::fprintf(stderr, "IOP sifcmd service installation failed\n");
-            return 1;
+            iop_sifcmd = std::make_unique<iop::c_sifcmd_bridge>(
+                *iop_kernel, hardware.sif()
+            );
+            if (!iop_sifcmd->install())
+            {
+                std::fprintf(stderr, "IOP sifcmd service installation failed\n");
+                return 1;
+            }
+            // LOADFILE is backed by actual game disc files, but nothing
+            // is loaded until a guest-initialized IOP endpoint receives
+            // a valid EE RPC packet through SIF1.
+            iop_disc = std::make_unique<iop::c_disc_loader>(
+                *iop_kernel, std::filesystem::path(elf_path).parent_path()
+            );
+            iop_rpc = std::make_unique<iop::c_sif_rpc_bridge>(
+                *iop_disc, *iop_sifcmd, *memory, hardware.dmac()
+            );
+            iop_sif1 = std::make_unique<iop::c_sif1_bridge>(
+                *memory, iop_kernel->cpu(), hardware.dmac(),
+                iop_sifcmd.get(), iop_rpc.get()
+            );
+            iop_sifman = std::make_unique<iop::c_sifman_bridge>(
+                *iop_kernel, hardware.sif(),
+                &hardware.dmac(), memory.get()
+            );
+            if (!iop_sifman->install())
+            {
+                std::fprintf(stderr, "IOP sifman service installation failed\n");
+                return 1;
+            }
+            iop_kernel->bind_syscall([&](iop::c_kernel& active, uint32_t service)
+            {
+                return iop_sifman->handle_syscall(active, service) ||
+                       iop_sifcmd->handle_syscall(active, service);
+            });
         }
-        // LOADFILE is backed by actual game disc files, but nothing
-        // is loaded until a guest-initialized IOP endpoint receives
-        // a valid EE RPC packet through SIF1.
-        iop_disc = std::make_unique<iop::c_disc_loader>(
-            *iop_kernel, std::filesystem::path(elf_path).parent_path()
-        );
-        iop_rpc = std::make_unique<iop::c_sif_rpc_bridge>(
-            *iop_disc, *iop_sifcmd, *memory, hardware.dmac()
-        );
-        iop_sif1 = std::make_unique<iop::c_sif1_bridge>(
-            *memory, iop_kernel->cpu(), hardware.dmac(),
-            iop_sifcmd.get(), iop_rpc.get()
-        );
-        iop_sifman = std::make_unique<iop::c_sifman_bridge>(
-            *iop_kernel, hardware.sif(),
-            &hardware.dmac(), memory.get()
-        );
-        if (!iop_sifman->install())
+
+        else
         {
-            std::fprintf(stderr, "IOP sifman service installation failed\n");
-            return 1;
+            std::printf(
+                "IOP ROM0 compatibility bridges: disabled "
+                "(sifcmd/sifman owned by guest firmware)\n"
+            );
         }
-        iop_kernel->bind_syscall([&](iop::c_kernel& active, uint32_t service)
-        {
-            return iop_sifman->handle_syscall(active, service) ||
-                   iop_sifcmd->handle_syscall(active, service);
-        });
 
         // The optional ROM0 branch has no bootstrap IRX list: the
         // firmware must load and start its own IOP modules.
@@ -1057,9 +1099,8 @@ int main(int argc, char** argv)
 
     uint32_t remaining = budget;
     uint64_t dispatched = 0;
-    // Diagnostic-only guard: the native runner does not execute an IOP.
-    // A tight polling loop cannot advance IOP-owned SIF SMFLAG. Keep the
-    // guard optional so other hosts retain the original dispatch behavior.
+    // Diagnose an unready IOP SIF handshake. Real ROM0 execution advances
+    // on each read; the guard never manufactures a readiness value.
     uint32_t last_sif_smflag_epc = 0u;
     uint64_t last_sif_smflag_dispatch = 0u;
     uint32_t repeated_sif_smflag_reads = 0u;
@@ -2437,6 +2478,32 @@ int main(int argc, char** argv)
                                         ? "IOP producer not running"
                                         : "loaded IOP did not publish SMFLAG"
                                 );
+                                if (iop_rom0_path != nullptr &&
+                                    iop_kernel != nullptr)
+                                {
+                                    uint32_t subaddr = 0u;
+                                    uint32_t dma10_chcr = 0u;
+                                    (void)hardware.sif().get_reg(2u, &subaddr);
+                                    (void)iop_kernel->hardware().read(
+                                        iop::c_hw::k_sif1_dma_base + 8u,
+                                        4u, &dma10_chcr
+                                    );
+                                    std::fprintf(
+                                        stderr,
+                                        "IOP ROM0 stall state: pc=0x%08x "
+                                        "instructions=%llu quantum=%u "
+                                        "subaddr=0x%08x dma10_chcr=0x%08x "
+                                        "sif1_delivered=%llu sif0_delivered=%llu\n",
+                                        iop_kernel->cpu().state().m_pc,
+                                        static_cast<unsigned long long>(
+                                            iop_kernel->cycles()),
+                                        iop_quantum, subaddr, dma10_chcr,
+                                        static_cast<unsigned long long>(
+                                            iop_sif1_transport->delivered_bytes()),
+                                        static_cast<unsigned long long>(
+                                            iop_sif0_transport->delivered_bytes())
+                                    );
+                                }
                                 // Fail closed at the observed guest syscall,
                                 // not at an arbitrary later dispatch budget.
                                 // No IOP-owned status bits are synthesized.

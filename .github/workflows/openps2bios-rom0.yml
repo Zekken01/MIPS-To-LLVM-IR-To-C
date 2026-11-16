@@ -26,6 +26,14 @@ jobs:
           ctest --test-dir build-rom0 --output-on-failure \
             -R '^(iop_cpu|iop_rom0_boot|iop_rom0_runner|iop_hw|iop_timer5_exception|iop_dma_icr|iop_dma_global_enable|iop_dma_sif_channels|iop_sif_handoff)$'
 
+      - name: Build native EE runner for authentic firmware rendezvous
+        run: cmake --build build-rom0 --parallel 2 --target ee_recomp ee_game_runner
+
+      - name: Install LLVM Python binding for synthetic EE translation
+        run: |
+          python3 -m venv .venv-rom0
+          .venv-rom0/bin/python -m pip install llvmlite
+
       - name: Download official OpenPS2BIOS v0.6 ROM0
         run: |
           set -euo pipefail
@@ -151,6 +159,20 @@ jobs:
           print("Guest-published destination: 0x%08X" % report["firmware_receive_buffer"])
           PY
 
+      - name: Verify native EE runner observes authentic ROM0 SMFLAG
+        run: |
+          set -euo pipefail
+          .venv-rom0/bin/python tests/tools/test_rom0_ee_poll.py \
+            --rom0 OpenPS2BIOS-0.6.bin \
+            --build-dir build-rom0 \
+            --work-dir build-rom0/ee-rom0-handshake \
+            --report rom0-ee-smflag.json \
+            --log rom0-ee-smflag.log || {
+              cat rom0-ee-smflag.log
+              exit 1
+            }
+          tail -n 16 rom0-ee-smflag.log
+
       - name: Preserve actual guest execution evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -158,6 +180,8 @@ jobs:
           name: openps2bios-v06-rom0-execution
           path: |
             rom0-report.json
+            rom0-ee-smflag.json
+            rom0-ee-smflag.log
             rom0-trace.log
             rom0-sif-integration.json
             rom0-sif-integration.log
