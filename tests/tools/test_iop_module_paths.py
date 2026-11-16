@@ -112,6 +112,8 @@ def test_irx_callsite_recovery():
         0x248400c0,  # addiu a0,a0,0xc0 (delay slot)
         (3 << 26) | (indirect_target >> 2),
         0,
+        (3 << 26) | (0x00123470 >> 2),  # unrelated subsequent JAL
+        0,
     )
     for i, word in enumerate(instructions):
         struct.pack_into("<I", raw, 0x100 + i * 4, word)
