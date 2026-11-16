@@ -126,7 +126,7 @@ int main()
         kernel.load_module(module);
     const iop::s_kernel_module* image =
         kernel.module(loaded.m_id);
-    if (loaded.m_status != e_irx_load_result::success ||
+    if (loaded.m_status != iop::e_irx_load_result::success ||
         loaded.m_id != 1u || image == nullptr ||
         image->m_irx.m_base != 0x20000u ||
         image->m_irx.m_size != 0x80u ||
