@@ -3,6 +3,8 @@
 #include "ee_ram_interpreter.h"
 #include "ee_hw_bus.h"
 #include "elf_loader.h"
+#include "iop_kernel.h"
+#include "iop_sifman_bridge.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -11,6 +13,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <string>
@@ -135,6 +139,8 @@ void usage(const char* program)
         "  --stack=0xADDR       Initial EE stack pointer (default 0x01fff000)\n"
         "  --loop-budget=N       Stop at a guest CFG loop after N header entries (0=off)\n"
         "  --sif-poll-limit=N    Diagnose N repeated IOP SMFLAG zero reads (0=off)\n"
+        "  --iop-irx=FILE       Opt-in: load and execute an IOP guest IRX on SIF polling\n"
+        "  --iop-quantum=N      Max R3000 instructions per SIF poll (default 256)\n"
         "  --trace              Print guest PC, reason and dispatch count per step\n"
         "  --trace-entry=0xPC   Print arguments and pointed-to words at a guest entry\n"
         "  --watch-word=0xADDR  Report guest word changes between native dispatches\n"
@@ -450,9 +456,11 @@ int main(int argc, char** argv)
     bool kseg_ram = false;
     const char* kernel_ram_path = nullptr;
     const char* report_path = nullptr;
+    const char* iop_irx_path = nullptr;
     uint32_t budget = k_default_dispatch_budget;
     uint32_t loop_budget = 0u;
     uint32_t sif_poll_limit = 0u;
+    uint32_t iop_quantum = 256u;
     uint32_t trace_entry = 0u;
     uint32_t watch_word = 0u;
     uint32_t trace_store = 0u;
@@ -509,6 +517,16 @@ int main(int argc, char** argv)
             hle_startup = true;
             continue;
         }
+        if (argument.compare(0, 10, "--iop-irx=") == 0)
+        {
+            if (argument.size() == 10u)
+            {
+                std::fprintf(stderr, "empty IOP IRX path\n");
+                return 2;
+            }
+            iop_irx_path = argv[i] + 10;
+            continue;
+        }
 
         if (argument.compare(0, 11, "--trace-v0=") == 0)
         {
@@ -549,6 +567,10 @@ int main(int argc, char** argv)
         if (parsed == 0)
         {
             parsed = parse_option("--sif-poll-limit=", &sif_poll_limit);
+        }
+        if (parsed == 0)
+        {
+            parsed = parse_option("--iop-quantum=", &iop_quantum);
         }
         if (parsed == 0)
         {
@@ -616,6 +638,7 @@ int main(int argc, char** argv)
     }
 
     if (elf_path == nullptr || library_path == nullptr || budget == 0 ||
+        iop_quantum == 0u || iop_quantum > 65536u ||
         stack >= k_ee_ram_size ||
         (has_trace_entry && (trace_entry & 3u) != 0u) ||
         (has_watch_word && (watch_word & 3u) != 0u) ||
@@ -696,6 +719,69 @@ int main(int argc, char** argv)
     ee::c_ee_hw_bus hardware;
     hardware.bind_cpu(&cpu);
     hardware.bind_memory(memory.get());
+
+    // Optional real guest IOP execution. This is a deterministic polling
+    // rendezvous, NOT EE/IOP hardware cycle synchronization: the native
+    // dispatcher does not yet expose an accurate EE-cycle clock.
+    std::unique_ptr<iop::c_kernel> iop_kernel;
+    std::unique_ptr<iop::c_sifman_bridge> iop_sifman;
+    if (iop_irx_path != nullptr)
+    {
+        std::ifstream input(iop_irx_path, std::ios::binary | std::ios::ate);
+        if (!input)
+        {
+            std::fprintf(stderr, "IOP IRX cannot be opened: %s\n", iop_irx_path);
+            return 1;
+        }
+        const std::streampos file_end = input.tellg();
+        if (file_end <= 0 || file_end > static_cast<std::streampos>(
+                iop::c_cpu::k_ram_size))
+        {
+            std::fprintf(stderr, "IOP IRX invalid file size: %s\n", iop_irx_path);
+            return 1;
+        }
+        std::vector<uint8_t> bytes(static_cast<size_t>(file_end));
+        input.seekg(0, std::ios::beg);
+        if (!input.read(reinterpret_cast<char*>(bytes.data()),
+                        static_cast<std::streamsize>(bytes.size())))
+        {
+            std::fprintf(stderr, "IOP IRX read failed: %s\n", iop_irx_path);
+            return 1;
+        }
+
+        iop_kernel = std::make_unique<iop::c_kernel>();
+        iop_sifman = std::make_unique<iop::c_sifman_bridge>(
+            *iop_kernel, hardware.sif()
+        );
+        if (!iop_sifman->install())
+        {
+            std::fprintf(stderr, "IOP sifman service installation failed\n");
+            return 1;
+        }
+        iop_kernel->bind_syscall([&](iop::c_kernel& active, uint32_t service)
+        {
+            return iop_sifman->handle_syscall(active, service);
+        });
+        const iop::s_module_load_result loaded = iop_kernel->load_module(bytes);
+        if (loaded.m_status != iop::e_irx_load_result::success)
+        {
+            std::fprintf(stderr, "IOP IRX load failed: %s status=%u\n",
+                         iop_irx_path, static_cast<uint32_t>(loaded.m_status));
+            return 1;
+        }
+        const uint32_t thread_id = iop_kernel->create_module_thread(
+            loaded.m_id, 1u
+        );
+        if (thread_id == 0u || !iop_kernel->start_thread(thread_id))
+        {
+            std::fprintf(stderr, "IOP IRX thread start failed: %s\n", iop_irx_path);
+            return 1;
+        }
+        std::printf("IOP guest loaded: %s thread=%u quantum=%u "
+                    "(SIF-poll rendezvous, not cycle accurate)\n",
+                    iop_irx_path, thread_id, iop_quantum);
+    }
+
     ee::s_ee_runtime runtime{};
     runtime.m_user = memory.get();
     runtime.m_vu0_state = &vu0;
@@ -2040,6 +2126,45 @@ int main(int argc, char** argv)
                             break;
                         }
 
+                        // Only the guest IOP can publish new SMFLAG bits.
+                        // Give its already-loaded R3000 module a bounded
+                        // execution turn when the EE asks for a missing
+                        // IOP-owned flag. No module means no IOP execution.
+                        if (id == 4u && value == 0u && iop_kernel != nullptr)
+                        {
+                            const iop::s_kernel_run_result iop_result =
+                                iop_kernel->run(iop_quantum, 128u);
+                            if (iop_result.m_stop != iop::e_kernel_stop::budget_exhausted &&
+                                iop_result.m_stop != iop::e_kernel_stop::idle)
+                            {
+                                std::fprintf(
+                                    stderr,
+                                    "IOP guest stopped: reason=%u thread=%u "
+                                    "pc=0x%08x opcode=0x%08x\n",
+                                    static_cast<uint32_t>(iop_result.m_stop),
+                                    iop_result.m_thread_id,
+                                    iop_result.m_guest_pc,
+                                    iop_result.m_opcode
+                                );
+                                break;
+                            }
+                            if (!hardware.sif().get_reg(id, &value))
+                            {
+                                break;
+                            }
+                            if (trace && value != 0u)
+                            {
+                                std::printf(
+                                    "IOP guest published SMFLAG: "
+                                    "value=0x%08x instructions=%llu\n",
+                                    value,
+                                    static_cast<unsigned long long>(
+                                        iop_result.m_executed
+                                    )
+                                );
+                            }
+                        }
+
                         // MIPS32 scalar values return sign-extended in
                         // the EE's 64-bit GPR low half.
                         cpu.m_gpr[2].m_lo = static_cast<uint64_t>(
@@ -2080,8 +2205,11 @@ int main(int argc, char** argv)
                                     stderr,
                                     "SIF SMFLAG polling stalled: "
                                     "guest_epc=0x%08x register=4 value=0 "
-                                    "reads=%u (IOP producer not running)\n",
-                                    epc, repeated_sif_smflag_reads
+                                    "reads=%u (%s)\n",
+                                    epc, repeated_sif_smflag_reads,
+                                    iop_kernel == nullptr
+                                        ? "IOP producer not running"
+                                        : "loaded IOP did not publish SMFLAG"
                                 );
                                 // Fail closed at the observed guest syscall,
                                 // not at an arbitrary later dispatch budget.

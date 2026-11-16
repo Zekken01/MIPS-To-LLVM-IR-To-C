@@ -138,10 +138,10 @@ add_executable(ee_recomp
 )
 target_link_libraries(ee_recomp PRIVATE ee_core)
 
-# Standalone host for a linked set of translated guest functions.
-# It loads the original ELF PT_LOAD segments and executes via ee_game_run.
+# Standalone host for translated EE functions and optional, explicit
+# IOP IRX execution at SIF polling rendezvous points.
 add_executable(ee_game_runner src/tools/ee_game_runner_main.cpp)
-target_link_libraries(ee_game_runner PRIVATE ee_core ${CMAKE_DL_LIBS})
+target_link_libraries(ee_game_runner PRIVATE ee_core iop_cpu ${CMAKE_DL_LIBS})
 
 add_executable(ee_ram_interpreter_test tests/smoke/ee_ram_interpreter_test.cpp)
 target_link_libraries(ee_ram_interpreter_test PRIVATE ee_core)

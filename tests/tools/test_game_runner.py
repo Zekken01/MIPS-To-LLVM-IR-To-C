@@ -162,6 +162,69 @@ def make_sif_poll_elf(path):
     path.write_bytes(image)
 
 
+def make_sif_handshake_elf(path):
+    """EE branches out of SMFLAG polling only after a genuine IOP write."""
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    instructions = (
+        0x24040004,  # addiu a0,zero,4: SIF_REG_SMFLAG
+        0x2403007a,  # addiu v1,zero,0x7a: SifGetReg
+        0x0000000c,  # syscall
+        0x1040fffe,  # beq v0,zero,-2 (back to syscall)
+        0x00000000,  # delay slot
+        0x00408021,  # addu s0,v0,zero: capture observed SMFLAG
+        0x0000000d,  # break: deliberate fixture termination
+    )
+    for index, opcode in enumerate(instructions):
+        struct.pack_into("<I", image, 0x108 + index * 4, opcode)
+    path.write_bytes(image)
+
+
+def make_sif_guest_irx(path, unknown_import=False, unhandled_syscall=False):
+    """Non-copyrighted IOP IRX: guest code calls sifman #24 then #23."""
+    image = bytearray(0x200)
+    image[0:7] = bytes((0x7f, 0x45, 0x4c, 0x46, 1, 1, 1))
+    struct.pack_into("<HH", image, 16, 0xff80, 8)
+    struct.pack_into("<I", image, 28, 0x34)
+    struct.pack_into("<HHH", image, 40, 52, 32, 2)
+
+    # One PT_LOAD plus PT_SCE_IOPMOD.
+    struct.pack_into("<IIIIII", image, 0x34, 1, 0x100, 0, 0, 0x70, 0x80)
+    struct.pack_into("<II", image, 0x54, 0x70000080, 0x180)
+    struct.pack_into("<IIIII", image, 0x184, 0, 0x60, 0x40, 0x20, 0x20)
+    image[0x19a:0x19a + 8] = b"SIFTEST" + bytes(1)
+
+    if unhandled_syscall:
+        instructions = (
+            0x24020063,  # addiu v0,zero,99: unimplemented IOP service
+            0x0000000c,  # syscall
+            0x08008002,  # loop (unreachable)
+            0x00000000,
+        )
+    else:
+        instructions = (
+            0x3c040006,  # lui a0,6 => SMFLAG bits 0x60000
+            0x0c00800f,  # jal 0x2003c (sifman #24)
+            0x00000000,  # delay slot
+            0x0c00800d,  # jal 0x20034 (sifman #23)
+            0x00000000,  # delay slot
+            0x08008005,  # j 0x20014
+            0x00000000,  # delay slot
+        )
+    for index, opcode in enumerate(instructions):
+        struct.pack_into("<I", image, 0x100 + index * 4, opcode)
+
+    # IRX import stubs use the actual library resolver, not fixed HLE PCs.
+    struct.pack_into("<I", image, 0x120, 0x41e00000)
+    image[0x12c:0x132] = b"sifman"
+    struct.pack_into("<II", image, 0x134, 0x03e00008, 0x24000017)
+    struct.pack_into(
+        "<II", image, 0x13c, 0x03e00008,
+        0x24000019 if unknown_import else 0x24000018,
+    )
+    path.write_bytes(image)
+
+
 def make_sif_register_elf(path):
     """SifGetReg/SetReg and physical SIF MMIO must share guest-visible state."""
     make_elf(path)
@@ -1640,6 +1703,90 @@ def main():
         assert bounded_state["exit_name"] == "UNSUPPORTED", bounded_state
         assert "SIF SMFLAG polling stalled:" in bounded.stderr, bounded.stderr
         assert "guest_epc=0x00100010 register=4 value=0 reads=6" in bounded.stderr, bounded.stderr
+
+    # End-to-end integration: EE polls SMFLAG, *actual* IOP R3000 guest
+    # instructions invoke sifman via IRX imports, and the EE then exits
+    # its polling loop. Without an IOP module, the identical ELF stalls.
+    with tempfile.TemporaryDirectory(prefix="ee-native-iop-rendezvous-") as tmp:
+        root = Path(tmp)
+        elf = root / "ee-sif-wait.elf"
+        irx = root / "iop-sifman.irx"
+        make_sif_handshake_elf(elf)
+        make_sif_guest_irx(irx)
+        report_path = root / "ee-iop.json"
+        command = [
+            sys.executable, str(source / "tools" / "run_game.py"),
+            str(elf), "--build-dir", str(build),
+            "--work-dir", str(root / "out"),
+            "--max-dispatches=48", "--hle-startup", "--trace",
+            "--sif-poll-limit=6", "--report", str(report_path),
+        ]
+
+        without_iop = subprocess.run(
+            command, capture_output=True, text=True, check=False,
+        )
+        without_state = json.loads(
+            report_path.read_text(encoding="utf-8")
+        )
+        assert without_iop.returncode == 3, (
+            without_iop.stdout + without_iop.stderr
+        )
+        assert without_state["final_pc"] == 0x00100010, without_state
+        assert "SIF SMFLAG polling stalled" in without_iop.stderr
+        assert "IOP guest loaded:" not in without_iop.stdout
+
+        with_iop = subprocess.run(
+            command + [
+                "--no-recompile", f"--iop-irx={irx}",
+                "--iop-quantum=64",
+            ],
+            capture_output=True, text=True, check=False,
+        )
+        with_state = json.loads(
+            report_path.read_text(encoding="utf-8")
+        )
+        assert with_state["gpr_lo"][16] == 0x60000, (
+            with_state, with_iop.stdout, with_iop.stderr
+        )
+        assert "IOP guest loaded:" in with_iop.stdout
+        assert (
+            "IOP guest published SMFLAG: value=0x00060000"
+        ) in with_iop.stdout
+        assert "HLE SifGetReg: register=0x00000004 result=0x00060000" in (
+            with_iop.stdout
+        ), with_iop.stdout
+        assert "SIF SMFLAG polling stalled" not in with_iop.stderr
+        assert with_state["dispatches"] < 48, with_state
+
+        # The kernel's real IRX resolver refuses an unsupported import.
+        invalid_irx = root / "bad-import.irx"
+        make_sif_guest_irx(invalid_irx, unknown_import=True)
+        missing_import = subprocess.run(
+            command + ["--no-recompile", f"--iop-irx={invalid_irx}"],
+            capture_output=True, text=True, check=False,
+        )
+        assert missing_import.returncode == 1, (
+            missing_import.stdout + missing_import.stderr
+        )
+        assert "IOP IRX load failed:" in missing_import.stderr
+        assert "IOP guest published SMFLAG:" not in missing_import.stdout
+
+        # An IOP thread that traps on an unknown syscall never
+        # synthesizes readiness or resumes the EE unconditionally.
+        unknown_service_irx = root / "bad-syscall.irx"
+        make_sif_guest_irx(unknown_service_irx, unhandled_syscall=True)
+        unknown_service = subprocess.run(
+            command + [
+                "--no-recompile", f"--iop-irx={unknown_service_irx}",
+                "--iop-quantum=64",
+            ],
+            capture_output=True, text=True, check=False,
+        )
+        assert unknown_service.returncode != 0, (
+            unknown_service.stdout + unknown_service.stderr
+        )
+        assert "IOP guest stopped: reason=2" in unknown_service.stderr
+        assert "IOP guest published SMFLAG:" not in unknown_service.stdout
 
     for invalid_open in (False, True):
         with tempfile.TemporaryDirectory(prefix="ee-native-deci2-") as tmp:
