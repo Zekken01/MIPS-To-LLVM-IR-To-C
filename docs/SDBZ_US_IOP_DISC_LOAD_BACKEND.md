@@ -2,23 +2,23 @@
 
 ## Real game evidence
 
-The 2026-11-16 07:13 boot logs still stop at \`0x001750B4\`
+The 2026-11-16 07:13 boot logs still stop at `0x001750B4`
 after 6,945 EE dispatches while the EE polls IOP SMFLAG
-\`0x00020000\`. No IOP module was started and no LOADFILE RPC was
-observed. The new \`iop-disc-catalog.json\` resolves all seven
-ELF-embedded \`cdrom0:\` filenames, but \`runtime_load_count\` is zero.
+`0x00020000`. No IOP module was started and no LOADFILE RPC was
+observed. The new `iop-disc-catalog.json` resolves all seven
+ELF-embedded `cdrom0:` filenames, but `runtime_load_count` is zero.
 
 The catalog's static ELF references are **not module load events**.
 
 ## Guest-requested disc loading
 
-\`iop::c_disc_loader\` provides the file and IRX-linking backend for
-the pending LOADFILE server \`0x80000006\`:
+`iop::c_disc_loader` provides the file and IRX-linking backend for
+the pending LOADFILE server `0x80000006`:
 
-1. The request must supply its own \`cdrom0:\` path. No arbitrary
+1. The request must supply its own `cdrom0:` path. No arbitrary
    installed IRXs are loaded from a speculative static candidate list.
 2. Resolve against an extracted disc root, with ASCII-insensitive
-   names, optional ISO9660 \`;1\` suffix, and nested directories.
+   names, optional ISO9660 `;1` suffix, and nested directories.
 3. Reject unsupported devices, empty/relative/traversal path
    components, symlink escapes, ambiguous filenames, oversized files,
    and invalid ELF32 MIPS/IRX headers.
@@ -34,7 +34,7 @@ SIF replies, or mark the IOP as ready.
 
 ## Regression
 
-\`iop_disc_loader_test\` writes small synthetic IRX files into a
+`iop_disc_loader_test` writes small synthetic IRX files into a
 temporary extracted-disc layout. It verifies:
 
 - Missing provider imports abort loading.
@@ -49,12 +49,12 @@ temporary extracted-disc layout. It verifies:
 ## Next integration
 
 To make this load path reachable from **the actual game**, implement
-the EE→IOP SIF1 command sequence and LOADFILE RPC (\`0x80000006\`)
+the EE→IOP SIF1 command sequence and LOADFILE RPC (`0x80000006`)
 server in the guest-initialized IOP SIFCMD bridge, including:
 a validated parameter DMA, RPC bind and call packets, IOP→EE reply
 DMA through an armed SIF0 channel, and callbacks/scheduling.
 
 Even with that bridge, an IOP firmware or explicitly sourced
 initialization image must run first to produce SMFLAG readiness.
-The current \`--iop-irx\` bootstrap is optional and cannot replace
+The current `--iop-irx` bootstrap is optional and cannot replace
 firmware or infer the startup sequence from game ELF strings.
