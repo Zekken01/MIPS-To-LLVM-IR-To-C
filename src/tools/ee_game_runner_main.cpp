@@ -6,6 +6,7 @@
 #include "iop_kernel.h"
 #include "iop_sifman_bridge.h"
 #include "iop_sif1_bridge.h"
+#include "iop_sifcmd_bridge.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -736,11 +737,21 @@ int main(int argc, char** argv)
     std::unique_ptr<iop::c_kernel> iop_kernel;
     std::unique_ptr<iop::c_sifman_bridge> iop_sifman;
     std::unique_ptr<iop::c_sif1_bridge> iop_sif1;
+    std::unique_ptr<iop::c_sifcmd_bridge> iop_sifcmd;
     if (!iop_irx_paths.empty())
     {
         iop_kernel = std::make_unique<iop::c_kernel>();
+        iop_sifcmd = std::make_unique<iop::c_sifcmd_bridge>(
+            *iop_kernel, hardware.sif()
+        );
+        if (!iop_sifcmd->install())
+        {
+            std::fprintf(stderr, "IOP sifcmd service installation failed\n");
+            return 1;
+        }
         iop_sif1 = std::make_unique<iop::c_sif1_bridge>(
-            *memory, iop_kernel->cpu(), hardware.dmac()
+            *memory, iop_kernel->cpu(), hardware.dmac(),
+            iop_sifcmd.get()
         );
         iop_sifman = std::make_unique<iop::c_sifman_bridge>(
             *iop_kernel, hardware.sif(),
@@ -753,7 +764,8 @@ int main(int argc, char** argv)
         }
         iop_kernel->bind_syscall([&](iop::c_kernel& active, uint32_t service)
         {
-            return iop_sifman->handle_syscall(active, service);
+            return iop_sifman->handle_syscall(active, service) ||
+                   iop_sifcmd->handle_syscall(active, service);
         });
 
         // Load the complete list before starting *any* IOP thread.
