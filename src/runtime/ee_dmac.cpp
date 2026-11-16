@@ -38,6 +38,70 @@ void c_ee_dmac::bind_memory(ee_memory* memory)
     m_memory = memory;
 }
 
+void c_ee_dmac::bind_sif0_start(
+    void* user, t_sif0_start_callback callback)
+{
+    m_sif0_user = callback != nullptr ? user : nullptr;
+    m_sif0_start = m_sif0_user != nullptr ? callback : nullptr;
+}
+
+bool c_ee_dmac::begin_sif0_packet(uint32_t tag, uint32_t destination)
+{
+    s_spr_channel& channel = m_sif0_channel;
+    const uint32_t id = (tag >> 28u) & 7u;
+    const uint32_t qwc = tag & 0xffffu;
+    const uint32_t address = destination & ~15u;
+    if (m_memory == nullptr ||
+        (channel.m_chcr & k_chcr_str) == 0u ||
+        ((channel.m_chcr >> 2u) & 3u) != 1u ||
+        channel.m_qwc != 0u ||
+        (id != 1u && id != 4u && id != 7u) ||
+        address >= 0x02000000u ||
+        static_cast<uint64_t>(address) +
+            static_cast<uint64_t>(qwc) * 16u > 0x02000000ull ||
+        !m_memory->contains(address, static_cast<size_t>(qwc) * 16u))
+    {
+        return false;
+    }
+
+    const bool end = id == 7u ||
+        ((channel.m_chcr & 0x80u) != 0u &&
+         (tag & 0x80000000u) != 0u);
+
+    // The received tag supplies MADR/QWC. No IOP source data is
+    // written yet, so invalid tags cannot mutate EE destination RAM.
+    channel.m_chcr = (channel.m_chcr & 0x0000ffffu) |
+                      (tag & 0xffff0000u);
+    channel.m_madr = address;
+    channel.m_qwc = qwc;
+    m_sif0_chain_end = end;
+    if (qwc == 0u && end)
+    {
+        channel.m_chcr &= ~k_chcr_str;
+        return raise(5u);
+    }
+    return true;
+}
+
+bool c_ee_dmac::commit_sif0_qwords(uint32_t qwc)
+{
+    s_spr_channel& channel = m_sif0_channel;
+    if ((channel.m_chcr & k_chcr_str) == 0u ||
+        qwc == 0u || qwc > channel.m_qwc)
+    {
+        return false;
+    }
+
+    channel.m_madr += qwc * 16u;
+    channel.m_qwc -= qwc;
+    if (channel.m_qwc == 0u && m_sif0_chain_end)
+    {
+        channel.m_chcr &= ~k_chcr_str;
+        return raise(5u);
+    }
+    return true;
+}
+
 void c_ee_dmac::bind_sif1_start(
     void* user, t_sif1_start_callback callback)
 {
@@ -189,6 +253,7 @@ void c_ee_dmac::reset()
         channel = {};
     }
     m_sif0_channel = {};
+    m_sif0_chain_end = false;
     m_sif1_channel = {};
     m_sif1_chain_end = false;
     m_sif1_chain_tags = 0u;
@@ -929,6 +994,10 @@ bool c_ee_dmac::write_spr_channel(uint32_t address, uint32_t value)
         if (!was_running && (value & k_chcr_str) != 0u)
         {
             const uint32_t mode = (channel->m_chcr >> 2u) & 3u;
+            if (channel_index == 5u)
+            {
+                m_sif0_chain_end = false;
+            }
             if (channel_index == 6u)
             {
                 m_sif1_chain_end = false;
@@ -936,8 +1005,12 @@ bool c_ee_dmac::write_spr_channel(uint32_t address, uint32_t value)
             }
             if (channel_index == 5u || channel_index == 6u)
             {
-                // SIF0 waits for an IOP producer. SIF1 notifies the
-                // hardware FIFO; only committed words can retire STR.
+                // Both channels notify their genuine FIFO engines.
+                // Neither MMIO register write itself retires STR.
+                if (channel_index == 5u && m_sif0_start != nullptr)
+                {
+                    m_sif0_start(m_sif0_user);
+                }
                 if (channel_index == 6u && m_sif1_start != nullptr)
                 {
                     m_sif1_start(m_sif1_user);
