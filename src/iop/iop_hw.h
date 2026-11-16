@@ -63,6 +63,9 @@ public:
     static constexpr uint8_t k_cdvd_ncmd_ready = 0x40u;
     // CDVD I_STAT: byte-wide interrupt-reason register, write-one-to-clear.
     static constexpr uint32_t k_cdvd_i_stat = 0x1f402008u;
+    // CDVD decryption configuration byte. This is register storage,
+    // not a disc-sector decryption implementation.
+    static constexpr uint32_t k_cdvd_dec_set = 0x1f40203au;
     static constexpr uint32_t k_cdvd_disc_type = 0x1f40200fu;
     static constexpr uint8_t k_cdvd_no_disc = 0x00u;
 
@@ -113,6 +116,7 @@ private:
     // No CDVD command backend is connected yet, so no command may set
     // interrupt reasons spontaneously. Acknowledge writes clear bits.
     uint8_t m_cdvd_i_stat = 0u;
+    uint8_t m_cdvd_dec_set = 0u;
     uint32_t m_i_stat = 0u;
     uint32_t m_i_mask = 0u;
     uint32_t m_i_ctrl = 1u;
