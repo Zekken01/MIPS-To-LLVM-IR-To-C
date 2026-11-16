@@ -9,6 +9,8 @@ import tempfile
 
 import llvmlite.binding as llvm
 
+from ee_diagnostic_stubs import register_ee_diagnostic_stubs
+
 
 class U128(ctypes.Structure):
     _fields_ = [("lo", ctypes.c_uint64), ("hi", ctypes.c_uint64)]
@@ -61,6 +63,7 @@ def main():
 
         llvm.initialize_native_target()
         llvm.initialize_native_asmprinter()
+    register_ee_diagnostic_stubs()
         target = llvm.Target.from_default_triple()
         target_machine = target.create_target_machine()
         module.data_layout = str(target_machine.target_data)
