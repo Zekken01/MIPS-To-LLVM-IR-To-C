@@ -52,6 +52,10 @@ private:
     std::map<uint8_t, std::string> m_cur_lo, m_cur_hi;
     std::set<uint8_t> m_dirty_regs;
 
+    // Scope of the guest instruction currently being emitted. Only used to
+    // annotate read-only, SSA-based register provenance events.
+    const ee::s_ee_instruction* m_current_guest_insn = nullptr;
+
     void header();
     void declare_memory_helpers();
     void emit_guest_store_trace(const ee::s_ee_instruction& ins,
@@ -59,6 +63,8 @@ private:
                                 const std::string& affected_address,
                                 uint32_t width, const std::string& source_value,
                                 uint32_t source_lane);
+    void emit_guest_v0_write(const std::string& old_value,
+                             const std::string& new_value);
     void begin_function(const char* func_name);
     void end_function();
 
