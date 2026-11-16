@@ -1333,6 +1333,13 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
             m_out += "  " + hi64 + " = sext i32 " + hi32 + " to i64\n";
             m_out += "  store i64 " + lo64 + ", ptr " + state_field(2) + "\n";
             m_out += "  store i64 " + hi64 + ", ptr " + state_field(1) + "\n";
+            // R5900 MULT/MULTU additionally write the low signed 32-bit
+            // product into their encoded rd GPR. Unlike generic MIPS III,
+            // this field is not reserved. It is used by SDBZ's SIFCMD
+            // registration for its 12-byte handler entry offsets.
+            // Source operands were captured before this write, so rd may
+            // alias rs or rt; $zero remains hard-wired.
+            set_gpr_lo64(ins.rd, lo64);
         }
         else if (funct == ee::e_ee_opcode::FUNCT_DIV ||
                  funct == ee::e_ee_opcode::FUNCT_DIVU)

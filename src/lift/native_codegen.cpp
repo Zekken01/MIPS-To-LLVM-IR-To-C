@@ -106,6 +106,11 @@ void native_codegen::touched_regs(const std::vector<s_lifted_op>& ops,
         case LOP_DIVU:
         case LOP_MTSAB:
         case LOP_MTSAH:
+            if ((op.kind == LOP_MULT || op.kind == LOP_MULTU) &&
+                op.rd != 0)
+            {
+                seen[op.rd] = true;
+            }
             if (op.rs != 0) seen[op.rs] = true;
             if (op.kind != LOP_MTSAB && op.kind != LOP_MTSAH && op.rt != 0)
                 seen[op.rt] = true;
@@ -400,13 +405,29 @@ void native_codegen::emit_op_body(const s_lifted_op& op)
         break;
     }
     case K::LOP_MULT:
+    case K::LOP_MULTU:
     {
+        const std::string a = "g_cpu.m_gpr[" + std::to_string(op.rs) + "].m_lo";
+        const std::string b = "g_cpu.m_gpr[" + std::to_string(op.rt) + "].m_lo";
         out_ += "    {\n";
-        out_ += "        int64_t __a = " + sext32_expr("g_cpu.m_gpr[" + std::to_string(op.rs) + "].m_lo") + ";\n";
-        out_ += "        int64_t __b = " + sext32_expr("g_cpu.m_gpr[" + std::to_string(op.rt) + "].m_lo") + ";\n";
-        out_ += "        int64_t __p = __a * __b;\n";
-        out_ += "        g_cpu.m_lo = (uint64_t)(uint32_t)__p;\n";
-        out_ += "        g_cpu.m_hi = (uint64_t)(__p >> 32);\n";
+        if (op.kind == K::LOP_MULT)
+        {
+            out_ += "        int64_t __a = " + sext32_expr(a) + ";\n";
+            out_ += "        int64_t __b = " + sext32_expr(b) + ";\n";
+            out_ += "        uint64_t __p = (uint64_t)(__a * __b);\n";
+        }
+        else
+        {
+            out_ += "        uint64_t __a = (uint32_t)(" + a + ");\n";
+            out_ += "        uint64_t __b = (uint32_t)(" + b + ");\n";
+            out_ += "        uint64_t __p = __a * __b;\n";
+        }
+        out_ += "        g_cpu.m_lo = (uint64_t)(int64_t)(int32_t)(uint32_t)__p;\n";
+        out_ += "        g_cpu.m_hi = (uint64_t)(int64_t)(int32_t)(uint32_t)(__p >> 32);\n";
+        if (op.rd != 0)
+        {
+            out_ += "        g_cpu.m_gpr[" + std::to_string(op.rd) + "].m_lo = g_cpu.m_lo;\n";
+        }
         out_ += "    }\n";
         break;
     }
