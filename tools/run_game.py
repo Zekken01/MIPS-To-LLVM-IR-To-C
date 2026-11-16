@@ -446,6 +446,14 @@ def main(argv=None):
         help="Stop after N consecutive unchanged IOP SMFLAG reads at the same syscall (0=off)",
     )
     parser.add_argument(
+        "--iop-irx", type=Path,
+        help="Opt-in IOP ELF/IRX to execute at EE SIF SMFLAG poll boundaries",
+    )
+    parser.add_argument(
+        "--iop-quantum", type=int, default=256,
+        help="Bounded R3000 instructions per SIF poll, when --iop-irx is provided",
+    )
+    parser.add_argument(
         "--timeout-seconds", type=int, default=10,
         help="hard wall-time limit for each guest replay (default: 10)",
     )
@@ -484,6 +492,10 @@ def main(argv=None):
         parser.error("--loop-budget must fit a uint32")
     if args.sif_poll_limit < 0 or args.sif_poll_limit > 0xFFFFFFFF:
         parser.error("--sif-poll-limit must fit a uint32")
+    if args.iop_quantum < 1 or args.iop_quantum > 65536:
+        parser.error("--iop-quantum must be in [1, 65536]")
+    if args.iop_irx is not None and not args.iop_irx.is_file():
+        parser.error(f"--iop-irx file not found: {args.iop_irx}")
     for name in ("trace_entry", "watch_word", "trace_store"):
         address = getattr(args, name)
         if address is not None and not (0 <= address <= 0xFFFFFFFF and address % 4 == 0):
@@ -634,6 +646,9 @@ def main(argv=None):
         ]
         if args.stack is not None:
             command.append(f"--stack=0x{args.stack:08x}")
+        if args.iop_irx is not None:
+            command.append(f"--iop-irx={args.iop_irx.resolve(strict=True)}")
+            command.append(f"--iop-quantum={args.iop_quantum}")
         if args.trace:
             command.append("--trace")
         if args.trace_entry is not None:
