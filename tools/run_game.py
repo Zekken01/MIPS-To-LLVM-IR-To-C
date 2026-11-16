@@ -81,9 +81,10 @@ def ir_generation_inputs(elf, source_root):
                 # Dispatch glue and runtime linking do not affect IR text.
                 continue
             paths.append((item.relative_to(source_root).as_posix(), item))
-    for name in ("src/tools/ee_recomp_main.cpp",
-                 "src/runtime/ee_runtime.h"):
-        paths.append((name, source_root / name))
+    paths.append((
+        "src/tools/ee_recomp_main.cpp",
+        source_root / "src/tools/ee_recomp_main.cpp"
+    ))
     return {name: sha256_path(item) for name, item in paths}
 
 
