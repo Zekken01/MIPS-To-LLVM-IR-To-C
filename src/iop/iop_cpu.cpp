@@ -112,6 +112,12 @@ bool c_cpu::read(uint32_t address, uint32_t width, uint32_t* value) const
 
     // RAM is visible through the physical, KSEG0 and KSEG1 aliases.
     // Do not wrap unknown MMIO or unmapped physical addresses into RAM.
+    const uint32_t region = address & 0xe0000000u;
+    if (region != 0u && region != 0x80000000u &&
+        region != 0xa0000000u)
+    {
+        return false;
+    }
     const uint32_t physical = address & 0x1fffffffu;
     if ((address & (width - 1u)) != 0u)
     {
@@ -155,6 +161,12 @@ bool c_cpu::write(uint32_t address, uint32_t width, uint32_t value)
         return false;
     }
 
+    const uint32_t region = address & 0xe0000000u;
+    if (region != 0u && region != 0x80000000u &&
+        region != 0xa0000000u)
+    {
+        return false;
+    }
     const uint32_t physical = address & 0x1fffffffu;
     if ((address & (width - 1u)) != 0u ||
         physical > k_ram_size - width)
