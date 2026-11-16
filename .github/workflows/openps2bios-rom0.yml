@@ -53,6 +53,16 @@ jobs:
             '3702baa508ff40498fab4a95429a2ae1f903d11f5bbcdd4e1a87dbe9f5d21a84' \
             'OpenPS2BIOS-0.6.bin' | sha256sum --check
 
+      # Temporary verified upstream firmware artifact for local debugging.
+      # No game files, proprietary BIOS or generated code are uploaded.
+      - name: Export verified official ROM0 for local integration
+        uses: actions/upload-artifact@v4
+        with:
+          name: official-openps2bios-v06-local-fixture
+          path: OpenPS2BIOS-0.6.bin
+          if-no-files-found: error
+          retention-days: 1
+
       - name: Execute guest IOP reset vector and capture stop
         run: |
           set -uo pipefail
