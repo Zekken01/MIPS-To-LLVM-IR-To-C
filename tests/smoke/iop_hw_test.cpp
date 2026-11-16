@@ -94,6 +94,16 @@ int main()
         return fail("primary DMA3 registers survived reset");
     }
 
+    // Readiness is a controller state, NOT proof of an inserted disc.
+    // The idle no-disc state reports N_READY=0x40 and disc type=0.
+    if (!hardware.read(iop::c_hw::k_cdvd_ncmd_status, 1u, &actual) ||
+        actual != iop::c_hw::k_cdvd_ncmd_ready ||
+        hardware.read(iop::c_hw::k_cdvd_ncmd_status, 2u, &actual) ||
+        hardware.read(iop::c_hw::k_cdvd_ncmd_status, 4u, &actual) ||
+        hardware.write(iop::c_hw::k_cdvd_ncmd_status, 1u, 0u))
+    {
+        return fail("CDVD N-command idle readiness or unsupported command write");
+    }
     // The standalone ROM0 runner has no mounted disc. The CDVD
     // disk-type register must report no media, not an invented game disc.
     if (!hardware.read(iop::c_hw::k_cdvd_disc_type, 1u, &actual) ||
@@ -259,15 +269,18 @@ int main()
         return fail("Guest SB to IOP diagnostic console was not captured");
     }
 
-    // Guest LBU from CDVD using the KSEG1 address seen in OpenPS2BIOS.
+    // Guest LBU from CDVD N-command readiness and disc-type via KSEG1.
+    // The first LBU matches the real faulting ROM0 access at 0x0001CA14.
     const uint32_t cdvd_instructions[] =
     {
         0x3c08bf40u, // lui t0,0xbf40
+        0x35082005u, // ori t0,t0,0x2005
+        0x91090000u, // lbu t1,0(t0): ready=0x40
         0x3508200fu, // ori t0,t0,0x200f
-        0x91090000u, // lbu t1,0(t0)
+        0x910a0000u, // lbu t2,0(t0): disc type=0x00
         0x0000000du  // break
     };
-    for (uint32_t index = 0u; index < 4u; ++index)
+    for (uint32_t index = 0u; index < 6u; ++index)
     {
         put32(rom, index * 4u, cdvd_instructions[index]);
     }
@@ -278,8 +291,10 @@ int main()
     }
     const iop::s_kernel_run_result cdvd = cdvd_kernel.run(16u, 4u);
     if (cdvd.m_stop != iop::e_kernel_stop::breakpoint ||
-        cdvd.m_executed != 3u ||
+        cdvd.m_executed != 5u ||
         cdvd_kernel.cpu().state().m_gpr[9u] !=
+            iop::c_hw::k_cdvd_ncmd_ready ||
+        cdvd_kernel.cpu().state().m_gpr[10u] !=
             iop::c_hw::k_cdvd_no_disc)
     {
         return fail("Guest LBU did not read CDVD no-media state");

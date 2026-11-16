@@ -57,6 +57,10 @@ public:
     static constexpr uint32_t k_dma_icr = 0x1f8010f4u;
     static constexpr uint32_t k_dma_icr2 = 0x1f801574u;
     static constexpr uint32_t k_dma_irq = 3u;
+    // CDVD N-command status: bit 6=controller ready, bit 7=busy.
+    // A controller can be idle/ready without a disc inserted.
+    static constexpr uint32_t k_cdvd_ncmd_status = 0x1f402005u;
+    static constexpr uint8_t k_cdvd_ncmd_ready = 0x40u;
     static constexpr uint32_t k_cdvd_disc_type = 0x1f40200fu;
     static constexpr uint8_t k_cdvd_no_disc = 0x00u;
 
