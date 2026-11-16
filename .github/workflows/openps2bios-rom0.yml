@@ -16,6 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+
       - name: Configure ROM0 runner
         run: cmake -S . -B build-rom0 -G Ninja -DCMAKE_BUILD_TYPE=Release
 
@@ -178,6 +179,17 @@ jobs:
           tail -n 16 rom0-ee-smflag.log
           tail -n 24 rom0-ee-sifsetdma.log
 
+      - name: Verify genuine ROM0 SIF0 reply invokes EE DMA5 guest handler
+        run: |
+          set -euo pipefail
+          .venv-rom0/bin/python tests/tools/test_rom0_dma5_callback.py \
+            --rom0 OpenPS2BIOS-0.6.bin \
+            --build-dir build-rom0 \
+            --work-dir build-rom0/ee-rom0-dma5-callback || {
+              cat build-rom0/ee-rom0-dma5-callback/ee-dma5-callback.log || true
+              exit 1
+            }
+
       - name: Preserve actual guest execution evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -189,6 +201,8 @@ jobs:
             rom0-ee-smflag.log
             rom0-ee-sifsetdma.json
             rom0-ee-sifsetdma.log
+            build-rom0/ee-rom0-dma5-callback/ee-dma5-callback.json
+            build-rom0/ee-rom0-dma5-callback/ee-dma5-callback.log
             rom0-trace.log
             rom0-sif-integration.json
             rom0-sif-integration.log

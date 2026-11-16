@@ -1,4 +1,5 @@
 #include "ee_runtime.h"
+#include "ee_exceptions.h"
 #include "ee_memory.h"
 #include "ee_ram_interpreter.h"
 #include "ee_hw_bus.h"
@@ -993,6 +994,14 @@ int main(int argc, char** argv)
     runtime.m_guest_v0_trace_remaining = has_trace_v0 ? 64u : 0u;
     cpu.m_pc = entry;
     cpu.m_gpr[29].m_lo = stack;
+    // Startup HLE runs without a guest EE BIOS. Match the kernel's
+    // initial interrupt-capable main-thread COP0 context rather than
+    // leaving IE/IM bits zero; otherwise genuine DMA5 completions
+    // assert Cause.IP3 but can never invoke the guest SIF0 handler.
+    if (hle_startup)
+    {
+        cpu.m_cop0[12] = 0x70010c01u;
+    }
 
     // Watchpoints observe *committed* architectural memory between host
     // dispatches. They never modify guest RAM or trigger a guest exception.
@@ -1090,6 +1099,45 @@ int main(int argc, char** argv)
     bool callback_active = false;
     uint32_t callback_resume_pc = 0u;
     ee::s_ee_u128 callback_saved_ra{};
+
+    // The HLE EE kernel dispatches *registered guest* DMAC callbacks at
+    // native safepoints. DMA5's pending level originates only from the
+    // hardware-backed IOP DMA9 -> FIFO -> EE DMA5 transport; the host
+    // does not fabricate any completion, response or guest memory flag.
+    bool dmac_callback_active = false;
+    uint32_t dmac_callback_channel = 0u;
+    size_t dmac_callback_index = 0u;
+    std::vector<s_kernel_interrupt_handler> dmac_callback_handlers;
+    ee::s_ee_cpu_state dmac_interrupted_cpu{};
+    ee::s_ee_vu0_state dmac_interrupted_vu0{};
+    constexpr uint32_t k_dmac_kernel_stack = 0x8007fff0u;
+    const auto enter_dmac_callback = [&](const s_kernel_interrupt_handler& handler)
+    {
+        cpu.m_cop0[12] = (dmac_interrupted_cpu.m_cop0[12] & ~0x10001u) | 2u;
+        cpu.m_gpr[4] = {dmac_callback_channel, 0u};
+        cpu.m_gpr[5] = {handler.m_arg, 0u};
+        cpu.m_gpr[6] = {0u, 0u};
+        cpu.m_gpr[7] = {0u, 0u};
+        if (handler.m_gp != 0u)
+        {
+            cpu.m_gpr[28] = {handler.m_gp, 0u};
+        }
+        cpu.m_gpr[29] = {
+            static_cast<uint64_t>(static_cast<int64_t>(
+                static_cast<int32_t>(k_dmac_kernel_stack))), 0u
+        };
+        cpu.m_gpr[31] = {static_cast<uint64_t>(-16ll), 0u};
+        cpu.m_pc = handler.m_address;
+        cpu.m_exit_reason = static_cast<uint32_t>(
+            ee::e_ee_exit_reason::EE_EXIT_DISPATCH);
+        if (trace)
+        {
+            std::printf("HLE DMAC callback enter: channel=%u "
+                        "handler=0x%08x arg=0x%08x gp=0x%08x\n",
+                        dmac_callback_channel, handler.m_address,
+                        handler.m_arg, handler.m_gp);
+        }
+    };
     std::vector<s_syscall_sample> syscall_history;
     uint32_t callback_sample_index = 0;
     if (report_path != nullptr)
@@ -1121,6 +1169,61 @@ int main(int argc, char** argv)
     uint32_t slowest_native_pc = 0u;
     while (remaining != 0)
     {
+        // Kernel HLE services completed device interrupts before handing
+        // control back to its main thread. There is no synthetic DMA
+        // status: only actual masked D_STAT completion bits can enter here.
+        if (hle_startup && !dmac_callback_active && !callback_active &&
+            ee::ee_interrupts_enabled(&cpu) &&
+            hardware.dmac().pending() != 0u)
+        {
+            const uint32_t pending = hardware.dmac().pending();
+            uint32_t channel = 0u;
+            while (channel < 10u && (pending & (1u << channel)) == 0u)
+            {
+                ++channel;
+            }
+            if (channel >= 10u || !hardware.dmac().acknowledge(channel))
+            {
+                reason = static_cast<uint32_t>(
+                    ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED);
+                status = 0u;
+                break;
+            }
+            dmac_callback_handlers.clear();
+            for (const s_kernel_interrupt_handler& handler : dmac_handlers)
+            {
+                if (handler.m_cause == channel)
+                {
+                    dmac_callback_handlers.push_back(handler);
+                }
+            }
+            if (trace)
+            {
+                std::printf("HLE DMAC IRQ: channel=%u pending=0x%08x "
+                            "handlers=%zu\n", channel, pending,
+                            dmac_callback_handlers.size());
+            }
+            if (dmac_callback_handlers.empty())
+            {
+                continue;
+            }
+            if (!memory->contains(k_dmac_kernel_stack - 0x1000u, 0x1000u))
+            {
+                std::fprintf(stderr,
+                    "HLE DMAC callback refused unmapped kernel stack\n");
+                reason = static_cast<uint32_t>(
+                    ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED);
+                status = 0u;
+                break;
+            }
+            dmac_interrupted_cpu = cpu;
+            dmac_interrupted_vu0 = vu0;
+            dmac_callback_channel = channel;
+            dmac_callback_index = 0u;
+            dmac_callback_active = true;
+            enter_dmac_callback(dmac_callback_handlers[dmac_callback_index++]);
+            continue;
+        }
         if (report_path != nullptr &&
             (dispatched == 0 ||
              dispatched - last_snapshot_dispatch >= k_report_snapshot_interval ||
@@ -1396,6 +1499,35 @@ int main(int argc, char** argv)
 
         // A bounded one-dispatch slice reports DISPATCH_LIMIT even when
         // the translated callback just returned to the synthetic sentinel.
+        if (dmac_callback_active &&
+            count != 0u &&
+            cpu.m_pc == k_callback_return_pc &&
+            status != 2u &&
+            (reason == static_cast<uint32_t>(ee::e_ee_exit_reason::EE_EXIT_RETURN) ||
+             reason == static_cast<uint32_t>(ee::e_ee_exit_reason::EE_EXIT_DISPATCH)))
+        {
+            const int32_t result = static_cast<int32_t>(cpu.m_gpr[2].m_lo);
+            if (result >= 0 && dmac_callback_index < dmac_callback_handlers.size())
+            {
+                enter_dmac_callback(dmac_callback_handlers[dmac_callback_index++]);
+                continue;
+            }
+            cpu = dmac_interrupted_cpu;
+            vu0 = dmac_interrupted_vu0;
+            hardware.intc().bind_cpu(&cpu);
+            hardware.dmac().bind_cpu(&cpu);
+            dmac_callback_active = false;
+            dmac_callback_handlers.clear();
+            cpu.m_exit_reason = static_cast<uint32_t>(
+                ee::e_ee_exit_reason::EE_EXIT_DISPATCH);
+            if (trace)
+            {
+                std::printf("HLE DMAC callback returned: channel=%u "
+                            "v0=%d resume=0x%08x\n",
+                            dmac_callback_channel, result, cpu.m_pc);
+            }
+            continue;
+        }
         if (callback_active &&
             count != 0u &&
             cpu.m_pc == k_callback_return_pc &&
@@ -1582,9 +1714,9 @@ int main(int argc, char** argv)
                             );
                         }
                     }
-                    // No interrupt callback is executed on registration.
-                    // Hardware IRQ delivery to guest handlers is not yet
-                    // implemented by this bounded native runner.
+                    // Registration alone does not invoke guest code;
+                    // DMAC callbacks execute on genuine masked hardware
+                    // completions at the dispatcher safepoint.
                 }
 
                 else if ((service >= 0x14u && service <= 0x17u) ||
