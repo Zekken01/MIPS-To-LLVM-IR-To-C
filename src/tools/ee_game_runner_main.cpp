@@ -1220,7 +1220,8 @@ int main(int argc, char** argv)
                 service == 0x4au || service == 0x4bu ||
                 service == 0x64u ||
                 service == 0x68u || service == 0x74u ||
-                service == 0x78u || service == 0x7cu)
+                service == 0x78u || service == 0x79u ||
+                service == 0x7au || service == 0x7cu)
             {
                 const uint32_t epc = cpu.m_cop0[14];
                 uint32_t opcode = 0;
@@ -1976,6 +1977,70 @@ int main(int argc, char** argv)
                             "qwc=0 chcr=0x00000184 "
                             "result=void (no IOP producer)\n"
                         );
+                    }
+                }
+
+                else if (service == 0x79u || service == 0x7au)
+                {
+                    // sceSifSetReg/GetReg: four EE-visible hardware
+                    // mailboxes and three software-only SIF_SYSREG slots.
+                    // SIF_SYSREG_SUBADDR is initially zero. Only an IOP
+                    // producer can publish the physical SUBADDR/SMFLAG;
+                    // neither syscall fakes IOP initialization.
+                    const uint32_t id =
+                        static_cast<uint32_t>(cpu.m_gpr[4].m_lo);
+                    if (service == 0x79u)
+                    {
+                        const uint32_t value =
+                            static_cast<uint32_t>(cpu.m_gpr[5].m_lo);
+                        if (!hardware.sif().set_reg(id, value))
+                        {
+                            std::fprintf(
+                                stderr,
+                                "SifSetReg HLE refused unsupported "
+                                "register=0x%08x value=0x%08x\n",
+                                id, value
+                            );
+                            break;
+                        }
+
+                        cpu.m_gpr[2].m_lo = 0u;
+                        cpu.m_gpr[2].m_hi = 0u;
+                        if (trace)
+                        {
+                            std::printf(
+                                "HLE SifSetReg: register=0x%08x "
+                                "value=0x%08x result=0\n",
+                                id, value
+                            );
+                        }
+                    }
+                    else
+                    {
+                        uint32_t value = 0u;
+                        if (!hardware.sif().get_reg(id, &value))
+                        {
+                            std::fprintf(
+                                stderr,
+                                "SifGetReg HLE refused unsupported "
+                                "register=0x%08x\n", id
+                            );
+                            break;
+                        }
+
+                        // MIPS32 scalar values return sign-extended in
+                        // the EE's 64-bit GPR low half.
+                        cpu.m_gpr[2].m_lo = static_cast<uint64_t>(
+                            static_cast<int64_t>(static_cast<int32_t>(value))
+                        );
+                        cpu.m_gpr[2].m_hi = 0u;
+                        if (trace)
+                        {
+                            std::printf(
+                                "HLE SifGetReg: register=0x%08x "
+                                "result=0x%08x\n", id, value
+                            );
+                        }
                     }
                 }
 
