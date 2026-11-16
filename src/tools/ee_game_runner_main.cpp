@@ -861,6 +861,50 @@ int main(int argc, char** argv)
                 static_cast<uint32_t>(cpu.m_gpr[6].m_lo),
                 static_cast<uint32_t>(cpu.m_gpr[7].m_lo)
             );
+            // Capture preserved registers at a *native dispatch* boundary.
+            // This is particularly useful when a translated call resumes
+            // in the middle of its parent function (e.g. after JAL).
+            // Both 64-bit halves of each EE GPR remain available in cpu;
+            // the low halves are enough for 32-bit pointers and lengths.
+            std::printf(
+                "EE trace-entry saved: "
+                "s0=%08x s1=%08x s2=%08x s3=%08x "
+                "s4=%08x s5=%08x s6=%08x s7=%08x "
+                "fp=%08x gp=%08x v0=%08x v1=%08x\n",
+                static_cast<uint32_t>(cpu.m_gpr[16].m_lo),
+                static_cast<uint32_t>(cpu.m_gpr[17].m_lo),
+                static_cast<uint32_t>(cpu.m_gpr[18].m_lo),
+                static_cast<uint32_t>(cpu.m_gpr[19].m_lo),
+                static_cast<uint32_t>(cpu.m_gpr[20].m_lo),
+                static_cast<uint32_t>(cpu.m_gpr[21].m_lo),
+                static_cast<uint32_t>(cpu.m_gpr[22].m_lo),
+                static_cast<uint32_t>(cpu.m_gpr[23].m_lo),
+                static_cast<uint32_t>(cpu.m_gpr[30].m_lo),
+                static_cast<uint32_t>(cpu.m_gpr[28].m_lo),
+                static_cast<uint32_t>(cpu.m_gpr[2].m_lo),
+                static_cast<uint32_t>(cpu.m_gpr[3].m_lo)
+            );
+            // Dump eight adjacent 32-bit pairs beginning at SP+0x10.
+            // These are generic stack words, not interpreted as a
+            // game-specific iovec. This is a *read-only* diagnostic
+            // bounded by the guest memory mapper.
+            const uint32_t sp = static_cast<uint32_t>(cpu.m_gpr[29].m_lo);
+            const uint64_t pairs_address = static_cast<uint64_t>(sp) + 16u;
+            if (pairs_address <= UINT32_MAX &&
+                memory->contains(static_cast<uint32_t>(pairs_address), 64u))
+            {
+                for (uint32_t index = 0; index < 8u; ++index)
+                {
+                    const uint32_t address =
+                        static_cast<uint32_t>(pairs_address) + index * 8u;
+                    std::printf(
+                        "EE trace-entry stack-pair: index=%u addr=0x%08x "
+                        "word0=0x%08x word1=0x%08x\n",
+                        index, address,
+                        memory->read32(address), memory->read32(address + 4u)
+                    );
+                }
+            }
             // Show the descriptor content without interpreting the memory
             // as a particular game's C structure or dereferencing a raw
             // host pointer. The caller can determine which fields matter.
@@ -881,6 +925,12 @@ int main(int argc, char** argv)
         }
         const uint32_t watched_before = has_watch_word
             ? memory->read32(watch_word) : 0u;
+        const uint32_t watch_s3_before = has_watch_word
+            ? static_cast<uint32_t>(cpu.m_gpr[19].m_lo) : 0u;
+        const uint32_t watch_s5_before = has_watch_word
+            ? static_cast<uint32_t>(cpu.m_gpr[21].m_lo) : 0u;
+        const uint32_t watch_fp_before = has_watch_word
+            ? static_cast<uint32_t>(cpu.m_gpr[30].m_lo) : 0u;
         uint32_t count = 0;
         uint32_t out_pc = from_pc;
         const uint32_t slice = (trace || report_path != nullptr) ? 1u : remaining;
@@ -923,6 +973,30 @@ int main(int argc, char** argv)
                     static_cast<unsigned long long>(dispatched), from_pc,
                     cpu.m_pc, watch_word, watched_before, watched_after
                 );
+                std::printf(
+                    "EE watch registers: "
+                    "s3_before=%08x s3_after=%08x "
+                    "s5_before=%08x s5_after=%08x "
+                    "fp_before=%08x fp_after=%08x sp=%08x\n",
+                    watch_s3_before,
+                    static_cast<uint32_t>(cpu.m_gpr[19].m_lo),
+                    watch_s5_before,
+                    static_cast<uint32_t>(cpu.m_gpr[21].m_lo),
+                    watch_fp_before,
+                    static_cast<uint32_t>(cpu.m_gpr[30].m_lo),
+                    static_cast<uint32_t>(cpu.m_gpr[29].m_lo)
+                );
+                if (watch_word >= 4u &&
+                    memory->contains(watch_word - 4u, 8u))
+                {
+                    std::printf(
+                        "EE watch pair: addr=0x%08x "
+                        "word0=0x%08x word1=0x%08x\n",
+                        watch_word - 4u,
+                        memory->read32(watch_word - 4u),
+                        watched_after
+                    );
+                }
             }
         }
         if (report_path != nullptr && count != 0)

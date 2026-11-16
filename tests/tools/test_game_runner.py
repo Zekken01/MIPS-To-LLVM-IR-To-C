@@ -1214,8 +1214,19 @@ def main():
         assert "EE watch initial: addr=0x00100200 value=0x00000000" in result.stdout, result.stdout
         assert "EE trace-entry: dispatch=1 pc=0x00100008" in result.stdout, result.stdout
         assert "sp=0x01fff000" in result.stdout, result.stdout
+        assert "EE trace-entry saved: s0=00000000" in result.stdout, result.stdout
+        assert "s3=00000000" in result.stdout, result.stdout
+        assert "fp=00000000" in result.stdout, result.stdout
+        assert result.stdout.count("EE trace-entry stack-pair:") == 8, result.stdout
+        assert ("EE trace-entry stack-pair: index=0 addr=0x01fff010 "
+                "word0=0x00000000 word1=0x00000000") in result.stdout, result.stdout
         assert "EE watch changed: dispatch=1 from_pc=0x00100008 " in result.stdout, result.stdout
         assert "addr=0x00100200 old=0x00000000 new=0x00000007" in result.stdout, result.stdout
+        assert ("EE watch registers: s3_before=00000000 "
+                "s3_after=00000000") in result.stdout, result.stdout
+        assert "fp_before=00000000 fp_after=00000000" in result.stdout, result.stdout
+        assert ("EE watch pair: addr=0x001001fc "
+                "word0=0x00000000 word1=0x00000007") in result.stdout, result.stdout
 
         rejected = subprocess.run(
             args[:-1] + ["--watch-word=0x02000000", "--no-recompile"],

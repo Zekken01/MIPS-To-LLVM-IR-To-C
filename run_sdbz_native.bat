@@ -106,13 +106,15 @@ if defined REUSE_FLAG (
 )
 
 rem Temporary SDBZ-specific default diagnostics for the reproducible
-rem LOOP_BUDGET at 0x0018e194. Its caller enters at 0x0018cf68; the
-rem I/O-vector length word is at 0x01ffec14 (S4 advances in delay slot).
+rem LOOP_BUDGET at 0x0018e194. The watchpoint identified the
+rem formatter's resumed PC 0x00194478 as the first writer of the
+rem suspicious I/O-vector length word 0x01ffec14. Trace its saved
+rem registers and stack vector just before the writer runs.
 rem Set SDBZ_BOOT_DIAGNOSTICS=0 to disable these defaults.
 rem Explicit EE_TRACE_ENTRY / EE_WATCH_WORD values take precedence.
 if not defined SDBZ_BOOT_DIAGNOSTICS set "SDBZ_BOOT_DIAGNOSTICS=1"
 if "%SDBZ_BOOT_DIAGNOSTICS%"=="1" (
-    if not defined EE_TRACE_ENTRY set "EE_TRACE_ENTRY=0x0018cf68"
+    if not defined EE_TRACE_ENTRY set "EE_TRACE_ENTRY=0x00194478"
     if not defined EE_WATCH_WORD set "EE_WATCH_WORD=0x01ffec14"
 )
 set "GUEST_TRACE_FLAGS="
