@@ -6,6 +6,7 @@
 
 namespace iop
 {
+class c_hw;
 // The PS2 IOP is an R3000A (MIPS I), separate from the EE R5900.
 // This standalone, fail-closed interpreter is the execution foundation
 // for the IOP kernel/IRX loader. It does not start an IOP or set SIF flags.
@@ -51,6 +52,7 @@ public:
 
     c_cpu();
     void reset(uint32_t entry = 0u);
+    void bind_hardware(c_hw* hardware);
 
     // The 4 MiB primary PS2 BIOS ROM is read-only at physical
     // 0x1fc00000, KSEG0 and KSEG1. No firmware is provided by the
@@ -79,6 +81,7 @@ private:
     bool read(uint32_t address, uint32_t width, uint32_t* value) const;
     bool write(uint32_t address, uint32_t width, uint32_t value);
 
+    c_hw* m_hardware = nullptr;
     std::vector<uint8_t> m_ram;
     std::vector<uint8_t> m_rom0;
     s_cpu_state m_state{};

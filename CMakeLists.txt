@@ -50,6 +50,7 @@ add_library(ee_core STATIC
 # runner until module loading, timing and SIF transport are integrated.
 add_library(iop_cpu STATIC
     src/iop/iop_cpu.cpp
+    src/iop/iop_hw.cpp
     src/iop/irx_loader.cpp
     src/iop/iop_kernel.cpp
     src/iop/iop_sifman_bridge.cpp
@@ -63,6 +64,8 @@ add_executable(iop_cpu_test tests/smoke/iop_cpu_test.cpp)
 target_link_libraries(iop_cpu_test PRIVATE iop_cpu)
 add_executable(iop_rom0_boot_test tests/smoke/iop_rom0_boot_test.cpp)
 target_link_libraries(iop_rom0_boot_test PRIVATE iop_cpu)
+add_executable(iop_hw_test tests/smoke/iop_hw_test.cpp)
+target_link_libraries(iop_hw_test PRIVATE iop_cpu)
 add_executable(iop_irx_loader_test tests/smoke/iop_irx_loader_test.cpp)
 target_link_libraries(iop_irx_loader_test PRIVATE iop_cpu)
 add_executable(iop_irx_export_link_test tests/smoke/iop_irx_export_link_test.cpp)
@@ -335,6 +338,7 @@ if(Python3_Interpreter_FOUND)
 endif()
 add_test(NAME iop_cpu COMMAND iop_cpu_test)
 add_test(NAME iop_rom0_boot COMMAND iop_rom0_boot_test)
+add_test(NAME iop_hw COMMAND iop_hw_test)
 add_test(NAME iop_irx_loader COMMAND iop_irx_loader_test)
 add_test(NAME iop_irx_export_link COMMAND iop_irx_export_link_test)
 add_test(NAME iop_kernel COMMAND iop_kernel_test)
