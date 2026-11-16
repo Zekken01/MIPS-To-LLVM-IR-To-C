@@ -8,7 +8,12 @@ if errorlevel 1 goto :failed
 
 set "ELF=PS2_GAME\SLUS_214.42"
 set "WORK_DIR=build\sdbz-thread-pr38"
-set "EMIT_JOBS=4"
+rem Parallel LLVM object emission (tools/run_game.py allows 1..32).
+rem Default to 8 workers; callers can override with set EMIT_JOBS=16.
+rem Auto-expansion usually emits one module at a time, so this mostly
+rem benefits cache rebuilds and bulk translation.
+if not defined EMIT_JOBS set "EMIT_JOBS=8"
+echo LLVM emit workers: %EMIT_JOBS%
 
 if not exist "%ELF%" (
     echo Missing local game ELF: "%ELF%"
