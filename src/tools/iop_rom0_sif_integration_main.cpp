@@ -371,7 +371,7 @@ int main(int argc, char** argv)
     memory.write32(k_ee_tag + 4u, 0u);
     memory.write32(k_ee_tag + 8u, 0u);
     memory.write32(k_ee_tag + 12u, 0u);
-    memory.write32(k_ee_tag + 16u, 0x40000000u | ee_subaddr);
+    memory.write32(k_ee_tag + 16u, 0xc0000000u | ee_subaddr);
     memory.write32(k_ee_tag + 20u, k_payload_bytes);
     memory.write32(k_ee_tag + 24u, 0u);
     memory.write32(k_ee_tag + 28u, 0u);
