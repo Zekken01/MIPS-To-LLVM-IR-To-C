@@ -113,7 +113,7 @@ rem Explicit EE_TRACE_ENTRY / EE_WATCH_WORD values take precedence.
 if not defined SDBZ_BOOT_DIAGNOSTICS set "SDBZ_BOOT_DIAGNOSTICS=1"
 if "%SDBZ_BOOT_DIAGNOSTICS%"=="1" (
     if not defined EE_TRACE_ENTRY set "EE_TRACE_ENTRY=0x0018cf68"
-    if not defined EE_WATCH_WORD set "EE_WATCH_WORD=0x01ffec1c"
+    if not defined EE_WATCH_WORD set "EE_WATCH_WORD=0x01ffec14"
 )
 set "GUEST_TRACE_FLAGS="
 if defined EE_TRACE_ENTRY set "GUEST_TRACE_FLAGS=%GUEST_TRACE_FLAGS% --trace-entry=%EE_TRACE_ENTRY%"
