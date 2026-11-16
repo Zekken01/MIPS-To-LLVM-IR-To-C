@@ -2,6 +2,8 @@
 
 #include "iop_kernel.h"
 #include "ee_sif.h"
+#include "ee_dmac.h"
+#include "ee_memory.h"
 
 #include <cstdint>
 
@@ -20,13 +22,19 @@ class c_sifman_bridge
 {
 public:
     static constexpr uint32_t k_get_smflag_stub = 0x00018000u;
+    static constexpr uint32_t k_set_dma_stub = 0x00018040u;
+    static constexpr uint32_t k_set_dma_syscall = 0x494f0007u;
     static constexpr uint32_t k_set_smflag_stub = 0x00018020u;
     static constexpr uint32_t k_get_smflag_syscall = 0x494f0017u;
     static constexpr uint32_t k_set_smflag_syscall = 0x494f0018u;
 
-    c_sifman_bridge(c_kernel& kernel, ee::c_ee_sif& sif);
+    c_sifman_bridge(
+        c_kernel& kernel, ee::c_ee_sif& sif,
+        ee::c_ee_dmac* dmac = nullptr,
+        ee::ee_memory* ee_ram = nullptr
+    );
 
-    // Registers sifman ordinals 23 and 24 as executable guest-callable
+    // Registers sifman ordinals 7, 23 and 24 as executable guest-callable
     // import destinations. Returns false instead of overriding exports.
     bool install();
 
@@ -37,5 +45,8 @@ public:
 private:
     c_kernel& m_kernel;
     ee::c_ee_sif& m_sif;
+    ee::c_ee_dmac* m_dmac = nullptr;
+    ee::ee_memory* m_ee_ram = nullptr;
+    uint32_t m_next_dma_id = 1u;
 };
 } // namespace iop

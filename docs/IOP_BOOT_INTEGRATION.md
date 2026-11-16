@@ -315,3 +315,43 @@ path/buffer, arguments, guest caller and request ordering, and use
 those *observed* requests to drive `c_kernel::load_module()`.
 Simply scanning the ELF cannot complete this step; native SIF
 DMA/CMD/RPC delivery is still required.
+
+
+## Guest-triggered IOP to EE SIF0 DMA (PR #75)
+
+The optional IOP R3000 kernel now links another explicit, executable
+`sifman` import: ordinal **7** (`sceSifSetDma`). Its guest arguments
+are `a0` = IOP address of an array of 16-byte transfer descriptors
+(`src, dst, size, attributes`), `a1` = descriptor count. An actual
+guest IOP import call must execute before any transfer occurs.
+
+The bridge stages **every** source IOP RAM byte and validates all
+guest descriptors and EE RAM destination spans before writing guest
+memory; a malformed later descriptor cannot partially commit an
+earlier transfer. The current bounded subset accepts 1-64 descriptors,
+nonzero sizes no greater than 64 KiB each, zero attributes, word-aligned
+guest source/destination addresses and known physical/KSEG aliases.
+Unmapped IOP sources, EE destinations, unusual DMA attributes and
+oversized transfers are rejected, not silently truncated or wrapped.
+
+The IOP kernel must be explicitly connected to `ee::ee_memory` and
+`ee::c_ee_dmac`. An EE SIF0 channel 5 receive chain must already have
+`CHCR.STR` armed (the real EE `sceSifSetDChain` does this); only
+then does the IOP guest's successful DMA copy its bytes into EE RAM
+and latch a real channel-5 `D_STAT` completion. The guest receives a
+monotonic DMA transaction ID; failure does not consume an ID. Existing
+SMFLAG register ownership is unchanged, and no module startup
+automatically creates packets, interrupts or readiness.
+
+The new `iop_sif_dma` CTest executes a synthetic R3000 IRX calling
+sifman #7 via the actual import resolver. It checks two IOP RAM-to-EE
+RAM transfers, completion status, absence of a synthetic SMFLAG,
+all-or-nothing rejection of invalid descriptors, an unarmed EE receive
+channel, and an absent EE DMA backend.
+
+**Remaining critical limits:** The bridge is synchronous, not
+cycle-accurate and does not implement IOP boot ROM, SIF command framing,
+packet queues, RPC transport or LOADFILE server handling. It cannot
+advance the real US game past `0x001750B4` unless authentic IOP
+initialization code is supplied and executed. Do not interpret the
+successful synthetic transfer as completion of SIFCMD/RPC boot.
