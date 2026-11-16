@@ -30,6 +30,8 @@ public:
     static constexpr uint32_t k_timer5_mode = 0x1f8014a4u;
     static constexpr uint32_t k_timer5_target = 0x1f8014a8u;
     static constexpr uint32_t k_timer5_irq = 16u;
+    static constexpr uint32_t k_dma_pcr = 0x1f8010f0u;
+    static constexpr uint32_t k_dma_pcr2 = 0x1f801570u;
     static constexpr uint32_t k_dma_icr = 0x1f8010f4u;
     static constexpr uint32_t k_dma_icr2 = 0x1f801574u;
     static constexpr uint32_t k_dma_irq = 3u;
@@ -74,6 +76,8 @@ private:
     uint32_t m_timer5_target = 0u;
     uint32_t m_timer5_remainder = 0u;
     bool m_timer5_irq_armed = true;
+    uint32_t m_dma_pcr = 0u;
+    uint32_t m_dma_pcr2 = 0u;
     uint32_t m_dma_icr = 0u;
     uint32_t m_dma_icr2 = 0u;
     std::string m_debug_console;

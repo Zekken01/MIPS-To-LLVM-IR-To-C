@@ -25,6 +25,8 @@ void c_hw::reset()
     m_timer5_target = 0u;
     m_timer5_remainder = 0u;
     m_timer5_irq_armed = true;
+    m_dma_pcr = 0u;
+    m_dma_pcr2 = 0u;
     m_dma_icr = 0u;
     m_dma_icr2 = 0u;
     m_debug_console.clear();
@@ -83,6 +85,12 @@ bool c_hw::read(
 
     switch (address)
     {
+    case k_dma_pcr:
+        *value = m_dma_pcr;
+        return true;
+    case k_dma_pcr2:
+        *value = m_dma_pcr2;
+        return true;
     case k_dma_icr:
         *value = m_dma_icr;
         return true;
@@ -162,6 +170,14 @@ bool c_hw::write(
 
     switch (address)
     {
+    case k_dma_pcr:
+        // Each DMA channel's priority and enable nibble is writable,
+        // but programming it does not launch or complete a transfer.
+        m_dma_pcr = value;
+        return true;
+    case k_dma_pcr2:
+        m_dma_pcr2 = value;
+        return true;
     case k_dma_icr:
         m_dma_icr = update_dma_icr(m_dma_icr, value);
         return true;
