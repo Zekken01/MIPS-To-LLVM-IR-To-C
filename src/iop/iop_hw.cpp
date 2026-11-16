@@ -33,6 +33,8 @@ void c_hw::reset()
     m_sif_msflag = 0u;
     m_sif_smflag = 0u;
     m_sif_mmio_user = nullptr;
+    m_sif0_user = nullptr;
+    m_sif0_start = nullptr;
     m_sif1_user = nullptr;
     m_sif1_start = nullptr;
     m_sif_mmio_read = nullptr;
@@ -58,6 +60,12 @@ void c_hw::bind_sif_mmio(
                        write != nullptr) ? user : nullptr;
     m_sif_mmio_read = m_sif_mmio_user != nullptr ? read : nullptr;
     m_sif_mmio_write = m_sif_mmio_user != nullptr ? write : nullptr;
+}
+
+void c_hw::bind_sif0_start(void* user, t_sif0_start_callback callback)
+{
+    m_sif0_user = callback != nullptr ? user : nullptr;
+    m_sif0_start = m_sif0_user != nullptr ? callback : nullptr;
 }
 
 void c_hw::bind_sif1_start(void* user, t_sif1_start_callback callback)
@@ -266,11 +274,17 @@ bool c_hw::write(
         const bool was_started =
             (m_sif_dma[channel][2u] & 0x01000000u) != 0u;
         m_sif_dma[channel][reg] = value;
-        if (channel == 1u && reg == 2u &&
-            !was_started && (value & 0x01000000u) != 0u &&
-            m_sif1_start != nullptr)
+        if (reg == 2u && !was_started &&
+            (value & 0x01000000u) != 0u)
         {
-            m_sif1_start(m_sif1_user);
+            if (channel == 0u && m_sif0_start != nullptr)
+            {
+                m_sif0_start(m_sif0_user);
+            }
+            else if (channel == 1u && m_sif1_start != nullptr)
+            {
+                m_sif1_start(m_sif1_user);
+            }
         }
         return true;
     }
