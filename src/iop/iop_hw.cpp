@@ -141,6 +141,15 @@ bool c_hw::read(
     // A physical CDVD drive with no media reports 0x00. The ROM0
     // diagnostic runner does not mount a disc. This deliberately does
     // not claim a successful CD read, device initialization, or SIF.
+    // The physical controller is idle and ready to receive a command
+    // after reset, independently of whether media is present. Only
+    // the observed READ width is supported; N-command writes still
+    // fail closed until real command processing exists.
+    if (address == k_cdvd_ncmd_status && width == 1u)
+    {
+        *value = k_cdvd_ncmd_ready;
+        return true;
+    }
     if (address == k_cdvd_disc_type && width == 1u)
     {
         *value = k_cdvd_no_disc;
