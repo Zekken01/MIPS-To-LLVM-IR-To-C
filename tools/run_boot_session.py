@@ -14,6 +14,8 @@ import subprocess
 import sys
 import time
 
+from iop_disc_catalog import build_catalog
+
 
 REPLAY_PATTERN = re.compile(r"== Executing translated EE code \(replay (\d+)\) ==")
 
@@ -51,6 +53,21 @@ def main(argv=None):
     parser.add_argument("--expansion-per-pass", type=int, default=128)
     parser.add_argument("--no-recompile", action="store_true")
     parser.add_argument(
+        "--disc-root", type=Path,
+        help="Extracted CD-ROM root (default: directory containing the ELF)",
+    )
+    parser.add_argument(
+        "--no-iop-catalog", action="store_true",
+        help="Disable the non-executing diagnostic IOP disc catalog",
+    )
+    parser.add_argument(
+        "--iop-auto-irx", action="append", default=[],
+        metavar="GUEST_PATH_OR_NAME",
+        help="Resolve a discovered IRX name from the game disc and append "
+             "it to the explicit IOP bootstrap load list (repeat in "
+             "provider-first order). Never infers execution order.",
+    )
+    parser.add_argument(
         "--driver", type=Path,
         default=Path(__file__).with_name("run_game.py"),
         help=argparse.SUPPRESS,
@@ -71,6 +88,58 @@ def main(argv=None):
     report = args.report.resolve()
     work.mkdir(parents=True, exist_ok=True)
     report.parent.mkdir(parents=True, exist_ok=True)
+    catalog_path = work / "iop-disc-catalog.json"
+    if args.no_iop_catalog and args.iop_auto_irx:
+        parser.error("--iop-auto-irx requires disc catalog discovery")
+    if args.iop_auto_irx and any(
+            arg.startswith("--iop-irx=") or
+            arg == "--iop-irx-list" or
+            arg.startswith("--iop-irx-list=")
+            for arg in forwarded):
+        parser.error("--iop-auto-irx cannot mix with manual IOP IRX lists")
+    catalog = None
+    if not args.no_iop_catalog:
+        try:
+            catalog = build_catalog(args.elf, args.disc_root)
+            catalog_path.write_text(
+                json.dumps(catalog, indent=2) + "\n", encoding="utf-8"
+            )
+            print(
+                f"IOP disc discovery: {catalog['resolved_count']}/"
+                f"{len(catalog['candidates'])} candidate files resolved "
+                f"({catalog_path}); no IOP modules started",
+                flush=True,
+            )
+        except (OSError, ValueError) as exc:
+            catalog_path.unlink(missing_ok=True)
+            # Diagnostic discovery must not make EE boot or --no-recompile
+            # fail when a disc is incomplete or a synthetic test ELF is
+            # supplied. Never turn an invalid catalog into a load list.
+            print(f"IOP disc discovery unavailable: {exc}", flush=True)
+
+    for request in args.iop_auto_irx:
+        if catalog is None:
+            parser.error("IOP disc catalog could not be built")
+        name = request.casefold()
+        matches = [
+            item for item in catalog["candidates"]
+            if item["guest_path"].casefold() == name or
+            item["guest_path"].replace("\\", "/").split("/")[-1]
+                .split(";")[0].casefold() == name
+        ]
+        # A static ELF string is not a runtime load request or a
+        # dependency graph. The caller chooses every bootstrap module.
+        if len(matches) != 1 or matches[0]["status"] != "resolved":
+            parser.error(
+                f"IOP bootstrap IRX {request!r} is missing or ambiguous"
+            )
+        forwarded.append(f"--iop-irx={matches[0]['host_path']}")
+        print(
+            f"IOP explicit bootstrap selection: "
+            f"{matches[0]['guest_path']} -> {matches[0]['host_path']}",
+            flush=True,
+        )
+
     expansion_log = work / "expansion.log"
     boot_log = work / "boot.log"
     expansion_log.write_text("", encoding="utf-8")
