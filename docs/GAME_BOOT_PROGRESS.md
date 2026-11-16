@@ -1318,6 +1318,44 @@ watchword's first change with the I/O-vector state at
 `0x0018CF68`, then trace the producer function rather
 than raising the loop budget.
 
+### First producer isolated by word watchpoint (US SDBZ, dispatch 6029)
+
+The first run with the corrected watchpoint verified that
+`[0x01FFEC14]` changes from `0x00000000` to **`0x00171D0C`**
+during **dispatch 6029**, when translated guest execution resumes at
+`0x00194478` and exits at `0x00193670`. The output formatter
+(`0x001937E8`) builds a 32-bit pointer/length vector on its
+stack and `0x00193670` forwards that vector to the
+`0x0018CF68` output path. The latter was traced at dispatch
+6031 with `A1=0x01FFEBE0`, `A2=7`, and its first two
+vector entries `(0x01FFEBF0,5)` and `(0x00171D27,0)`.
+The seventh length field is `0x01FFEC14`, reached by iterating
+seven eight-byte entries.
+
+The original US ELF confirms `0x00171D0C` is **executable
+instruction data** in another routine (not a plausible
+`size_t` length), and `0x00171D27` also points into
+that routine's instruction bytes. The defect therefore lies
+at or upstream of the formatter's vector construction.
+The watchpoint identifies the **native dispatch segment** that
+committed the write, but does not yet identify a single guest
+store or whether the formatter was supplied an invalid
+varargs pointer, reused guest stack memory, or a wrongly
+translated value. The previous `0x0018CF68` entry trace
+only captured state after the vector was constructed.
+
+The runner's opt-in `--trace-entry` now additionally emits
+32-bit low halves of `S0-S7`, `FP`, `GP`, `V0`, `V1`,
+and eight guest stack word pairs beginning at `SP+0x10`
+(where mapped). These observations are read-only and
+generic to the runner. The SDBZ launcher now defaults
+`EE_TRACE_ENTRY=0x00194478` to capture **before**
+the suspect dispatch segment, retaining
+`EE_WATCH_WORD=0x01FFEC14`. A subsequent user-owned
+boot is needed to determine whether `FP` or a stack
+value was already wrong on entry; no guest-code semantic
+patch is justified from these observations alone.
+
 ## Validation limits
 
 CTest contains `game_runner_end_to_end` which creates small synthetic MIPS
