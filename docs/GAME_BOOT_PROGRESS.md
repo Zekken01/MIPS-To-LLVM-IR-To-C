@@ -1464,6 +1464,58 @@ opcode, PC, old/new SSA values and range filtering. This validates
 the diagnostics only: identifying the actual SDBZ producer instruction
 still requires the next user-owned local ELF run.
 
+### SDBZ US 02:10 trace: DECI2 open reached; prior formatter path diverged
+
+The new 2026-11-16 02:10 real-game replay reached **6,119
+translated dispatches** and stopped on a *real guest SYSCALL*
+(`0x0000000c`) at EPC `0x001750D4`, with COP0 Cause=0x20
+and `V1=0x7C`, `A0=1`, `A1=0x01FFEA80`.
+PS2SDK names syscall 0x7C **Deci2Call**, and PCSX2's
+R5900OpcodeImpl.cpp documents operation 1 as OPEN:
+read four words from A1, record word 1 as DECI2 channel address,
+word 2 as handler, and return `V0=1`.
+The runner's HLE filter had no service 0x7C entry.
+
+The new V0 trace default `0x00194478:0x00194794` was active,
+but no guest instruction in that window executed and no V0
+provenance event occurred. It is **not evidence that the bad
+formatter store was fixed**. Compared with the prior 01:37 trace,
+the first different native control-flow edge occurs at
+**dispatch 5874** (`0x0018EBB0 -> 0x0018DF98` previously,
+now `0x0018EBB0 -> 0x0018E07C`). The formatter route
+`0x00194478 -> 0x00194794` is absent from the new run.
+The V0 tracing milestone changed generated SSA register
+read/liveness bookkeeping; this apparent advancement must
+not yet be considered a demonstrated native-semantics correction.
+The guest execution path needs comparison with instrumentation
+disabled and with a reference emulator before treating it as
+stable.
+
+The next HLE implementation covers **DECI2 OPEN (1) and
+CLOSE (2) only**, matching PCSX2's documented return value 1
+and registration/clearing of channel and handler state.
+OPEN validates that A1 is word-aligned and maps to 16
+accessible guest bytes before reading `addr[1]` and
+`addr[2]`; invalid memory leaves the guest exception
+unhandled. CLOSE clears state. Operations that require an
+actual DECI2 transport, including request-send, remain
+**unsupported and fail closed**, rather than silently
+reporting successful transmission. No PCSX2 debug console,
+IOP subsystem or synthetic external response is supplied.
+
+Synthetic translated-MIPS tests cover OPEN, CLOSE, unchanged
+descriptor memory, the return value, opt-in HLE isolation,
+invalid/unbacked descriptors and request-send refusal.
+The user must rerun the real US ELF after merge to see
+whether the game proceeds to another unsupported service.
+This HLE-only change does **not** require regenerating guest
+LLVM objects: `ee_game_runner` is rebuilt by the launcher;
+the validated translated DLL may be reused.
+
+References:
+- PS2SDK: `ee/kernel/include/syscallnr.h` (`__NR_Deci2Call=0x7c`)
+- PCSX2: `pcsx2/R5900OpcodeImpl.cpp` (`__Deci2Call`)
+
 ## Validation limits
 
 CTest contains `game_runner_end_to_end` which creates small synthetic MIPS

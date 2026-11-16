@@ -62,6 +62,58 @@ def make_guest_word_watch_elf(path):
     path.write_bytes(image)
 
 
+def make_deci2_open_close_elf(path, invalid_open=False):
+    """Exercise DECI2 OPEN/CLOSE via real translated MIPS syscalls."""
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    image.extend(bytes(max(0, 0x400 - len(image))))
+    struct.pack_into("<I", image, 52 + 16, 0x300)
+    struct.pack_into("<I", image, 52 + 20, 0x300)
+    # Four guest words at VA 0x00100200; OPEN reads words 1 and 2.
+    struct.pack_into(
+        "<IIII", image, 0x300,
+        0x11223344, 0x00100220, 0x00100060, 0x55667788,
+    )
+    if invalid_open:
+        # Refuse before changing DECI2 state or modifying guest memory.
+        instructions = (
+            0x3c057fff,  # lui a1,0x7fff
+            0x34a5fffc,  # ori a1,a1,0xfffc (unbacked 0x7ffffffc)
+            0x24040001,  # a0=1 OPEN
+            0x2403007c,  # v1=Deci2Call
+            0x0000000c,  # syscall: must remain an exception
+            0x00404021,  # unreachable: addu t0,v0,zero
+            0x00000008,
+            0x00000000,
+        )
+    else:
+        instructions = (
+            0x3c050010,  # lui a1,0x0010
+            0x34a50200,  # ori a1,a1,0x200
+            0x24040001,  # a0=1 OPEN
+            0x2403007c,  # v1=Deci2Call
+            0x0000000c,  # syscall
+            0x00404021,  # t0=OPEN result 1
+            0x24040002,  # a0=2 CLOSE (A1 remains unchanged)
+            0x0000000c,  # syscall
+            0x00404821,  # t1=CLOSE result 1
+            0x3c0b0010,  # lui t3,0x0010
+            0x356b0200,  # ori t3,t3,0x200
+            0x8d700000,  # lw s0,0(t3): original word 0
+            0x8d710004,  # lw s1,4(t3): original word 1
+            0x8d720008,  # lw s2,8(t3): original word 2
+            0x8d73000c,  # lw s3,12(t3): original word 3
+            0x24040003,  # a0=3 REQSEND (not supported)
+            0x0000000c,  # syscall: fail closed, don't fake send
+            0x00405021,  # unreachable: t2=V0
+            0x00000008,
+            0x00000000,
+        )
+    for index, opcode in enumerate(instructions):
+        struct.pack_into("<I", image, 0x108 + index * 4, opcode)
+    path.write_bytes(image)
+
+
 def make_create_thread_elf(path):
     make_elf(path)
     image = bytearray(path.read_bytes())
@@ -1195,6 +1247,66 @@ def main():
             assert registers[12] == 0, state          # second Get result
             assert registers[13] == 0, state          # no fallthrough
             assert state["exit_name"] == "EXCEPTION", state
+
+    for invalid_open in (False, True):
+        with tempfile.TemporaryDirectory(prefix="ee-native-deci2-") as tmp:
+            root = Path(tmp)
+            elf = root / "deci2.elf"
+            make_deci2_open_close_elf(elf, invalid_open=invalid_open)
+            report_path = root / "deci2.json"
+            command = [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf), "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--max-dispatches=32", "--trace",
+                "--report", str(report_path),
+            ]
+
+            if not invalid_open:
+                # The opt-in kernel emulation must not be active by default.
+                disabled = subprocess.run(
+                    command, capture_output=True, text=True, check=False,
+                )
+                assert disabled.returncode == 3, disabled.stdout + disabled.stderr
+                disabled_state = json.loads(report_path.read_text(encoding="utf-8"))
+                assert disabled_state["cop0_epc"] == 0x00100018, disabled_state
+                assert "HLE Deci2Call" not in disabled.stdout, disabled.stdout
+                command.append("--no-recompile")
+
+            result = subprocess.run(
+                command + ["--hle-startup"],
+                capture_output=True, text=True, check=False,
+            )
+            assert result.returncode == 3, result.stdout + result.stderr
+            state = json.loads(report_path.read_text(encoding="utf-8"))
+            assert state["exit_name"] == "EXCEPTION", state
+            if invalid_open:
+                assert state["cop0_epc"] == 0x00100018, state
+                assert (
+                    "Deci2Call OPEN HLE refused unbacked or unaligned "
+                    "descriptor 0x7ffffffc"
+                ) in result.stderr, result.stdout + result.stderr
+                assert "HLE Deci2Call OPEN:" not in result.stdout, result.stdout
+                assert state["gpr_lo"][8] == 0, state  # no fallback write
+            else:
+                assert state["cop0_epc"] == 0x00100048, state
+                assert (
+                    "HLE Deci2Call OPEN: descriptor=0x00100200 "
+                    "channel=0x00100220 handler=0x00100060 result=1"
+                ) in result.stdout, result.stdout
+                assert "HLE Deci2Call CLOSE: result=1" in result.stdout, result.stdout
+                assert (
+                    "Deci2Call HLE refused unsupported operation=3 "
+                    "descriptor=0x00000000 handler=0x00000000"
+                ) in result.stderr, result.stdout + result.stderr
+                regs = state["gpr_lo"]
+                assert regs[8] == 1, state  # OPEN result
+                assert regs[9] == 1, state  # CLOSE result
+                assert regs[10] == 0, state # no fake REQSEND return
+                assert regs[16:20] == [
+                    0x11223344, 0x00100220, 0x00100060, 0x55667788,
+                ], state
+
 
     with tempfile.TemporaryDirectory(prefix="ee-native-word-watch-") as tmp:
         root = Path(tmp)
