@@ -1220,7 +1220,7 @@ int main(int argc, char** argv)
                 service == 0x4au || service == 0x4bu ||
                 service == 0x64u ||
                 service == 0x68u || service == 0x74u ||
-                service == 0x7cu)
+                service == 0x78u || service == 0x7cu)
             {
                 const uint32_t epc = cpu.m_cop0[14];
                 uint32_t opcode = 0;
@@ -1938,6 +1938,43 @@ int main(int argc, char** argv)
                             "HLE %s: mode=0x%08x result=0\n",
                             service == 0x64u ? "FlushCache" : "iFlushCache",
                             static_cast<uint32_t>(cpu.m_gpr[4].m_lo)
+                        );
+                    }
+                }
+
+                else if (service == 0x78u)
+                {
+                    // sceSifSetDChain: initialize the EE SIF0 receive DMA
+                    // channel 5, QWC=0 and CHCR=0x184 (chain/TIE/STR).
+                    // The syscall is void: keep the incoming V0 unchanged.
+                    // A real IOP DMA producer/scheduler is not yet present;
+                    // the hardware model retains STR without fabricating
+                    // received bytes, completion or an interrupt.
+                    const ee::s_ee_u128 zero{0u, 0u};
+                    const ee::s_ee_u128 chcr{0x184u, 0u};
+                    if (!ee::c_ee_hw_bus::mmio_write(
+                            &hardware,
+                            ee::c_ee_dmac::k_sif0_base + 0x20u,
+                            4u, &zero) ||
+                        !ee::c_ee_hw_bus::mmio_write(
+                            &hardware,
+                            ee::c_ee_dmac::k_sif0_base,
+                            4u, &chcr))
+                    {
+                        std::fprintf(
+                            stderr,
+                            "SifSetDChain HLE refused missing SIF0 DMA "
+                            "MMIO register backing\n"
+                        );
+                        break;
+                    }
+
+                    if (trace)
+                    {
+                        std::printf(
+                            "HLE SifSetDChain: channel=5 "
+                            "qwc=0 chcr=0x00000184 "
+                            "result=void (no IOP producer)\n"
                         );
                     }
                 }
