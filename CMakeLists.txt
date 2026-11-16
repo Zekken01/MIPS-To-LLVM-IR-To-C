@@ -64,7 +64,9 @@ target_link_libraries(iop_irx_export_link_test PRIVATE iop_cpu)
 add_executable(iop_kernel_test tests/smoke/iop_kernel_test.cpp)
 target_link_libraries(iop_kernel_test PRIVATE iop_cpu)
 add_executable(iop_sifman_bridge_test tests/smoke/iop_sifman_bridge_test.cpp)
-target_link_libraries(iop_sifman_bridge_test PRIVATE iop_cpu)
+target_link_libraries(iop_sifman_bridge_test PRIVATE iop_cpu ee_core)
+add_executable(iop_sif_dma_test tests/smoke/iop_sif_dma_test.cpp)
+target_link_libraries(iop_sif_dma_test PRIVATE iop_cpu ee_core)
 
 add_executable(ee_smoke_test
     tests/smoke/smoke_test.cpp
@@ -319,6 +321,7 @@ add_test(NAME iop_irx_loader COMMAND iop_irx_loader_test)
 add_test(NAME iop_irx_export_link COMMAND iop_irx_export_link_test)
 add_test(NAME iop_kernel COMMAND iop_kernel_test)
 add_test(NAME iop_sifman_bridge COMMAND iop_sifman_bridge_test)
+add_test(NAME iop_sif_dma COMMAND iop_sif_dma_test)
 add_test(NAME decoder COMMAND ee_decoder_test)
 add_test(NAME dispatcher COMMAND ee_dispatcher_test)
 add_test(NAME ee_dispatch_interrupt COMMAND ee_dispatch_interrupt_test)
