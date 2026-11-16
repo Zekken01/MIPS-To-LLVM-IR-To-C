@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""Validate real native EE CreateThread/StartThread/preemption/ExitThread.
+
+The synthetic MIPS worker writes guest RAM and signals a real HLE semaphore.
+No game files, synthetic IRQs or IOP image are needed.
+"""
+from pathlib import Path
+import argparse
+import json
+import struct
+import subprocess
+import sys
+
+from test_game_runner import make_elf
+
+
+def make_thread_elf(path):
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    image.extend(bytes(0x1100 - len(image)))
+    struct.pack_into("<II", image, 52 + 16, 0x1000, 0x1000)
+    # Main creates a zero-count semaphore and a dormant worker,
+    # lowers its own priority, then starts worker ID 2. Worker runs
+    # at priority 0 and signals the semaphore before exiting.
+    main = (
+        0x3c040010, 0x34840500, 0x24030040, 0x0000000c, 0x00408021,
+        0x3c040010, 0x34840540, 0x24030020, 0x0000000c, 0x00408821,
+        0x00002021, 0x24050001, 0x24030029, 0x0000000c,
+        0x02202021, 0x24050042, 0x24030022, 0x0000000c,
+        0x02002021, 0x24030044, 0x0000000c,
+        0x3c080010, 0x35080580, 0x8d120000, 0x0000000d,
+    )
+    for index, word in enumerate(main):
+        struct.pack_into("<I", image, 0x108 + index * 4, word)
+
+    # Guest worker at 0x00100200: store the genuine StartThread argument
+    # (0x42) to guest RAM, call SignalSema, then call ExitThread.
+    worker = (
+        0x3c080010, 0x35080580, 0xad040000,
+        0x24040001, 0x24030042, 0x0000000c,
+        0x24030023, 0x0000000c, 0x0000000d,
+    )
+    for index, word in enumerate(worker):
+        struct.pack_into("<I", image, 0x300 + index * 4, word)
+
+    # ee_sema_t: count, max_count, init_count, wait_threads, attr, option.
+    struct.pack_into("<6I", image, 0x600, 0, 1, 0, 0, 0, 0)
+    # ee_thread_t: status, entry, stack, size, gp, initial priority,
+    # current priority, attr, option. File-offset 0x640 => guest 0x100540.
+    struct.pack_into(
+        "<9I", image, 0x640,
+        16, 0x00100200, 0x00100600, 0x400, 0, 0, 0, 0, 0
+    )
+    path.write_bytes(image)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--build-dir", required=True, type=Path)
+    parser.add_argument("--work-dir", required=True, type=Path)
+    args = parser.parse_args()
+    source = Path(__file__).resolve().parents[2]
+    work = args.work_dir.resolve()
+    work.mkdir(parents=True, exist_ok=True)
+    elf = work / "thread-scheduler.elf"
+    report = work / "thread-scheduler.json"
+    make_thread_elf(elf)
+    command = [
+        sys.executable, str(source / "tools" / "run_game.py"), str(elf),
+        "--build-dir", str(args.build_dir.resolve()),
+        "--work-dir", str(work / "native"),
+        "--functions=entry", "--extra-functions=0x00100200",
+        "--max-dispatches=256", "--hle-startup", "--kseg-ram",
+        "--trace", "--report", str(report),
+    ]
+    result = subprocess.run(
+        command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, check=False, timeout=120
+    )
+    (work / "thread-scheduler.log").write_text(result.stdout)
+    assert report.is_file(), result.stdout[-6000:]
+    state = json.loads(report.read_text())
+    assert "HLE StartThread: id=2 entry=0x00100200 " in result.stdout, (
+        result.stdout[-6000:]
+    )
+    assert "HLE EE thread switch: id=2 pc=0x00100200" in result.stdout, (
+        result.stdout[-6000:]
+    )
+    assert "HLE SignalSema: id=1 " in result.stdout, result.stdout[-6000:]
+    assert "HLE ExitThread: id=2" in result.stdout, result.stdout[-6000:]
+    assert "HLE EE thread switch: id=1 " in result.stdout, result.stdout[-6000:]
+    assert state["exit_name"] == "EXCEPTION", state
+    assert (state["cop0_cause"] >> 2) & 31 == 9, state  # main BREAK
+    assert state["gpr_lo"][18] == 0x42, state  # written by guest worker
+    assert state["gpr_lo"][16] == 1, state  # CreateSema ID
+    assert state["gpr_lo"][17] == 2, state  # CreateThread ID
+    print(
+        "EE native thread scheduler: PASS "
+        "worker=2 flag=0x42 sema=1 restored_main=1"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
