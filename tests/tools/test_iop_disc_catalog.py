@@ -108,6 +108,47 @@ def main():
         assert "no modules loaded or executed" in proc.stdout
         assert json.loads(output.read_text())["resolved_count"] == 2
 
+        # The boot wrapper passes explicitly selected *guest names* to
+        # the existing IOP module loader as resolved host paths. It
+        # does not start every static ELF candidate.
+        session_spec = importlib.util.spec_from_file_location(
+            "run_boot_session", TOOLS / "run_boot_session.py"
+        )
+        session = importlib.util.module_from_spec(session_spec)
+        session_spec.loader.exec_module(session)
+        work = root / "work"
+        report = work / "first-boot.json"
+        calls = []
+
+        def fake_run(command, log_path, append=False):
+            calls.append(list(map(str, command)))
+            report.write_text(
+                json.dumps({
+                    "dispatches": 5,
+                    "final_pc": 0x1750b4,
+                    "exit_reason": 4,
+                }), encoding="utf-8"
+            )
+            with log_path.open("a" if append else "w") as log:
+                log.write("EE stopped\\n")
+            return 0, "EE stopped\\n", 0.001
+
+        session.run_session = fake_run
+        result_code = session.main([
+            str(elf), "--work-dir", str(work), "--report", str(report),
+            "--expansion-passes=1", "--expansion-per-pass=1",
+            "--no-recompile", "--iop-auto-irx=PADMAN.IRX",
+            "--driver", str(TOOLS / "run_game.py"),
+        ])
+        assert result_code == 0 and len(calls) == 2, calls
+        expected = f"--iop-irx={disc / 'padman.irx'}"
+        assert all(expected in call for call in calls), calls
+        assert "--no-recompile" in calls[0]
+        saved = json.loads(
+            (work / "iop-disc-catalog.json").read_text(encoding="utf-8")
+        )
+        assert saved["runtime_load_count"] == 0, saved
+
         # Case-insensitive ambiguity is an error even on Linux.
         write_mips_elf(disc / "PADMAN.IRX;1")
         expect_error(
