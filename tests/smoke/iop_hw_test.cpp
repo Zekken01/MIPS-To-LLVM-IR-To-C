@@ -119,6 +119,28 @@ int main()
         return fail("CDVD interrupt reason W1C or unsupported width");
     }
 
+    // OpenPS2BIOS clears CDVD DEC_SET at 0xBF40203A. Preserve the
+    // 8-bit control value without treating the store as an I/O command.
+    if (!hardware.read(iop::c_hw::k_cdvd_dec_set, 1u, &actual) ||
+        actual != 0u ||
+        !hardware.write(iop::c_hw::k_cdvd_dec_set, 1u, 0x15au) ||
+        !hardware.read(iop::c_hw::k_cdvd_dec_set, 1u, &actual) ||
+        actual != 0x5au ||
+        hardware.read(iop::c_hw::k_cdvd_dec_set, 2u, &actual) ||
+        hardware.read(iop::c_hw::k_cdvd_dec_set, 4u, &actual) ||
+        hardware.write(iop::c_hw::k_cdvd_dec_set, 2u, 0u) ||
+        hardware.write(iop::c_hw::k_cdvd_dec_set + 1u, 1u, 0u) ||
+        hardware.pending_interrupts() != 0u)
+    {
+        return fail("CDVD DEC_SET byte register storage/width semantics");
+    }
+    hardware.reset();
+    if (!hardware.read(iop::c_hw::k_cdvd_dec_set, 1u, &actual) ||
+        actual != 0u)
+    {
+        return fail("CDVD DEC_SET retained state after reset");
+    }
+
     // The standalone ROM0 runner has no mounted disc. The CDVD
     // disk-type register must report no media, not an invented game disc.
     if (!hardware.read(iop::c_hw::k_cdvd_disc_type, 1u, &actual) ||
@@ -345,6 +367,41 @@ int main()
         cdvd_ack_kernel.hardware().pending_interrupts() != 0u)
     {
         return fail("guest CDVD interrupt-ack created phantom IRQ/fault");
+    }
+
+    // Execute genuine R3000 SB/LBU instructions against CDVD DEC_SET
+    // through the KSEG1 MMIO mirror. This tests register programming
+    // only, not decryption or successful disc I/O.
+    const uint32_t cdvd_dec_set_instructions[] =
+    {
+        0x3c08bf40u, // lui t0,0xbf40
+        0x3508203au, // ori t0,t0,0x203a
+        0x2409005au, // addiu t1,zero,0x5a
+        0xa1090000u, // sb t1,0(t0)
+        0x910a0000u, // lbu t2,0(t0)
+        0xa1000000u, // sb zero,0(t0) (ROM0 reset store)
+        0x910b0000u, // lbu t3,0(t0)
+        0x0000000du  // break
+    };
+    for (uint32_t index = 0u; index < 8u; ++index)
+    {
+        put32(rom, index * 4u, cdvd_dec_set_instructions[index]);
+    }
+    iop::c_kernel cdvd_dec_set_kernel{};
+    if (!cdvd_dec_set_kernel.start_rom0_boot(rom))
+    {
+        return fail("IOP ROM0 CDVD DEC_SET fixture failed to install ROM");
+    }
+    const iop::s_kernel_run_result dec_set =
+        cdvd_dec_set_kernel.run(16u, 4u);
+    if (dec_set.m_stop != iop::e_kernel_stop::breakpoint ||
+        dec_set.m_executed != 7u ||
+        cdvd_dec_set_kernel.cpu().state().m_gpr[10u] != 0x5au ||
+        cdvd_dec_set_kernel.cpu().state().m_gpr[11u] != 0u ||
+        cdvd_dec_set_kernel.cpu().last_memory_fault().m_valid ||
+        cdvd_dec_set_kernel.hardware().pending_interrupts() != 0u)
+    {
+        return fail("Guest CDVD DEC_SET access faulted or fabricated I/O");
     }
 
     // The cache-control register is address-specific. The IOP bus
