@@ -38,6 +38,11 @@ public:
     static constexpr uint32_t k_timer5_mode = 0x1f8014a4u;
     static constexpr uint32_t k_timer5_target = 0x1f8014a8u;
     static constexpr uint32_t k_timer5_irq = 16u;
+    // IOP primary DMA channels 0-6; each exposes MADR/BCR/CHCR.
+    // No data-device backend is connected until implemented separately.
+    static constexpr uint32_t k_primary_dma_base = 0x1f801080u;
+    static constexpr uint32_t k_primary_dma_channel_count = 7u;
+    static constexpr uint32_t k_primary_dma_stride = 0x10u;
     static constexpr uint32_t k_dma_pcr = 0x1f8010f0u;
     static constexpr uint32_t k_dma_pcr2 = 0x1f801570u;
     // Secondary DMA global-enable control, used by the firmware's SIF.
@@ -95,6 +100,8 @@ public:
 
 private:
     bool scratchpad_range(uint32_t address, uint32_t width) const;
+    bool primary_dma_register(uint32_t address, uint32_t* channel,
+                              uint32_t* reg) const;
     bool sif_dma_register(uint32_t address, uint32_t* channel,
                           uint32_t* reg) const;
     uint32_t update_dma_icr(uint32_t previous, uint32_t value);
@@ -110,6 +117,8 @@ private:
     uint32_t m_timer5_target = 0u;
     uint32_t m_timer5_remainder = 0u;
     bool m_timer5_irq_armed = true;
+    // Hardware register bank, not a synthetic DMA completion engine.
+    uint32_t m_primary_dma[k_primary_dma_channel_count][3]{};
     uint32_t m_dma_pcr = 0u;
     uint32_t m_dma_pcr2 = 0u;
     uint32_t m_dma_global_enable = 0u;
