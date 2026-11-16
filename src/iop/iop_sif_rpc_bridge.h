@@ -73,5 +73,6 @@ private:
     ee::c_ee_dmac& m_dmac;
     std::deque<s_reply> m_replies;
     uint32_t m_load_requests = 0u;
+    bool m_reply_in_flight = false;
 };
 } // namespace iop
