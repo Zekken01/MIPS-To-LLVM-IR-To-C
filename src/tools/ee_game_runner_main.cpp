@@ -1777,7 +1777,7 @@ int main(int argc, char** argv)
                 {
                     std::printf(
                         "HLE interrupt SIF syscall: pc=0x%08x "
-                        "architectural_epc=0x%08x resume=0x%08x\\n",
+                        "architectural_epc=0x%08x resume=0x%08x\n",
                         epc, cpu.m_cop0[14], epc + 4u
                     );
                 }
