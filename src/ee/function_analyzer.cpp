@@ -666,9 +666,17 @@ std::vector<s_ee_function> function_analyzer::analyze(
     const std::map<uint32_t, s_ee_instruction>& insns,
     const std::vector<uint32_t>& entry_points,
     const std::vector<uint32_t>& all_entries,
-    const std::set<uint32_t>* block_starts)
+    const std::set<uint32_t>* block_starts,
+    const std::set<uint32_t>* stop_entries)
 {
-    std::set<uint32_t> stop_entries(all_entries.begin(), all_entries.end());
+    // Thousands of function analyses may share the same stop-at-entry
+    // boundary. Avoid allocating and filling an identical set for every
+    // single-function CFG in the full-image coverage and IR passes.
+    const std::set<uint32_t> local_stop_entries = stop_entries
+        ? std::set<uint32_t>{}
+        : std::set<uint32_t>(all_entries.begin(), all_entries.end());
+    const std::set<uint32_t>& indexed_stop_entries = stop_entries
+        ? *stop_entries : local_stop_entries;
     const std::set<uint32_t> local_block_starts = block_starts
         ? std::set<uint32_t>{}
         : collect_function_block_starts(insns, all_entries);
@@ -680,7 +688,7 @@ std::vector<s_ee_function> function_analyzer::analyze(
     {
         s_ee_function fn;
         fn.entry_pc = ep;
-        split_into_blocks(insns, ep, fn, stop_entries, indexed_block_starts);
+        split_into_blocks(insns, ep, fn, indexed_stop_entries, indexed_block_starts);
         link_cfg(fn);
         functions.push_back(std::move(fn));
     }
@@ -703,6 +711,11 @@ std::set<uint32_t> collect_static_jalr_targets(
     const std::set<uint32_t>& indexed_block_starts = block_starts
         ? *block_starts : local_block_starts;
     function_analyzer analyzer;
+    // JALR fixed-point discovery analyzes every known entry. All CFGs in
+    // this invocation use identical function boundaries.
+    const std::set<uint32_t> stop_entries(
+        all_entries.begin(), all_entries.end()
+    );
 
     auto states_equal = [](const s_gpr_constant_state& a,
                            const s_gpr_constant_state& b) -> bool
@@ -715,7 +728,10 @@ std::set<uint32_t> collect_static_jalr_targets(
     for (uint32_t entry : entry_points)
     {
         const std::vector<s_ee_function> functions =
-            analyzer.analyze(insns, {entry}, all_entries, &indexed_block_starts);
+            analyzer.analyze(
+                insns, {entry}, all_entries, &indexed_block_starts,
+                &stop_entries
+            );
         if (functions.empty() || functions[0].blocks.empty())
         {
             continue;
