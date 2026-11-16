@@ -32,10 +32,10 @@ jobs:
             sif1_ee_to_iop_test \
             sif1_dma_invalid_tags_test \
             sif1_ee_chain_test \
-            sif0_iop_to_ee_test
+            sif0_iop_to_ee_test \
+            sif0_dma_invalid_tags_test
 
       - name: Validate guest-visible DMA behavior
         run: |
           ctest --test-dir build --output-on-failure -R \
-            '^(iop_dma_icr|iop_dma_sif_channels|iop_dma_global_enable|iop_sif_mmio_link|sif1_dma_registers|sif1_ee_to_iop|sif1_dma_invalid_tags|sif1_ee_chain|sif0_iop_to_ee)
-
+            '^(iop_dma_icr|iop_dma_sif_channels|iop_dma_global_enable|iop_sif_mmio_link|sif1_dma_registers|sif1_ee_to_iop|sif1_dma_invalid_tags|sif1_ee_chain|sif0_iop_to_ee|sif0_dma_invalid_tags)$'
