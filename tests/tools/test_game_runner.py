@@ -146,6 +146,63 @@ def make_sif_set_dchain_elf(path):
     path.write_bytes(image)
 
 
+def make_sif_register_elf(path):
+    """SifGetReg/SetReg and physical SIF MMIO must share guest-visible state."""
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    image.extend(bytes(max(0, 0x280 - len(image))))
+    struct.pack_into("<I", image, 52 + 16, 0x180)
+    struct.pack_into("<I", image, 52 + 20, 0x180)
+
+    instructions = (
+        0x3c048000,  # a0=SIF_SYSREG_SUBADDR
+        0x2403007a,  # SifGetReg
+        0x0000000c,  # initial software SIF register, no IOP
+        0x00408021,  # initially zero
+        0x3c048000,  # a0=SIF_SYSREG_SUBADDR
+        0x3c050010,  # address hi
+        0x34a52200,  # a1=0x00102200
+        0x24030079,  # SifSetReg
+        0x0000000c,  # persist software SIF register
+        0x00408821,  # set result=0
+        0x2403007a,  # SifGetReg
+        0x0000000c,  # read back software state
+        0x00409021,  # readback 0x00102200
+        0x24040001,  # SIF_REG_MAINADDR
+        0x3c050010,  # address hi
+        0x34a52300,  # a1=0x00102300
+        0x24030079,  # SifSetReg
+        0x0000000c,  # publish EE receive buffer
+        0x00409821,  # set result=0
+        0x3c081000,  # SIF MMIO hi
+        0x3508f200,  # MSCOM physical address
+        0x8d140000,  # guest reads same MMIO value
+        0x24040001,  # SIF_REG_MAINADDR
+        0x2403007a,  # SifGetReg
+        0x0000000c,  # read same MSCOM via kernel
+        0x0040a821,  # readback 0x00102300
+        0x24040003,  # SIF_REG_MSFLAG
+        0x3c050002,  # EE CMDINIT bit
+        0x24030079,  # SifSetReg
+        0x0000000c,  # OR MSFLAG
+        0x8d160020,  # read MSFLAG via MMIO
+        0x24040002,  # SIF_REG_SUBADDR: still IOP-owned
+        0x2403007a,  # SifGetReg
+        0x0000000c,  # no fake IOP bootstrap
+        0x0040b821,  # SUBADDR=0
+        0x3c047fff,  # unsupported register
+        0x34840000,  # unsupported id unchanged
+        0x2403007a,  # SifGetReg
+        0x0000000c,  # must fail closed
+        0x24090001,  # unreachable
+        0x00000008,  # jr zero
+        0x00000000,  # nop
+    )
+    for index, opcode in enumerate(instructions):
+        struct.pack_into("<I", image, 0x108 + index * 4, opcode)
+    path.write_bytes(image)
+
+
 def make_deci2_reqsend_elf(path, invalid_channel=False):
     """Exercise the reference DECI2 channel acknowledgement in real MIPS."""
     make_elf(path)
@@ -1383,6 +1440,60 @@ def main():
         assert state["gpr_lo"][18] == 0x184, state       # SIF0 CHCR
         assert state["gpr_lo"][19] == 0, state           # SIF0 MADR
         assert "guest blocked by an unsupported operation" in enabled.stderr
+
+
+    with tempfile.TemporaryDirectory(prefix="ee-native-sif-register-") as tmp:
+        root = Path(tmp)
+        elf = root / "sif-register.elf"
+        make_sif_register_elf(elf)
+        report_path = root / "sif-register.json"
+        command = [
+            sys.executable, str(source / "tools" / "run_game.py"),
+            str(elf), "--build-dir", str(build),
+            "--work-dir", str(root / "out"),
+            "--max-dispatches=16", "--trace",
+            "--report", str(report_path),
+        ]
+
+        disabled = subprocess.run(
+            command, capture_output=True, text=True, check=False,
+        )
+        assert disabled.returncode == 3, disabled.stdout + disabled.stderr
+        disabled_state = json.loads(report_path.read_text(encoding="utf-8"))
+        assert disabled_state["cop0_epc"] == 0x00100010, disabled_state
+        assert "HLE SifGetReg:" not in disabled.stdout, disabled.stdout
+
+        enabled = subprocess.run(
+            command + ["--no-recompile", "--hle-startup"],
+            capture_output=True, text=True, check=False,
+        )
+        assert enabled.returncode == 3, enabled.stdout + enabled.stderr
+        state = json.loads(report_path.read_text(encoding="utf-8"))
+        assert state["exit_name"] == "EXCEPTION", state
+        assert state["cop0_epc"] == 0x001000a0, state
+        regs = state["gpr_lo"]
+        assert regs[16] == 0, state              # initial SUBADDR
+        assert regs[17] == 0, state              # SifSetReg returns 0
+        assert regs[18] == 0x00102200, state     # software sysreg persists
+        assert regs[19] == 0, state              # main address set returns 0
+        assert regs[20] == 0x00102300, state     # MSCOM direct MMIO
+        assert regs[21] == 0x00102300, state     # MSCOM syscall read
+        assert regs[22] == 0x00020000, state     # MSFLAG OR'd via SifSetReg
+        assert regs[23] == 0, state              # no fabricated IOP SUBADDR
+        assert regs[9] == 0, state               # no fallthrough after refusal
+        assert (
+            "HLE SifGetReg: register=0x80000000 result=0x00000000"
+        ) in enabled.stdout, enabled.stdout + enabled.stderr
+        assert (
+            "HLE SifGetReg: register=0x80000000 result=0x00102200"
+        ) in enabled.stdout, enabled.stdout + enabled.stderr
+        assert (
+            "HLE SifSetReg: register=0x00000003 "
+            "value=0x00020000 result=0"
+        ) in enabled.stdout, enabled.stdout + enabled.stderr
+        assert (
+            "SifGetReg HLE refused unsupported register=0x7fff0000"
+        ) in enabled.stderr, enabled.stdout + enabled.stderr
 
 
     for invalid_open in (False, True):

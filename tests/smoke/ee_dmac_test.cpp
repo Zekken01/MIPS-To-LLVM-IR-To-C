@@ -153,6 +153,81 @@ int main()
         return fail("SifSetDChain SIF0 QWC/CHCR reinitialization");
     }
 
+    // The SIF mailbox MMIO and SifSetReg/GetReg share one state owner.
+    constexpr uint32_t mscom = ee::c_ee_sif::k_mscom_address;
+    constexpr uint32_t smcom = ee::c_ee_sif::k_smcom_address;
+    constexpr uint32_t msflag = ee::c_ee_sif::k_msflag_address;
+    constexpr uint32_t smflag = ee::c_ee_sif::k_smflag_address;
+    constexpr uint32_t sysreg = ee::c_ee_sif::k_sysreg_base;
+    uint32_t sif_result = 0xffffffffu;
+
+    if (!hardware.sif().get_reg(sysreg, &sif_result) ||
+        sif_result != 0u ||
+        !hardware.sif().get_reg(sysreg + 2u, &sif_result) ||
+        sif_result != 0u ||
+        ee::ee_mem_read32(&runtime, smcom) != 0u ||
+        ee::ee_mem_read32(&runtime, smflag) != 0u)
+    {
+        return fail("SIF initially fabricated an IOP or RPC bootstrap");
+    }
+
+    ee::ee_mem_write32(&runtime, mscom, 0x001abc00u);
+    ee::ee_mem_write32(&runtime, msflag, 0x00010000u);
+    ee::ee_mem_write32(&runtime, 0xb000f220u, 0x00020000u);
+    if (!hardware.sif().get_reg(1u, &sif_result) ||
+        sif_result != 0x001abc00u ||
+        ee::ee_mem_read32(&runtime, mscom) != 0x001abc00u ||
+        ee::ee_mem_read32(&runtime, msflag) != 0x00030000u ||
+        !hardware.sif().get_reg(3u, &sif_result) ||
+        sif_result != 0x00030000u)
+    {
+        return fail("SIF MSCOM/MSFLAG MMIO and syscall state disagree");
+    }
+
+    hardware.sif().publish_iop_subaddr(0x0001e000u);
+    hardware.sif().publish_iop_smflag(0x00060000u);
+    ee::ee_mem_write32(&runtime, smcom, 0x00bad000u); // EE cannot write IOP mailbox.
+    ee::ee_mem_write32(&runtime, smflag, 0x00020000u); // EE clears IOP flags.
+    if (ee::ee_mem_read32(&runtime, smcom) != 0x0001e000u ||
+        ee::ee_mem_read32(&runtime, smflag) != 0x00040000u ||
+        !hardware.sif().get_reg(2u, &sif_result) ||
+        sif_result != 0x0001e000u ||
+        !hardware.sif().get_reg(4u, &sif_result) ||
+        sif_result != 0x00040000u)
+    {
+        return fail("SIF IOP-only mailbox or SMFLAG clear semantics");
+    }
+
+    if (!hardware.sif().set_reg(sysreg, 0x001fe000u) ||
+        !hardware.sif().set_reg(sysreg + 1u, 0x001df000u) ||
+        !hardware.sif().set_reg(sysreg + 2u, 1u) ||
+        !hardware.sif().get_reg(sysreg, &sif_result) ||
+        sif_result != 0x001fe000u ||
+        !hardware.sif().get_reg(sysreg + 2u, &sif_result) ||
+        sif_result != 1u)
+    {
+        return fail("SIF kernel system register read/write");
+    }
+
+    if (hardware.sif().get_reg(0x80000003u, &sif_result) ||
+        hardware.sif().set_reg(0x80000003u, 1u) ||
+        hardware.sif().get_reg(2u, nullptr) ||
+        hardware.sif().set_reg(2u, 0x00bad000u) ||
+        ee::c_ee_hw_bus::mmio_write(
+            &hardware, smcom, 4u, &unsupported_sif0))
+    {
+        return fail("unimplemented SIF register or IOP-only EE write");
+    }
+
+    ee::ee_mem_write16(&runtime, mscom, 0xffffu);
+    ee::ee_mem_write64(&runtime, mscom, ~uint64_t{0});
+    if (ee::ee_mem_read32(&runtime, mscom) != 0x001abc00u ||
+        ee::ee_mem_read16(&runtime, mscom) != 0u ||
+        ee::ee_mem_read64(&runtime, mscom) != 0u)
+    {
+        return fail("unsupported SIF MMIO width modified mailbox");
+    }
+
     // Only 32-bit D_STAT accesses are supported at this milestone.
     ee::ee_mem_write8(&runtime, d_stat, 0xffu);
     ee::ee_mem_write16(&runtime, d_stat, 0xffffu);
@@ -190,6 +265,14 @@ int main()
         hardware.intc().status() != 0 ||
         ee::ee_mem_read32(&runtime, sif0) != 0u ||
         ee::ee_mem_read32(&runtime, sif0 + 0x20u) != 0u ||
+        ee::ee_mem_read32(&runtime, mscom) != 0u ||
+        ee::ee_mem_read32(&runtime, smcom) != 0u ||
+        ee::ee_mem_read32(&runtime, msflag) != 0u ||
+        ee::ee_mem_read32(&runtime, smflag) != 0u ||
+        !hardware.sif().get_reg(sysreg, &sif_result) ||
+        sif_result != 0u ||
+        !hardware.sif().get_reg(sysreg + 2u, &sif_result) ||
+        sif_result != 0u ||
         (next_cpu.m_cop0[ee::COP0_Cause] & (dmac_ip | intc_ip)) != 0)
     {
         return fail("hardware reset did not release pending interrupts");
