@@ -28,6 +28,22 @@ int main()
     iop::c_hw hw{};
     uint32_t actual = 0u;
     const uint32_t dma_irq = 1u << iop::c_hw::k_dma_irq;
+    if (!hw.read(iop::c_hw::k_dma_pcr, 4u, &actual) ||
+        actual != 0u ||
+        !hw.read(iop::c_hw::k_dma_pcr2, 4u, &actual) ||
+        actual != 0u ||
+        !hw.write(iop::c_hw::k_dma_pcr, 4u, 0x12345678u) ||
+        !hw.write(iop::c_hw::k_dma_pcr2, 4u, 0x89abcdefu) ||
+        !hw.read(iop::c_hw::k_dma_pcr, 4u, &actual) ||
+        actual != 0x12345678u ||
+        !hw.read(iop::c_hw::k_dma_pcr2, 4u, &actual) ||
+        actual != 0x89abcdefu ||
+        hw.pending_interrupts() != 0u ||
+        hw.write(iop::c_hw::k_dma_pcr, 2u, 0u) ||
+        hw.read(iop::c_hw::k_dma_pcr2, 1u, &actual))
+    {
+        return fail("DMA priority controls fabricated transfer or accepted invalid widths");
+    }
     if (!hw.read(iop::c_hw::k_dma_icr, 4u, &actual) ||
         actual != 0u ||
         !hw.read(iop::c_hw::k_dma_icr2, 4u, &actual) ||
@@ -89,7 +105,7 @@ int main()
     if (hw.read(iop::c_hw::k_dma_icr, 1u, &actual) ||
         hw.write(iop::c_hw::k_dma_icr2, 2u, 0u) ||
         hw.read(iop::c_hw::k_dma_icr2 + 4u, 4u, &actual) ||
-        hw.write(0x1f8010f0u, 4u, 0u))
+        hw.write(0x1f8010f2u, 2u, 0u))
     {
         return fail("Unsupported DMA MMIO register/width did not fail");
     }
@@ -119,9 +135,14 @@ int main()
         0x3c0d0004u, // lui t5,0x0004 (SIF0 IRQ enable)
         0xad8d0000u, // sw t5,0(t4)
         0x8d8e0000u, // lw t6,0(t4)
+        0x358c1570u, // ori t4,t4,0x1570 (PCR2)
+        0x3c0f1234u, // lui t7,0x1234
+        0x35ef5678u, // ori t7,t7,0x5678
+        0xad8f0000u, // sw t7,0(t4)
+        0x8d980000u, // lw t8,0(t4)
         0x0000000du  // break
     };
-    for (uint32_t index = 0u; index < 12u; ++index)
+    for (uint32_t index = 0u; index < 17u; ++index)
     {
         put32(rom, index * 4u, program[index]);
     }
@@ -133,11 +154,12 @@ int main()
     }
     const iop::s_kernel_run_result result = kernel.run(24u, 1u);
     if (result.m_stop != iop::e_kernel_stop::breakpoint ||
-        result.m_executed != 11u ||
-        result.m_guest_pc != 0xbfc0002cu ||
+        result.m_executed != 16u ||
+        result.m_guest_pc != 0xbfc00040u ||
         kernel.cpu().state().m_gpr[9u] != 0u ||
         kernel.cpu().state().m_gpr[11u] != 0x00800000u ||
         kernel.cpu().state().m_gpr[14u] != 0x00040000u ||
+        kernel.cpu().state().m_gpr[24u] != 0x12345678u ||
         kernel.hardware().pending_interrupts() != 0u)
     {
         return fail("Guest DMA ICR register sequence or no-spurious-IRQ");
