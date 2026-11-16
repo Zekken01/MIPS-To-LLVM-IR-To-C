@@ -32,6 +32,14 @@ public:
     void reset();
     void pump();
 
+    // Adapt EE syscall 0x77 descriptor lists to a real DMA6 source
+    // chain, with IOP DMA10 responsible for receiving every packet.
+    // All descriptors are validated and snapshotted before DMA starts.
+    // A completed ID reports -1 through sceSifDmaStat; no HLE RPC
+    // service processes these bytes.
+    bool set_dma(uint32_t list, uint32_t count, uint32_t* dma_id);
+    bool dma_stat(uint32_t dma_id, int32_t* result) const;
+
     uint64_t queued_bytes() const;
     uint64_t delivered_bytes() const;
     uint32_t fifo_words() const;
@@ -62,5 +70,6 @@ private:
     bool m_faulted = false;
     uint64_t m_queued_bytes = 0u;
     uint64_t m_delivered_bytes = 0u;
+    uint32_t m_next_dma_id = 1u;
 };
 } // namespace iop
