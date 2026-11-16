@@ -169,7 +169,7 @@ For a synthetic module or a user-supplied independently executable
 IOP IRX, run:
 
 ```text
-python tools/run_game.py PS2_GAME/SLUS_214.42 --build-dir build --work-dir build/sdbz-thread-pr38 --no-recompile --hle-startup --kseg-ram --sif-poll-limit=256 --iop-irx=path/to/module.irx --iop-quantum=256
+python tools/run_game.py PS2_GAME/SLUS_214.42 --build-dir build --work-dir build/sdbz --no-recompile --hle-startup --kseg-ram --sif-poll-limit=256 --iop-irx=path/to/module.irx --iop-quantum=256
 ```
 
 The SDBZ .bat launcher does not supply an IOP IRX automatically. No
@@ -288,7 +288,7 @@ unsound address-construction pairing.
 Example manual use:
 
 ```bat
-python tools\analyze_iop_module_paths.py PS2_GAME\SLUS_214.42 --json build\sdbz-thread-pr38\iop-module-paths.json
+python tools\analyze_iop_module_paths.py PS2_GAME\SLUS_214.42 --json build\sdbz\iop-module-paths.json
 ```
 
 `run_sdbz_native.bat` generates this JSON automatically on each
