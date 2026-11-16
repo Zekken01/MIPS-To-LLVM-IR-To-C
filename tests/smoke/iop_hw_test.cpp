@@ -104,10 +104,64 @@ int main()
         actual != iop::c_hw::k_cdvd_ncmd_ready ||
         hardware.read(iop::c_hw::k_cdvd_ncmd_status, 2u, &actual) ||
         hardware.read(iop::c_hw::k_cdvd_ncmd_status, 4u, &actual) ||
-        hardware.write(iop::c_hw::k_cdvd_ncmd_status, 1u, 0u))
+        hardware.write(iop::c_hw::k_cdvd_ncmd_status, 2u, 0u))
     {
-        return fail("CDVD N-command idle readiness or unsupported command write");
+        return fail("CDVD N-command idle readiness or unsupported MMIO width");
     }
+    // OpenPS2BIOS submits CDVD READ(0x06) for LBA 16, one sector.
+    // The physical 0x1F402005 is status on read and FIFO data on write.
+    const uint8_t ncmd_params[11] =
+    {
+        0x10u, 0u, 0u, 0u, 1u, 0u, 0u, 0u, 0x10u, 0x85u, 0u
+    };
+    for (uint32_t index = 0u; index < 11u; ++index)
+    {
+        if (!hardware.write(iop::c_hw::k_cdvd_ncmd_status, 1u,
+                            ncmd_params[index]))
+        {
+            return fail("CDVD N-command FIFO rejected firmware parameter");
+        }
+    }
+    uint8_t observed_param = 0u;
+    if (hardware.cdvd_ncmd_parameter_count() != 11u ||
+        !hardware.cdvd_ncmd_parameter(9u, &observed_param) ||
+        observed_param != 0x85u ||
+        hardware.cdvd_ncmd_parameter(11u, &observed_param) ||
+        hardware.cdvd_ncmd_parameter(0u, nullptr) ||
+        !hardware.write(iop::c_hw::k_cdvd_ncmd_command, 1u, 0x06u) ||
+        !hardware.cdvd_ncmd_pending() ||
+        !hardware.read(iop::c_hw::k_cdvd_ncmd_command, 1u, &actual) ||
+        actual != 0x06u ||
+        !hardware.read(iop::c_hw::k_cdvd_ncmd_status, 1u, &actual) ||
+        actual != iop::c_hw::k_cdvd_ncmd_busy ||
+        hardware.write(iop::c_hw::k_cdvd_ncmd_command, 1u, 0x06u) ||
+        hardware.write(iop::c_hw::k_cdvd_ncmd_status, 1u, 0u) ||
+        hardware.pending_interrupts() != 0u)
+    {
+        return fail("CDVD READ was completed, duplicated or interrupted");
+    }
+    hardware.reset();
+    if (hardware.cdvd_ncmd_pending() ||
+        hardware.cdvd_ncmd_parameter_count() != 0u ||
+        !hardware.read(iop::c_hw::k_cdvd_ncmd_status, 1u, &actual) ||
+        actual != iop::c_hw::k_cdvd_ncmd_ready)
+    {
+        return fail("CDVD N-command FIFO and pending state survived reset");
+    }
+    for (uint32_t index = 0u;
+         index < iop::c_hw::k_cdvd_ncmd_param_capacity; ++index)
+    {
+        if (!hardware.write(iop::c_hw::k_cdvd_ncmd_status, 1u, index))
+        {
+            return fail("CDVD N-command FIFO rejected a bounded byte");
+        }
+    }
+    if (hardware.write(iop::c_hw::k_cdvd_ncmd_status, 1u, 0xffu))
+    {
+        return fail("CDVD N-command FIFO overflow was silently accepted");
+    }
+    hardware.reset();
+
     // CDVD I_STAT (0x1F402008) is a distinct byte-wide W1C
     // interrupt status register; acknowledging zero pending reasons
     // must not synthesize an interrupt or complete a command.
@@ -442,6 +496,48 @@ int main()
         cdvd_dec_set_kernel.hardware().pending_interrupts() != 0u)
     {
         return fail("Guest CDVD DEC_SET access faulted or fabricated I/O");
+    }
+
+    // Real CDVD parameters use SB at the same address where LBU
+    // reports readiness. The next SB to 0xBF402004 submits READ(0x06).
+    const uint32_t ncmd_instructions[] =
+    {
+        0x3c08bf40u, // lui t0,0xbf40
+        0x35082005u, // ori t0,t0,0x2005 (N_DATAIN/N_READY)
+        0x24090010u, // addiu t1,zero,0x10 (LBA low byte)
+        0xa1090000u, // sb t1,0(t0) (N_DATAIN)
+        0x910a0000u, // lbu t2,0(t0): ready before command
+        0x2508ffffu, // addiu t0,t0,-1 (N_CMD)
+        0x24090006u, // addiu t1,zero,0x06 (READ)
+        0xa1090000u, // sb t1,0(t0)
+        0x910b0000u, // lbu t3,0(t0): command
+        0x25080001u, // addiu t0,t0,1 (N_READY)
+        0x910c0000u, // lbu t4,0(t0): still busy
+        0x0000000du  // break
+    };
+    for (uint32_t index = 0u; index < 12u; ++index)
+    {
+        put32(rom, index * 4u, ncmd_instructions[index]);
+    }
+    iop::c_kernel ncmd_kernel{};
+    if (!ncmd_kernel.start_rom0_boot(rom))
+    {
+        return fail("CDVD N-command KSEG1 fixture failed to install guest ROM");
+    }
+    const iop::s_kernel_run_result ncmd = ncmd_kernel.run(20u, 4u);
+    if (ncmd.m_stop != iop::e_kernel_stop::breakpoint ||
+        ncmd.m_executed != 11u ||
+        ncmd_kernel.cpu().state().m_gpr[10u] !=
+            iop::c_hw::k_cdvd_ncmd_ready ||
+        ncmd_kernel.cpu().state().m_gpr[11u] != 0x06u ||
+        ncmd_kernel.cpu().state().m_gpr[12u] !=
+            iop::c_hw::k_cdvd_ncmd_busy ||
+        !ncmd_kernel.hardware().cdvd_ncmd_pending() ||
+        ncmd_kernel.hardware().cdvd_ncmd_parameter_count() != 1u ||
+        ncmd_kernel.cpu().last_memory_fault().m_valid ||
+        ncmd_kernel.hardware().pending_interrupts() != 0u)
+    {
+        return fail("guest CDVD N-command/parameter created phantom completion");
     }
 
     // The cache-control register is address-specific. The IOP bus

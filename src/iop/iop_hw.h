@@ -59,8 +59,12 @@ public:
     static constexpr uint32_t k_dma_irq = 3u;
     // CDVD N-command status: bit 6=controller ready, bit 7=busy.
     // A controller can be idle/ready without a disc inserted.
+    static constexpr uint32_t k_cdvd_ncmd_command = 0x1f402004u;
+    // This address reads N-ready status, but writes command params.
     static constexpr uint32_t k_cdvd_ncmd_status = 0x1f402005u;
+    static constexpr uint32_t k_cdvd_ncmd_param_capacity = 16u;
     static constexpr uint8_t k_cdvd_ncmd_ready = 0x40u;
+    static constexpr uint8_t k_cdvd_ncmd_busy = 0x80u;
     // CDVD I_STAT: byte-wide interrupt-reason register, write-one-to-clear.
     static constexpr uint32_t k_cdvd_i_stat = 0x1f402008u;
     // CDVD decryption configuration byte. This is register storage,
@@ -104,6 +108,10 @@ public:
     uint32_t sif_smflag() const;
     const std::string& debug_console() const;
     bool debug_console_truncated() const;
+    // Expose pending work to an eventual real CDVD sector provider.
+    bool cdvd_ncmd_pending() const;
+    uint32_t cdvd_ncmd_parameter_count() const;
+    bool cdvd_ncmd_parameter(uint32_t index, uint8_t* value) const;
 
 private:
     bool scratchpad_range(uint32_t address, uint32_t width) const;
@@ -117,6 +125,10 @@ private:
     // interrupt reasons spontaneously. Acknowledge writes clear bits.
     uint8_t m_cdvd_i_stat = 0u;
     uint8_t m_cdvd_dec_set = 0u;
+    uint8_t m_cdvd_ncmd_command = 0u;
+    uint8_t m_cdvd_ncmd_params[k_cdvd_ncmd_param_capacity]{};
+    uint32_t m_cdvd_ncmd_param_count = 0u;
+    bool m_cdvd_ncmd_pending = false;
     uint32_t m_i_stat = 0u;
     uint32_t m_i_mask = 0u;
     uint32_t m_i_ctrl = 1u;
