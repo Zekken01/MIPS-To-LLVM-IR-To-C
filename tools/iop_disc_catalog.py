@@ -8,7 +8,6 @@ without hardcoded host paths, guesswork or path traversal.
 """
 
 import argparse
-import hashlib
 import json
 import re
 from pathlib import Path
@@ -33,13 +32,13 @@ def parse_cdrom_path(guest_path):
     names = text.split("/")
     if (not names or len(names) > 16 or
             any(part in ("", ".", "..") or ":" in part or
-                "\x00" in part or len(part) > 128 for part in names)):
+                len(part) > 128 or any(ord(ch) < 32 or ord(ch) > 126
+                                        for ch in part) for part in names)):
         return None
 
     final = IRX_NAME.fullmatch(names[-1])
     if final is None:
         return None
-    names[-1] = final.group(1)
     return tuple(names)
 
 
@@ -57,9 +56,16 @@ def resolve_disc_path(root, guest_path):
     for name in parts:
         if not current.is_dir():
             return None
+        # Extractors may preserve ISO9660 ";1" suffixes or strip them.
+        # Never silently choose if both representations exist.
+        accepted = {name.casefold()}
+        if name == parts[-1]:
+            suffix = IRX_NAME.fullmatch(name)
+            if suffix is not None:
+                accepted.add(suffix.group(1).casefold())
         matches = [
             item for item in current.iterdir()
-            if item.name.casefold() == name.casefold()
+            if item.name.casefold() in accepted
         ]
         if len(matches) > 1:
             raise ValueError(
@@ -79,6 +85,11 @@ def resolve_disc_path(root, guest_path):
     size = current.stat().st_size
     if size < 52 or size > MAX_IRX_BYTES:
         raise ValueError(f"IRX file size is invalid: {current} ({size})")
+    with current.open("rb") as stream:
+        header = stream.read(52)
+    if (header[:6] != b"\x7fELF\x01\x01" or
+            int.from_bytes(header[18:20], "little") != 8):
+        raise ValueError(f"not a little-endian MIPS IRX: {current}")
     return current
 
 
