@@ -107,7 +107,7 @@ if defined REUSE_FLAG (
 
 rem Temporary SDBZ-specific default diagnostics for the reproducible
 rem LOOP_BUDGET at 0x0018e194. Its caller enters at 0x0018cf68; the
-rem suspect I/O-vector length word is at 0x01ffec1c.
+rem I/O-vector length word is at 0x01ffec14 (S4 advances in delay slot).
 rem Set SDBZ_BOOT_DIAGNOSTICS=0 to disable these defaults.
 rem Explicit EE_TRACE_ENTRY / EE_WATCH_WORD values take precedence.
 if not defined SDBZ_BOOT_DIAGNOSTICS set "SDBZ_BOOT_DIAGNOSTICS=1"
