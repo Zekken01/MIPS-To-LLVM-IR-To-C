@@ -28,7 +28,13 @@ void c_hw::reset()
     m_dma_pcr = 0u;
     m_dma_pcr2 = 0u;
     m_dma_global_enable = 0u;
-    std::fill(&m_sif_dma[0][0], &m_sif_dma[0][0] + 8u, 0u);
+    for (uint32_t channel = 0u; channel < 2u; ++channel)
+    {
+        for (uint32_t reg = 0u; reg < 4u; ++reg)
+        {
+            m_sif_dma[channel][reg] = 0u;
+        }
+    }
     m_dma_icr = 0u;
     m_dma_icr2 = 0u;
     m_debug_console.clear();
