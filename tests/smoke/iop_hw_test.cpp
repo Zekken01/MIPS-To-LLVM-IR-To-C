@@ -104,6 +104,21 @@ int main()
     {
         return fail("CDVD N-command idle readiness or unsupported command write");
     }
+    // CDVD I_STAT (0x1F402008) is a distinct byte-wide W1C
+    // interrupt status register; acknowledging zero pending reasons
+    // must not synthesize an interrupt or complete a command.
+    if (!hardware.read(iop::c_hw::k_cdvd_i_stat, 1u, &actual) ||
+        actual != 0u ||
+        !hardware.write(iop::c_hw::k_cdvd_i_stat, 1u, 0xffu) ||
+        !hardware.read(iop::c_hw::k_cdvd_i_stat, 1u, &actual) ||
+        actual != 0u ||
+        hardware.pending_interrupts() != 0u ||
+        hardware.read(iop::c_hw::k_cdvd_i_stat, 4u, &actual) ||
+        hardware.write(iop::c_hw::k_cdvd_i_stat, 2u, 1u))
+    {
+        return fail("CDVD interrupt reason W1C or unsupported width");
+    }
+
     // The standalone ROM0 runner has no mounted disc. The CDVD
     // disk-type register must report no media, not an invented game disc.
     if (!hardware.read(iop::c_hw::k_cdvd_disc_type, 1u, &actual) ||
@@ -298,6 +313,38 @@ int main()
             iop::c_hw::k_cdvd_no_disc)
     {
         return fail("Guest LBU did not read CDVD no-media state");
+    }
+
+    // Real ROM0 writes SB to CDVD interrupt-status 0xBF402008.
+    // Test that the guest acknowledges outstanding reasons without
+    // adding an IRQ, claiming a completed command or inventing media.
+    const uint32_t cdvd_ack_instructions[] =
+    {
+        0x3c08bf40u, // lui t0,0xbf40
+        0x35082008u, // ori t0,t0,0x2008
+        0x240900ffu, // addiu t1,zero,0xff
+        0xa1090000u, // sb t1,0(t0)
+        0x910a0000u, // lbu t2,0(t0)
+        0x0000000du  // break
+    };
+    for (uint32_t index = 0u; index < 6u; ++index)
+    {
+        put32(rom, index * 4u, cdvd_ack_instructions[index]);
+    }
+    iop::c_kernel cdvd_ack_kernel{};
+    if (!cdvd_ack_kernel.start_rom0_boot(rom))
+    {
+        return fail("IOP ROM0 CDVD ack fixture failed to install ROM");
+    }
+    const iop::s_kernel_run_result ack =
+        cdvd_ack_kernel.run(16u, 4u);
+    if (ack.m_stop != iop::e_kernel_stop::breakpoint ||
+        ack.m_executed != 5u ||
+        cdvd_ack_kernel.cpu().state().m_gpr[10u] != 0u ||
+        cdvd_ack_kernel.cpu().last_memory_fault().m_valid ||
+        cdvd_ack_kernel.hardware().pending_interrupts() != 0u)
+    {
+        return fail("guest CDVD interrupt-ack created phantom IRQ/fault");
     }
 
     // The cache-control register is address-specific. The IOP bus
