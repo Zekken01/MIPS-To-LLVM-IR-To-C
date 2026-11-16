@@ -62,6 +62,9 @@ def run_case(
     assert data["cop0_status"] == 0x10900000, data
     assert data["cop0_prid"] == 0x1F, data
     assert len(data["gpr"]) == 32, data
+    assert data["disc_mailbox_magic"] == 0, data
+    assert data["sif_iop_subaddr"] == 0, data
+    assert data["sif_iop_smflag"] == 0, data
     assert len(data["trace_tail"]) <= 8, data
     return data, result
 

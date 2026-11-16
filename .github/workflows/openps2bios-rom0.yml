@@ -22,9 +22,9 @@ jobs:
       - name: Build ROM0 runner and focused regressions
         run: |
           cmake --build build-rom0 --parallel 2 --target \
-            iop_rom0_runner iop_cpu_test iop_rom0_boot_test iop_hw_test iop_timer5_exception_test iop_dma_icr_test iop_dma_global_enable_test iop_dma_sif_channels_test
+            iop_rom0_runner iop_cpu_test iop_rom0_boot_test iop_hw_test iop_timer5_exception_test iop_dma_icr_test iop_dma_global_enable_test iop_dma_sif_channels_test iop_sif_handoff_test
           ctest --test-dir build-rom0 --output-on-failure \
-            -R '^(iop_cpu|iop_rom0_boot|iop_rom0_runner|iop_hw|iop_timer5_exception|iop_dma_icr|iop_dma_global_enable|iop_dma_sif_channels)$'
+            -R '^(iop_cpu|iop_rom0_boot|iop_rom0_runner|iop_hw|iop_timer5_exception|iop_dma_icr|iop_dma_global_enable|iop_dma_sif_channels|iop_sif_handoff)$'
 
       - name: Download official OpenPS2BIOS v0.6 ROM0
         run: |
@@ -61,7 +61,17 @@ jobs:
           assert report["rom0_bytes"] == 4194304
           assert report["reset_pc"] == 0xBFC00000
           assert report["romdir_has_iopboot"]
-          assert report["executed"] > 0
+          # This workflow is pinned to OpenPS2BIOS v0.6 and runs with
+          # no EE connected. It must reach guest-initialized SIF/CMD
+          # flags and the service mailbox without a guest MMIO fault.
+          assert report["stop"] == "BUDGET_EXHAUSTED", report
+          assert report["executed"] == 10000000, report
+          assert report["memory_fault"] is None, report
+          assert report["disc_mailbox_magic"] == 0x4F424344, report
+          assert (report["sif_iop_smflag"] & 0x30000) == 0x30000, report
+          assert report["sif_iop_subaddr"] != 0, report
+          print("Guest SIF flags (IOP-originated): 0x%08X" % report["sif_iop_smflag"])
+          print("Guest disc-service mailbox: 0x%08X" % report["disc_mailbox_magic"])
           print("Observed stop:", report["stop"])
           print("Guest PC: 0x%08X" % report["pc"])
           print("Guest opcode: 0x%08X" % report["opcode"])

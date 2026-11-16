@@ -180,7 +180,19 @@ bool write_report(
         output << (index == 0u ? "" : ", ")
                << cpu.m_gpr[index];
     }
-    output << "],\n  \"console_output_hex\": \"";
+    uint32_t mailbox_magic = 0u;
+    // This is the official OpenPS2BIOS v0.6 disc-service mailbox
+    // location. It can only become initialized through guest RAM writes.
+    const bool mailbox_read =
+        kernel.cpu().read32(0xa0042f00u, &mailbox_magic);
+
+    output << "],\n  \"disc_mailbox_magic\": "
+           << (mailbox_read ? mailbox_magic : 0u)
+           << ",\n  \"sif_iop_subaddr\": "
+           << kernel.hardware().sif_smcom()
+           << ",\n  \"sif_iop_smflag\": "
+           << kernel.hardware().sif_smflag()
+           << ",\n  \"console_output_hex\": \"";
     const char* digits = "0123456789abcdef";
     for (unsigned char byte : kernel.hardware().debug_console())
     {
@@ -384,6 +396,14 @@ int main(int argc, char** argv)
             std::putchar('\n');
         }
     }
+    uint32_t mailbox_magic = 0u;
+    (void)kernel.cpu().read32(0xa0042f00u, &mailbox_magic);
+    std::printf("IOP disc mailbox guest magic: 0x%08x\n", mailbox_magic);
+    std::printf(
+        "IOP SIF guest registers: subaddr=0x%08x smflag=0x%08x (EE not connected)\n",
+        kernel.hardware().sif_smcom(),
+        kernel.hardware().sif_smflag()
+    );
     for (const s_trace_sample& item : tail)
     {
         std::printf("IOP trace: pc=0x%08x opcode=0x%08x\n",
