@@ -1622,7 +1622,9 @@ def main():
             command + ["--sif-poll-limit=0"],
             capture_output=True, text=True, check=False,
         )
-        assert baseline.returncode == 4, baseline.stdout + baseline.stderr
+        # The last handled syscall can retain EXCEPTION/status=0 when
+        # the native dispatch budget ends at that very boundary.
+        assert baseline.returncode == 3, baseline.stdout + baseline.stderr
         baseline_state = json.loads(report_path.read_text(encoding="utf-8"))
         assert baseline_state["dispatches"] == 48, baseline_state
         assert "SIF SMFLAG polling stalled" not in baseline.stderr
