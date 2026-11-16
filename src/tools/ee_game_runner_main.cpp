@@ -7,6 +7,7 @@
 #include "iop_sifman_bridge.h"
 #include "iop_sif1_bridge.h"
 #include "iop_sif1_dma_transport.h"
+#include "iop_sif0_dma_transport.h"
 #include "iop_sifcmd_bridge.h"
 #include "iop_disc_loader.h"
 #include "iop_sif_rpc_bridge.h"
@@ -767,6 +768,7 @@ int main(int argc, char** argv)
     // dispatcher does not yet expose an accurate EE-cycle clock.
     std::unique_ptr<iop::c_kernel> iop_kernel;
     std::unique_ptr<iop::c_sif1_dma_transport> iop_sif1_transport;
+    std::unique_ptr<iop::c_sif0_dma_transport> iop_sif0_transport;
     std::unique_ptr<iop::c_sifman_bridge> iop_sifman;
     std::unique_ptr<iop::c_sif1_bridge> iop_sif1;
     std::unique_ptr<iop::c_sifcmd_bridge> iop_sifcmd;
@@ -812,6 +814,11 @@ int main(int argc, char** argv)
             // hardware FIFO bytes, not by the IRX/HLE SifSetDma path.
             iop_sif1_transport =
                 std::make_unique<iop::c_sif1_dma_transport>(
+                    *memory, hardware.dmac(),
+                    iop_kernel->cpu(), iop_kernel->hardware()
+                );
+            iop_sif0_transport =
+                std::make_unique<iop::c_sif0_dma_transport>(
                     *memory, hardware.dmac(),
                     iop_kernel->cpu(), iop_kernel->hardware()
                 );
