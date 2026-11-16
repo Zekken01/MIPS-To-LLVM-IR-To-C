@@ -225,6 +225,81 @@ def make_sif_guest_irx(path, unknown_import=False, unhandled_syscall=False):
     path.write_bytes(image)
 
 
+def make_iop_provider_irx(path):
+    """Synthetic IRX exporting PROVIDER ordinal 0 returning 0x60000."""
+    image = bytearray(0x2a0)
+    image[0:7] = bytes((0x7f, 0x45, 0x4c, 0x46, 1, 1, 1))
+    struct.pack_into("<HH", image, 16, 0xff80, 8)
+    struct.pack_into("<I", image, 28, 0x34)
+    struct.pack_into("<I", image, 32, 0x240)
+    struct.pack_into("<HHH", image, 40, 52, 32, 2)
+    struct.pack_into("<HH", image, 46, 40, 1)
+    struct.pack_into("<IIIIII", image, 0x34, 1, 0x100, 0, 0, 0x80, 0x80)
+    struct.pack_into("<II", image, 0x54, 0x70000080, 0x200)
+    struct.pack_into("<IIIII", image, 0x204, 0, 0x50, 0x60, 0x10, 0x10)
+    image[0x21a:0x222] = b"PROVIDER"
+
+    # Provider entry is safe to leave dormant or run as an idle loop.
+    struct.pack_into("<II", image, 0x100, 0x08000000, 0)
+    struct.pack_into("<III", image, 0x110,
+                     0x3c020006,  # lui v0,6
+                     0x03e00008,  # jr ra
+                     0)           # delay slot
+    struct.pack_into("<I", image, 0x120, 0x41c00000)
+    image[0x12c:0x134] = b"PROVIDER"
+    struct.pack_into("<II", image, 0x134, 0x10, 0)
+
+    # Export table contains one R_MIPS_32 relocated pointer.
+    struct.pack_into("<I", image, 0x244, 9)
+    struct.pack_into("<II", image, 0x250, 0x280, 8)
+    struct.pack_into("<II", image, 0x280, 0x34, 2)
+    # Idle jump also needs relocation to its allocated module base.
+    struct.pack_into("<I", image, 0x254, 16)
+    struct.pack_into("<II", image, 0x288, 0, 4)
+    path.write_bytes(image)
+
+
+def make_iop_consumer_irx(path):
+    """Calls imported PROVIDER #0, forwards its result to sifman #24."""
+    image = bytearray(0x2c0)
+    image[0:7] = bytes((0x7f, 0x45, 0x4c, 0x46, 1, 1, 1))
+    struct.pack_into("<HH", image, 16, 0xff80, 8)
+    struct.pack_into("<I", image, 28, 0x34)
+    struct.pack_into("<I", image, 32, 0x240)
+    struct.pack_into("<HHH", image, 40, 52, 32, 2)
+    struct.pack_into("<HH", image, 46, 40, 1)
+    struct.pack_into("<IIIIII", image, 0x34, 1, 0x100, 0, 0, 0x90, 0x90)
+    struct.pack_into("<II", image, 0x54, 0x70000080, 0x200)
+    struct.pack_into("<IIIII", image, 0x204, 0, 0x60, 0x80, 0x10, 0x00)
+    image[0x21a:0x223] = b"CONSUMER" + bytes(1)
+
+    instructions = (
+        0x0c00000d,  # jal PROVIDER import stub at module+0x34
+        0x00000000,  # delay slot
+        0x00402021,  # addu a0,v0,zero
+        0x0c000015,  # jal sifman ordinal 24 at module+0x54
+        0x00000000,  # delay slot
+        0x08000005,  # idle loop at module+0x14
+        0x00000000,  # delay slot
+    )
+    for index, opcode in enumerate(instructions):
+        struct.pack_into("<I", image, 0x100 + index * 4, opcode)
+
+    struct.pack_into("<I", image, 0x120, 0x41e00000)
+    image[0x12c:0x134] = b"PROVIDER"
+    struct.pack_into("<II", image, 0x134, 0x03e00008, 0x24000000)
+    struct.pack_into("<I", image, 0x140, 0x41e00000)
+    image[0x14c:0x152] = b"sifman"
+    struct.pack_into("<II", image, 0x154, 0x03e00008, 0x24000018)
+
+    # R_MIPS_26 relocations for both JALs and the idle jump.
+    struct.pack_into("<I", image, 0x244, 9)
+    struct.pack_into("<II", image, 0x250, 0x280, 24)
+    for index, offset in enumerate((0, 12, 20)):
+        struct.pack_into("<II", image, 0x280 + index * 8, offset, 4)
+    path.write_bytes(image)
+
+
 def make_sif_register_elf(path):
     """SifGetReg/SetReg and physical SIF MMIO must share guest-visible state."""
     make_elf(path)
@@ -1787,6 +1862,97 @@ def main():
         )
         assert "IOP guest stopped: reason=2" in unknown_service.stderr
         assert "IOP guest published SMFLAG:" not in unknown_service.stdout
+
+        # PR #71 exposes real guest IRX exports, and the EE host must
+        # preserve their order. The provider publishes ordinal 0 as a
+        # relocated guest function returning 0x60000; only the consumer
+        # imports it and uses the returned value for sifman SetSMFlag.
+        assets = root / "iop assets"
+        assets.mkdir()
+        provider = assets / "provider.irx"
+        consumer = assets / "consumer.irx"
+        make_iop_provider_irx(provider)
+        make_iop_consumer_irx(consumer)
+        manifest = root / "iop-modules.txt"
+        manifest.write_text(
+            "# Provider first, IOP entry module last\n"
+            "iop assets/provider.irx\n"
+            "\n"
+            "iop assets/consumer.irx\n",
+            encoding="utf-8",
+        )
+
+        for invocation in (
+            [f"--iop-irx={provider}", f"--iop-irx={consumer}"],
+            [f"--iop-irx-list={manifest}"],
+            [f"--iop-irx-list={manifest}", "--iop-start-all"],
+        ):
+            linked_run = subprocess.run(
+                command + ["--no-recompile", "--iop-quantum=64",
+                           *invocation],
+                capture_output=True, text=True, check=False,
+            )
+            linked_state = json.loads(
+                report_path.read_text(encoding="utf-8")
+            )
+            assert linked_state["gpr_lo"][16] == 0x60000, (
+                invocation, linked_state,
+                linked_run.stdout, linked_run.stderr
+            )
+            assert linked_run.stdout.count("IOP IRX linked:") == 2, (
+                invocation, linked_run.stdout
+            )
+            assert "IOP guest published SMFLAG: value=0x00060000" in (
+                linked_run.stdout
+            ), (invocation, linked_run.stdout, linked_run.stderr)
+            assert "SIF SMFLAG polling stalled" not in linked_run.stderr
+
+        reversed_modules = subprocess.run(
+            command + [
+                "--no-recompile",
+                f"--iop-irx={consumer}", f"--iop-irx={provider}",
+            ],
+            capture_output=True, text=True, check=False,
+        )
+        assert reversed_modules.returncode == 1, (
+            reversed_modules.stdout + reversed_modules.stderr
+        )
+        assert "IOP IRX load failed: index=1" in reversed_modules.stderr
+        assert "IOP guest loaded:" not in reversed_modules.stdout
+
+        # A second copy of a provider must be refused before any guest
+        # thread starts, because its export ordinals already exist.
+        duplicate_module = subprocess.run(
+            command + [
+                "--no-recompile",
+                f"--iop-irx={provider}", f"--iop-irx={provider}",
+            ],
+            capture_output=True, text=True, check=False,
+        )
+        assert duplicate_module.returncode == 1
+        assert "IOP IRX load failed: index=2" in duplicate_module.stderr
+        assert "IOP guest loaded:" not in duplicate_module.stdout
+
+        no_manifest = subprocess.run(
+            command + [
+                "--no-recompile", f"--iop-irx-list={root / 'missing.txt'}",
+            ],
+            capture_output=True, text=True, check=False,
+        )
+        assert no_manifest.returncode == 2, no_manifest
+        assert "cannot read IOP IRX list" in no_manifest.stderr
+
+        ambiguous = subprocess.run(
+            command + [
+                "--no-recompile", f"--iop-irx={provider}",
+                f"--iop-irx-list={manifest}",
+            ],
+            capture_output=True, text=True, check=False,
+        )
+        assert ambiguous.returncode == 2, ambiguous
+        assert "--iop-irx-list and --iop-irx are mutually exclusive" in (
+            ambiguous.stderr
+        )
 
     for invalid_open in (False, True):
         with tempfile.TemporaryDirectory(prefix="ee-native-deci2-") as tmp:
