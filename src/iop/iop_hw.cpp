@@ -25,6 +25,14 @@ void c_hw::reset()
     m_timer5_target = 0u;
     m_timer5_remainder = 0u;
     m_timer5_irq_armed = true;
+    for (uint32_t channel = 0u; channel < k_primary_dma_channel_count;
+         ++channel)
+    {
+        for (uint32_t reg = 0u; reg < 3u; ++reg)
+        {
+            m_primary_dma[channel][reg] = 0u;
+        }
+    }
     m_dma_pcr = 0u;
     m_dma_pcr2 = 0u;
     m_dma_global_enable = 0u;
@@ -86,6 +94,30 @@ bool c_hw::scratchpad_range(
            static_cast<uint64_t>(address - k_scratchpad_base) +
                width <= k_scratchpad_size &&
            (address & (width - 1u)) == 0u;
+}
+
+bool c_hw::primary_dma_register(
+    uint32_t address, uint32_t* channel, uint32_t* reg
+) const
+{
+    if (channel == nullptr || reg == nullptr ||
+        (address & 3u) != 0u ||
+        address < k_primary_dma_base ||
+        address >= k_primary_dma_base +
+            k_primary_dma_channel_count * k_primary_dma_stride)
+    {
+        return false;
+    }
+    const uint32_t offset = address - k_primary_dma_base;
+    const uint32_t register_index =
+        (offset % k_primary_dma_stride) / 4u;
+    if (register_index >= 3u)
+    {
+        return false;
+    }
+    *channel = offset / k_primary_dma_stride;
+    *reg = register_index;
+    return true;
 }
 
 bool c_hw::sif_dma_register(uint32_t address, uint32_t* channel,
@@ -152,6 +184,11 @@ bool c_hw::read(
 
     uint32_t channel = 0u;
     uint32_t reg = 0u;
+    if (primary_dma_register(address, &channel, &reg))
+    {
+        *value = m_primary_dma[channel][reg];
+        return true;
+    }
     if (sif_dma_register(address, &channel, &reg))
     {
         *value = m_sif_dma[channel][reg];
@@ -266,6 +303,14 @@ bool c_hw::write(
 
     uint32_t channel = 0u;
     uint32_t reg = 0u;
+    if (primary_dma_register(address, &channel, &reg))
+    {
+        // Retain CHCR.STR as guest written. Without a real device
+        // producer no DMA data moves, no IRQ fires, and no completion
+        // can be claimed.
+        m_primary_dma[channel][reg] = value;
+        return true;
+    }
     if (sif_dma_register(address, &channel, &reg))
     {
         // CHCR.STR is guest-controlled when starting/stopping DMA, and
