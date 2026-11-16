@@ -36,10 +36,15 @@ subsequent IOP-side command buffer, DMA and RPC services.
    branch/delay behavior, HI/LO, unaligned loads/stores, and explicit traps.
    Unsupported MMIO, kernel syscalls and instructions fail closed. This does
    not create SIF state or execute any module in the game runner.
-2. **IOP kernel and IRX loader.** Reuse/adapt the reference IRX loader and
-   scheduler. Implement module allocation/import resolution, threads,
-   interrupts and syscall/HLE boundaries against this CPU and RAM. Use real
-   game module bytes supplied at runtime, not committed copyrighted binaries.
+2. **IOP kernel and IRX loader (in progress).** The standalone
+   `load_irx()` now validates Sony IOP ELF32 modules, copies PT_LOAD into
+   isolated IOP RAM, zero-fills BSS, applies the MIPS R_32/R_26/HI16/LO16
+   relocation types for IRX v1/v2, resolves import stubs through an explicit
+   caller-provided callback, and rejects malformed/unknown imports before
+   modifying memory. It takes an explicit preallocated module base. Next:
+   implement module allocation, library registration, syscall/HLE boundaries,
+   IOP threads and interrupts in the kernel. Use real game module bytes
+   supplied at runtime, not committed copyrighted binaries.
 3. **Cycle/event integration.** Advance IOP execution from an explicit,
    deterministic EE-cycle source. Do not derive hardware cycles from native
    dispatch count: one dispatch can execute widely different numbers of
@@ -63,3 +68,24 @@ The `ee_recomp` LLVM generator, EE native function metadata and
 a separate native CMake target and uses no game-specific executable hashes
 or function addresses. No unsupported opcode is treated as NOP, and no
 successful IOP boot is reported until the IOP kernel actually runs.
+
+
+## IRX loader contract
+
+`iop::load_irx(cpu, elf_bytes, guest_base, module, resolver)` never starts
+a module automatically. The kernel will supply the allocated 16-byte-aligned
+base and the import resolver. Missing imports are an error rather than a
+fake-returning HLE trampoline. The staging image is fully validated and
+relocated before being committed to IOP RAM; invalid inputs do not partially
+modify RAM. The first supported format is a single PT_LOAD plus PT_SCE_IOPMOD,
+with SHT_REL relocations. Multi-PT_LOAD layouts and unhandled relocation
+types are rejected instead of silently approximated.
+
+The `iop_irx_loader` CTest uses synthetic, non-copyrighted ELF fixtures
+covering both IRX variants, MIPS relocation, zero-filled BSS, executable
+entry code, import resolution and no-write-on-failure behavior. The separate
+IOP CPU and loader are still intentionally not linked into the EE runner.
+
+**Boot status as of the 04:20 US run:** 6,945 EE dispatches,
+`sceSifGetReg(4)` at `0x001750B4` returns SMFLAG=0. The independent
+IOP CPU and IRX parser cannot yet satisfy this wait.
