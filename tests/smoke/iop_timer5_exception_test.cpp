@@ -88,6 +88,27 @@ int main()
         return fail("Timer 5 must repeat at each target");
     }
     hardware.reset();
+    // I_STAT can record a real target event without dispatching it;
+    // I_MASK and I_CTRL independently gate interrupt visibility.
+    if (!hardware.write(iop::c_hw::k_timer5_mode, 4u, 0x58u) ||
+        !hardware.write(iop::c_hw::k_timer5_target, 4u, 3u))
+    {
+        return fail("Could not configure masked timer interrupt");
+    }
+    hardware.advance_cycles(3u);
+    if (hardware.pending_interrupts() != 0u ||
+        !hardware.read(iop::c_hw::k_i_stat, 4u, &readback) ||
+        (readback & irq) == 0u ||
+        !hardware.write(iop::c_hw::k_i_mask, 4u, irq) ||
+        hardware.pending_interrupts() != irq ||
+        !hardware.write(iop::c_hw::k_i_ctrl, 4u, 0u) ||
+        hardware.pending_interrupts() != 0u ||
+        !hardware.write(iop::c_hw::k_i_ctrl, 4u, 1u) ||
+        hardware.pending_interrupts() != irq)
+    {
+        return fail("Masked I_STAT pending event / I_MASK / I_CTRL gating");
+    }
+    hardware.reset();
     if (!hardware.read(iop::c_hw::k_timer5_count, 4u, &readback) ||
         readback != 0u || hardware.pending_interrupts() != 0u)
     {
