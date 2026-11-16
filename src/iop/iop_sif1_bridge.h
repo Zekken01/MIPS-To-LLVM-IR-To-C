@@ -9,6 +9,7 @@
 namespace iop
 {
 class c_sifcmd_bridge;
+class c_sif_rpc_bridge;
 // Guest EE sceSifSetDma (syscall 0x77) to IOP RAM transport.
 //
 // This is a synchronous, bounded transport foundation, not an IOP BIOS,
@@ -19,7 +20,8 @@ class c_sif1_bridge
 public:
     c_sif1_bridge(
         ee::ee_memory& ee_ram, c_cpu& iop_cpu, ee::c_ee_dmac& dmac,
-        c_sifcmd_bridge* sifcmd = nullptr
+        c_sifcmd_bridge* sifcmd = nullptr,
+        c_sif_rpc_bridge* rpc = nullptr
     );
 
     // Returns false on unsupported destinations, flags, or unmapped ranges.
@@ -35,6 +37,7 @@ private:
     c_cpu& m_iop_cpu;
     ee::c_ee_dmac& m_dmac;
     c_sifcmd_bridge* m_sifcmd = nullptr;
+    c_sif_rpc_bridge* m_rpc = nullptr;
     uint32_t m_next_dma_id = 1u;
 };
 } // namespace iop
