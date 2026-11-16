@@ -14,6 +14,10 @@ rem Auto-expansion usually emits one module at a time, so this mostly
 rem benefits cache rebuilds and bulk translation.
 if not defined EMIT_JOBS set "EMIT_JOBS=8"
 echo LLVM emit workers: %EMIT_JOBS%
+rem Stop a known no-IOP SIF busy wait instead of tracing 100000
+rem identical kernel calls; 0 disables this diagnostic for comparisons.
+if not defined SIF_POLL_LIMIT set "SIF_POLL_LIMIT=256"
+echo SIF SMFLAG poll diagnostic limit: %SIF_POLL_LIMIT%
 
 if not exist "%ELF%" (
     echo Missing local game ELF: "%ELF%"
@@ -169,6 +173,7 @@ python tools\run_boot_session.py "%ELF%" ^
     --emit-opt=0 ^
     --max-dispatches=100000 ^
     --loop-budget=1000000 ^
+    --sif-poll-limit=%SIF_POLL_LIMIT% ^
     --timeout-seconds=120 ^
     --report "%WORK_DIR%\first-boot.json" %REUSE_FLAG% %GUEST_TRACE_FLAGS%
 
