@@ -53,6 +53,7 @@ c_cpu::c_cpu()
 void c_cpu::reset(uint32_t entry)
 {
     m_state = {};
+    m_last_memory_fault = {};
     m_state.m_pc = entry;
     m_state.m_next_pc = entry + 4u;
     m_cycles = 0u;
@@ -113,19 +114,36 @@ uint64_t c_cpu::cycles() const
     return m_cycles;
 }
 
+const s_memory_fault& c_cpu::last_memory_fault() const
+{
+    return m_last_memory_fault;
+}
+
+bool c_cpu::fail_memory(
+    uint32_t address, uint32_t width, bool write
+) const
+{
+    m_last_memory_fault = {address, width, write, true};
+    return false;
+}
+
 bool c_cpu::read(uint32_t address, uint32_t width, uint32_t* value) const
 {
     if (value == nullptr || (width != 1u && width != 2u && width != 4u))
     {
-        return false;
+        return fail_memory(address, width, false);
     }
 
     // The R3000 cache-control register lives above KSEG1 and does
     // not use the ordinary 29-bit physical bus mask.
     if (address == c_hw::k_cache_control)
     {
-        return m_hardware != nullptr &&
-            m_hardware->read(address, width, value);
+        if (m_hardware != nullptr &&
+            m_hardware->read(address, width, value))
+        {
+            return true;
+        }
+        return fail_memory(address, width, false);
     }
     // RAM, ROM and ordinary MMIO are accessed through physical or
     // direct-mapped KSEG0/KSEG1, never arbitrary KSEG2/TLB aliases.
@@ -133,12 +151,12 @@ bool c_cpu::read(uint32_t address, uint32_t width, uint32_t* value) const
     if (region != 0u && region != 0x80000000u &&
         region != 0xa0000000u)
     {
-        return false;
+        return fail_memory(address, width, false);
     }
     const uint32_t physical = address & 0x1fffffffu;
     if ((address & (width - 1u)) != 0u)
     {
-        return false;
+        return fail_memory(address, width, false);
     }
 
     const uint8_t* source = nullptr;
@@ -157,8 +175,12 @@ bool c_cpu::read(uint32_t address, uint32_t width, uint32_t* value) const
     }
     else
     {
-        return m_hardware != nullptr &&
-            m_hardware->read(physical, width, value);
+        if (m_hardware != nullptr &&
+            m_hardware->read(physical, width, value))
+        {
+            return true;
+        }
+        return fail_memory(address, width, false);
     }
 
     uint32_t result = 0u;
@@ -176,29 +198,37 @@ bool c_cpu::write(uint32_t address, uint32_t width, uint32_t value)
 {
     if (width != 1u && width != 2u && width != 4u)
     {
-        return false;
+        return fail_memory(address, width, true);
     }
     if (address == c_hw::k_cache_control)
     {
-        return m_hardware != nullptr &&
-            m_hardware->write(address, width, value);
+        if (m_hardware != nullptr &&
+            m_hardware->write(address, width, value))
+        {
+            return true;
+        }
+        return fail_memory(address, width, true);
     }
 
     const uint32_t region = address & 0xe0000000u;
     if (region != 0u && region != 0x80000000u &&
         region != 0xa0000000u)
     {
-        return false;
+        return fail_memory(address, width, true);
     }
     const uint32_t physical = address & 0x1fffffffu;
     if ((address & (width - 1u)) != 0u)
     {
-        return false;
+        return fail_memory(address, width, true);
     }
     if (physical > k_ram_size - width)
     {
-        return m_hardware != nullptr &&
-            m_hardware->write(physical, width, value);
+        if (m_hardware != nullptr &&
+            m_hardware->write(physical, width, value))
+        {
+            return true;
+        }
+        return fail_memory(address, width, true);
     }
 
     for (uint32_t index = 0u; index < width; ++index)
@@ -227,6 +257,9 @@ void c_cpu::resume_syscall()
 
 e_step_result c_cpu::step(uint32_t* opcode)
 {
+    // Each guest instruction owns its own fault evidence. Successful
+    // reads/writes do not leave a stale failure from a previous step.
+    m_last_memory_fault = {};
     uint32_t word = 0u;
     if (!read32(m_state.m_pc, &word))
     {
