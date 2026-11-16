@@ -59,7 +59,9 @@ c_kernel::c_kernel()
 
 void c_kernel::reset()
 {
+    m_cpu.bind_hardware(nullptr);
     m_cpu.reset();
+    m_hardware.reset();
     m_rom0_boot_active = false;
     m_allocations.clear();
     m_libraries.clear();
@@ -80,8 +82,14 @@ bool c_kernel::start_rom0_boot(const std::vector<uint8_t>& image)
     if (m_rom0_boot_active || !m_modules.empty() ||
         !m_threads.empty() || !m_libraries.empty() ||
         !m_allocations.empty() ||
-        !m_cpu.install_rom0(image) || !m_cpu.reset_rom0())
+        !m_cpu.install_rom0(image))
     {
+        return false;
+    }
+    m_cpu.bind_hardware(&m_hardware);
+    if (!m_cpu.reset_rom0())
+    {
+        m_cpu.bind_hardware(nullptr);
         return false;
     }
     m_cycles = 0u;
@@ -93,6 +101,16 @@ bool c_kernel::start_rom0_boot(const std::vector<uint8_t>& image)
 bool c_kernel::rom0_boot_active() const
 {
     return m_rom0_boot_active;
+}
+
+c_hw& c_kernel::hardware()
+{
+    return m_hardware;
+}
+
+const c_hw& c_kernel::hardware() const
+{
+    return m_hardware;
 }
 
 c_cpu& c_kernel::cpu()
