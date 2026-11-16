@@ -9,6 +9,8 @@ namespace ee
 {
 // EE DMA registers, normal/interleave SPR DMA, bounded SPR chains,
 // and normal DMA for VIF0/VIF1/GIF through an optional host consumer.
+// SIF0 channel 5 registers are readable/writable, but no IOP transport
+// or channel-5 transfer completion is simulated.
 // Includes VIF1 reverse GS image downloads (CHCR.DIR=0).
 // Reference: ps2-web-recomp/runtime/src/dmac.cpp and hw.cpp.
 // Transfers execute synchronously, prevalidating physical RAM ranges.
@@ -20,6 +22,7 @@ public:
     static constexpr uint32_t k_vif0_base = 0x10008000u; // channel 0
     static constexpr uint32_t k_vif1_base = 0x10009000u; // channel 1
     static constexpr uint32_t k_gif_base = 0x1000a000u; // channel 2
+    static constexpr uint32_t k_sif0_base = 0x1000c000u; // channel 5, IOP -> EE
     static constexpr uint32_t k_stat_address = 0x1000e010u;
     static constexpr uint32_t k_sqwc_address = 0x1000e030u;
     static constexpr uint32_t k_channel_count = 10u;
@@ -97,6 +100,7 @@ private:
     uint32_t m_status = 0;
     uint32_t m_sqwc = 0;
     s_spr_channel m_device_channels[3]{}; // VIF0, VIF1, GIF PATH3
+    s_spr_channel m_sif0_channel{}; // SIF0, no IOP producer yet
     s_spr_channel m_spr_channels[2]{}; // fromSPR channel 8, toSPR channel 9
 };
 } // namespace ee
