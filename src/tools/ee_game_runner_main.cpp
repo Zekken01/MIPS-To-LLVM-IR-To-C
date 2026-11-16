@@ -759,9 +759,10 @@ int main(int argc, char** argv)
     };
     s_kernel_semaphore semaphores[64]{};
 
-    // DECI2 is a kernel debug channel. Only OPEN and CLOSE are modeled;
-    // requests that require an actual debug transport still fail closed.
-    // No guest callback is invoked merely because it was registered.
+    // DECI2 is the EE debugging channel. PCSX2's HLE records OPEN's
+    // descriptor and handler, acknowledges REQSEND by clearing word 3 in
+    // the registered descriptor, and has no active outbound transport.
+    // No registered guest callback is invoked by these operations.
     uint32_t deci2_descriptor_address = 0u;
     uint32_t deci2_handler_pc = 0u;
 
@@ -1944,11 +1945,11 @@ int main(int argc, char** argv)
                 else if (service == 0x7cu)
                 {
                     // DECI2 (syscall 0x7C) is the EE debug transport.
-                    // Per PCSX2's reference implementation, operation 1
-                    // (open) reads four guest words and remembers addr[1]
-                    // and addr[2], while operation 2 (close) clears both.
-                    // Both return 1. There is deliberately NO simulated
-                    // send/poll/receive success without a transport model.
+                    // Match PCSX2's guest-visible debug-kernel behavior:
+                    // OPEN records addr[1]/addr[2], CLOSE clears them,
+                    // REQSEND clears the registered channel's word 3,
+                    // and POLL/EXRECV/EXSEND acknowledge without a physical
+                    // DECI2 backend. No IOP transfer or callback is claimed.
                     const uint32_t operation =
                         static_cast<uint32_t>(cpu.m_gpr[4].m_lo);
                     const uint32_t argument_address =
@@ -1990,6 +1991,78 @@ int main(int argc, char** argv)
                         if (trace)
                         {
                             std::printf("HLE Deci2Call CLOSE: result=1\n");
+                        }
+                    }
+                    else if (operation == 3u)
+                    {
+                        // PCSX2 Deci2Call(REQSEND) consumes the descriptor
+                        // registered at OPEN, not A1 (used for logging only).
+                        // It may emit a bounded host debug message, but the
+                        // observable EE effects are channel[3]=0 and V0=1.
+                        // Do not pretend to transmit anything to the IOP.
+                        if (deci2_descriptor_address != 0u)
+                        {
+                            if ((deci2_descriptor_address & 3u) != 0u ||
+                                !memory->contains(deci2_descriptor_address, 32u))
+                            {
+                                std::fprintf(
+                                    stderr,
+                                    "Deci2Call REQSEND HLE refused unbacked "
+                                    "or unaligned channel 0x%08x\n",
+                                    deci2_descriptor_address
+                                );
+                                break;
+                            }
+
+                            const uint32_t packet_size =
+                                memory->read32(deci2_descriptor_address + 4u);
+                            const uint32_t packet_pointer =
+                                memory->read32(deci2_descriptor_address + 16u);
+                            const uint32_t pending_before =
+                                memory->read32(deci2_descriptor_address + 12u);
+                            // The debug-message payload is host-only output,
+                            // not an EE architectural effect. Do not read an
+                            // unchecked guest pointer or fabricate transport.
+                            memory->write32(
+                                deci2_descriptor_address + 12u, 0u
+                            );
+                            if (trace)
+                            {
+                                std::printf(
+                                    "HLE Deci2Call REQSEND: channel=0x%08x "
+                                    "packet_ptr=0x%08x packet_size=%u "
+                                    "pending_before=0x%08x pending_after=0 "
+                                    "result=1\n",
+                                    deci2_descriptor_address, packet_pointer,
+                                    packet_size, pending_before
+                                );
+                            }
+                        }
+                        else if (trace)
+                        {
+                            // PCSX2 also returns 1 for REQSEND without
+                            // a registered channel, without any memory write.
+                            std::printf(
+                                "HLE Deci2Call REQSEND: no active channel "
+                                "result=1\n"
+                            );
+                        }
+                    }
+                    else if (operation >= 4u && operation <= 6u)
+                    {
+                        // PCSX2 HLE returns 1 for POLL, EXRECV and EXSEND
+                        // without an EE-visible channel or buffer mutation.
+                        // This is not a general DECI2 transport model.
+                        if (trace)
+                        {
+                            const char* name =
+                                operation == 4u ? "POLL" :
+                                operation == 5u ? "EXRECV" : "EXSEND";
+                            std::printf(
+                                "HLE Deci2Call %s: result=1 "
+                                "(debug-only transport)\n",
+                                name
+                            );
                         }
                     }
                     else
