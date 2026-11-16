@@ -1516,6 +1516,56 @@ References:
 - PS2SDK: `ee/kernel/include/syscallnr.h` (`__NR_Deci2Call=0x7c`)
 - PCSX2: `pcsx2/R5900OpcodeImpl.cpp` (`__Deci2Call`)
 
+### SDBZ US 02:21 trace: DECI2 REQSEND at 6,130 dispatches
+
+After PR #58 merged, the user's US ELF (SLUS_214.42) replay
+reached **6,130 dispatches**. At dispatch **6119**, the runner
+acknowledged `Deci2Call(OPEN)` at EPC `0x001750D4`:
+`A1=0x01FFEA80`, channel `0x005612D0`, handler
+`0x00176260`. The guest then called
+`Deci2Call(REQSEND)` at the same EPC during dispatch **6130**:
+`A0=3`, `A1=0x01FFEA30`. HLE intentionally declined
+this operation prior to the REQSEND implementation.
+The guest V0 trace still did not execute its configured
+formatter-PC interval; no evidence yet establishes the
+correctness of the earlier `0x00194478` formatter path.
+
+PCSX2's `pcsx2/R5900OpcodeImpl.cpp::__Deci2Call` shows
+the **guest-visible** operation-3 semantics: if no DECI2
+channel is registered, return 1; otherwise inspect the
+*eight-word channel descriptor* registered by OPEN,
+clear **word 3** at `channel+12`, and return 1.
+The optional Shift-JIS console output is a host debug
+effect; this native runner does not simulate delivery
+to a physical IOP/debug transport or invoke the
+registered handler. Operations 4 (POLL), 5 (EXRECV),
+and 6 (EXSEND) similarly return 1 without mutating
+guest memory in PCSX2's HLE; the native runner's
+compatibility path follows those explicit behaviors.
+Unknown operations remain unsupported.
+
+For REQSEND with a registered channel, the runner
+validates its alignment and that all eight guest
+words are backed, *before* reading or changing
+memory; invalid pointers leave the syscall exception
+unhandled. It samples word 1 (packet length),
+word 4 (packet pointer) and word 3 (pending field)
+for the trace; it writes only `channel[3]=0`.
+The request argument `A1` is debug metadata in
+this reference implementation, not the registered
+channel descriptor.
+
+End-to-end synthetic MIPS tests cover OPEN,
+REQSEND with/without registration, channel-word
+mutation, unchanged length/packet pointer,
+POLL/EXRECV/EXSEND, CLOSE, invalid channel
+pointers, and fail-closed unknown operations.
+This change only touches the native game runner
+and integration tests. The existing validated
+guest translation cache is reusable.
+
+Reference: https://github.com/PCSX2/pcsx2/blob/master/pcsx2/R5900OpcodeImpl.cpp
+
 ## Validation limits
 
 CTest contains `game_runner_end_to_end` which creates small synthetic MIPS

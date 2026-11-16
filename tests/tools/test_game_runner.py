@@ -103,13 +103,75 @@ def make_deci2_open_close_elf(path, invalid_open=False):
             0x8d710004,  # lw s1,4(t3): original word 1
             0x8d720008,  # lw s2,8(t3): original word 2
             0x8d73000c,  # lw s3,12(t3): original word 3
-            0x24040003,  # a0=3 REQSEND (not supported)
-            0x0000000c,  # syscall: fail closed, don't fake send
+            0x24040007,  # a0=7 unknown DECI2 operation
+            0x0000000c,  # syscall: fail closed for unknown opcode
             0x00405021,  # unreachable: t2=V0
             0x00000008,
             0x00000000,
         )
     for index, opcode in enumerate(instructions):
+        struct.pack_into("<I", image, 0x108 + index * 4, opcode)
+    path.write_bytes(image)
+
+
+def make_deci2_reqsend_elf(path, invalid_channel=False):
+    """Exercise the reference DECI2 channel acknowledgement in real MIPS."""
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    image.extend(bytes(max(0, 0x600 - len(image))))
+    struct.pack_into("<I", image, 52 + 16, 0x500)
+    struct.pack_into("<I", image, 52 + 20, 0x500)
+
+    # OPEN's argument descriptor: word 1 registers a separate channel.
+    channel = 0x7FFFFFFC if invalid_channel else 0x00100220
+    struct.pack_into(
+        "<IIII", image, 0x300,
+        0x11223344, channel, 0x00100090, 0x55667788,
+    )
+    # Eight-word registered DECI2 channel: word 3 is cleared by REQSEND.
+    struct.pack_into(
+        "<8I", image, 0x320,
+        0x1234, 0x10, 0, 0xCAFEBABE, 0x00100260, 5, 6, 7,
+    )
+    image[0x36c:0x370] = b"PING"
+
+    words = (
+        0x3c050010,  # lui a1,0x0010
+        0x34a50200,  # ori a1,a1,0x200
+        0x24040001,  # a0=OPEN
+        0x2403007c,  # v1=Deci2Call
+        0x0000000c,  # syscall
+        0x00404021,  # t0=V0 (OPEN returned 1)
+        0x24040003,  # a0=REQSEND
+        0x0000000c,  # syscall (reject invalid channel)
+        0x00404821,  # t1=V0 (REQSEND returned 1)
+        0x3c0b0010,  # lui t3,0x0010
+        0x356b0220,  # ori t3,t3,0x220
+        0x8d70000c,  # lw s0,12(t3): pending word cleared
+        0x8d710004,  # lw s1,4(t3): packet size unchanged
+        0x8d720010,  # lw s2,16(t3): packet pointer unchanged
+        0x24040004,  # a0=POLL
+        0x0000000c,
+        0x00407021,  # t6=1
+        0x24040005,  # a0=EXRECV
+        0x0000000c,
+        0x00407821,  # t7=1
+        0x24040006,  # a0=EXSEND
+        0x0000000c,
+        0x0040c021,  # t8=1
+        0x24040002,  # a0=CLOSE
+        0x0000000c,
+        0x00405021,  # t2=1
+        0x24040003,  # a0=REQSEND without active registration
+        0x0000000c,
+        0x00406021,  # t4=1
+        0x24040007,  # unknown operation
+        0x0000000c,  # must remain an exception
+        0x00406821,  # unreachable: t5
+        0x00000008,  # jr zero
+        0x00000000,
+    )
+    for index, opcode in enumerate(words):
         struct.pack_into("<I", image, 0x108 + index * 4, opcode)
     path.write_bytes(image)
 
@@ -1296,7 +1358,7 @@ def main():
                 ) in result.stdout, result.stdout
                 assert "HLE Deci2Call CLOSE: result=1" in result.stdout, result.stdout
                 assert (
-                    "Deci2Call HLE refused unsupported operation=3 "
+                    "Deci2Call HLE refused unsupported operation=7 "
                     "descriptor=0x00000000 handler=0x00000000"
                 ) in result.stderr, result.stdout + result.stderr
                 regs = state["gpr_lo"]
@@ -1307,6 +1369,78 @@ def main():
                     0x11223344, 0x00100220, 0x00100060, 0x55667788,
                 ], state
 
+
+
+    for invalid_channel in (False, True):
+        with tempfile.TemporaryDirectory(prefix="ee-native-deci2-reqsend-") as tmp:
+            root = Path(tmp)
+            elf = root / "deci2-reqsend.elf"
+            make_deci2_reqsend_elf(elf, invalid_channel=invalid_channel)
+            report_path = root / "deci2-reqsend.json"
+            result = subprocess.run(
+                [
+                    sys.executable, str(source / "tools" / "run_game.py"),
+                    str(elf), "--build-dir", str(build),
+                    "--work-dir", str(root / "out"),
+                    "--max-dispatches=48",
+                    "--hle-startup", "--trace",
+                    "--watch-word=0x0010022c",
+                    "--report", str(report_path),
+                ],
+                capture_output=True, text=True, check=False,
+            )
+            assert result.returncode == 3, result.stdout + result.stderr
+            state = json.loads(report_path.read_text(encoding="utf-8"))
+            assert state["exit_name"] == "EXCEPTION", state
+            registers = state["gpr_lo"]
+            assert registers[8] == 1, state  # OPEN returned 1
+            if invalid_channel:
+                assert state["cop0_epc"] == 0x00100024, state
+                assert (
+                    "Deci2Call REQSEND HLE refused unbacked or "
+                    "unaligned channel 0x7ffffffc"
+                ) in result.stderr, result.stdout + result.stderr
+                assert registers[9] == 0, state
+                assert "EE watch changed:" not in result.stdout, result.stdout
+            else:
+                assert state["cop0_epc"] == 0x00100080, state
+                assert (
+                    "HLE Deci2Call REQSEND: channel=0x00100220 "
+                    "packet_ptr=0x00100260 packet_size=16 "
+                    "pending_before=0xcafebabe pending_after=0 result=1"
+                ) in result.stdout, result.stdout
+                assert (
+                    "HLE Deci2Call REQSEND: no active channel result=1"
+                ) in result.stdout, result.stdout
+                for operation in ("POLL", "EXRECV", "EXSEND"):
+                    assert (
+                        f"HLE Deci2Call {operation}: result=1 "
+                        "(debug-only transport)"
+                    ) in result.stdout, result.stdout
+                assert "HLE Deci2Call CLOSE: result=1" in result.stdout
+                assert (
+                    "Deci2Call HLE refused unsupported operation=7 "
+                    "descriptor=0x00000000 handler=0x00000000"
+                ) in result.stderr, result.stdout + result.stderr
+                assert registers[9] == 1, state     # REQSEND
+                assert registers[10] == 1, state    # CLOSE
+                assert registers[12] == 1, state    # unregistered REQSEND
+                assert registers[14] == 1, state    # POLL
+                assert registers[15] == 1, state    # EXRECV
+                assert registers[24] == 1, state    # EXSEND
+                assert registers[16] == 0, state    # channel[3] cleared
+                assert registers[17] == 16, state   # size unchanged
+                assert registers[18] == 0x00100260, state  # pointer unchanged
+                assert registers[13] == 0, state    # no unsupported fallthrough
+                # The existing --watch-word probe compares the RAM
+                # before/after *translated* native callbacks only; this
+                # HLE mutation occurs between callbacks. Verify it via
+                # both the HLE trace and real guest LW result above.
+                assert (
+                    "EE watch initial: addr=0x0010022c "
+                    "value=0xcafebabe"
+                ) in result.stdout, result.stdout
+                assert "EE watch changed:" not in result.stdout, result.stdout
 
     with tempfile.TemporaryDirectory(prefix="ee-native-word-watch-") as tmp:
         root = Path(tmp)
