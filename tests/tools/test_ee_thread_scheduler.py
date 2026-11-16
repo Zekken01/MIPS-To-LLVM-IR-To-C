@@ -54,10 +54,12 @@ def make_thread_elf(path, blocking=False):
         # ReferSemaStatus writes ee_sema_t to 0x001005a0; the worker
         # copies wait_threads (+12) to shared RAM at 0x00100584.
         worker = (
+            0x00808021,  # move s0, a0: preserve StartThread argument
             0x24040001, 0x3c050010, 0x34a505a0,
             0x24030047, 0x0000000c,
             0x3c080010, 0x350805ac, 0x8d090000,
             0x3c080010, 0x35080584, 0xad090000,
+            0x02002021,  # move a0, s0: restore worker argument
         ) + worker
     for index, word in enumerate(worker):
         struct.pack_into("<I", image, 0x300 + index * 4, word)
