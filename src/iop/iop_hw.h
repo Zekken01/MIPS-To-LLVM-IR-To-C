@@ -22,6 +22,11 @@ public:
     // It is a write-only diagnostic extension, not IOP boot readiness.
     static constexpr uint32_t k_debug_console = 0x1f802080u;
     static constexpr size_t k_debug_console_capacity = 4096u;
+    // CDVD byte register: 0x00 means no inserted disc.
+    // Standalone ROM0 boot has no attached media. A media backend
+    // must eventually replace this default with detected disc type.
+    static constexpr uint32_t k_cdvd_disc_type = 0x1f40200fu;
+    static constexpr uint8_t k_cdvd_no_disc = 0x00u;
 
     c_hw();
     void reset();

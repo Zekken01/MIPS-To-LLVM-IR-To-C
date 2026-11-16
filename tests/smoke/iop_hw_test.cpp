@@ -68,6 +68,18 @@ int main()
         return fail("scratchpad size, subword access or unknown MMIO safety");
     }
 
+    // The standalone ROM0 runner has no mounted disc. The CDVD
+    // disk-type register must report no media, not an invented game disc.
+    if (!hardware.read(iop::c_hw::k_cdvd_disc_type, 1u, &actual) ||
+        actual != iop::c_hw::k_cdvd_no_disc ||
+        hardware.read(iop::c_hw::k_cdvd_disc_type, 2u, &actual) ||
+        hardware.read(iop::c_hw::k_cdvd_disc_type, 4u, &actual) ||
+        hardware.write(iop::c_hw::k_cdvd_disc_type, 1u, 0x14u) ||
+        hardware.read(iop::c_hw::k_cdvd_disc_type - 1u, 1u, &actual))
+    {
+        return fail("CDVD no-media type access or unsupported width safety");
+    }
+
     // Firmware writes bytes to the emulator's IOP debug console.
     // Other widths, reads, and nearby unmapped addresses must still fault.
     const uint32_t console = iop::c_hw::k_debug_console;
@@ -189,6 +201,32 @@ int main()
         debug_kernel.hardware().debug_console() != "A")
     {
         return fail("Guest SB to IOP diagnostic console was not captured");
+    }
+
+    // Guest LBU from CDVD using the KSEG1 address seen in OpenPS2BIOS.
+    const uint32_t cdvd_instructions[] =
+    {
+        0x3c08bf40u, // lui t0,0xbf40
+        0x3508200fu, // ori t0,t0,0x200f
+        0x91090000u, // lbu t1,0(t0)
+        0x0000000du  // break
+    };
+    for (uint32_t index = 0u; index < 4u; ++index)
+    {
+        put32(rom, index * 4u, cdvd_instructions[index]);
+    }
+    iop::c_kernel cdvd_kernel{};
+    if (!cdvd_kernel.start_rom0_boot(rom))
+    {
+        return fail("IOP ROM0 CDVD test failed to install ROM");
+    }
+    const iop::s_kernel_run_result cdvd = cdvd_kernel.run(16u, 4u);
+    if (cdvd.m_stop != iop::e_kernel_stop::breakpoint ||
+        cdvd.m_executed != 3u ||
+        cdvd_kernel.cpu().state().m_gpr[9u] !=
+            iop::c_hw::k_cdvd_no_disc)
+    {
+        return fail("Guest LBU did not read CDVD no-media state");
     }
 
     // The cache-control register is address-specific. The IOP bus
