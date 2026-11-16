@@ -2561,7 +2561,9 @@ int main(int argc, char** argv)
                                             semaphore.m_max_count);
                             memory->write32(status_address + 8u,
                                             semaphore.m_initial_count);
-                            memory->write32(status_address + 12u, 0u);
+                            memory->write32(status_address + 12u,
+                                             static_cast<uint32_t>(
+                                                 semaphore.m_waiters.size()));
                             memory->write32(status_address + 16u,
                                             semaphore.m_attr);
                             memory->write32(status_address + 20u,

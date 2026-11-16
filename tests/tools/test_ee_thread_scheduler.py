@@ -35,6 +35,10 @@ def make_thread_elf(path, blocking=False):
         # before the lower-priority worker can run.
         main = list(main)
         main[10:14] = [0, 0, 0, 0]
+        # Preserve the worker's observed waiter count in s3.
+        main[-1:] = [
+            0x3c080010, 0x35080584, 0x8d130000, 0x0000000d,
+        ]
     for index, word in enumerate(main):
         struct.pack_into("<I", image, 0x108 + index * 4, word)
 
@@ -45,6 +49,18 @@ def make_thread_elf(path, blocking=False):
         0x24040001, 0x24030042, 0x0000000c,
         0x24030023, 0x0000000c, 0x0000000d,
     )
+    if blocking:
+        # Inspect the real kernel semaphore queue before signaling main.
+        # ReferSemaStatus writes ee_sema_t to 0x001005a0; the worker
+        # copies wait_threads (+12) to shared RAM at 0x00100584.
+        worker = (
+            0x00808021,  # move s0, a0: preserve StartThread argument
+            0x24040001, 0x3c050010, 0x34a505a0,
+            0x24030047, 0x0000000c,
+            0x3c080010, 0x350805ac, 0x8d090000,
+            0x3c080010, 0x35080584, 0xad090000,
+            0x02002021,  # move a0, s0: restore worker argument
+        ) + worker
     for index, word in enumerate(worker):
         struct.pack_into("<I", image, 0x300 + index * 4, word)
 
@@ -132,6 +148,10 @@ def main():
         blocked.stdout[-6000:]
     )
     assert blocked_state["gpr_lo"][18] == 0x42, blocked_state
+    assert "HLE ReferSemaStatus: id=1 " in blocked.stdout, (
+        blocked.stdout[-6000:]
+    )
+    assert blocked_state["gpr_lo"][19] == 1, blocked_state  # one real waiter
     assert blocked_state["exit_name"] == "EXCEPTION", blocked_state
     assert (blocked_state["cop0_cause"] >> 2) & 31 == 9, blocked_state
     print("EE blocked WaitSema wakeup: PASS worker=2 signal=1 main_resumed=1")
