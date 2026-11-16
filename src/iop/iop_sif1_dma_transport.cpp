@@ -1,5 +1,7 @@
 #include "iop_sif1_dma_transport.h"
 
+#include <vector>
+
 namespace iop
 {
 c_sif1_dma_transport::c_sif1_dma_transport(
@@ -32,6 +34,7 @@ void c_sif1_dma_transport::reset()
     m_faulted = false;
     m_queued_bytes = 0u;
     m_delivered_bytes = 0u;
+    m_next_dma_id = 1u;
 }
 
 void c_sif1_dma_transport::start_callback(void* user)
@@ -255,6 +258,177 @@ void c_sif1_dma_transport::pump()
         }
     }
     m_in_pump = false;
+}
+
+
+bool c_sif1_dma_transport::set_dma(
+    uint32_t list, uint32_t count, uint32_t* dma_id)
+{
+    // sceSifSetDma descriptors are four words:
+    // EE source, IOP destination, byte count, attributes.
+    //
+    // The EE kernel normally marshals these into an EE DMA6 source
+    // chain containing IOP DMA10 destination tags and padded payloads.
+    // Our bounded HLE boundary does the same *marshalling*, but the
+    // actual bytes still traverse DMA6, the FIFO and DMA10: no IOP RAM
+    // copy, HLE SIFCMD dispatch or synthetic channel completion.
+    //
+    // Host-owned staging is borrowed from EE RAM only while a fully
+    // armed synchronous transfer runs. Every original byte is restored
+    // before returning to guest code, including on a failed transfer.
+    constexpr uint32_t k_stage = 0x01c00000u;
+    constexpr uint32_t k_stage_capacity = 0x00010000u;
+    uint32_t ee_chcr = 0u;
+    uint32_t iop_chcr = 0u;
+    const uint32_t list_address = m_ee_ram.translate_direct_address(list);
+    if (dma_id == nullptr || m_next_dma_id == 0u ||
+        count == 0u || count > 64u ||
+        (list & 15u) != 0u ||
+        list_address >= 0x02000000u ||
+        !m_ee_ram.contains(list_address, static_cast<size_t>(count) * 16u) ||
+        !m_ee_ram.contains(k_stage, k_stage_capacity) ||
+        m_faulted || m_count != 0u ||
+        !read_ee_register(0u, &ee_chcr) ||
+        (ee_chcr & ee::c_ee_dmac::k_chcr_str) != 0u ||
+        !read_iop_register(8u, &iop_chcr) ||
+        (iop_chcr & 0x01000000u) == 0u)
+    {
+        return false;
+    }
+
+    std::vector<uint8_t> packet(16u, 0u);
+    uint64_t expected_payload = 0u;
+    for (uint32_t index = 0u; index < count; ++index)
+    {
+        const uint32_t descriptor = list_address + index * 16u;
+        const uint32_t source = m_ee_ram.read32(descriptor);
+        const uint32_t destination = m_ee_ram.read32(descriptor + 4u);
+        const uint32_t size = m_ee_ram.read32(descriptor + 8u);
+        const uint32_t attributes = m_ee_ram.read32(descriptor + 12u);
+        const uint32_t source_address =
+            m_ee_ram.translate_direct_address(source);
+        const uint32_t destination_region = destination & 0xe0000000u;
+        const uint32_t destination_address = destination & 0x1fffffffu;
+        const uint64_t padded =
+            (static_cast<uint64_t>(size) + 15u) & ~uint64_t(15u);
+        if (attributes != 0u || size == 0u || size > 65536u ||
+            (source & 15u) != 0u ||
+            (destination & 15u) != 0u ||
+            (destination_region != 0u &&
+             destination_region != 0x80000000u &&
+             destination_region != 0xa0000000u) ||
+            source_address >= 0x02000000u ||
+            !m_ee_ram.contains(source_address, size) ||
+            destination_address == 0u ||
+            destination_address >= c_cpu::k_ram_size ||
+            static_cast<uint64_t>(destination_address) + padded >
+                c_cpu::k_ram_size ||
+            packet.size() + 16u + padded > k_stage_capacity)
+        {
+            return false;
+        }
+
+        const size_t tag_offset = packet.size();
+        packet.resize(tag_offset + 16u + static_cast<size_t>(padded), 0u);
+        const uint32_t destination_tag =
+            destination_address |
+            (index + 1u == count ? 0x40000000u : 0u);
+        for (uint32_t lane = 0u; lane < 4u; ++lane)
+        {
+            packet[tag_offset + lane] =
+                static_cast<uint8_t>(destination_tag >> (lane * 8u));
+            packet[tag_offset + 4u + lane] =
+                static_cast<uint8_t>(padded >> (lane * 8u));
+        }
+        for (uint32_t offset = 0u; offset < size; ++offset)
+        {
+            packet[tag_offset + 16u + offset] =
+                m_ee_ram.read8(source_address + offset);
+        }
+        expected_payload += padded;
+    }
+
+    // One genuine DMA6 END source tag carries all IOP DMA10
+    // destination tags. Packets are word- and quadword-aligned,
+    // with zeros only in the transfer padding.
+    const uint32_t qwc =
+        static_cast<uint32_t>((packet.size() - 16u) / 16u);
+    const uint32_t source_tag = 0x70000000u | qwc;
+    for (uint32_t lane = 0u; lane < 4u; ++lane)
+    {
+        packet[lane] = static_cast<uint8_t>(source_tag >> (lane * 8u));
+    }
+
+    // Snapshot the entire source packet and the borrowed backing RAM
+    // before writing a single staging byte. Guest sources, including
+    // those that alias the borrowed area, were read above.
+    std::vector<uint8_t> original(packet.size());
+    for (size_t index = 0u; index < packet.size(); ++index)
+    {
+        original[index] =
+            m_ee_ram.read8(k_stage + static_cast<uint32_t>(index));
+        m_ee_ram.write8(
+            k_stage + static_cast<uint32_t>(index), packet[index]);
+    }
+
+    const uint64_t before_queued = m_queued_bytes;
+    const uint64_t before_delivered = m_delivered_bytes;
+    const ee::s_ee_u128 zero{0u, 0u};
+    const ee::s_ee_u128 address{k_stage, 0u};
+    const ee::s_ee_u128 start{0x105u, 0u};
+    const bool started =
+        ee::c_ee_dmac::mmio_write(
+            &m_ee_dmac, ee::c_ee_dmac::k_sif1_base + 0x20u,
+            4u, &zero) &&
+        ee::c_ee_dmac::mmio_write(
+            &m_ee_dmac, ee::c_ee_dmac::k_sif1_base + 0x30u,
+            4u, &address) &&
+        ee::c_ee_dmac::mmio_write(
+            &m_ee_dmac, ee::c_ee_dmac::k_sif1_base,
+            4u, &start);
+
+    // The registered DMA6 callback pumps the real FIFO synchronously
+    // when the IOP DMA10 receiver is already armed. If the transfer
+    // cannot finish, report failure rather than pretending DMA finished.
+    uint32_t final_ee_chcr = 0u;
+    uint32_t final_iop_chcr = 0u;
+    const bool completed =
+        started && !m_faulted &&
+        read_ee_register(0u, &final_ee_chcr) &&
+        read_iop_register(8u, &final_iop_chcr) &&
+        (final_ee_chcr & ee::c_ee_dmac::k_chcr_str) == 0u &&
+        (final_iop_chcr & 0x01000000u) == 0u &&
+        m_count == 0u &&
+        m_queued_bytes == before_queued + packet.size() - 16u &&
+        m_delivered_bytes == before_delivered + expected_payload &&
+        (m_ee_dmac.status() & (1u << 6u)) != 0u;
+
+    for (size_t index = 0u; index < original.size(); ++index)
+    {
+        m_ee_ram.write8(
+            k_stage + static_cast<uint32_t>(index), original[index]);
+    }
+    if (!completed)
+    {
+        return false;
+    }
+
+    *dma_id = m_next_dma_id++;
+    return true;
+}
+
+bool c_sif1_dma_transport::dma_stat(
+    uint32_t dma_id, int32_t* result) const
+{
+    if (result == nullptr || dma_id == 0u ||
+        dma_id >= m_next_dma_id)
+    {
+        return false;
+    }
+    // This bounded hardware-backed syscall adapter only returns an
+    // ID after a real DMA6 + DMA10 completion.
+    *result = -1;
+    return true;
 }
 
 uint64_t c_sif1_dma_transport::queued_bytes() const
