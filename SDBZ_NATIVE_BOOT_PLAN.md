@@ -166,8 +166,8 @@ Create feature branches from up-to-date `main`, commit incremental source/tests,
 
 | Field | Verified checkpoint (2026-11-17) |
 |---|---|
-| Base commit | `1f906fd490e407e76028232dba58317959cbb7a4` (squash PR #132) |
-| Latest merged change | PR #132 — authentic SetVSyncFlag registration; PR #133 is a scanout model (not runtime-wired) |
+| Base commit | `37b99f4e0bc0d021662b04be09ab5b20273adf37` (squash PR #133) |
+| Latest merged change | PR #133 — isolated cycle-driven GS scanout foundation; PR #134 instrumented guest instruction attempts (not EE cycles) |
 | Original game | Super Dragon Ball Z (US), `SLUS_214.42` |
 | IOP firmware | genuine OpenPS2BIOS v0.6 |
 | Verified real-CDVD transfer | LBA 16, 261, 289 × 135, 450 × 4 |
@@ -176,7 +176,7 @@ Create feature branches from up-to-date `main`, commit incremental source/tests,
 | Last focused replay | **12,232 EE dispatches** using authentic USA ELF/ISO and OpenPS2BIOS 0.6; loop budget, not boot |
 | Last guest PC | **`0x00175210`** (guest VBlank wait loop), after genuine SetVSyncFlag registration |
 | Stop class | **LOOP_BUDGET(5)** while polling EE INTC_STAT VBlank-start bit and registered guest VSync flag; **not boot complete** |
-| Next action | Validate the new cycle-driven scanout device model (#133); then add exact native EE guest-cycle accounting and loop preemption **before connecting VBlank to the runner**. Do not substitute dispatch count, loop visits or elapsed host time |
+| Next action | Use PR #134 instruction-attempt counts to design accurate, preemptible EE cycle accounting; validate R5900 timing/branch-delay stalls against reference before connecting real scanout to the native runner |
 
 ### 2026-11-17 — Stage 0/1 authentic replay evidence (PR #129)
 
@@ -210,5 +210,13 @@ Create feature branches from up-to-date `main`, commit incremental source/tests,
 - **Implemented separately:** `c_ee_scanout_clock` accepts **explicit authoritative EE cycle timestamps**, rejects unconfigured/malformed/non-monotonic timing, and emits a scheduled field-start only at the proper boundary. It latches GS `CSR.VSINT`, toggles `CSR.FIELD` for interlaced output, raises INTC cause 2 (with the existing mask logic), and invokes the prior one-shot guest flag/CSR callback. Invalid memory refuses delivery without partially updating GS/INTC state. New `ee_scanout_clock` CTest exercises timing, masks, edge acknowledgements, callback lifetime, and refusal.
 - **IMPORTANT: not enabled in the native game runner.** The current EE dispatcher has no trustworthy instruction/cycle clock and no interruptible mid-function guest-loop safepoint. Driving this model with host wall time, dispatch count, or `m_loop_safepoint_remaining` would fabricate VBlank. Do **not** claim new boot progress; the last authentic replay remains **12,232 dispatches, LOOP_BUDGET at 0x00175210**.
 - **Next required work:** introduce instrumented accurate guest EE cycle accounting across translated basic blocks, branch-likely annulled slots, delay slots and long loops; add a bounded, resumable timed-event exit; keep scheduler state outside guest CPU context; connect the scanout clock only after differential/reference tests demonstrate the clock is credible. Validate hardware INTC/GS CSR and field semantics with authentic guest tracing before calling native rendering ready.
+
+### 2026-11-17 — Native guest-instruction accounting (PR #134)
+
+- **Architecture:** appended `s_ee_runtime::m_guest_instruction_attempts` diagnostic counter (host-side, separate from `s_ee_cpu_state`). Generated LLVM increments only for executed guest instructions, including reached delay slots, excluding annulled branch-likely delay slots. The internal LLVM helper allows null runtime pointers in existing JIT fixtures. No scanout trigger, IRQ, synthetic VBlank, CPU timing approximation or guest registers change as a result.
+- **Focused tests:** original JR, BEQ, JAL, BLTZALL, BGEZALL instruction/delay-slot JIT cases; reported count in `ee_game_runner` JSON and text output; native integration assertion of guest-loop attempts vs dispatches. Existing VU0 JIT fixture needed its runtime allocation expanded to the actual LLVM-exposed appended counter offset, rather than the old six-pointer ABI prefix; this was fixed after first CI exposed a segmentation fault.
+- **Authentic replay provenance:** US `SLUS_214.42` SHA-256 `1b213a85a2c305dc0f893c007a502c93e0851d1bb7db6164f9e0b72adb074a16`; original US 4,259,610,624-byte ISO SHA-256 `d432b3ccaafe6ddf50ed3dedcf683dbac9bf06556d4e843d12fdee1a821231e1`; genuine OpenPS2BIOS v0.6 SHA-256 `3702baa508ff40498fab4a95429a2ae1f903d11f5bbcdd4e1a87dbe9f5d21a84`. Fresh 7,901 function modules translated and all passed LLVM verification, then original-replay-derived **145 additional** entries were retranslated from the US ELF (no old LLVM or object copying). **8,046/8,046 modules verified**, native library re-linked, new provenance cache produced and verified with `validate_translation_cache`.
+- **Native replay result (after instrumentation):** exactly **12,232 dispatches**, **9,009,311 guest instruction attempts** (not EE cycles); final PC `0x00175210`, reason `LOOP_BUDGET(5)`, guest `INTC_STAT & 4` VBlank wait remains unresolved. Real CDVD DMA3, SIF/IOP firmware, GS PATH3, VU0 FMAC and guest SetVSyncFlag registration follow the same tested paths; no guest framebuffer or VBlank event is invented.
+- **Remaining hardware blocker:** implement authoritative R5900 cycle accumulation and safe guest-loop preemption; validate timing against reliable reference, then advance real `c_ee_scanout_clock` only with those EE cycles. This accounting PR is diagnostic evidence, **not** a native-boot progress claim. Rerun three GitHub Actions workflows after the final documentation changes before squash merging.
 
 **Next developer instruction:** The authentic run now reaches the real VBlank polling loop at `0x00175210`. Implement cycle-driven GS VBlank scheduling only after verifying guest CRT timing, EE cycle accounting and INTC masks/callback delivery. The verified SetVSyncFlag registration alone does not create a VSync. Preserve all prior genuine CDVD/SIF/GIF and VMAC state; continue through a new trace-proven blocker.
