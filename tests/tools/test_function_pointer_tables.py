@@ -125,7 +125,7 @@ class PointerTableTests(unittest.TestCase):
             (0x214, 0x24a50101),  # misaligned table base
             (0x218, 0x00451821),  # adds a different register
             (0x21c, 0x8c620000),  # loads a different JR register
-            (0x400, 0x200020),    # table contains a non-executable PC
+            (0x404, 0x200020),    # sibling non-executable, anchor remains
         ):
             with self.subTest(offset=offset):
                 image = bytearray(original)
