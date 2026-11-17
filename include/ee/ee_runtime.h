@@ -252,6 +252,13 @@ struct s_ee_runtime
     // and does not promote one instruction to one EE cycle (R5900 is
     // superscalar and instructions can stall). Appended for ABI stability.
     uint64_t m_guest_instruction_attempts = 0u;
+
+    // Optional bounded host yield at translated loop headers. Distinct
+    // from the fail-closed m_loop_safepoint_limit diagnostic guard. The
+    // host resets remaining only on explicit entry/resume; no EE cycles
+    // or synthetic peripheral events are implied by a yield.
+    uint32_t m_loop_yield_limit = 0u;
+    uint32_t m_loop_yield_remaining = 0u;
 };
 
 // Outside a branch delay slot, all four transfer forms only catch VU0 up to
