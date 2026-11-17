@@ -246,6 +246,12 @@ struct s_ee_runtime
     uint32_t m_guest_v0_trace_first_pc = 0u;
     uint32_t m_guest_v0_trace_last_pc = 0u;
     uint32_t m_guest_v0_trace_remaining = 0u;
+
+    // Diagnostic count of reached, decodable guest EE instructions. This
+    // includes executed delay slots but not annulled branch-likely slots,
+    // and does not promote one instruction to one EE cycle (R5900 is
+    // superscalar and instructions can stall). Appended for ABI stability.
+    uint64_t m_guest_instruction_attempts = 0u;
 };
 
 // Outside a branch delay slot, all four transfer forms only catch VU0 up to

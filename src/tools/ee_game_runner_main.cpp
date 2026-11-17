@@ -345,6 +345,7 @@ bool write_report(
     const ee::s_ee_cpu_state& cpu,
     uint32_t entry,
     uint64_t dispatched,
+    uint64_t instruction_attempts,
     uint32_t reason,
     uint32_t status,
     const std::vector<s_dispatch_sample>& history,
@@ -383,6 +384,8 @@ bool write_report(
     {
         std::fputs("null", output);
     }
+    std::fprintf(output, ",\n  \"guest_instruction_attempts\": %llu",
+                 static_cast<unsigned long long>(instruction_attempts));
     std::fputs(",\n  \"gpr_lo\": [", output);
     for (uint32_t i = 0; i < 32; ++i)
     {
@@ -1436,6 +1439,7 @@ int main(int argc, char** argv)
             const auto report_start = std::chrono::steady_clock::now();
             const bool report_ok = write_report(
                 report_path, image, cpu, entry, dispatched,
+                runtime.m_guest_instruction_attempts,
                 reason, status, history, syscall_history, true
             );
             report_time_ms += std::chrono::duration<double, std::milli>(
@@ -3847,6 +3851,11 @@ int main(int argc, char** argv)
     }
 
     std::printf(
+        "EE diagnostic guest-instruction attempts: %llu (NOT EE cycles)\n",
+        static_cast<unsigned long long>(
+            runtime.m_guest_instruction_attempts)
+    );
+    std::printf(
         "EE stopped: dispatched=%llu pc=0x%08x reason=%s(%u) status=%u\n",
         static_cast<unsigned long long>(dispatched), cpu.m_pc,
         exit_name(reason), reason, status
@@ -3893,6 +3902,7 @@ int main(int argc, char** argv)
     }
     if (report_path != nullptr &&
         !write_report(report_path, image, cpu, entry, dispatched,
+                      runtime.m_guest_instruction_attempts,
                       reason, status, history, syscall_history, false))
     {
         return 1;
