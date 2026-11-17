@@ -655,6 +655,10 @@ def main(argv=None):
         help="Optional translated CFG loop-header watchdog limit per native dispatch (0=off)",
     )
     parser.add_argument(
+        "--loop-yield-resumes", type=int, default=0,
+        help="Opt-in bounded native host safepoint resumes; requires --loop-budget > 0",
+    )
+    parser.add_argument(
         "--sif-poll-limit", type=int, default=0,
         help="Stop after N consecutive unchanged IOP SMFLAG reads at the same syscall (0=off)",
     )
@@ -715,6 +719,10 @@ def main(argv=None):
         parser.error("--max-dispatches must fit a positive uint32")
     if args.loop_budget < 0 or args.loop_budget > 0xFFFFFFFF:
         parser.error("--loop-budget must fit a uint32")
+    if args.loop_yield_resumes < 0 or args.loop_yield_resumes > 0xFFFFFFFF:
+        parser.error("--loop-yield-resumes must fit a uint32")
+    if args.loop_yield_resumes and not args.loop_budget:
+        parser.error("--loop-yield-resumes requires --loop-budget > 0")
     if args.sif_poll_limit < 0 or args.sif_poll_limit > 0xFFFFFFFF:
         parser.error("--sif-poll-limit must fit a uint32")
     if args.iop_quantum < 1 or args.iop_quantum > 65536:
@@ -890,6 +898,7 @@ def main(argv=None):
             runner, elf, library,
             f"--max-dispatches={args.max_dispatches}",
             f"--loop-budget={args.loop_budget}",
+            f"--loop-yield-resumes={args.loop_yield_resumes}",
             f"--sif-poll-limit={args.sif_poll_limit}",
             f"--entry=0x{entry:08x}",
         ]

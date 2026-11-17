@@ -2880,6 +2880,64 @@ def main():
         assert state["guest_instruction_attempts"] > 32, state
         assert state["guest_instruction_attempts"] > state["dispatches"], state
 
+    # The opt-in runner resumes the *same* exact compiled loop header
+    # across host yields while preserving guest GPRs and the nonarchitectural
+    # instruction attempt counter. No guest time or VBlank event is created.
+    with tempfile.TemporaryDirectory(prefix="ee-native-resumable-yield-") as tmp:
+        root = Path(tmp)
+        elf = root / "counting-yield-loop.elf"
+        make_counting_loop_elf(elf)
+        report_path = root / "loop-yield.json"
+        result = subprocess.run(
+            [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf),
+                "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--max-dispatches=8",
+                "--loop-budget=4",
+                "--loop-yield-resumes=2",
+                "--report", str(report_path),
+                "--timeout-seconds=10",
+                "--trace",
+            ],
+            capture_output=True, text=True, check=False, timeout=40,
+        )
+        assert result.returncode == 3, result.stdout + result.stderr
+        assert result.stdout.count("EE host loop resume:") == 2, (
+            result.stdout, result.stderr
+        )
+        assert "guest host loop yield cap reached:" in result.stderr, (
+            result.stdout, result.stderr
+        )
+        state = json.loads(report_path.read_text(encoding="utf-8"))
+        assert state["snapshot_kind"] == "stopped", state
+        assert state["exit_reason"] == 6, state
+        assert state["exit_name"] == "HOST_YIELD", state
+        assert state["dispatches"] == 3, state
+        assert state["final_pc"] == 0x00100008, state
+        assert state["gpr_lo"][8] == 12, state
+        assert state["guest_instruction_attempts"] >= 24, state
+        assert (state["cop0_cause"] & 0x7c) == 0, state
+
+    # Resuming without a bounded guest-loop watchdog would spin forever;
+    # reject an invalid command before loading or mutating guest state.
+    with tempfile.TemporaryDirectory(prefix="ee-invalid-loop-resume-") as tmp:
+        root = Path(tmp)
+        elf = root / "invalid-yield.elf"
+        make_counting_loop_elf(elf)
+        result = subprocess.run(
+            [
+                str(runner), str(elf), str(root / "unused-library.so"),
+                "--loop-yield-resumes=2",
+            ],
+            capture_output=True, text=True, check=False, timeout=10,
+        )
+        assert result.returncode == 2, (result.stdout, result.stderr)
+        assert "--loop-yield-resumes requires --loop-budget" in result.stderr, (
+            result.stdout, result.stderr
+        )
+
     for blocking_wait, invalid_status in (
         (False, False), (True, False), (False, True),
     ):
