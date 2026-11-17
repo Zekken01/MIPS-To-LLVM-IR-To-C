@@ -3,6 +3,8 @@
 #include "ee_memory.h"
 #include "ee_ram_interpreter.h"
 #include "ee_hw_bus.h"
+#include "ee_gif.h"
+#include "ee_gs.h"
 #include "elf_loader.h"
 #include "iop_kernel.h"
 #include "iop_cdvd.h"
@@ -138,6 +140,57 @@ bool parse_u32(const char* value, uint32_t* out)
 
     *out = static_cast<uint32_t>(parsed);
     return true;
+}
+
+// The native runner has no VU1 engine and begins with VU0 halted.  It may
+// therefore synchronize ordinary COP2 control traffic only while VU0 remains
+// halted; attempting to run a microprogram still fails closed rather than
+// treating an unimplemented engine as a no-op.
+uint32_t runner_vu0_sync(
+    void*, ee::s_ee_cpu_state* cpu, ee::s_ee_vu0_state* vu0,
+    uint32_t mode, uint32_t
+)
+{
+    if (cpu == nullptr || vu0 == nullptr ||
+        mode > static_cast<uint32_t>(ee::e_ee_vu0_sync_mode::WAIT_TO_E_OR_M))
+    {
+        return static_cast<uint32_t>(ee::e_ee_vu0_sync_result::INVALID_ARGUMENT);
+    }
+
+    return ((vu0->m_vpu_status & 1u) == 0u && vu0->m_running == 0u)
+        ? static_cast<uint32_t>(ee::e_ee_vu0_sync_result::COMPLETE)
+        : static_cast<uint32_t>(ee::e_ee_vu0_sync_result::UNAVAILABLE);
+}
+
+// FBRST's VU1 reset/break bits complete immediately when the runner has no
+// VU1 work in flight.  VU0 force-break is representable by its visible halted
+// state.  A VU0 reset or CMSAR1 VU1 launch requires an engine and is rejected
+// by this callback before the runtime commits the CTC2 register write.
+uint32_t runner_vu0_control(
+    void*, ee::s_ee_cpu_state* cpu, ee::s_ee_vu0_state* vu0,
+    uint32_t register_index, uint32_t value, uint32_t
+)
+{
+    if (cpu == nullptr || vu0 == nullptr)
+    {
+        return static_cast<uint32_t>(ee::e_ee_vu0_sync_result::INVALID_ARGUMENT);
+    }
+    if (register_index != 28u)
+    {
+        return static_cast<uint32_t>(ee::e_ee_vu0_sync_result::UNAVAILABLE);
+    }
+    if ((value & 0x00000001u) != 0u)
+    {
+        return static_cast<uint32_t>(ee::e_ee_vu0_sync_result::UNAVAILABLE);
+    }
+    if ((value & 0x00000100u) != 0u)
+    {
+        vu0->m_vpu_status &= ~1u;
+        vu0->m_running = 0u;
+        vu0->m_e_bit = 0u;
+        vu0->m_m_bit = 0u;
+    }
+    return static_cast<uint32_t>(ee::e_ee_vu0_sync_result::COMPLETE);
 }
 
 void usage(const char* program)
@@ -806,6 +859,14 @@ int main(int argc, char** argv)
     ee::c_ee_hw_bus hardware;
     hardware.bind_cpu(&cpu);
     hardware.bind_memory(memory.get());
+    // Feed actual EE GIF DMA channel 2 payloads through the existing
+    // stateful PATH3 parser and GS register/VRAM consumer. DMA completion
+    // remains conditional on accepting the *real* transferred packet.
+    ee::c_ee_gif_path3 gif_path3{};
+    ee::c_ee_gs_state gs_state{};
+    gif_path3.bind_event_sink(&gs_state, &ee::c_ee_gs_state::gif_events);
+    hardware.bind_device_transfer(&gif_path3, &ee::c_ee_gif_path3::dma_transfer);
+    hardware.bind_device_download(&gs_state, &ee::c_ee_gs_state::dma_download);
 
     // Optional real guest IOP execution. This is a deterministic polling
     // rendezvous, NOT EE/IOP hardware cycle synchronization: the native
@@ -1029,6 +1090,8 @@ int main(int argc, char** argv)
     ee::s_ee_runtime runtime{};
     runtime.m_user = memory.get();
     runtime.m_vu0_state = &vu0;
+    runtime.m_vu0_sync = runner_vu0_sync;
+    runtime.m_vu0_control = runner_vu0_control;
     runtime.m_mmio_user = &hardware;
     runtime.m_mmio_read = &ee::c_ee_hw_bus::mmio_read;
     runtime.m_mmio_write = &ee::c_ee_hw_bus::mmio_write;
@@ -1274,6 +1337,12 @@ int main(int argc, char** argv)
     uint32_t last_sif_smflag_epc = 0u;
     uint64_t last_sif_smflag_dispatch = 0u;
     uint32_t repeated_sif_smflag_reads = 0u;
+    // A zero-count EE semaphore can be completed by a genuine IOP->EE
+    // DMA5 callback, even when there is no separate runnable EE thread.
+    // Count bounded IOP turns at the trapped WaitSema site; this is a
+    // diagnostic/scheduling guard, never a synthetic signal.
+    uint32_t iop_semaphore_wait_turns = 0u;
+    uint64_t iop_semaphore_wait_last_sif0 = 0u;
     std::vector<s_dispatch_sample> history;
     if (report_path != nullptr)
     {
@@ -1294,8 +1363,12 @@ int main(int argc, char** argv)
         // Kernel HLE services completed device interrupts before handing
         // control back to its main thread. There is no synthetic DMA
         // status: only actual masked D_STAT completion bits can enter here.
+        // An EE WaitSema may be blocked on a real IOP->EE DMA5 reply.
+        // Its syscall exception keeps EXL set, but the kernel must still
+        // enter the registered DMA callback that supplies iSignalSema.
+        const bool external_iop_wait = iop_semaphore_wait_turns != 0u;
         if (hle_startup && !dmac_callback_active && !callback_active &&
-            ee::ee_interrupts_enabled(&cpu) &&
+            (ee::ee_interrupts_enabled(&cpu) || external_iop_wait) &&
             hardware.dmac().pending() != 0u)
         {
             const uint32_t pending = hardware.dmac().pending();
@@ -1640,6 +1713,15 @@ int main(int argc, char** argv)
             hardware.dmac().bind_cpu(&cpu);
             dmac_callback_active = false;
             dmac_callback_handlers.clear();
+            if (iop_semaphore_wait_turns != 0u)
+            {
+                // The interrupted EE context is a WaitSema syscall trap,
+                // so its architectural PC is the exception vector. Replay
+                // only that original syscall at EPC after the real DMA5
+                // callback has iSignalSema'd its token.
+                cpu.m_pc = cpu.m_cop0[14];
+                cpu.m_cop0[12] &= ~2u;
+            }
             cpu.m_exit_reason = static_cast<uint32_t>(
                 ee::e_ee_exit_reason::EE_EXIT_DISPATCH);
             if (trace)
@@ -1807,7 +1889,8 @@ int main(int argc, char** argv)
                 }
                 continue;
             }
-            if ((service >= 0x10u && service <= 0x17u) ||
+            if (service == 0x02u ||
+                (service >= 0x10u && service <= 0x17u) ||
                 (service >= 0x1au && service <= 0x1du) ||
                 (service >= 0x20u && service <= 0x24u) ||
                 service == 0x29u || service == 0x2au || service == 0x2bu ||
@@ -1817,6 +1900,7 @@ int main(int argc, char** argv)
                 service == 0x4au || service == 0x4bu ||
                 service == 0x64u ||
                 service == 0x68u || service == 0x6bu ||
+                service == 0x71u ||
                 service == 0x74u ||
                 service == 0x76u || service == 0x77u ||
                 service == 0x78u || service == 0x79u ||
@@ -1847,7 +1931,35 @@ int main(int argc, char** argv)
                     );
                 }
 
-                if (service >= 0x10u && service <= 0x13u)
+                if (service == 0x02u)
+                {
+                    // SetGsCrt configures the privileged GS display timing
+                    // registers. The runner preserves the configuration but
+                    // does not fabricate scanout, vblank or presentation.
+                    const uint32_t interlace =
+                        static_cast<uint32_t>(cpu.m_gpr[4].m_lo);
+                    const uint32_t mode =
+                        static_cast<uint32_t>(cpu.m_gpr[5].m_lo);
+                    const uint32_t ffmd =
+                        static_cast<uint32_t>(cpu.m_gpr[6].m_lo);
+                    if (!hardware.set_gs_crt(interlace, mode, ffmd))
+                    {
+                        std::fprintf(stderr,
+                            "SetGsCrt HLE refused invalid configuration "
+                            "interlace=%u mode=%u ffmd=%u\n",
+                            interlace, mode, ffmd);
+                        break;
+                    }
+                    if (trace)
+                    {
+                        std::printf(
+                            "HLE SetGsCrt: interlace=%u mode=%u ffmd=%u "
+                            "result=void\n",
+                            interlace, mode, ffmd);
+                    }
+                }
+
+                else if (service >= 0x10u && service <= 0x13u)
                 {
                     const bool intc = service == 0x10u || service == 0x11u;
                     std::vector<s_kernel_interrupt_handler>& handlers =
@@ -2575,6 +2687,131 @@ int main(int argc, char** argv)
                             if (!other_ready || callback_active ||
                                 dmac_callback_active)
                             {
+                                if (!other_ready && !callback_active &&
+                                    !dmac_callback_active &&
+                                    iop_rom0_path != nullptr &&
+                                    iop_kernel != nullptr &&
+                                    iop_sif0_transport != nullptr)
+                                {
+                                    if (iop_semaphore_wait_turns >=
+                                        sif_poll_limit)
+                                    {
+                                        uint32_t op0 = 0u;
+                                        uint32_t op1 = 0u;
+                                        uint32_t sio2_ctrl = 0u;
+                                        uint32_t ee5_chcr = 0u;
+                                        uint32_t ee5_madr = 0u;
+                                        uint32_t ee5_qwc = 0u;
+                                        uint32_t iop9_chcr = 0u;
+                                        uint32_t iop9_tadr = 0u;
+                                        const iop::s_cpu_state& iop_state =
+                                            iop_kernel->cpu().state();
+                                        (void)iop_kernel->cpu().read32(
+                                            iop_state.m_pc, &op0);
+                                        (void)iop_kernel->cpu().read32(
+                                            iop_state.m_pc + 4u, &op1);
+                                        (void)iop_kernel->hardware().read(
+                                            iop::c_hw::k_sio2_ctrl, 4u,
+                                            &sio2_ctrl);
+                                        ee::s_ee_u128 dma_word{};
+                                        (void)ee::c_ee_dmac::mmio_read(
+                                            &hardware.dmac(),
+                                            ee::c_ee_dmac::k_sif0_base, 4u,
+                                            &dma_word);
+                                        ee5_chcr = static_cast<uint32_t>(
+                                            dma_word.m_lo);
+                                        (void)ee::c_ee_dmac::mmio_read(
+                                            &hardware.dmac(),
+                                            ee::c_ee_dmac::k_sif0_base + 0x10u,
+                                            4u, &dma_word);
+                                        ee5_madr = static_cast<uint32_t>(
+                                            dma_word.m_lo);
+                                        (void)ee::c_ee_dmac::mmio_read(
+                                            &hardware.dmac(),
+                                            ee::c_ee_dmac::k_sif0_base + 0x20u,
+                                            4u, &dma_word);
+                                        ee5_qwc = static_cast<uint32_t>(
+                                            dma_word.m_lo);
+                                        (void)iop_kernel->hardware().read(
+                                            iop::c_hw::k_sif0_dma_base + 8u,
+                                            4u, &iop9_chcr);
+                                        (void)iop_kernel->hardware().read(
+                                            iop::c_hw::k_sif0_dma_base + 12u,
+                                            4u, &iop9_tadr);
+                                        std::fprintf(stderr,
+                                            "WaitSema HLE exhausted IOP "
+                                            "completion turns: id=%u "
+                                            "count=0 turns=%u iop_pc=%08x "
+                                            "opcodes=%08x/%08x v0=%08x "
+                                            "a0=%08x a1=%08x t4=%08x "
+                                            "sio2_ctrl=%08x ee5=%08x/"
+                                            "%08x/%08x iop9=%08x/%08x\n",
+                                            semaphore_id,
+                                            iop_semaphore_wait_turns,
+                                            iop_state.m_pc, op0, op1,
+                                            iop_state.m_gpr[2],
+                                            iop_state.m_gpr[4],
+                                            iop_state.m_gpr[5],
+                                            iop_state.m_gpr[12], sio2_ctrl,
+                                            ee5_chcr, ee5_madr, ee5_qwc,
+                                            iop9_chcr, iop9_tadr);
+                                        break;
+                                    }
+                                    ++iop_semaphore_wait_turns;
+                                    const iop::s_kernel_run_result progressed =
+                                        iop_kernel->run(iop_quantum, 128u);
+                                    if (progressed.m_stop !=
+                                            iop::e_kernel_stop::budget_exhausted &&
+                                        progressed.m_stop !=
+                                            iop::e_kernel_stop::idle)
+                                    {
+                                        const iop::s_memory_fault& fault =
+                                            iop_kernel->cpu()
+                                                .last_memory_fault();
+                                        std::fprintf(stderr,
+                                            "WaitSema HLE IOP producer "
+                                            "stopped: reason=%u pc=0x%08x "
+                                            "opcode=0x%08x v0=0x%08x "
+                                            "a0=0x%08x fault=%u/%u/%u\n",
+                                            static_cast<uint32_t>(
+                                                progressed.m_stop),
+                                            progressed.m_guest_pc,
+                                            progressed.m_opcode,
+                                            iop_kernel->cpu().state().m_gpr[2],
+                                            iop_kernel->cpu().state().m_gpr[4],
+                                            fault.m_valid ? 1u : 0u,
+                                            fault.m_address,
+                                            fault.m_write ? fault.m_width : 0u);
+                                        break;
+                                    }
+                                    const uint64_t sif0_delivered =
+                                        iop_sif0_transport->delivered_bytes();
+                                    if (trace &&
+                                        (iop_semaphore_wait_turns == 1u ||
+                                         sif0_delivered !=
+                                            iop_semaphore_wait_last_sif0))
+                                    {
+                                        std::printf(
+                                            "WaitSema HLE advanced IOP "
+                                            "producer: id=%u turn=%u "
+                                            "instructions=%llu "
+                                            "sif0_delivered=%llu\n",
+                                            semaphore_id,
+                                            iop_semaphore_wait_turns,
+                                            static_cast<unsigned long long>(
+                                                progressed.m_executed),
+                                            static_cast<unsigned long long>(
+                                                sif0_delivered));
+                                    }
+                                    iop_semaphore_wait_last_sif0 =
+                                        sif0_delivered;
+                                    // Preserve the trapped syscall. The
+                                    // normal top-of-loop DMA dispatch runs
+                                    // any real completion callback; its
+                                    // iSignalSema then makes this exact
+                                    // WaitSema succeed on re-entry.
+                                    continue;
+                                }
                                 std::fprintf(stderr,
                                     "WaitSema HLE refused blocking wait: "
                                     "id=%u current_thread=%u count=0 "
@@ -2658,6 +2895,8 @@ int main(int argc, char** argv)
                             if (semaphore.m_count > 0u)
                             {
                                 --semaphore.m_count;
+                                iop_semaphore_wait_turns = 0u;
+                                iop_semaphore_wait_last_sif0 = 0u;
                             }
                             else if (!wait_blocked)
                             {
@@ -2833,6 +3072,25 @@ int main(int argc, char** argv)
                             "old_chcr=0x%08x new_chcr=0x%08x result=void\n",
                             old_chcr,
                             static_cast<uint32_t>(chcr.m_lo));
+                    }
+                }
+
+                else if (service == 0x71u)
+                {
+                    // GsPutIMR is a void kernel service for the privileged
+                    // GS interrupt-mask register.  Preserve only documented
+                    // mask bits in the hardware state; no GS IRQ is invented
+                    // by this non-rasterizing runner.
+                    const uint64_t requested = cpu.m_gpr[4].m_lo;
+                    hardware.set_gs_imr(requested);
+                    if (trace)
+                    {
+                        std::printf(
+                            "HLE GsPutIMR: requested=0x%08llx "
+                            "stored=0x%08llx result=void\n",
+                            static_cast<unsigned long long>(requested),
+                            static_cast<unsigned long long>(hardware.gs_imr())
+                        );
                     }
                 }
 
@@ -3173,27 +3431,91 @@ int main(int argc, char** argv)
                                     iop_kernel != nullptr)
                                 {
                                     uint32_t subaddr = 0u;
+                                    uint32_t msflag = 0u;
+                                    uint32_t smflag = 0u;
+                                    uint32_t dma9_chcr = 0u;
                                     uint32_t dma10_chcr = 0u;
+                                    uint32_t dma_icr = 0u;
+                                    uint32_t i_stat = 0u;
+                                    uint32_t i_mask = 0u;
+                                    uint32_t dma_icr2 = 0u;
+                                    uint32_t op_prev = 0u;
+                                    uint32_t op_pc = 0u;
+                                    uint32_t op_next = 0u;
                                     (void)hardware.sif().get_reg(2u, &subaddr);
+                                    (void)hardware.sif().get_reg(3u, &msflag);
+                                    (void)hardware.sif().get_reg(4u, &smflag);
+                                    (void)iop_kernel->hardware().read(
+                                        iop::c_hw::k_sif0_dma_base + 8u,
+                                        4u, &dma9_chcr
+                                    );
                                     (void)iop_kernel->hardware().read(
                                         iop::c_hw::k_sif1_dma_base + 8u,
                                         4u, &dma10_chcr
                                     );
+                                    (void)iop_kernel->hardware().read(
+                                        iop::c_hw::k_dma_icr, 4u, &dma_icr);
+                                    (void)iop_kernel->hardware().read(
+                                        iop::c_hw::k_i_stat, 4u, &i_stat);
+                                    (void)iop_kernel->hardware().read(
+                                        iop::c_hw::k_i_mask, 4u, &i_mask);
+                                    (void)iop_kernel->hardware().read(
+                                        iop::c_hw::k_dma_icr2, 4u, &dma_icr2);
+                                    const iop::s_cpu_state& iop_state =
+                                        iop_kernel->cpu().state();
+                                    (void)iop_kernel->cpu().read32(
+                                        iop_state.m_pc - 4u, &op_prev);
+                                    (void)iop_kernel->cpu().read32(
+                                        iop_state.m_pc, &op_pc);
+                                    (void)iop_kernel->cpu().read32(
+                                        iop_state.m_pc + 4u, &op_next);
                                     std::fprintf(
                                         stderr,
                                         "IOP ROM0 stall state: pc=0x%08x "
                                         "instructions=%llu quantum=%u "
-                                        "subaddr=0x%08x dma10_chcr=0x%08x "
+                                        "subaddr=0x%08x msflag=0x%08x "
+                                        "smflag=0x%08x dma9_chcr=0x%08x "
+                                        "dma10_chcr=0x%08x "
                                         "sif1_delivered=%llu sif0_delivered=%llu\n",
                                         iop_kernel->cpu().state().m_pc,
                                         static_cast<unsigned long long>(
                                             iop_kernel->cycles()),
-                                        iop_quantum, subaddr, dma10_chcr,
+                                        iop_quantum, subaddr, msflag, smflag,
+                                        dma9_chcr, dma10_chcr,
                                         static_cast<unsigned long long>(
                                             iop_sif1_transport->delivered_bytes()),
                                         static_cast<unsigned long long>(
                                             iop_sif0_transport->delivered_bytes())
                                     );
+                                    std::fprintf(
+                                        stderr,
+                                        "IOP ROM0 context: opcodes=%08x/%08x/%08x "
+                                        "v0=%08x a0=%08x a1=%08x gp=%08x "
+                                        "sp=%08x ra=%08x status=%08x cause=%08x "
+                                        "epc=%08x i_stat=%08x i_mask=%08x "
+                                        "dma_icr=%08x dma_icr2=%08x\n",
+                                        op_prev, op_pc, op_next,
+                                        iop_state.m_gpr[2], iop_state.m_gpr[4],
+                                        iop_state.m_gpr[5], iop_state.m_gpr[28],
+                                        iop_state.m_gpr[29], iop_state.m_gpr[31],
+                                        iop_state.m_cop0_status,
+                                        iop_state.m_cop0_cause,
+                                        iop_state.m_cop0_epc,
+                                        i_stat, i_mask, dma_icr, dma_icr2
+                                    );
+                                    const std::string& iop_console =
+                                        iop_kernel->hardware().debug_console();
+                                    if (!iop_console.empty())
+                                    {
+                                        std::fprintf(
+                                            stderr,
+                                            "IOP ROM0 console: %s%s\n",
+                                            iop_console.c_str(),
+                                            iop_kernel->hardware()
+                                                    .debug_console_truncated()
+                                                ? " [truncated]" : ""
+                                        );
+                                    }
                                 }
                                 // Fail closed at the observed guest syscall,
                                 // not at an arbitrary later dispatch budget.
@@ -3471,6 +3793,20 @@ int main(int argc, char** argv)
         std::fprintf(stderr,
             "registered syscall handler did not return: pc=0x%08x resume=0x%08x\n",
             cpu.m_pc, callback_resume_pc);
+    }
+
+    // Only accepted GIF PATH3 batches contribute to these counters.
+    // This does not imply scanout or rasterized presentation.
+    if (gs_state.state().m_tag_count != 0u)
+    {
+        std::printf(
+            "GS PATH3 accepted: tags=%llu vertices=%llu image_qwc=%u "
+            "transfer_pixels=%u\n",
+            static_cast<unsigned long long>(gs_state.state().m_tag_count),
+            static_cast<unsigned long long>(gs_state.state().m_vertex_count),
+            gs_state.state().m_image_qwc,
+            gs_state.state().m_transfer_pixels_written
+        );
     }
 
     std::printf(

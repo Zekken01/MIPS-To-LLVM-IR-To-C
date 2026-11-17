@@ -27,6 +27,9 @@ public:
     static constexpr uint32_t k_i_mask = 0x1f801074u;
     static constexpr uint32_t k_i_ctrl = 0x1f801078u;
     static constexpr uint32_t k_cache_control = 0xfffe0130u;
+    // SIO2 serial-interface control. Firmware resets/configures this
+    // register while loading IOP modules; transfer emulation is separate.
+    static constexpr uint32_t k_sio2_ctrl = 0x1f808268u;
     // OpenPS2BIOS emits guest TTY bytes to this emulator-facing port.
     // It is a write-only diagnostic extension, not IOP boot readiness.
     static constexpr uint32_t k_debug_console = 0x1f802080u;
@@ -138,6 +141,7 @@ private:
     uint32_t m_i_mask = 0u;
     uint32_t m_i_ctrl = 1u;
     uint32_t m_cache_control = 0u;
+    uint32_t m_sio2_ctrl = 0u;
     uint32_t m_timer5_count = 0u;
     uint32_t m_timer5_mode = 0u;
     uint32_t m_timer5_target = 0u;

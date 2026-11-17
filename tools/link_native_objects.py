@@ -127,6 +127,197 @@ def build_dispatch_source(metadata, functions):
     return "\n".join(lines)
 
 
+# A full game's metadata contains thousands of functions. Keep it in fixed
+# chunks: appending one function then changes only the final chunk's object,
+# rather than recompiling a multi-megabyte dispatcher on every replay.
+DISPATCH_CHUNK_SIZE = 256
+
+
+def build_dispatch_chunk_source(functions, first, index):
+    lines = [
+        '#include "ee_dispatcher.h"',
+        '#include <cstdint>',
+        '#include <utility>',
+        'extern "C"',
+        '{',
+    ]
+    for fn in functions:
+        lines.append(
+            f"    std::uint32_t {fn['host_symbol']}("
+            "ee::s_ee_cpu_state*, ee::s_ee_runtime*);"
+        )
+    lines += [
+        '}',
+        f'extern "C" void ee_dispatch_chunk_{index:04d}(',
+        '    ee::s_recompiled_elf* compiled,',
+        '    ee::t_ee_translated_entry* entries)',
+        '{',
+    ]
+    for offset, fn in enumerate(functions):
+        block_values = ', '.join(
+            f"0x{pc:08x}u" for pc in fn['block_pcs']
+        )
+        lines += [
+            '    {',
+            '        ee::s_recompiled_fn function{};',
+            f"        function.name = {cpp_string(fn.get('name', ''))};",
+            f"        function.host_symbol = {cpp_string(fn['host_symbol'])};",
+            f"        function.vaddr = 0x{fn['vaddr']:08x}u;",
+            f"        function.block_count = {len(fn['block_pcs'])}u;",
+            f"        function.block_pcs = {{{block_values}}};",
+            f"        function.ir_path = {cpp_string(fn.get('ir_path', ''))};",
+            '        compiled->functions.push_back(std::move(function));',
+            f"        entries[{first + offset}] = &{fn['host_symbol']};",
+            '    }',
+        ]
+    lines.append('}')
+    lines.append('')
+    return '\n'.join(lines)
+
+
+def build_chunked_dispatch_source(metadata, functions, chunk_count):
+    lines = [
+        '#include "ee_dispatcher.h"',
+        '#include <cstdint>',
+        '#include <vector>',
+        'extern "C"',
+        '{',
+    ]
+    for index in range(chunk_count):
+        lines += [
+            f'    void ee_dispatch_chunk_{index:04d}(',
+            '        ee::s_recompiled_elf*, ee::t_ee_translated_entry*);',
+        ]
+    lines += [
+        '}',
+        'namespace',
+        '{',
+        'struct s_compiled_dispatch',
+        '{',
+        '    ee::s_recompiled_elf compiled{};',
+        '    std::vector<ee::t_ee_translated_entry> entries;',
+        '    s_compiled_dispatch()',
+        '    {',
+        f"        compiled.entry_point = 0x{parse_u32(metadata.get('entry_point'), 'entry_point'):08x}u;",
+        f'        compiled.function_count = {len(functions)}u;',
+        f"        compiled.functions_discovered = {parse_u32(metadata.get('functions_discovered', len(functions)), 'functions_discovered')}u;",
+        f'        compiled.functions.reserve({len(functions)}u);',
+        f'        entries.resize({len(functions)}u);',
+    ]
+    for index in range(chunk_count):
+        lines.append(
+            f'        ee_dispatch_chunk_{index:04d}(&compiled, entries.data());'
+        )
+    lines += [
+        '    }',
+        '};',
+        'const s_compiled_dispatch g_dispatch{};',
+        'const ee::s_ee_dispatch_table g_dispatch_table',
+        '{',
+        '    &g_dispatch.compiled,',
+        '    g_dispatch.entries.data(),',
+        '    g_dispatch.entries.size()',
+        '};',
+        '} // namespace',
+        '#if defined(_WIN32)',
+        '#define EE_GAME_EXPORT __declspec(dllexport)',
+        '#else',
+        '#define EE_GAME_EXPORT',
+        '#endif',
+        'extern "C" EE_GAME_EXPORT std::uint32_t ee_game_run(',
+        '    ee::s_ee_cpu_state* cpu,',
+        '    ee::s_ee_runtime* runtime,',
+        '    std::uint32_t max_dispatches,',
+        '    std::uint32_t* out_dispatch_count,',
+        '    std::uint32_t* out_guest_pc,',
+        '    std::uint32_t* out_status)',
+        '{',
+        '    const ee::s_ee_dispatch_result result =',
+        '        ee::ee_dispatch_run(cpu, runtime, g_dispatch_table, max_dispatches);',
+        '    if (out_dispatch_count) *out_dispatch_count = result.dispatch_count;',
+        '    if (out_guest_pc) *out_guest_pc = result.guest_pc;',
+        '    if (out_status) *out_status = static_cast<std::uint32_t>(result.status);',
+        '    return result.exit_reason;',
+        '}',
+        '',
+    ]
+    return '\n'.join(lines)
+
+
+def cached_dispatch_objects(output, metadata, functions, cxx,
+                            source_root, include_args, compile_flags):
+    # The generated source, compiler signature, runtime headers, and flags
+    # all participate in cache validation. Never reuse stale native code.
+    compiler_path = Path(shutil.which(cxx) or cxx).resolve()
+    if not compiler_path.is_file():
+        raise ValueError(f'dispatch compiler unavailable: {cxx}')
+    compiler_stat = compiler_path.stat()
+    compiler_info = {
+        'path': str(compiler_path),
+        'size': compiler_stat.st_size,
+        'mtime_ns': compiler_stat.st_mtime_ns,
+    }
+    dependency_key = runtime_cache_key(
+        [], source_root, compiler_info, compile_flags + include_args
+    )
+    cache_dir = output.parent / (output.name + '.dispatch-cache')
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    chunk_count = (len(functions) + DISPATCH_CHUNK_SIZE - 1) // DISPATCH_CHUNK_SIZE
+    units = [(output.with_suffix(output.suffix + '.dispatch.cpp'),
+              output.with_suffix(output.suffix + '.dispatch.o'),
+              build_chunked_dispatch_source(metadata, functions, chunk_count))]
+    for index, first in enumerate(range(0, len(functions), DISPATCH_CHUNK_SIZE)):
+        name = f'chunk-{index:04d}'
+        units.append((
+            cache_dir / (name + '.cpp'),
+            cache_dir / (name + '.o'),
+            build_dispatch_chunk_source(
+                functions[first:first + DISPATCH_CHUNK_SIZE], first, index
+            ),
+        ))
+    object_paths = []
+    reused = 0
+    for source, obj, generated in units:
+        encoded = generated.encode('utf-8')
+        key = hashlib.sha256(
+            dependency_key.encode('ascii') + b'\0' + encoded
+        ).hexdigest()
+        record_path = obj.with_suffix(obj.suffix + '.json')
+        try:
+            record = json.loads(record_path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            record = {}
+        valid = (
+            obj.is_file() and record.get('key') == key and
+            record.get('object_sha256') == hashlib.sha256(obj.read_bytes()).hexdigest()
+        )
+        if not valid:
+            source.write_bytes(encoded)
+            temporary = obj.with_suffix(obj.suffix + '.tmp')
+            try:
+                subprocess.run([
+                    cxx, *compile_flags, *include_args,
+                    '-c', str(source), '-o', str(temporary)
+                ], check=True)
+                os.replace(temporary, obj)
+                record_path.write_text(json.dumps({
+                    'key': key,
+                    'object_sha256': hashlib.sha256(obj.read_bytes()).hexdigest(),
+                }, indent=2) + '\n', encoding='utf-8')
+            finally:
+                if temporary.exists():
+                    temporary.unlink()
+        else:
+            reused += 1
+        object_paths.append(obj)
+    print(
+        f'link_native_objects: dispatcher {len(object_paths)} units, '
+        f'reused {reused}, compiled {len(object_paths)-reused}',
+        flush=True,
+    )
+    return object_paths
+
+
 def load_inputs(metadata_path, object_dir):
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     object_manifest_path = object_dir / "objects.json"
@@ -381,43 +572,20 @@ def main():
 
         args.output.parent.mkdir(parents=True, exist_ok=True)
         dispatch_source = args.output.with_suffix(args.output.suffix + ".dispatch.cpp")
-        dispatch_source.write_text(
-            build_dispatch_source(metadata, functions), encoding="utf-8"
-        )
-
+        dispatch_object = args.output.with_suffix(args.output.suffix + ".dispatch.o")
         include_args = [
             "-I" + str(source_root / "include"),
             "-I" + str(source_root / "include/ee"),
             "-I" + str(source_root / "src/runtime"),
         ]
-
-        # The generated metadata glue can contain several megabytes of static
-        # initializer code for a full game. Compile it separately at a low
-        # optimisation level; optimising these tables is expensive and does not
-        # improve the generated guest functions (already compiled to objects).
-        dispatch_object = args.output.with_suffix(args.output.suffix + ".dispatch.o")
-        compile_command = [
-            args.cxx,
-            "-std=c++17",
-            f"-O{args.dispatcher_opt}",
-        ]
+        compile_flags = ["-std=c++17", f"-O{args.dispatcher_opt}"]
         if sys.platform in ("linux", "darwin"):
-            compile_command.append("-fPIC")
+            compile_flags.append("-fPIC")
         if args.pdb:
-            compile_command += ["-g", "-gcodeview"]
-        compile_command += include_args
-        compile_command += ["-c", str(dispatch_source), "-o", str(dispatch_object)]
-
-        print(
-            f"link_native_objects: compiling dispatcher glue at -O{args.dispatcher_opt}",
-            flush=True,
-        )
-        dispatch_started = time.monotonic()
-        subprocess.run(compile_command, check=True)
-        print(
-            f"link_native_objects: dispatcher glue compiled "
-            f"({time.monotonic() - dispatch_started:.2f}s)",
-            flush=True,
+            compile_flags += ["-g", "-gcodeview"]
+        dispatch_objects = cached_dispatch_objects(
+            args.output, metadata, functions, args.cxx, source_root,
+            include_args, compile_flags
         )
 
         # Runtime sources do not depend on the number of translated guest
@@ -464,7 +632,7 @@ def main():
         command += include_args
         command.append("@" + str(response_path))
         command += [str(path) for path in runtime_objects]
-        command.append(str(dispatch_object))
+        command += [str(path) for path in dispatch_objects]
         command += ["-o", str(args.output)]
 
         if pdb_path is not None and pdb_path.exists():
@@ -500,6 +668,7 @@ def main():
             "dispatcher_entry": "ee_game_run",
             "dispatch_glue": dispatch_source.name,
             "dispatch_object": dispatch_object.name,
+            "dispatch_chunk_objects": [path.name for path in dispatch_objects[1:]],
             "dispatcher_optimization_level": args.dispatcher_opt,
             "pdb": pdb_path.name if pdb_path is not None else None,
             "pdb_size_bytes": pdb_path.stat().st_size if pdb_path is not None else None,

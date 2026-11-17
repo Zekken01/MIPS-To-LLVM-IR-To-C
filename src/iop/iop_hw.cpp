@@ -30,6 +30,7 @@ void c_hw::reset()
     m_i_mask = 0u;
     m_i_ctrl = 1u;
     m_cache_control = 0u;
+    m_sio2_ctrl = 0u;
     m_timer5_count = 0u;
     m_timer5_mode = 0u;
     m_timer5_target = 0u;
@@ -275,6 +276,9 @@ bool c_hw::read(
         // I-cache/D-cache isolation or instruction fetch coherence.
         *value = m_cache_control;
         return true;
+    case k_sio2_ctrl:
+        *value = m_sio2_ctrl;
+        return true;
     default:
         return false;
     }
@@ -481,6 +485,11 @@ bool c_hw::write(
         return true;
     case k_cache_control:
         m_cache_control = value;
+        return true;
+    case k_sio2_ctrl:
+        // Keep real guest initialization/reset writes observable. A
+        // transfer start or SIO2 IRQ is deliberately not fabricated.
+        m_sio2_ctrl = value;
         return true;
     default:
         return false;

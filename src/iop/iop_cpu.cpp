@@ -492,6 +492,48 @@ e_step_result c_cpu::step(uint32_t* opcode)
                        static_cast<int32_t>(right) ? 1u : 0u);
             break;
         case 0x2bu: assign(rd, left < right ? 1u : 0u); break;
+        case 0x30u:
+            if (static_cast<int32_t>(left) >= static_cast<int32_t>(right))
+            {
+                return m_guest_exceptions ? guest_trap(13u) :
+                    e_step_result::unsupported;
+            }
+            break;
+        case 0x31u:
+            if (left >= right)
+            {
+                return m_guest_exceptions ? guest_trap(13u) :
+                    e_step_result::unsupported;
+            }
+            break;
+        case 0x32u:
+            if (static_cast<int32_t>(left) < static_cast<int32_t>(right))
+            {
+                return m_guest_exceptions ? guest_trap(13u) :
+                    e_step_result::unsupported;
+            }
+            break;
+        case 0x33u:
+            if (left < right)
+            {
+                return m_guest_exceptions ? guest_trap(13u) :
+                    e_step_result::unsupported;
+            }
+            break;
+        case 0x34u:
+            if (left == right)
+            {
+                return m_guest_exceptions ? guest_trap(13u) :
+                    e_step_result::unsupported;
+            }
+            break;
+        case 0x36u:
+            if (left != right)
+            {
+                return m_guest_exceptions ? guest_trap(13u) :
+                    e_step_result::unsupported;
+            }
+            break;
         default: return e_step_result::unsupported;
         }
         break;
