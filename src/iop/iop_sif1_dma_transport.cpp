@@ -201,10 +201,11 @@ bool c_sif1_dma_transport::consume_one_iop_word_or_tag()
         }
         m_iop_destination = destination;
         m_iop_words_remaining = count / 4u;
-        // IOP SIF DMA destination tags use bit 30 for ERT (end receive
-        // transfer) and bit 31 for INT_O (interrupt on the IOP side).
-        // INT_O alone must not terminate DMA10.
-        m_iop_final_tag = (tag & 0x40000000u) != 0u;
+        // IOP destination-chain tags encode ERT in bit 30 and IRQ
+        // (INT_O) in bit 31. Both terminate the current DMA10 transfer:
+        // the hardware receiver reaches completion after the tagged
+        // payload. PCSX2's SIFIOPReadTag checks IRQ || (ID & 4).
+        m_iop_final_tag = (tag & 0xc0000000u) != 0u;
         return true;
     }
 
