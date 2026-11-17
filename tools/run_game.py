@@ -336,6 +336,135 @@ def pointer_table_siblings(elf_path, target, executable_ranges, limit):
     return siblings
 
 
+
+def branch_anchored_jump_table_siblings(elf_path, target, executable_ranges, limit):
+    """Find a small bounded switch only through its actual MIPS JR consumer.
+
+    Unlike generic function-pointer discovery, this requires the compiler's
+    guarded indexed dispatch sequence: SLTIU/BEQ, LUI/SLL/ADDIU/ADDU,
+    LW and JR. The SLTIU bound supplies the *exact* table size. A reachable
+    target must occur inside that file-backed table; otherwise no pointers
+    are promoted to native entries. Do not weaken pointer_table_siblings().
+    """
+    if limit <= 0 or target == 0 or target & 3 or not any(
+        start <= target < end for start, end in executable_ranges
+    ):
+        return []
+
+    image = elf_path.read_bytes()
+    if len(image) < 52 or image[:6] != b"\x7fELF\x01\x01":
+        raise ValueError("jump-table discovery requires little-endian ELF32")
+    header_offset = struct.unpack_from("<I", image, 28)[0]
+    header_size = struct.unpack_from("<H", image, 42)[0]
+    header_count = struct.unpack_from("<H", image, 44)[0]
+    if header_size < 32 or header_offset + header_size * header_count > len(image):
+        raise ValueError("invalid ELF32 program header table")
+
+    segments = []
+    for index in range(header_count):
+        header = header_offset + header_size * index
+        kind, offset, vaddr, _, file_size, _, flags, _ = struct.unpack_from(
+            "<IIIIIIII", image, header
+        )
+        if kind != 1 or not file_size:
+            continue
+        if offset + file_size > len(image):
+            raise ValueError("ELF PT_LOAD exceeds file bounds")
+        segments.append((offset, vaddr, file_size, flags))
+
+    def table_words(address, count):
+        for file_offset, vaddr, size, _ in segments:
+            if address >= vaddr and count <= (size // 4) and (
+                address - vaddr <= size - 4 * count
+            ):
+                offset = file_offset + address - vaddr
+                return struct.unpack_from(f"<{count}I", image, offset)
+        return None
+
+    def executable(pc):
+        return pc != 0 and not (pc & 3) and any(
+            start <= pc < end for start, end in executable_ranges
+        )
+
+    def signed16(word):
+        value = word & 0xffff
+        return value - 0x10000 if value & 0x8000 else value
+
+    for file_offset, vaddr, size, flags in segments:
+        if not (flags & 1) or size < 36:
+            continue
+        # Include the guard and the MIPS JR, but never treat a delay-slot
+        # instruction as a second instruction in the dispatch sequence.
+        for offset in range((-vaddr) & 3, size - 3, 4):
+            if offset < 32:
+                continue
+            jr = struct.unpack_from("<I", image, file_offset + offset)[0]
+            if (jr & 0xfc1fffff) != 0x00000008:
+                continue
+            index_register = (jr >> 21) & 31
+            if index_register in (0, 31):
+                continue
+            (bound, guard, delay, upper, shift, lower, add,
+             load) = struct.unpack_from("<8I", image, file_offset + offset - 32)
+            guard_register = (bound >> 16) & 31
+            count = bound & 0xffff
+            base_register = (upper >> 16) & 31
+            if not (
+                (bound >> 26) == 0x0b and
+                ((bound >> 21) & 31) == index_register and
+                guard_register != 0 and 2 <= count <= 128 and
+                (guard >> 26) == 0x04 and
+                ((guard >> 21) & 31) == guard_register and
+                ((guard >> 16) & 31) == 0 and
+                delay == 0 and
+                (upper >> 26) == 0x0f and base_register not in (0, index_register) and
+                (shift >> 26) == 0 and (shift & 63) == 0 and
+                ((shift >> 21) & 31) == 0 and
+                ((shift >> 16) & 31) == index_register and
+                ((shift >> 11) & 31) == index_register and
+                ((shift >> 6) & 31) == 2 and
+                (lower >> 26) == 0x09 and
+                ((lower >> 21) & 31) == base_register and
+                ((lower >> 16) & 31) == base_register and
+                (add >> 26) == 0 and (add & 63) == 0x21 and
+                ((add >> 11) & 31) == index_register and
+                {((add >> 21) & 31), ((add >> 16) & 31)} ==
+                {index_register, base_register} and
+                (load >> 26) == 0x23 and
+                ((load >> 21) & 31) == index_register and
+                ((load >> 16) & 31) == index_register and
+                (load & 0xffff) == 0
+            ):
+                continue
+
+            jr_pc = vaddr + offset
+            guard_pc = jr_pc - 28
+            guard_target = (guard_pc + 4 + 4 * signed16(guard)) & 0xffffffff
+            # The failed bounds check must bypass the indexed dispatch.
+            if jr_pc - 20 <= guard_target <= jr_pc + 4:
+                continue
+            table_base = (((upper & 0xffff) << 16) +
+                          signed16(lower)) & 0xffffffff
+            words = table_words(table_base, count)
+            if words is None or target not in words or not all(
+                executable(candidate) for candidate in words
+            ):
+                continue
+            anchor = words.index(target)
+            order = sorted(range(count), key=lambda i: (abs(i - anchor), i))
+            siblings = []
+            seen = {target}
+            for index in order:
+                candidate = words[index]
+                if candidate not in seen:
+                    seen.add(candidate)
+                    siblings.append(candidate)
+                    if len(siblings) >= limit:
+                        break
+            return siblings
+    return []
+
+
 def parse_address(value):
     number = int(value, 0)
     if not 0 <= number <= 0xFFFFFFFF or number & 3:
@@ -891,10 +1020,14 @@ def main(argv=None):
                 return result.returncode
 
             remaining = args.auto_expand - expanded_count
-            siblings = pointer_table_siblings(
-                elf, address, ranges,
-                min(args.auto_expand_table, remaining - 1),
+            table_limit = min(args.auto_expand_table, remaining - 1)
+            siblings = branch_anchored_jump_table_siblings(
+                elf, address, ranges, table_limit,
             )
+            if not siblings:
+                siblings = pointer_table_siblings(
+                    elf, address, ranges, table_limit,
+                )
             if siblings:
                 print(
                     f"auto-expand: guest-reached PC 0x{address:08x} anchors "
