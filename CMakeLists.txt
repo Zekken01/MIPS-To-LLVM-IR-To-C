@@ -519,6 +519,10 @@ if(EE_HAVE_LLVM_JIT_TEST)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/smoke/test_guest_instruction_attempts_ir_runtime.py
                 $<TARGET_FILE:ee_control_flow_ir_fixture>)
+    add_test(NAME guest_loop_yield_ir_runtime
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/smoke/test_guest_loop_yield_ir_runtime.py
+                $<TARGET_FILE:ee_control_flow_ir_fixture>)
     add_test(NAME mmi_ir_runtime
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/smoke/test_mmi_ir_runtime.py

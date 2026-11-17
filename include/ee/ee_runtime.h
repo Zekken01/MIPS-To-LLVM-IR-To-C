@@ -252,6 +252,11 @@ struct s_ee_runtime
     // and does not promote one instruction to one EE cycle (R5900 is
     // superscalar and instructions can stall). Appended for ABI stability.
     uint64_t m_guest_instruction_attempts = 0u;
+
+    // Opt-in host scheduling mode for translated loop-header safepoints.
+    // Default false keeps the existing terminal LOOP_BUDGET diagnostic.
+    // A HOST_YIELD never creates a clock tick, VBlank or guest exception.
+    uint32_t m_loop_safepoint_yield_enabled = 0u;
 };
 
 // Outside a branch delay slot, all four transfer forms only catch VU0 up to
