@@ -190,7 +190,7 @@ int main()
                             inst.rs == 31u && inst.rt == column &&
                             inst.rd == row + 4u &&
                             std::strcmp(inst.mnemonic, names[row]) == 0 &&
-                            lift(inst).kind == LOP_UNSUPPORTED;
+                            lift(inst).kind == LOP_VU0_MACRO;
             ok ? ++g_pass : ++g_fail;
             if (!ok)
             {
