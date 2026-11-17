@@ -359,6 +359,9 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME ee_pointer_table_expansion
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_function_pointer_tables.py)
+    add_test(NAME ee_chunked_dispatcher
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/tools/test_chunked_dispatcher.py)
     if(EE_HAVE_LLVM_JIT_TEST)
         add_test(NAME verify_ir_incremental
             COMMAND ${Python3_EXECUTABLE}
