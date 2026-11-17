@@ -1303,6 +1303,105 @@ def main():
         assert report["history"][-1]["dispatch"] == report["dispatches"], report
         assert len(report["gpr_lo"]) == 32, report
         assert (root / "out" / "ir" / "ee_functions.json").is_file()
+        # Cycle-model prerequisite: an ordered trace of native-executed
+        # instruction PCs, without pretending attempt numbers are EE cycles.
+        # BEQL is NOT taken: its delay slot at 0x00100010 is annulled.
+        trace_elf = root / "branch-likely-trace.elf"
+        make_elf(trace_elf)
+        trace_image = bytearray(trace_elf.read_bytes())
+        for index, word in enumerate((
+            0x24080001,  # ADDIU t0, zero, 1
+            0x51000001,  # BEQL t0, zero, +1 (not taken)
+            0x24090005,  # annulled ADDIU t1, zero, 5
+            0x24020009,  # ADDIU v0, zero, 9
+            0x03e00008,  # JR ra
+            0x00000000,  # architectural delay slot
+        )):
+            struct.pack_into("<I", trace_image, 0x108 + index * 4, word)
+        trace_elf.write_bytes(trace_image)
+        trace_work = root / "instruction-trace-work"
+        trace_path = root / "instruction-trace.csv"
+        trace_report_path = root / "instruction-trace-report.json"
+        trace_cmd = [
+            sys.executable, str(source / "tools" / "run_game.py"),
+            str(trace_elf), "--build-dir", str(build),
+            "--work-dir", str(trace_work), "--max-dispatches=8",
+            "--kseg-ram", "--report", str(trace_report_path),
+        ]
+        trace_result = subprocess.run(
+            trace_cmd + [
+                "--trace-instructions", str(trace_path),
+                "--trace-instructions-window", "0x00100008:0x0010001c",
+            ], capture_output=True, text=True, check=False,
+        )
+        assert trace_result.returncode == 3, (
+            trace_result.stdout + trace_result.stderr
+        )
+        assert "NO cycle timestamps" in trace_result.stdout, trace_result.stdout
+        trace_lines = trace_path.read_text(encoding="utf-8").splitlines()
+        assert trace_lines == [
+            "attempt,pc,opcode_word",
+            "1,0x00100008,0x24080001",
+            "2,0x0010000c,0x51000001",
+            "3,0x00100014,0x24020009",
+            "4,0x00100018,0x03e00008",
+            "5,0x0010001c,0x00000000",
+            "# truncated=false range=0x00100008:0x0010001c",
+        ], trace_lines
+        traced_state = json.loads(trace_report_path.read_text(encoding="utf-8"))
+        baseline_report = root / "instruction-baseline-report.json"
+        baseline_result = subprocess.run(
+            trace_cmd[:-1] + [str(baseline_report), "--no-recompile"],
+            capture_output=True, text=True, check=False,
+        )
+        assert baseline_result.returncode == trace_result.returncode, (
+            baseline_result.stdout + baseline_result.stderr
+        )
+        baseline_state = json.loads(baseline_report.read_text(encoding="utf-8"))
+        for field in (
+            "entry_pc", "final_pc", "dispatches", "exit_reason", "exit_name",
+            "dispatch_status", "guest_instruction_attempts", "gpr_lo",
+        ):
+            assert traced_state[field] == baseline_state[field], field
+        assert traced_state["guest_instruction_attempts"] == 5, traced_state
+        assert traced_state["gpr_lo"][9] == 0, traced_state
+
+        # A genuine infinite backward branch fills exactly 65,536 samples.
+        # The overflow marker must be explicit; it must not fabricate
+        # interrupt events or silently truncate a purported complete trace.
+        loop_elf = root / "instruction-loop.elf"
+        make_elf(loop_elf)
+        loop_image = bytearray(loop_elf.read_bytes())
+        struct.pack_into("<II", loop_image, 0x108,
+                         0x1000ffff, 0x25080001)  # BEQ self; ADDIU t0,t0,1
+        loop_elf.write_bytes(loop_image)
+        loop_trace_path = root / "loop-instructions.csv"
+        loop_result = subprocess.run(
+            [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(loop_elf), "--build-dir", str(build),
+                "--work-dir", str(root / "instruction-loop-work"),
+                "--max-dispatches=8", "--loop-budget=40000",
+                "--kseg-ram", "--trace-instructions", str(loop_trace_path),
+                "--trace-instructions-window", "0x00100008:0x0010000c",
+            ], capture_output=True, text=True, check=False,
+        )
+        assert loop_result.returncode == 3, (
+            loop_result.stdout + loop_result.stderr
+        )
+        assert "LOOP_BUDGET(5)" in loop_result.stdout, loop_result.stdout
+        assert "guest-instruction attempts: 80000" in loop_result.stdout, (
+            loop_result.stdout + loop_result.stderr
+        )
+        loop_lines = loop_trace_path.read_text(encoding="utf-8").splitlines()
+        assert len(loop_lines) == 65538, len(loop_lines)
+        assert loop_lines[1] == "1,0x00100008,0x1000ffff", loop_lines[1]
+        assert loop_lines[-2] == "65536,0x0010000c,0x25080001", loop_lines[-2]
+        assert loop_lines[-1] == (
+            "# truncated=true range=0x00100008:0x0010000c"
+        ), loop_lines[-1]
+
+
 
         # Probe-only time-paced JSON snapshots must preserve the exact
         # one-dispatch host slicing, guest state and terminal report.
