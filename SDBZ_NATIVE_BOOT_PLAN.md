@@ -40,6 +40,8 @@ The following were implemented and merged by 2026-11-17:
 
 **Last confirmed focused full-game replay:** **12,168 EE dispatches**, final guest PC **`0x00102E24`**, reason **untranslated native entry** (`DISPATCH`, status 0). This occurred *after* the source-chain DMA blocker at `0x00105034` was passed; it was **not** evidence of complete gameplay. A later `END` tag (19 QWC at `0x005033B0`) was observed in the diagnostic stream; do not infer another missing DMA mode from this without a fresh guest trace.
 
+**Next-entry ELF evidence:** a guest `jr $3` at `0x00102E1C` loads its destination through a table based at **`0x004B7000`** (`lw $3,0($3)` at `0x00102E18`). The first six table words are `0x00102E24`, `0x00102E5C`, `0x00102DA4`, then `0x00102E24` repeated three times. This is a **three-distinct-target indirect switch**, whereas the existing generic `pointer_table_siblings()` deliberately requires at least four distinct executable entries before bulk expansion. That conservative generic threshold should be retained; recover small tables only when grounded by the actual guest indirect branch and its dataflow.
+
 Historical local full-library work reached approximately **8,047 LLVM-verified translated modules**. These were scratch build artifacts, not source checked into `main`. The source-controlled pipeline is authoritative.
 
 ## 3. Stage 0 — Establish a reproducible, provenance-safe replay
@@ -81,8 +83,8 @@ If no authentic raw ISO is available, explicitly mark real CDVD/boot acceptance 
 **Objective:** pass the observed untranslated PC via actual native translation, rather than changing guest state.
 
 1. Read `tools/run_game.py` and its `append_function()`, `covered_pcs()`, `pointer_table_siblings()` and runtime-stop parsing. Inspect `tools/link_native_objects.py`'s 256-function chunking and runtime cache validation.
-2. Check if `0x00102E24` is aligned, inside the game's executable ELF ranges, already owned by a CFG block, or actually a guest callback/indirect jump into the middle of a discovered function. Compare the original ELF bytes and incoming control flow.
-3. Let `--auto-expand` add the genuine guest-reached entry; if it is in a credible contiguous pointer table, batch only validated siblings under `--auto-expand-table`. Avoid predeclaring arbitrary executable-looking words as functions.
+2. Confirm the known **six-entry indirect jump table at `0x004B7000`** and its `jr $3` consumer at `0x00102E1C`. Verify the three distinct targets (`0x00102E24`, `0x00102E5C`, `0x00102DA4`) and the provenance of the table address from the real MIPS `lui`/`addiu`/`sll`/`addu`/`lw` dataflow. Distinguish a switch-case entry from a conventional function prologue.
+3. Let `--auto-expand` add the genuinely reached target, respecting existing CFG ownership. If repeated runs reveal this three-target switch is a systematic discovery miss, add **branch-anchored small jump-table recovery** with a deterministic synthetic ELF regression. Do not lower the generic `pointer_table_siblings()` threshold from four distinct addresses globally or sweep arbitrary pointer-looking data. Preserve the original MIPS branch/delay-slot semantics.
 4. When shared CFG blocks overlap, keep the original owner and publish only new guest entry PCs; preserve the full separately lifted module's correct control flow.
 5. Run `verify_ir.py` incrementally, relink with verified chunk caches, and replay. If discovery remains systematically incomplete, improve the discovery algorithm and add a small test fixture proving the omission is fixed.
 6. Capture the **first new genuine blocker** and compare against the last boot trace. Do not call a higher count progress if it only consists of a poll loop.
@@ -159,6 +161,6 @@ Create feature branches from up-to-date `main`, commit incremental source/tests,
 | Last focused replay | **12,168 EE dispatches** |
 | Last guest PC | **`0x00102E24`** |
 | Stop class | untranslated EE entry; **not boot complete** |
-| Next action | restore verified translation provenance and compile/discover `0x00102E24` |
+| Next action | recover branch-anchored 3-target jump table at `0x004B7000`; compile/discover `0x00102E24` |
 
 **Next developer instruction:** inspect the latest merged code and actual original-game inputs; begin with Stage 0 and Stage 1, then implement the next concrete blocker. Do not stop at a high-level proposal. Keep this file updated with each merged milestone and the exact proof that advanced the game.
