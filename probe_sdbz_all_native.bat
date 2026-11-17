@@ -25,10 +25,11 @@ if not exist "%CXX%" (
 )
 
 set "SDBZ_ISO=D:\Games\PS2_ISO\Super Dragon Ball Z (USA).iso"
-if not exist "%SDBZ_ISO%" (
-    echo ERROR: SDBZ ISO was not found at %SDBZ_ISO%.
-    exit /b 1
-)
+if exist "%SDBZ_ISO%" goto iso_found
+echo ERROR: SDBZ ISO was not found at "%SDBZ_ISO%".
+exit /b 1
+
+:iso_found
 
 set "SDBZ_WORK=build\sdbz-all-native"
 set "SDBZ_LOG=%SDBZ_WORK%\probe.log"
