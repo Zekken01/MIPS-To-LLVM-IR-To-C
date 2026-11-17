@@ -96,6 +96,16 @@ uint32_t zero_initial_pc_entry(ee::s_ee_cpu_state* cpu, ee::s_ee_runtime*)
     return static_cast<uint32_t>(ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED);
 }
 
+uint32_t host_yield_entry(ee::s_ee_cpu_state* cpu, ee::s_ee_runtime*)
+{
+    // Model one host-scheduled, fully committed guest loop slice. The
+    // dispatcher must not consume another entry or turn this into a guest
+    // interrupt: the outer host explicitly decides when to re-enter.
+    cpu->m_gpr[8].m_lo += 1u;
+    cpu->m_pc = 0x00310000u;
+    return static_cast<uint32_t>(ee::e_ee_exit_reason::EE_EXIT_HOST_YIELD);
+}
+
 uint32_t dispatch_loop_entry(ee::s_ee_cpu_state* cpu, ee::s_ee_runtime*)
 {
     // Deliberately return to this same translated block forever.
@@ -300,6 +310,44 @@ int main()
               result.dispatch_count == 5u &&
               result.guest_pc == 0x00300000u,
               "stop dispatcher at configured budget");
+    }
+
+    // A host-cooperative native loop yield is an EXITED status carrying a
+    // distinct host-only reason, not a guest exception or a completed frame.
+    // The host can re-enter the same PC with the exact committed state.
+    {
+        ee::s_recompiled_elf compiled{};
+        compiled.functions.push_back(
+            make_function("host_yield", 0x00310000u, {0x00310000u}));
+        const ee::t_ee_translated_entry entries[] = {host_yield_entry};
+        const ee::s_ee_dispatch_table table{&compiled, entries, 1u};
+
+        ee::s_ee_cpu_state cpu{};
+        cpu.m_pc = 0x00310000u;
+        cpu.m_gpr[8].m_lo = 41u;
+        cpu.m_gpr[8].m_hi = 0x0123456789abcdefull;
+        cpu.m_cop0[13] = 0u; // No hardware IRQ or guest exception.
+
+        const auto first = ee::ee_dispatch_run(&cpu, nullptr, table, 50u);
+        const bool first_valid =
+            is_exited(first, static_cast<uint32_t>(
+                e_ee_exit_reason::EE_EXIT_HOST_YIELD)) &&
+            first.dispatch_count == 1u &&
+            first.guest_pc == 0x00310000u &&
+            cpu.m_pc == 0x00310000u && cpu.m_gpr[8].m_lo == 42u &&
+            cpu.m_gpr[8].m_hi == 0x0123456789abcdefull &&
+            cpu.m_cop0[13] == 0u;
+
+        const auto resumed = ee::ee_dispatch_run(&cpu, nullptr, table, 50u);
+        check(first_valid &&
+              is_exited(resumed, static_cast<uint32_t>(
+                  e_ee_exit_reason::EE_EXIT_HOST_YIELD)) &&
+              resumed.dispatch_count == 1u &&
+              resumed.guest_pc == 0x00310000u &&
+              cpu.m_gpr[8].m_lo == 43u &&
+              cpu.m_gpr[8].m_hi == 0x0123456789abcdefull &&
+              cpu.m_cop0[13] == 0u,
+              "propagate exact host yield and resume same guest entry");
     }
 
     // Metadata and native entry arrays must remain index-aligned.
