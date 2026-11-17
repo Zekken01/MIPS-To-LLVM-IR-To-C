@@ -45,6 +45,7 @@ add_library(ee_core STATIC
     src/runtime/ee_exceptions.cpp
     src/runtime/ee_vu0.cpp
     src/runtime/ee_vsync_flags.cpp
+    src/runtime/ee_scanout_clock.cpp
 )
 
 # Standalone IOP R3000A interpreter, initially isolated from the EE
@@ -174,6 +175,10 @@ target_link_libraries(ee_vu0_macro_fmac_test PRIVATE ee_core)
 
 add_executable(ee_vsync_flag_test tests/smoke/ee_vsync_flag_test.cpp)
 target_link_libraries(ee_vsync_flag_test PRIVATE ee_core)
+
+# Cycle-driven GS field events, without a synthetic runtime VBlank producer.
+add_executable(ee_scanout_clock_test tests/smoke/ee_scanout_clock_test.cpp)
+target_link_libraries(ee_scanout_clock_test PRIVATE ee_core)
 
 # Emit a deterministic per-pair VU0 trace from the in-tree candidate runtime.
 add_executable(ee_vu0_trace_candidate tests/tools/vu0_trace_candidate.cpp)
@@ -455,6 +460,7 @@ add_test(NAME ee_unaligned_memory COMMAND ee_unaligned_memory_test)
 add_test(NAME vu0_runtime COMMAND ee_vu0_runtime_test)
 add_test(NAME vu0_macro_fmac COMMAND ee_vu0_macro_fmac_test)
 add_test(NAME ee_vsync_flag COMMAND ee_vsync_flag_test)
+add_test(NAME ee_scanout_clock COMMAND ee_scanout_clock_test)
 add_test(NAME multi_function COMMAND ee_multi_test)
 add_test(NAME function_discovery COMMAND ee_function_discovery_test)
 add_test(NAME smoke COMMAND ee_smoke_test)
