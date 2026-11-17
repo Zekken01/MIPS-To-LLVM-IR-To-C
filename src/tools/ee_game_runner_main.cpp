@@ -3118,11 +3118,15 @@ int main(int argc, char** argv)
                             flag_address, csr_address);
                         break;
                     }
+                    // The kernel's syscall ABI returns V0=0 even though
+                    // this registration creates no event or guest RAM write.
+                    cpu.m_gpr[2].m_lo = 0u;
+                    cpu.m_gpr[2].m_hi = 0u;
                     if (trace)
                     {
                         std::printf(
                             "HLE SetVSyncFlag: flag=0x%08x csr=0x%08x "
-                            "result=void, no VSync event\n",
+                            "result=0, no VSync event\n",
                             flag_address, csr_address);
                     }
                 }
