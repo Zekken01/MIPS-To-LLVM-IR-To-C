@@ -256,6 +256,86 @@ def executable_segments(path):
     return ranges
 
 
+def pointer_table_siblings(elf_path, target, executable_ranges, limit):
+    """Prefetch code pointers from a table containing a guest-reached PC.
+
+    The ELF may mix data and code in one executable PT_LOAD segment. Do
+    not treat every pointer-shaped word as a function. A table is trusted
+    only after real guest execution reaches one of its entries and at
+    least four distinct executable targets occur in a contiguous array.
+    """
+    if limit <= 0 or target & 3:
+        return []
+
+    image = elf_path.read_bytes()
+    if len(image) < 52 or image[:4] != b"\x7fELF" or image[4:6] != b"\x01\x01":
+        raise ValueError("function-pointer discovery requires little-endian ELF32")
+    program_offset = struct.unpack_from("<I", image, 28)[0]
+    program_size = struct.unpack_from("<H", image, 42)[0]
+    program_count = struct.unpack_from("<H", image, 44)[0]
+    if program_size < 32 or program_offset + program_size * program_count > len(image):
+        raise ValueError("invalid ELF32 program header table")
+
+    def executable(pc):
+        return pc != 0 and (pc & 3) == 0 and any(
+            start <= pc < end for start, end in executable_ranges
+        )
+
+    selected = None
+    best_score = None
+    for segment in range(program_count):
+        header = program_offset + program_size * segment
+        kind, file_offset, virtual_address, _, file_size, _, _, _ = (
+            struct.unpack_from("<IIIIIIII", image, header)
+        )
+        if kind != 1 or file_size < 16:
+            continue
+        if file_offset + file_size > len(image):
+            raise ValueError("ELF PT_LOAD exceeds file bounds")
+
+        run = []
+        def consider():
+            nonlocal selected, best_score
+            if len(run) < 4 or target not in run:
+                return
+            unique = len(set(run))
+            if unique < 4:
+                return
+            score = (unique, -len(run))
+            if best_score is None or score > best_score:
+                selected = run[:]
+                best_score = score
+
+        first = (-virtual_address) & 3
+        for offset in range(first, file_size - 3, 4):
+            candidate = struct.unpack_from("<I", image, file_offset + offset)[0]
+            if executable(candidate):
+                run.append(candidate)
+            else:
+                consider()
+                run = []
+        consider()
+
+    if selected is None:
+        return []
+
+    # Prefer neighbors in the same runtime-confirmed pointer array,
+    # expanding both directions before considering more distant entries.
+    anchor = selected.index(target)
+    order = sorted(range(len(selected)), key=lambda i: (abs(i - anchor), i))
+    siblings = []
+    seen = {target}
+    for index in order:
+        pc = selected[index]
+        if pc in seen:
+            continue
+        seen.add(pc)
+        siblings.append(pc)
+        if len(siblings) == limit:
+            break
+    return siblings
+
+
 def parse_address(value):
     number = int(value, 0)
     if not 0 <= number <= 0xFFFFFFFF or number & 3:
@@ -427,7 +507,11 @@ def main(argv=None):
     )
     parser.add_argument(
         "--auto-expand", type=int, default=0,
-        help="relink/replay with up to N newly reached executable function PCs",
+        help="relink/replay with up to N newly translated executable entry PCs",
+    )
+    parser.add_argument(
+        "--auto-expand-table", type=int, default=24,
+        help="prefetch up to N sibling function pointers per replay when anchored by a guest-reached entry (0=off)",
     )
     parser.add_argument("--pdb", action="store_true",
                         help="Generate game-translated.pdb using Windows Clang/LLD")
@@ -538,6 +622,8 @@ def main(argv=None):
         parser.error("--timeout-seconds must be in [1, 3600]")
     if args.auto_expand < 0 or args.auto_expand > 128:
         parser.error("--auto-expand must be between 0 and 128")
+    if args.auto_expand_table < 0 or args.auto_expand_table > 128:
+        parser.error("--auto-expand-table must be between 0 and 128")
     if args.pdb and os.name != "nt":
         parser.error("--pdb requires a Windows Clang/LLD host toolchain")
     if args.no_recompile and args.extra_functions:
@@ -726,6 +812,7 @@ def main(argv=None):
             command.append(f"--kernel-ram={snapshot}")
 
         ranges = executable_segments(elf) if args.auto_expand else []
+        expanded_count = 0
         for replay in range(args.auto_expand + 1):
             print(
                 f"\n== Executing translated EE code (replay {replay}) ==",
@@ -781,7 +868,7 @@ def main(argv=None):
                             file=sys.stderr,
                         )
                 return 124
-            if replay == args.auto_expand or result.returncode not in (3, 4):
+            if expanded_count >= args.auto_expand or result.returncode not in (3, 4):
                 return result.returncode
 
             match = STOP_PATTERN.search(result.stdout)
@@ -803,11 +890,43 @@ def main(argv=None):
                 )
                 return result.returncode
 
-            print(
-                f"auto-expand: compiling reachable PC 0x{address:08x}",
-                flush=True,
+            remaining = args.auto_expand - expanded_count
+            siblings = pointer_table_siblings(
+                elf, address, ranges,
+                min(args.auto_expand_table, remaining - 1),
             )
-            if not append_function(recomp, elf, work, metadata_path, address):
+            if siblings:
+                print(
+                    f"auto-expand: guest-reached PC 0x{address:08x} anchors "
+                    f"{len(siblings)} additional table entries; "
+                    "batching one native relink",
+                    flush=True,
+                )
+            targets = [address, *siblings]
+            added = 0
+            for candidate in targets:
+                current = json.loads(metadata_path.read_text(encoding="utf-8"))
+                if candidate in covered_pcs(current):
+                    continue
+                print(
+                    f"auto-expand: compiling reachable/table PC "
+                    f"0x{candidate:08x}", flush=True,
+                )
+                try:
+                    if append_function(
+                        recomp, elf, work, metadata_path, candidate
+                    ):
+                        added += 1
+                        expanded_count += 1
+                except ValueError as error:
+                    if candidate == address:
+                        raise
+                    print(
+                        f"auto-expand: ignoring speculative table sibling "
+                        f"0x{candidate:08x}: {error}",
+                        file=sys.stderr,
+                    )
+            if added == 0:
                 return result.returncode
             build_linked_library(
                 source_root, work, metadata_path, object_dir, library,
