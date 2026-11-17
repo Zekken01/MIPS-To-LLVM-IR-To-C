@@ -42,9 +42,14 @@ producer and a pinned PCSX2 interpreter adapter are now available for live
 differential testing. The candidate trace path passes CTest; the actual
 cross-engine comparison still needs to be run.
 
-The linked full-game library is not yet a complete PS2 executable. BIOS/IOP
-services, GS, DMA, TLB/MMIO devices, interrupts, and other console integration
-remain incomplete. See RESUME.md for the current status and next priorities.
+The linked full-game library is not yet a complete, playable PS2 executable.
+The native runtime now supports real OpenPS2BIOS ROM0 execution, CDVD reads,
+SIF/DMA handshakes, and selected GIF/GS transfers, but further native function
+coverage, graphics, device behavior and frame presentation are required.
+
+See [SDBZ_NATIVE_BOOT_PLAN.md](SDBZ_NATIVE_BOOT_PLAN.md) for the **current
+verified Super Dragon Ball Z boot checkpoint**, prioritized milestones, and
+acceptance criteria. `RESUME.md` retains earlier recompiler research history.
 
 ## Build and test
 
