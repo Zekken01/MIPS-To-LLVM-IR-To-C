@@ -31,6 +31,14 @@ exit /b 1
 
 :iso_found
 
+set "SDBZ_IOP_ROM0=%CD%\build\openps2bios\rom0.bin"
+if exist "%SDBZ_IOP_ROM0%" goto rom0_found
+echo ERROR: OpenPS2BIOS ROM0 is missing at "%SDBZ_IOP_ROM0%".
+echo Run build_openps2bios.bat or build.bat first.
+exit /b 1
+
+:rom0_found
+
 set "SDBZ_WORK=build\sdbz-all-native"
 set "SDBZ_LOG=%SDBZ_WORK%\probe.log"
 if not exist "%SDBZ_WORK%\game-translated.dll" (
