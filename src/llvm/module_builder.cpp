@@ -2427,6 +2427,57 @@ void module_builder::emit_block(const std::vector<ee::s_ee_instruction>& block,
         m_out += "  store i32 5, ptr " + reason_ptr + "\n";
         m_out += "  ret i32 5\n";
         m_out += continue_label + ":\n";
+
+        // Independent, opt-in cooperative host yield. It occurs before
+        // executing the next loop-header instruction, after the preceding
+        // control transfer has committed its delay-slot and GPR state.
+        // Neither the yield count nor this return is an EE cycle.
+        const std::string yield_enabled = "loop_yield_enabled_" + suffix;
+        const std::string yield_tick = "loop_yield_tick_" + suffix;
+        const std::string yield_dec = "loop_yield_dec_" + suffix;
+        const std::string yield_exit = "loop_yield_exit_" + suffix;
+        const std::string yield_continue = "loop_yield_continue_" + suffix;
+        const std::string yield_null = newtemp();
+        m_out += "  " + yield_null + " = icmp eq ptr %rt, null\n";
+        m_out += "  br i1 " + yield_null + ", label %" + yield_continue +
+                 ", label %" + yield_enabled + "\n";
+        m_out += yield_enabled + ":\n";
+        const std::string yield_limit_ptr = newtemp();
+        const std::string yield_limit = newtemp();
+        const std::string yield_disabled = newtemp();
+        m_out += "  " + yield_limit_ptr + " = getelementptr i8, ptr %rt, i64 " +
+                 std::to_string(offsetof(ee::s_ee_runtime, m_loop_yield_limit)) +
+                 "\n";
+        m_out += "  " + yield_limit + " = load i32, ptr " + yield_limit_ptr + "\n";
+        m_out += "  " + yield_disabled + " = icmp eq i32 " + yield_limit + ", 0\n";
+        m_out += "  br i1 " + yield_disabled + ", label %" + yield_continue +
+                 ", label %" + yield_tick + "\n";
+        m_out += yield_tick + ":\n";
+        const std::string yield_remaining_ptr = newtemp();
+        const std::string yield_remaining = newtemp();
+        const std::string yield_empty = newtemp();
+        m_out += "  " + yield_remaining_ptr + " = getelementptr i8, ptr %rt, i64 " +
+                 std::to_string(offsetof(ee::s_ee_runtime, m_loop_yield_remaining)) +
+                 "\n";
+        m_out += "  " + yield_remaining + " = load i32, ptr " +
+                 yield_remaining_ptr + "\n";
+        m_out += "  " + yield_empty + " = icmp eq i32 " + yield_remaining + ", 0\n";
+        m_out += "  br i1 " + yield_empty + ", label %" + yield_exit +
+                 ", label %" + yield_dec + "\n";
+        m_out += yield_dec + ":\n";
+        const std::string yield_decremented = newtemp();
+        m_out += "  " + yield_decremented + " = sub i32 " + yield_remaining + ", 1\n";
+        m_out += "  store i32 " + yield_decremented +
+                 ", ptr " + yield_remaining_ptr + "\n";
+        m_out += "  br label %" + yield_continue + "\n";
+        m_out += yield_exit + ":\n";
+        const std::string yield_pc_ptr = state_field(6);
+        const std::string yield_reason_ptr = state_field(7);
+        m_out += "  store i32 " + std::to_string(pc) +
+                 ", ptr " + yield_pc_ptr + "\n";
+        m_out += "  store i32 6, ptr " + yield_reason_ptr + "\n";
+        m_out += "  ret i32 6\n";
+        m_out += yield_continue + ":\n";
     }
 
     reset_tracking();
