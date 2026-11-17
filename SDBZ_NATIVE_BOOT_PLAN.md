@@ -2,7 +2,7 @@
 
 **Repository:** [twist84/MIPS-To-LLVM-IR-To-C](https://github.com/twist84/MIPS-To-LLVM-IR-To-C)  
 **Status date:** 2026-11-17  
-**Baseline:** `main` at `c2ab5b11d99e28067935d6d007e412b784ec2690` (squash-merged [PR #128](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/pull/128)); Stage 1 validated on feature [PR #129](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/pull/129) before squash merge.  
+**Baseline:** `main` at `81e57956de6862d0aa808d643433458b5c23d93c` (squash-merged [PR #129](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/pull/129)); Stage 1 authentic replay validated.  
 **Goal:** Boot and eventually play **Super Dragon Ball Z (USA, `SLUS_214.42`)** using recompiled EE code, genuine guest IOP execution, and a native runtime, without PCSX2.
 
 > This is a milestone and acceptance plan, **not** a statement that the game currently boots or renders a usable frame. Update the checkpoint and evidence as new PRs merge. Re-check `main` and any newer work before acting on these instructions.
@@ -104,6 +104,21 @@ Use this triage order after each replay:
 
 **Acceptance:** a regression reproduces the blocker; the fix preserves state on rejection, never invents an IRQ or successful result, and the same real-game input advances beyond that exact condition.
 
+### Stage 2 blocker at 0x00108240 — verified VU0 matrix macro sequence
+
+The real US executable enters **16 consecutive VU0/COP2 macro instructions** at `0x00108240..0x0010827C`, preceded by eight `LQC2` vector loads at `0x00108220..0x0010823C` and followed by four `SQC2` stores. This is a four-column matrix multiply, not a generic unsupported transfer:
+
+| Instruction | Decode table | Occurrences | Native execution |
+|---|---|---:|---|
+| `VMULAx` | COP2 SPECIAL2 0x18 | 4 | Unsupported; initializes ACC |
+| `VMADDAy` | COP2 SPECIAL2 0x09 | 4 | Unsupported; accumulates into ACC |
+| `VMADDAz` | COP2 SPECIAL2 0x0A | 4 | Unsupported; accumulates into ACC |
+| `VMADDw` | COP2 SPECIAL1 0x0B | 4 | Unsupported; writes VF destination |
+
+The indexed input VF registers are **8–11**, matrix source rows are **VF4–VF7**, and each output column overwrites the matching input VF register. The mask is XYZW. PR #130 pins the actual 16 guest opcode words to the decoder and ensures the LLVM lifter still reports `UNSUPPORTED`. This is *diagnosis*, not VU0 execution or higher boot progress.
+
+**Required next implementation (do not bypass):** model the FMAC/ACC pipeline for these four instructions, including PS2/VU float multiplication/addition semantics, the full four-lane destination mask, rounding/clamp/denormal behavior, MAC and status flags, operand forwarding and timing interactions with `LQC2` and `SQC2`. Prove the guest word semantics and state before/after each instruction with a controlled differential against original VU0 behavior or a trustworthy independent interpreter. Only then mark those exact four instructions as supported and replay the original US ISO/ROM0. The restricted existing VU0 scalar micro-engine is insufficient evidence to mark macro operations supported.
+
 ## 6. Stage 3 — Incremental GIF, GS and visual presentation
 
 Already implemented: normal GIF PATH3, GS register/VRAM sink, and source-chain END tag with inline payload. **Do not rewrite these.**
@@ -151,8 +166,8 @@ Create feature branches from up-to-date `main`, commit incremental source/tests,
 
 | Field | Verified checkpoint (2026-11-17) |
 |---|---|
-| Base commit | `c2ab5b11d99e28067935d6d007e412b784ec2690` (PR #128) |
-| Latest merged change | PR #128 — native boot plan; Stage 1 candidate PR #129 validated but merge pending |
+| Base commit | `81e57956de6862d0aa808d643433458b5c23d93c` (squash PR #129) |
+| Latest merged change | PR #129 — bounded switch discovery and verified 12,190-dispatch replay |
 | Original game | Super Dragon Ball Z (US), `SLUS_214.42` |
 | IOP firmware | genuine OpenPS2BIOS v0.6 |
 | Verified real-CDVD transfer | LBA 16, 261, 289 × 135, 450 × 4 |
