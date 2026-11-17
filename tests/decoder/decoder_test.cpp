@@ -250,7 +250,7 @@ int main()
         const bool defined = funct <= 50 || funct == 52 || funct == 53 ||
                              funct == 56 || funct == 57 || funct >= 60;
         const auto ins = decode(0x100000, R(0x12,0x10,0,0,0,funct));
-        const auto want = defined ? U : X;
+        const auto want = !defined ? X : (funct == 0x0bu ? V : U);
         const bool ok = ins.valid == want;
         ok ? ++g_pass : ++g_fail;
         if (!ok) std::printf("FAIL COP2 SPECIAL1 funct=%02x valid=%u want=%u\n",
@@ -263,7 +263,8 @@ int main()
         const uint32_t funct = 0x3c + (index & 3);
         const uint32_t sa = index >> 2;
         const auto ins = decode(0x100000, R(0x12,0x10,0,0,sa,funct));
-        const auto want = defined ? U : X;
+        const auto want = !defined ? X :
+            (index == 0x09u || index == 0x0au || index == 0x18u ? V : U);
         const bool ok = ins.valid == want;
         ok ? ++g_pass : ++g_fail;
         if (!ok) std::printf("FAIL COP2 SPECIAL2 index=%02x valid=%u want=%u\n",
