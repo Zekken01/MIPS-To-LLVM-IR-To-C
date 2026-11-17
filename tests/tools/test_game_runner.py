@@ -1297,6 +1297,7 @@ def main():
         assert report["snapshot_kind"] == "stopped", report
         assert report["entry_pc"] == 0x00100008, report
         assert report["dispatches"] >= 1, report
+        assert report["guest_instruction_attempts"] >= report["dispatches"], report
         assert report["history"][0]["from_pc"] == 0x00100008, report
         assert report["history"][-1]["dispatch"] == report["dispatches"], report
         assert len(report["gpr_lo"]) == 32, report
@@ -2876,6 +2877,8 @@ def main():
         assert state["dispatches"] == 1, state
         assert state["final_pc"] == 0x00100008, state
         assert state["gpr_lo"][8] == 32, state
+        assert state["guest_instruction_attempts"] > 32, state
+        assert state["guest_instruction_attempts"] > state["dispatches"], state
 
     for blocking_wait, invalid_status in (
         (False, False), (True, False), (False, True),
