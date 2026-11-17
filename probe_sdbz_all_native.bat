@@ -52,7 +52,6 @@ python tools\run_game.py PS2_GAME\SLUS_214.42 ^
     --build-dir=build ^
     --config=Release ^
     --no-recompile ^
-    --auto-expand=128 ^
     --emit-jobs=8 ^
     --emit-opt=0 ^
     --max-dispatches=100000 ^
