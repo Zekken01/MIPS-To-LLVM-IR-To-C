@@ -2,7 +2,7 @@
 
 **Repository:** [twist84/MIPS-To-LLVM-IR-To-C](https://github.com/twist84/MIPS-To-LLVM-IR-To-C)  
 **Status date:** 2026-11-17  
-**Baseline:** `main` at `81e57956de6862d0aa808d643433458b5c23d93c` (squash-merged [PR #129](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/pull/129)); Stage 1 authentic replay validated.  
+**Baseline:** `main` at `150b1e84281a1908c9b680984b3347f41031f872` (squash-merged [PR #130](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/pull/130)); Stage 2 VU0 FMAC execution under validation in [PR #131](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/pull/131).  
 **Goal:** Boot and eventually play **Super Dragon Ball Z (USA, `SLUS_214.42`)** using recompiled EE code, genuine guest IOP execution, and a native runtime, without PCSX2.
 
 > This is a milestone and acceptance plan, **not** a statement that the game currently boots or renders a usable frame. Update the checkpoint and evidence as new PRs merge. Re-check `main` and any newer work before acting on these instructions.
@@ -166,17 +166,17 @@ Create feature branches from up-to-date `main`, commit incremental source/tests,
 
 | Field | Verified checkpoint (2026-11-17) |
 |---|---|
-| Base commit | `81e57956de6862d0aa808d643433458b5c23d93c` (squash PR #129) |
-| Latest merged change | PR #129 — bounded switch discovery and verified 12,190-dispatch replay |
+| Base commit | `150b1e84281a1908c9b680984b3347f41031f872` (squash PR #130) |
+| Latest merged change | PR #130 — matrix macro decode; PR #131 candidate executes exact four FMAC operations |
 | Original game | Super Dragon Ball Z (US), `SLUS_214.42` |
 | IOP firmware | genuine OpenPS2BIOS v0.6 |
 | Verified real-CDVD transfer | LBA 16, 261, 289 × 135, 450 × 4 |
 | SIF/WaitSema | real DMA5 callback + `iSignalSema(8)` verified |
 | GIF/GS | PATH3 normal and nine-QWC END chain accepted; VRAM transfer observed |
-| Last focused replay | **12,190 EE dispatches** using authentic USA ELF/ISO and OpenPS2BIOS 0.6 |
-| Last guest PC | **`0x00108240`** |
-| Stop class | **`UNSUPPORTED(4)`**, true COP2/VU0 macro instruction; **not boot complete** |
-| Next action | Implement and validate only the required VU0 macro instructions beginning at `0x00108240`, with exact guest flag/ACC semantics and differential checks; do not mark them supported prematurely |
+| Last focused replay | **12,226 EE dispatches** using authentic USA ELF/ISO and OpenPS2BIOS 0.6 |
+| Last guest PC | **`0x80000180`** exception vector, EPC **`0x00175014`** |
+| Stop class | **EXCEPTION(1)**: guest SYSCALL service **`0x73` (SetVSyncFlag)**, Cause **`0x20`**; **not boot complete** |
+| Next action | Handle real guest SetVSyncFlag registration at `0x00175014` (A0=`0x01ffeeb0`, A1=`0x01ffeeb8`) without synthesizing a VBlank, GS CSR, IRQ or state change; then replay and classify next genuine dependency |
 
 ### 2026-11-17 — Stage 0/1 authentic replay evidence (PR #129)
 
@@ -185,5 +185,13 @@ Create feature branches from up-to-date `main`, commit incremental source/tests,
 - **Compilation:** 7,901 initial LLVM-verified native modules, zero invalid modules. Restarted `--auto-expand=128` using the verified, provenance-checked `--no-recompile` cache after the first expansion limit was reached. The final replay linked **8,046** verified modules and dispatched **12,190** guest entries. `0x00102E24` was actually executed and its small switch at `0x004B7000` supplied **two** additional targets; overlapping CFG block ownership remained with existing native modules.
 - **First new genuine dependency:** `0x00108240`, report `exit_reason=4`, `exit_name=UNSUPPORTED`, `dispatch_status=0`, not a DMA/IRQ stall. Original MIPS word is `0x4BE821BC` (COP2/VU0 macro). The game has eight preceding genuine `LQC2` loads and continues with additional COP2 operations. Implement macro execution only when exact ACC/flag semantics can be justified.
 - **CI (PR #129, pre-document-update head `7f331070`):** Build and test, SIF DMA acceptance, and OpenPS2BIOS ROM0 execution all passed. Rerun after any further head update before merge. The OpenPS2BIOS CI authentic ROM0 run is a separate IOP test; the focused full-game replay is the evidence above.
+
+### 2026-11-17 — Stage 2 VU0 authentic replay (PR #131 candidate)
+
+- **Provenance:** original USA ELF SHA-256 `1b213a85a2c305dc0f893c007a502c93e0851d1bb7db6164f9e0b72adb074a16`, original USA 4,259,610,624-byte raw ISO SHA-256 `d432b3ccaafe6ddf50ed3dedcf683dbac9bf06556d4e843d12fdee1a821231e1`, genuine OpenPS2BIOS v0.6 ROM0 SHA-256 `3702baa508ff40498fab4a95429a2ae1f903d11f5bbcdd4e1a87dbe9f5d21a84`.
+- **Tools:** native EE recompiler and runner from PR #131 Build and test artifact; fresh regeneration of the original 7,901 native modules plus 145 guest-anchored prior expansion entries. All **8,046 LLVM modules verified; zero invalid**. No checksum or cached-library validation bypass.
+- **Observed continuation:** original game executes through the four `VMULAx → VMADDAy → VMADDAz → VMADDw` matrix chains at `0x00108240..0x0010827C`; full replay reaches **12,226 EE dispatches** and stops at **EE SYSCALL** (`EXCEPTION(1)`), exception-vector PC `0x80000180`, **EPC `0x00175014`**, **Cause `0x20`**, guest service `v1=0x73` (`SetVSyncFlag`). Inputs `a0=0x01ffeeb0`, `a1=0x01ffeeb8`, both in RAM. This is a new dependency and does not mean VSync, native presentation or gameplay works.
+- **Next strict dependency:** `SetVSyncFlag` registers guest pointers which the real VSync event handler uses when an actual VSYNC arrives. Do not set either flag, CSR, an interrupt or a frame during registration. Preserve guest memory bounds and alignment validation, and do not substitute fake periodic events to pass polling.
+- **CI (PR #131 head `5d97b2b5` before plan update):** all three required checks passed — Build and test (89 CTest cases including `vu0_macro_fmac`), SIF DMA acceptance, OpenPS2BIOS ROM0 execution. Recheck all three after this plan update before squash merge. This replay establishes finite startup-path execution but does not replace a full VU FMAC pipeline/hardware differential.
 
 **Next developer instruction:** Stage 0/1 are validated on authentic inputs; Stage 2 begins with the VU0/COP2 macro `0x4BE821BC` at `0x00108240`. Implement semantic lowering with regression and compare against real hardware/differential evidence before advancing. Do not stop at a high-level proposal. Keep this file updated with each merged milestone and the exact proof that advanced the game.

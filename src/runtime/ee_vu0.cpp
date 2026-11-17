@@ -1,4 +1,5 @@
 #include "ee_runtime.h"
+#include <cstring>
 
 namespace ee
 {
@@ -1928,6 +1929,168 @@ extern "C" uint32_t ee_vu0_ctc2(
         ee_vu0_write_vi(vu0, vi_index, value);
         return sync_result;
     }
+}
+
+namespace
+{
+// VU0 stores four IEEE-style bit patterns in each 128-bit VF/ACC register.
+// Its register zero is (0, 0, 0, 1), regardless of the CPU backing bytes.
+uint32_t vu0_fmac_lane(const s_ee_u128& vector, uint32_t lane)
+{
+    const uint64_t half = lane < 2 ? vector.m_lo : vector.m_hi;
+    return static_cast<uint32_t>(half >> (32u * (lane & 1u)));
+}
+
+void vu0_fmac_set_lane(s_ee_u128* vector, uint32_t lane, uint32_t bits)
+{
+    uint64_t* half = lane < 2 ? &vector->m_lo : &vector->m_hi;
+    const uint32_t shift = 32u * (lane & 1u);
+    *half = (*half & ~(0xffffffffull << shift)) |
+        (static_cast<uint64_t>(bits) << shift);
+}
+
+uint32_t vu0_fmac_read_vf(const s_ee_cpu_state* cpu, uint32_t index, uint32_t lane)
+{
+    return index == 0 ? (lane == 3 ? 0x3f800000u : 0u) :
+        vu0_fmac_lane(cpu->m_vu0[index], lane);
+}
+
+float vu0_fmac_operand(uint32_t bits)
+{
+    // VU arithmetic flushes subnormal operands and interprets exponent
+    // 255 as a finite, signed maximum rather than host IEEE infinity/NaN.
+    const uint32_t exponent = bits & 0x7f800000u;
+    if (exponent == 0)
+    {
+        bits &= 0x80000000u;
+    }
+    else if (exponent == 0x7f800000u)
+    {
+        bits = (bits & 0x80000000u) | 0x7f7fffffu;
+    }
+    float value = 0.0f;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+uint32_t vu0_fmac_result_bits(float value, uint32_t lane, uint32_t* flags)
+{
+    uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    const uint32_t shift = 3u - lane;
+    const uint32_t exponent = bits & 0x7f800000u;
+    *flags &= ~(0x1111u << shift);
+    if (bits & 0x80000000u)
+    {
+        *flags |= 0x10u << shift;
+    }
+    if ((bits & 0x7fffffffu) == 0)
+    {
+        *flags |= 1u << shift;
+    }
+    else if (exponent == 0)
+    {
+        *flags |= 0x0101u << shift;
+        bits &= 0x80000000u;
+    }
+    else if (exponent == 0x7f800000u)
+    {
+        *flags |= 0x1000u << shift;
+        bits = (bits & 0x80000000u) | 0x7f7fffffu;
+    }
+    return bits;
+}
+} // namespace
+
+extern "C" uint32_t ee_vu0_macro_fmac(
+    s_ee_cpu_state* cpu,
+    s_ee_runtime* rt,
+    uint32_t word,
+    uint32_t pc
+)
+{
+    if (!cpu || !rt || (word >> 26) != 0x12u ||
+        ((word >> 21) & 31u) < 0x10u)
+    {
+        return static_cast<uint32_t>(e_ee_vu0_sync_result::INVALID_ARGUMENT);
+    }
+
+    // Restrict execution to the four actual VU0 FMAC operations needed
+    // by the US game's matrix transform. No generic SPECIAL2 fallback.
+    const uint32_t funct = word & 63u;
+    const uint32_t special2 = (word & 3u) | ((word >> 4) & 0x7cu);
+    const bool multiply = funct >= 0x3cu && special2 == 0x18u;
+    const bool accumulate_y = funct >= 0x3cu && special2 == 0x09u;
+    const bool accumulate_z = funct >= 0x3cu && special2 == 0x0au;
+    const bool store_w = funct == 0x0bu;
+    if (!multiply && !accumulate_y && !accumulate_z && !store_w)
+    {
+        return static_cast<uint32_t>(e_ee_vu0_sync_result::INVALID_ARGUMENT);
+    }
+
+    // COP2 macro operations wait for an active VU0 microprogram to
+    // terminate. If the host cannot do this, do not touch VF/ACC/flags.
+    const uint32_t sync_result = ee_vu0_sync(
+        cpu, rt, static_cast<uint32_t>(e_ee_vu0_sync_mode::FINISH_TO_E), pc
+    );
+    if (sync_result != static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE))
+    {
+        return sync_result;
+    }
+
+    const uint32_t fs = (word >> 11) & 31u;
+    const uint32_t ft = (word >> 16) & 31u;
+    const uint32_t fd = (word >> 6) & 31u;
+    const uint32_t mask = (word >> 21) & 15u;
+    const uint32_t bc = multiply ? 0u : accumulate_y ? 1u :
+        accumulate_z ? 2u : 3u;
+    const float broadcast = vu0_fmac_operand(vu0_fmac_read_vf(cpu, ft, bc));
+    s_ee_vu0_state* vu0 = rt->m_vu0_state;
+
+    // Snapshot all sources before committing any destination. In
+    // particular, VMADDw may use the same VF for Ft and Fd.
+    s_ee_u128 output = store_w && fd != 0 ? cpu->m_vu0[fd] : vu0->m_acc;
+    uint32_t mac_flags = vu0->m_mac_flags;
+    for (uint32_t lane = 0; lane < 4; ++lane)
+    {
+        if (!(mask & (8u >> lane)))
+        {
+            mac_flags &= ~(0x1111u << (3u - lane));
+            continue;
+        }
+        const float fs_value = vu0_fmac_operand(vu0_fmac_read_vf(cpu, fs, lane));
+        volatile float product = fs_value * broadcast; // no implicit host FMA
+        const float answer = multiply ? static_cast<float>(product) :
+            vu0_fmac_operand(vu0_fmac_lane(vu0->m_acc, lane)) +
+            static_cast<float>(product);
+        const uint32_t result_bits = vu0_fmac_result_bits(
+            answer, lane, &mac_flags
+        );
+        vu0_fmac_set_lane(&output, lane, result_bits);
+    }
+
+    if (store_w)
+    {
+        if (fd != 0)
+        {
+            cpu->m_vu0[fd] = output;
+        }
+    }
+    else
+    {
+        vu0->m_acc = output;
+    }
+    vu0->m_mac_flags = mac_flags;
+    vu0->m_vi[17] = mac_flags;
+    const uint32_t current = ((mac_flags & 0x000fu) ? 1u : 0u) |
+        ((mac_flags & 0x00f0u) ? 2u : 0u) |
+        ((mac_flags & 0x0f00u) ? 4u : 0u) |
+        ((mac_flags & 0xf000u) ? 8u : 0u);
+    // Preserve D/I flags and the prior status for sticky Z/S/U/O.
+    vu0->m_status_flags = (vu0->m_status_flags & 0x0c30u) |
+        current | ((vu0->m_status_flags & 15u) << 6);
+    vu0->m_vi[16] = vu0->m_status_flags;
+    return static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE);
 }
 
 extern "C" uint32_t ee_vu0_get_branch_condition(const s_ee_runtime* rt)

@@ -956,6 +956,19 @@ s_ee_instruction decode(uint32_t pc, uint32_t word)
                     default: break;
                     }
                 }
+                // Exactly the four matrix FMAC operations have a native
+                // runtime implementation; all other defined COP2 macros
+                // remain intentionally UNSUPPORTED.
+                const uint32_t special2_index =
+                    (word & 0x3u) | ((word >> 4) & 0x7cu);
+                if (defined && (funct == 0x0bu ||
+                    (funct >= 0x3cu &&
+                     (special2_index == 0x18u ||
+                      special2_index == 0x09u ||
+                      special2_index == 0x0au))))
+                {
+                    insn.valid = e_ee_valid::VALID;
+                }
                 set_mnemonic(insn, name);
             }
             else

@@ -378,6 +378,12 @@ uint32_t ee_vu0_ctc2(s_ee_cpu_state* cpu, s_ee_runtime* rt,
                       uint32_t gpr_index, uint32_t vi_index,
                       uint32_t mode, uint32_t pc);
 
+// Executes only VMULAx/VMADDAy/VMADDAz/VMADDw (the SDBZ US matrix
+// transform), synchronized against genuine VU0 execution. Invalid encodings
+// and unavailable synchronization must not commit VF/ACC/MAC/STATUS state.
+uint32_t ee_vu0_macro_fmac(s_ee_cpu_state* cpu, s_ee_runtime* rt,
+                            uint32_t instruction_word, uint32_t pc);
+
 // BC2 reads VPU_STAT bit 8 directly, as the interpreter branch handlers do.
 // Returns 0/1 for false/true, or 2 when VU0 state is unavailable.
 uint32_t ee_vu0_get_branch_condition(const s_ee_runtime* rt);

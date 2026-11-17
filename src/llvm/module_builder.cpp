@@ -88,6 +88,7 @@ void module_builder::declare_memory_helpers()
     m_out += "declare i32 @ee_vu0_qmtc2(ptr, ptr, i32, i32, i32, i32)\n";
     m_out += "declare i32 @ee_vu0_cfc2(ptr, ptr, i32, i32, i32, i32)\n";
     m_out += "declare i32 @ee_vu0_ctc2(ptr, ptr, i32, i32, i32, i32)\n";
+    m_out += "declare i32 @ee_vu0_macro_fmac(ptr, ptr, i32, i32)\n";
     m_out += "declare i32 @ee_vu0_get_branch_condition(ptr)\n";
     m_out += "\n";
 }
@@ -2273,10 +2274,10 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
             break;
         }
 
-        if (!helper)
+        const bool matrix_macro = ins.rs >= 0x10u;
+        if (!helper && !matrix_macro)
         {
-            // BC2 and VU0 macro instructions remain unsupported until their
-            // condition/pipeline semantics have dedicated lowerings.
+            // BC2 is emitted separately as a control-flow predicate.
             m_out += "  ; COP2 operation has no runtime lowering\n";
             break;
         }
@@ -2296,11 +2297,21 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
             ? 0u
             : (reads_vu0 ? 1u : 2u);
         const std::string result = newtemp();
-        m_out += "  " + result + " = call i32 @" + helper +
-                 "(ptr %cpu, ptr %rt, i32 " + std::to_string(ins.rt) +
-                 ", i32 " + std::to_string(ins.rd) +
-                 ", i32 " + std::to_string(sync_mode) +
-                 ", i32 " + std::to_string(ins.pc) + ")\n";
+        if (matrix_macro)
+        {
+            m_out += "  " + result + " = call i32 @ee_vu0_macro_fmac"
+                     "(ptr %cpu, ptr %rt, i32 " +
+                     std::to_string(ins.opcode_word) + ", i32 " +
+                     std::to_string(ins.pc) + ")\n";
+        }
+        else
+        {
+            m_out += "  " + result + " = call i32 @" + helper +
+                     "(ptr %cpu, ptr %rt, i32 " + std::to_string(ins.rt) +
+                     ", i32 " + std::to_string(ins.rd) +
+                     ", i32 " + std::to_string(sync_mode) +
+                     ", i32 " + std::to_string(ins.pc) + ")\n";
+        }
 
         // Do not execute following guest instructions when the scheduler or
         // control callback is unavailable/fails. Keep the guest PC at the
