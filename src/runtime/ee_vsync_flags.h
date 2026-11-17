@@ -19,8 +19,10 @@ public:
         uint32_t csr_address
     );
 
-    // Only to be called after a genuine GS VSync event. No native runner
-    // currently generates such an event merely to advance guest execution.
+    // Only to be called after a genuine GS VSync event. The callback
+    // consumes a registered non-null flag pointer exactly once; a null
+    // flag disables delivery even if the optional CSR pointer is non-null.
+    // No native runner currently generates such an event to advance the guest.
     bool deliver_actual_vsync(ee_memory* memory, uint64_t gs_csr);
 
     uint32_t flag_address() const;
