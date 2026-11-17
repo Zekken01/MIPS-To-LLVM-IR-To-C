@@ -3,7 +3,9 @@
 #include "function_analyzer.h"
 #include "llvm_context.h"
 #include "module_builder.h"
+#include "ee_runtime.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <map>
@@ -124,6 +126,15 @@ int main(int argc, char** argv)
         control_word = make_r(31, 0, 0, 0, 0x08);
         delay_word = make_i(0x09, 0, 8, 0x77); // $t0 = 0x77
         function_name = "guest_callee_return_test";
+    }
+    else if (mode == "loop_yield")
+    {
+        // Infinite real guest control flow, with one ADDIU delay slot per
+        // taken backwards branch. The translated header must yield before
+        // re-executing the first instruction of the next iteration.
+        control_word = make_i(0x04, 0, 0, -1);
+        delay_word = make_i(0x09, 8, 8, 1);
+        function_name = "guest_loop_yield_test";
     }
     else if (mode == "beq_taken")
     {
@@ -266,6 +277,17 @@ int main(int argc, char** argv)
     llvm::llvm_context context(mode + "_delay_slot_test");
     llvm::module_builder builder(context);
     builder.emit_function_cfg(functions[0], insn_map, function_name);
+
+    if (mode == "loop_yield")
+    {
+        // The Python JIT fixture allocates the full C++ runtime from these
+        // authoritative compile-time offsets, never guessed host padding.
+        std::printf("LOOP_RUNTIME_OFFSETS %zu %zu %zu %zu\n",
+                    offsetof(ee::s_ee_runtime, m_loop_safepoint_limit),
+                    offsetof(ee::s_ee_runtime, m_loop_safepoint_remaining),
+                    offsetof(ee::s_ee_runtime, m_guest_instruction_attempts),
+                    offsetof(ee::s_ee_runtime, m_loop_safepoint_yield_enabled));
+    }
 
     if (!context.write_ir_to_file(argv[2]))
     {
