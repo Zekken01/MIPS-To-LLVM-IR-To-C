@@ -178,7 +178,7 @@ def compile_jit(fixture, temp_dir, mode, target):
     # to write beyond its backing buffer. Derive the actual field offset
     # from generated IR rather than guessing the C++ struct's tail layout.
     match = re.search(
-        r"%counter_ptr = getelementptr i8, ptr %rt, i64 (\\d+)", ir_text
+        r"%counter_ptr = getelementptr i8, ptr %rt, i64 ([0-9]+)", ir_text
     )
     require(match is not None, "missing guest-instruction accounting offset")
     counter_offset = int(match.group(1))
