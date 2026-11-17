@@ -935,7 +935,28 @@ s_ee_instruction decode(uint32_t pc, uint32_t word)
                     defined = cop2_special2_defined(special2_index);
                 }
                 insn.valid = defined ? e_ee_valid::UNSUPPORTED : e_ee_valid::INVALID;
-                set_mnemonic(insn, defined ? "vu0_macro" : "cop2_reserved");
+                // Identify the retail SDBZ matrix-multiply FMAC operations
+                // exactly, while keeping them UNSUPPORTED until their VU0
+                // ACC/flag pipeline and operand forwarding are implemented.
+                // SPECIAL2 uses {sa, funct[1:0]}, not the raw funct field.
+                const char* name = defined ? "vu0_macro" : "cop2_reserved";
+                if (defined && funct == 0x0bu)
+                {
+                    name = "vmaddw";
+                }
+                else if (defined && funct >= 0x3cu)
+                {
+                    const uint32_t special2_index =
+                        (word & 0x3u) | ((word >> 4) & 0x7cu);
+                    switch (special2_index)
+                    {
+                    case 0x18: name = "vmulax"; break;
+                    case 0x09: name = "vmadday"; break;
+                    case 0x0a: name = "vmaddaz"; break;
+                    default: break;
+                    }
+                }
+                set_mnemonic(insn, name);
             }
             else
             {
