@@ -248,7 +248,8 @@ struct s_fixture
     }
 
     bool send_request(uint32_t seq, uint32_t p1, uint32_t p2,
-                      bool valid_checksum)
+                      bool valid_checksum,
+                      uint32_t destination_tag_flags = 0x40000000u)
     {
         const uint32_t payload[4] =
         {
@@ -257,10 +258,10 @@ struct s_fixture
         };
         const uint32_t header[4] =
         {
-            // ERT (bit 30) ends DMA10. Deliberately omit INT_O (bit 31)
-            // so this catches the two IOP destination-tag flags being
-            // accidentally interchanged.
-            0x40000000u | k_iop_request, k_payload_bytes, 0u, 0u
+            // Exercise ERT, INT_O and their combination independently.
+            // Either tag condition can terminate the IOP DMA10 receiver.
+            destination_tag_flags | k_iop_request,
+            k_payload_bytes, 0u, 0u
         };
         for (uint32_t i = 0u; i < 4u; ++i)
         {
@@ -336,8 +337,12 @@ int run_quantum(uint32_t quantum)
         {
             f.m_ram.write32(address, 0xcdcdcdcdu);
         }
+        const uint32_t destination_tag_flags =
+            sequence == 1u ? 0x40000000u :
+            sequence == 2u ? 0x80000000u : 0xc0000000u;
         if (!f.arm_ee_receiver() ||
-            !f.send_request(sequence, p1, p2, true))
+            !f.send_request(
+                sequence, p1, p2, true, destination_tag_flags))
         {
             return fail("failed to arm EE DMA5/DMA6",
                         quantum, sequence, f.m_iop.cpu().state().m_pc);
