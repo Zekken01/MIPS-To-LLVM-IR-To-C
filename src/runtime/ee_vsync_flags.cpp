@@ -46,16 +46,22 @@ bool c_ee_vsync_flags::deliver_actual_vsync(
         return false;
     }
 
-    // This is deliberately not called by the HLE registration syscall.
-    // A future GS event source must pass the CSR sampled at *real* VSync.
-    if (m_flag_address != 0)
+    // ps2-web-recomp's EE kernel invokes this only when VBlank starts:
+    // a null flag pointer disables delivery even if a CSR pointer exists.
+    // After delivery the registration is consumed (one shot).
+    // This is deliberately never called by the registration syscall.
+    if (m_flag_address == 0)
     {
-        memory->write32(m_flag_address, 1u);
+        return true;
     }
+
+    memory->write32(m_flag_address, 1u);
     if (m_csr_address != 0)
     {
         memory->write64(m_csr_address, gs_csr);
     }
+    m_flag_address = 0;
+    m_csr_address = 0;
     return true;
 }
 
