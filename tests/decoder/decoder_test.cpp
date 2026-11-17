@@ -170,7 +170,7 @@ int main()
 
     // Directly from SDBZ (US) 0x00108240..0x0010827C: a 4x4 matrix
     // multiply using the VU0 accumulator. Decode the actual 16 words
-    // without promoting them to executable IR until FMAC semantics exist.
+    // Decode all original instructions through the guarded FMAC runtime.
     {
         const uint32_t matrix_words[] =
         {
@@ -185,7 +185,7 @@ int main()
             const auto inst = decode(0x00108240u + 4u * index, matrix_words[index]);
             const uint32_t column = 8u + (index / 4u);
             const uint32_t row = index % 4u;
-            const bool ok = inst.valid == U &&
+            const bool ok = inst.valid == V &&
                             inst.opcode == e_ee_opcode::OP_COP2 &&
                             inst.rs == 31u && inst.rt == column &&
                             inst.rd == row + 4u &&
