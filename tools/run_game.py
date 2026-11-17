@@ -908,10 +908,16 @@ def main(argv=None):
                 current = json.loads(metadata_path.read_text(encoding="utf-8"))
                 if candidate in covered_pcs(current):
                     continue
-                print(
-                    f"auto-expand: compiling reachable/table PC "
-                    f"0x{candidate:08x}", flush=True,
-                )
+                if candidate == address:
+                    print(
+                        f"auto-expand: compiling reachable PC "
+                        f"0x{candidate:08x}", flush=True,
+                    )
+                else:
+                    print(
+                        f"auto-expand: compiling table sibling PC "
+                        f"0x{candidate:08x}", flush=True,
+                    )
                 try:
                     if append_function(
                         recomp, elf, work, metadata_path, candidate
