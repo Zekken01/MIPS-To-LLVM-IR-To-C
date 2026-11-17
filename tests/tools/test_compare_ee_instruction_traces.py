@@ -62,6 +62,7 @@ def main():
             "19,0x00100008,0x8c620000\n",
             encoding="utf-8",
         )
+        reference_original = reference_path.read_text(encoding="utf-8")
         args_ref = args + ["--reference", str(reference_path),
                            "--reference-provenance", "test-fixture-not-hardware"]
         assert tool.main(args_ref) == 0
@@ -85,7 +86,7 @@ def main():
         assert tool.main(args_ref) == 1
 
         # Backwards reference cycles must be rejected rather than reordered.
-        reference_path.write_text(reference_path.read_text().replace(
+        reference_path.write_text(reference_original.replace(
             "14,0x00100010", "9,0x00100010"
         ), encoding="utf-8")
         assert tool.main(args_ref) == 1
