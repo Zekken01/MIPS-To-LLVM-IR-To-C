@@ -2424,8 +2424,22 @@ void module_builder::emit_block(const std::vector<ee::s_ee_instruction>& block,
         const std::string pc_ptr = state_field(6);
         const std::string reason_ptr = state_field(7);
         m_out += "  store i32 " + std::to_string(pc) + ", ptr " + pc_ptr + "\n";
-        m_out += "  store i32 5, ptr " + reason_ptr + "\n";
-        m_out += "  ret i32 5\n";
+        // Two distinct host-only outcomes use the *same* exact resume PC
+        // after all predecessor delay-slot writes have committed. Default
+        // mode preserves the prior terminal LOOP_BUDGET diagnostic.
+        const std::string yield_flag_ptr = newtemp();
+        const std::string yield_flag = newtemp();
+        const std::string yield_enabled = newtemp();
+        const std::string safepoint_exit = newtemp();
+        m_out += "  " + yield_flag_ptr + " = getelementptr i8, ptr %rt, i64 " +
+                 std::to_string(offsetof(ee::s_ee_runtime,
+                                         m_loop_safepoint_yield_enabled)) + "\n";
+        m_out += "  " + yield_flag + " = load i32, ptr " + yield_flag_ptr + "\n";
+        m_out += "  " + yield_enabled + " = icmp ne i32 " + yield_flag + ", 0\n";
+        m_out += "  " + safepoint_exit + " = select i1 " + yield_enabled +
+                 ", i32 6, i32 5\n";
+        m_out += "  store i32 " + safepoint_exit + ", ptr " + reason_ptr + "\n";
+        m_out += "  ret i32 " + safepoint_exit + "\n";
         m_out += continue_label + ":\n";
     }
 
