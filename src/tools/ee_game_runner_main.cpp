@@ -3,6 +3,7 @@
 #include "ee_memory.h"
 #include "ee_ram_interpreter.h"
 #include "ee_hw_bus.h"
+#include "ee_vsync_flags.h"
 #include "ee_gif.h"
 #include "ee_gs.h"
 #include "elf_loader.h"
@@ -1174,6 +1175,10 @@ int main(int argc, char** argv)
     uint32_t deci2_descriptor_address = 0u;
     uint32_t deci2_handler_pc = 0u;
 
+    // Guest-visible 0x73 SetVSyncFlag pointer registration. Event delivery
+    // is not implied; this runner has no real GS vertical-blank producer yet.
+    ee::c_ee_vsync_flags vsync_flags{};
+
     struct s_kernel_thread
     {
         bool m_used = false;
@@ -1900,7 +1905,7 @@ int main(int argc, char** argv)
                 service == 0x4au || service == 0x4bu ||
                 service == 0x64u ||
                 service == 0x68u || service == 0x6bu ||
-                service == 0x71u ||
+                service == 0x71u || service == 0x73u ||
                 service == 0x74u ||
                 service == 0x76u || service == 0x77u ||
                 service == 0x78u || service == 0x79u ||
@@ -3091,6 +3096,38 @@ int main(int argc, char** argv)
                             static_cast<unsigned long long>(requested),
                             static_cast<unsigned long long>(hardware.gs_imr())
                         );
+                    }
+                }
+
+                else if (service == 0x73u)
+                {
+                    // SetVSyncFlag records two guest-RAM pointers for a
+                    // future *actual* GS VSync event. Unlike VSync itself,
+                    // registration must not touch their current contents,
+                    // change CSR, raise an IRQ or advance a frame.
+                    const uint32_t flag_address =
+                        static_cast<uint32_t>(cpu.m_gpr[4].m_lo);
+                    const uint32_t csr_address =
+                        static_cast<uint32_t>(cpu.m_gpr[5].m_lo);
+                    if (!vsync_flags.register_guest_pointers(
+                            memory.get(), flag_address, csr_address))
+                    {
+                        std::fprintf(stderr,
+                            "SetVSyncFlag HLE refused invalid guest pointers "
+                            "flag=0x%08x csr=0x%08x\n",
+                            flag_address, csr_address);
+                        break;
+                    }
+                    // The kernel's syscall ABI returns V0=0 even though
+                    // this registration creates no event or guest RAM write.
+                    cpu.m_gpr[2].m_lo = 0u;
+                    cpu.m_gpr[2].m_hi = 0u;
+                    if (trace)
+                    {
+                        std::printf(
+                            "HLE SetVSyncFlag: flag=0x%08x csr=0x%08x "
+                            "result=0, no VSync event\n",
+                            flag_address, csr_address);
                     }
                 }
 

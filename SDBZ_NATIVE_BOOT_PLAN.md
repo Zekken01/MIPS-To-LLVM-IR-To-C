@@ -2,7 +2,7 @@
 
 **Repository:** [twist84/MIPS-To-LLVM-IR-To-C](https://github.com/twist84/MIPS-To-LLVM-IR-To-C)  
 **Status date:** 2026-11-17  
-**Baseline:** `main` at `150b1e84281a1908c9b680984b3347f41031f872` (squash-merged [PR #130](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/pull/130)); Stage 2 VU0 FMAC execution under validation in [PR #131](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/pull/131).  
+**Baseline:** `main` at `5f6f24b8f80584d6dc0b16db6c0b28d9e46a0360` (squash-merged [PR #131](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/pull/131)); VSync pointer registration in [PR #132](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/pull/132).  
 **Goal:** Boot and eventually play **Super Dragon Ball Z (USA, `SLUS_214.42`)** using recompiled EE code, genuine guest IOP execution, and a native runtime, without PCSX2.
 
 > This is a milestone and acceptance plan, **not** a statement that the game currently boots or renders a usable frame. Update the checkpoint and evidence as new PRs merge. Re-check `main` and any newer work before acting on these instructions.
@@ -166,17 +166,17 @@ Create feature branches from up-to-date `main`, commit incremental source/tests,
 
 | Field | Verified checkpoint (2026-11-17) |
 |---|---|
-| Base commit | `150b1e84281a1908c9b680984b3347f41031f872` (squash PR #130) |
-| Latest merged change | PR #130 — matrix macro decode; PR #131 candidate executes exact four FMAC operations |
+| Base commit | `5f6f24b8f80584d6dc0b16db6c0b28d9e46a0360` (squash PR #131) |
+| Latest merged change | PR #131 — guarded matrix FMAC path; PR #132 candidate registers real VSync flag pointers without an event |
 | Original game | Super Dragon Ball Z (US), `SLUS_214.42` |
 | IOP firmware | genuine OpenPS2BIOS v0.6 |
 | Verified real-CDVD transfer | LBA 16, 261, 289 × 135, 450 × 4 |
 | SIF/WaitSema | real DMA5 callback + `iSignalSema(8)` verified |
 | GIF/GS | PATH3 normal and nine-QWC END chain accepted; VRAM transfer observed |
-| Last focused replay | **12,226 EE dispatches** using authentic USA ELF/ISO and OpenPS2BIOS 0.6 |
-| Last guest PC | **`0x80000180`** exception vector, EPC **`0x00175014`** |
-| Stop class | **EXCEPTION(1)**: guest SYSCALL service **`0x73` (SetVSyncFlag)**, Cause **`0x20`**; **not boot complete** |
-| Next action | Handle real guest SetVSyncFlag registration at `0x00175014` (A0=`0x01ffeeb0`, A1=`0x01ffeeb8`) without synthesizing a VBlank, GS CSR, IRQ or state change; then replay and classify next genuine dependency |
+| Last focused replay | **12,232 EE dispatches** using authentic USA ELF/ISO and OpenPS2BIOS 0.6; loop budget, not boot |
+| Last guest PC | **`0x00175210`** (guest VBlank wait loop), after genuine SetVSyncFlag registration |
+| Stop class | **LOOP_BUDGET(5)** while polling EE INTC_STAT VBlank-start bit and registered guest VSync flag; **not boot complete** |
+| Next action | Add **genuine** GS scanout/VBlank event scheduling, assert EE INTC_STAT bit `0x4` at actual VBlank start, deliver the real sampled GS_CSR to registered guest pointer, and invoke guest interrupt path only through enabled INTC bits; no immediate fake completion |
 
 ### 2026-11-17 — Stage 0/1 authentic replay evidence (PR #129)
 
@@ -194,4 +194,13 @@ Create feature branches from up-to-date `main`, commit incremental source/tests,
 - **Next strict dependency:** `SetVSyncFlag` registers guest pointers which the real VSync event handler uses when an actual VSYNC arrives. Do not set either flag, CSR, an interrupt or a frame during registration. Preserve guest memory bounds and alignment validation, and do not substitute fake periodic events to pass polling.
 - **CI (PR #131 head `5d97b2b5` before plan update):** all three required checks passed — Build and test (89 CTest cases including `vu0_macro_fmac`), SIF DMA acceptance, OpenPS2BIOS ROM0 execution. Recheck all three after this plan update before squash merge. This replay establishes finite startup-path execution but does not replace a full VU FMAC pipeline/hardware differential.
 
-**Next developer instruction:** Stage 0/1 are validated on authentic inputs; Stage 2 begins with the VU0/COP2 macro `0x4BE821BC` at `0x00108240`. Implement semantic lowering with regression and compare against real hardware/differential evidence before advancing. Do not stop at a high-level proposal. Keep this file updated with each merged milestone and the exact proof that advanced the game.
+### 2026-11-17 — Authentic SetVSyncFlag and VBlank-poll replay (PR #132)
+
+- **Input provenance unchanged:** original US ELF SHA-256 `1b213a85a2c305dc0f893c007a502c93e0851d1bb7db6164f9e0b72adb074a16`; original USA raw ISO 4,259,610,624 bytes SHA-256 `d432b3ccaafe6ddf50ed3dedcf683dbac9bf06556d4e843d12fdee1a821231e1`; genuine OpenPS2BIOS v0.6 ROM0 SHA-256 `3702baa508ff40498fab4a95429a2ae1f903d11f5bbcdd4e1a87dbe9f5d21a84`.
+- **Runner:** CI-built PR #132 native recompiler and runner, validated `--relink-existing` of the 8,046 LLVM-verified modules from the previous fresh generation (no fingerprint bypass), with `--hle-startup --kseg-ram --disc-image=<original ISO> --max-dispatches=100000 --loop-budget=1000000 --sif-poll-limit=2048 --auto-expand=128 --auto-expand-table=24 --trace`. Genuine ROM0 supplied via `SDBZ_IOP_ROM0`.
+- **Observed kernel behavior:** at 12,226 dispatches, guest syscall `0x73` registers `a0=0x01ffeeb0` (4-byte VSync flag), `a1=0x01ffeeb8` (8-byte GS_CSR destination); HLE returns with V0=0 without changing either location or issuing VBlank/IRQ. The flag/optional CSR pointer registration is one-shot: the future real VBlank callback writes its data and clears both pointers; a null flag disables that callback. Guest then calls `SetSyscall(0x12c,0x80076488)` which the existing out-of-range policy ignores, separately from this blocker.
+- **New verified stop:** **12,232 EE dispatches**, `LOOP_BUDGET(5)`, guest PC **`0x00175210`**. Original code at `0x001751EC` writes `0x4` to EE INTC_STAT `0x1000f000` to acknowledge VBlank-start, then at `0x00175210` reads `INTC_STAT & 0x4`. If that is not asserted, it checks the guest registered flag at `0x01ffeeb0`. Neither is set because **no genuine VBlank event producer** exists in this native runner. Increasing dispatch or loop budgets cannot solve the hardware dependency.
+- **Next acceptance milestone:** real scanout/VBlank producer driven by the guest CRT configuration and emulated EE timing, correct EE INTC_STAT start interrupt and enable/mask logic, actual GS CSR on VBlank, and guest flag write only from that event. First add focused timing/edge/acknowledge/reject tests against reliable GS behavior. Do not create an unconditional periodic host callback, forged interrupt or write-at-registration shortcut.
+- **CI for PR #132 pre-document head `4aa9ccf2`:** Build and test, SIF DMA acceptance, and OpenPS2BIOS ROM0 execution all succeeded. Recheck the final head after this document change before squash merge. This replay is not a running main menu or a rendered frame.
+
+**Next developer instruction:** The authentic run now reaches the real VBlank polling loop at `0x00175210`. Implement cycle-driven GS VBlank scheduling only after verifying guest CRT timing, EE cycle accounting and INTC masks/callback delivery. The verified SetVSyncFlag registration alone does not create a VSync. Preserve all prior genuine CDVD/SIF/GIF and VMAC state; continue through a new trace-proven blocker.
