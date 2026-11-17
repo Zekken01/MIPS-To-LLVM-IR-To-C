@@ -2,7 +2,7 @@
 
 **Repository:** [twist84/MIPS-To-LLVM-IR-To-C](https://github.com/twist84/MIPS-To-LLVM-IR-To-C)  
 **Status date:** 2026-11-17  
-**Baseline:** `main` at `11b44575df0f0d2441c5e60a99c2ba9df06a2050` (squash-merged [PR #134](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/pull/134)); opt-in resumable loop safepoints candidate in [PR #135](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/pull/135).  
+**Baseline:** `main` at `c7ca053af2e022bd5709ee6583c7c5427ef75016` (squash-merged [PR #135](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/pull/135)); dispatcher host-yield integration regression is the next checkpoint.  
 **Goal:** Boot and eventually play **Super Dragon Ball Z (USA, `SLUS_214.42`)** using recompiled EE code, genuine guest IOP execution, and a native runtime, without PCSX2.
 
 > This is a milestone and acceptance plan, **not** a statement that the game currently boots or renders a usable frame. Update the checkpoint and evidence as new PRs merge. Re-check `main` and any newer work before acting on these instructions.
@@ -166,8 +166,8 @@ Create feature branches from up-to-date `main`, commit incremental source/tests,
 
 | Field | Verified checkpoint (2026-11-17) |
 |---|---|
-| Base commit | `11b44575df0f0d2441c5e60a99c2ba9df06a2050` (squash PR #134) |
-| Latest merged change | PR #134 — genuine guest instruction-attempt diagnostics; PR #135 adds opt-in resumable loop safepoints |
+| Base commit | `c7ca053af2e022bd5709ee6583c7c5427ef75016` (squash PR #135) |
+| Latest merged change | PR #135 — opt-in exact guest PC host-loop yields, verified with real LLVM and authentic full-game replay |
 | Original game | Super Dragon Ball Z (US), `SLUS_214.42` |
 | IOP firmware | genuine OpenPS2BIOS v0.6 |
 | Verified real-CDVD transfer | LBA 16, 261, 289 × 135, 450 × 4 |
@@ -176,7 +176,7 @@ Create feature branches from up-to-date `main`, commit incremental source/tests,
 | Last focused replay | **12,232 EE dispatches** using authentic USA ELF/ISO and OpenPS2BIOS 0.6; loop budget, not boot |
 | Last guest PC | **`0x00175210`** (guest VBlank wait loop), after genuine SetVSyncFlag registration |
 | Stop class | **LOOP_BUDGET(5)** while polling EE INTC_STAT VBlank-start bit and registered guest VSync flag; **not boot complete** |
-| Next action | Validate lossless native loop yield at exact guest PCs (PR #135); implement/validate authoritative EE cycle timing before enabling yields and connecting real GS scanout in the boot runner |
+| Next action | Implement and independently validate accurate EE cycle timing/stalls, then build a native host scheduler to advance scanout only from measured EE cycles. Keep opt-in yields separate from guest VBlank |
 
 ### 2026-11-17 — Stage 0/1 authentic replay evidence (PR #129)
 
@@ -219,11 +219,18 @@ Create feature branches from up-to-date `main`, commit incremental source/tests,
 - **Native replay result (after instrumentation):** exactly **12,232 dispatches**, **9,009,311 guest instruction attempts** (not EE cycles); final PC `0x00175210`, reason `LOOP_BUDGET(5)`, guest `INTC_STAT & 4` VBlank wait remains unresolved. Real CDVD DMA3, SIF/IOP firmware, GS PATH3, VU0 FMAC and guest SetVSyncFlag registration follow the same tested paths; no guest framebuffer or VBlank event is invented.
 - **Remaining hardware blocker:** implement authoritative R5900 cycle accumulation and safe guest-loop preemption; validate timing against reliable reference, then advance real `c_ee_scanout_clock` only with those EE cycles. This accounting PR is diagnostic evidence, **not** a native-boot progress claim. Rerun three GitHub Actions workflows after the final documentation changes before squash merging.
 
-### 2026-11-17 — Host-cooperative native EE loop safepoints (PR #135 candidate)
+### 2026-11-17 — Host-cooperative native EE loop safepoints (PR #135, squash-merged)
 
 - **Why:** The original SDBZ VBlank wait at `0x00175210` is an *intra-function* polling loop. A genuine timed GS event cannot be serviced if the native guest never yields to the host scheduler. The existing `LOOP_BUDGET` exit is a terminal diagnostic, not a resumable scheduling boundary.
 - **Implemented (opt-in only):** a separate `EE_EXIT_HOST_YIELD(6)` reason and ABI-appended `m_loop_safepoint_yield_enabled` host flag. On exact budget exhaustion at an already-instrumented backward-loop header, generated LLVM chooses between unchanged terminal `LOOP_BUDGET(5)` (default) and `HOST_YIELD(6)`. Both set `m_pc` to the guarded block start *after* prior branch delay slots and architectural GPR writes have committed. They do not change guest cause/status or raise interrupts.
 - **Regression:** actual MIPS `BEQ zero,zero,-1` with `ADDIU t0,t0,1` delay slot is emitted to real LLVM. Test provides two bounded host yields and re-enters the same guest PC; it compares cumulative GPR128 state and instruction-attempt count to the expected uninterrupted execution. A disabled yield flag must still return `LOOP_BUDGET` with identical guest state.
 - **Not yet connected to the native game runner.** The existing 12,232-dispatch original-game VBlank loop remains the true hardware blocker. The host must first gain accurate, independently verified R5900 EE cycles (including pipeline stalls, dual-issue constraints and delay-slot timing). Only then can a scheduler use cooperative yields to drive `c_ee_scanout_clock` and deliver genuine GS VBlank events. Yield count and instruction-attempt count are **not** substitutes for cycles.
+
+### 2026-11-17 — Authentic verification and native host-yield dispatch contract (PR #135/#136)
+
+- **Merged:** [PR #135](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/pull/135) squash commit `c7ca053af2e022bd5709ee6583c7c5427ef75016`. Final head passed all three workflows. Build and test completed **93/93 CTest**, including `guest_loop_yield_ir_runtime` and `guest_instruction_attempts_ir_runtime`.
+- **Authentic PR #135 replay:** original SDBZ US `SLUS_214.42` SHA-256 `1b213a85a2c305dc0f893c007a502c93e0851d1bb7db6164f9e0b72adb074a16`; original US 4,259,610,624-byte ISO SHA-256 `d432b3ccaafe6ddf50ed3dedcf683dbac9bf06556d4e843d12fdee1a821231e1`; genuine OpenPS2BIOS v0.6 ROM0 SHA-256 `3702baa508ff40498fab4a95429a2ae1f903d11f5bbcdd4e1a87dbe9f5d21a84`. Fresh translation of 7,901 original entries plus 145 previously guest-reached entries; **8,046/8,046 LLVM modules verified**, native linked library and provenance record independently validated. The default runner correctly returns exactly **12,232 dispatches**, **9,009,311 guest instruction attempts**, `LOOP_BUDGET(5)` at guest PC `0x00175210`, with **no** invented GS VBlank event. The opt-in yield remains disabled during this replay.
+- **New PR #136 host-boundary coverage:** tests the native EE dispatcher returning `EE_EXIT_HOST_YIELD(6)` after one function dispatch, with exact committed PC, preserved GPR128 upper/lower halves, and unchanged COP0 Cause. Re-entering the same compiled function must make exactly one additional guest-side state transition. This is a host orchestration regression; the previous real LLVM test already proves native loop-safepoint behavior.
+- **Remaining hardware dependency:** neither instruction attempts nor host yields are equivalent to elapsed R5900 cycles. The actual VBlank signal may only be delivered after a separately validated issue/stall-aware EE timing source crosses the configured NTSC/PAL scanout boundary. Do not mark main-menu boot or native frame presentation complete.
 
 **Next developer instruction:** The authentic run now reaches the real VBlank polling loop at `0x00175210`. Implement cycle-driven GS VBlank scheduling only after verifying guest CRT timing, EE cycle accounting and INTC masks/callback delivery. The verified SetVSyncFlag registration alone does not create a VSync. Preserve all prior genuine CDVD/SIF/GIF and VMAC state; continue through a new trace-proven blocker.
