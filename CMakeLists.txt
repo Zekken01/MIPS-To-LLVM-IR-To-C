@@ -380,6 +380,10 @@ if(Python3_Interpreter_FOUND)
             COMMAND ${Python3_EXECUTABLE}
                     ${CMAKE_SOURCE_DIR}/tests/tools/test_verify_ir_incremental.py)
     endif()
+    add_test(NAME ee_instruction_trace_comparator
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/tools/test_compare_ee_instruction_traces.py
+                ${CMAKE_SOURCE_DIR}/tools/compare_ee_instruction_traces.py)
     add_test(NAME vu0_trace_comparator
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_compare_vu0_traces.py)
