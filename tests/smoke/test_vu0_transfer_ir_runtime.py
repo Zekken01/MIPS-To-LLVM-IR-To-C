@@ -3,6 +3,7 @@
 
 import ctypes
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -170,7 +171,21 @@ def compile_jit(fixture, temp_dir, mode, target):
     ir_path = temp_dir / f"{mode}.ll"
     subprocess.run([str(fixture), str(ir_path), mode], check=True)
 
-    module = llvm.parse_assembly(ir_path.read_text(encoding="utf-8"))
+    ir_text = ir_path.read_text(encoding="utf-8")
+    # The fixture previously modeled only the ABI's first six pointer
+    # fields. Native instruction counting appends a counter after later
+    # host-owned fields; a 48-byte runtime allocation would cause JIT code
+    # to write beyond its backing buffer. Derive the actual field offset
+    # from generated IR rather than guessing the C++ struct's tail layout.
+    match = re.search(
+        r"%counter_ptr = getelementptr i8, ptr %rt, i64 (\\d+)", ir_text
+    )
+    require(match is not None, "missing guest-instruction accounting offset")
+    counter_offset = int(match.group(1))
+    require(counter_offset >= ctypes.sizeof(Runtime),
+            "instrumentation counter overlaps VU0 callback ABI")
+
+    module = llvm.parse_assembly(ir_text)
     module.verify()
     target_machine = target.create_target_machine(opt=0)
     module.triple = llvm.get_default_triple()
@@ -186,7 +201,7 @@ def compile_jit(fixture, temp_dir, mode, target):
     function_type = ctypes.CFUNCTYPE(
         ctypes.c_uint32, ctypes.POINTER(EEState), ctypes.c_void_p
     )
-    return function_type(address), engine, module, target_machine
+    return function_type(address), engine, module, target_machine, counter_offset
 
 
 def make_runtime(vu0, sync_result=VU0_SYNC_COMPLETE,
@@ -217,7 +232,7 @@ def run_guest(fixture, temp_dir, target, mode, setup=None,
               sync_result=VU0_SYNC_COMPLETE,
               control_result=VU0_SYNC_COMPLETE,
               vu0_state_available=True):
-    guest_fn, engine, module, target_machine = compile_jit(
+    guest_fn, engine, module, target_machine, counter_offset = compile_jit(
         fixture, temp_dir, mode, target
     )
     cpu_backing, cpu = aligned_instance(EEState)
@@ -225,15 +240,22 @@ def run_guest(fixture, temp_dir, target, mode, setup=None,
     runtime, sync_ref, control_ref, sync_state, control_state = make_runtime(
         vu0, sync_result=sync_result, control_result=control_result
     )
+    # Allocate every byte accessed by the JIT, including the appended
+    # diagnostic counter. Keep ABI-prefix fields exactly as before.
+    runtime_backing = ctypes.create_string_buffer(
+        max(ctypes.sizeof(Runtime), counter_offset + ctypes.sizeof(ctypes.c_uint64))
+    )
+    runtime_ptr = ctypes.cast(runtime_backing, ctypes.POINTER(Runtime))
+    runtime_ptr.contents = runtime
     if not vu0_state_available:
-        runtime.vu0_state = None
+        runtime_ptr.contents.vu0_state = None
 
     if setup:
         setup(cpu, vu0)
 
-    result = guest_fn(ctypes.pointer(cpu), ctypes.byref(runtime))
+    result = guest_fn(ctypes.pointer(cpu), ctypes.byref(runtime_ptr.contents))
     retained = (
-        cpu_backing, vu0_backing, engine, module, target_machine,
+        cpu_backing, vu0_backing, runtime_backing, engine, module, target_machine,
         sync_ref, control_ref,
     )
     return result, cpu, vu0, sync_state, control_state, retained
