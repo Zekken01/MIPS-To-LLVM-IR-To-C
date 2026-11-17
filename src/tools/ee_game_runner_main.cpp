@@ -3,6 +3,8 @@
 #include "ee_memory.h"
 #include "ee_ram_interpreter.h"
 #include "ee_hw_bus.h"
+#include "ee_gif.h"
+#include "ee_gs.h"
 #include "elf_loader.h"
 #include "iop_kernel.h"
 #include "iop_cdvd.h"
@@ -857,6 +859,14 @@ int main(int argc, char** argv)
     ee::c_ee_hw_bus hardware;
     hardware.bind_cpu(&cpu);
     hardware.bind_memory(memory.get());
+    // Feed actual EE GIF DMA channel 2 payloads through the existing
+    // stateful PATH3 parser and GS register/VRAM consumer. DMA completion
+    // remains conditional on accepting the *real* transferred packet.
+    ee::c_ee_gif_path3 gif_path3{};
+    ee::c_ee_gs_state gs_state{};
+    gif_path3.bind_event_sink(&gs_state, &ee::c_ee_gs_state::gif_events);
+    hardware.bind_device_transfer(&gif_path3, &ee::c_ee_gif_path3::dma_transfer);
+    hardware.bind_device_download(&gs_state, &ee::c_ee_gs_state::dma_download);
 
     // Optional real guest IOP execution. This is a deterministic polling
     // rendezvous, NOT EE/IOP hardware cycle synchronization: the native
@@ -3783,6 +3793,20 @@ int main(int argc, char** argv)
         std::fprintf(stderr,
             "registered syscall handler did not return: pc=0x%08x resume=0x%08x\n",
             cpu.m_pc, callback_resume_pc);
+    }
+
+    // Only accepted GIF PATH3 batches contribute to these counters.
+    // This does not imply scanout or rasterized presentation.
+    if (gs_state.state().m_tag_count != 0u)
+    {
+        std::printf(
+            "GS PATH3 accepted: tags=%llu vertices=%llu image_qwc=%u "
+            "transfer_pixels=%u\n",
+            static_cast<unsigned long long>(gs_state.state().m_tag_count),
+            static_cast<unsigned long long>(gs_state.state().m_vertex_count),
+            gs_state.state().m_image_qwc,
+            gs_state.state().m_transfer_pixels_written
+        );
     }
 
     std::printf(
