@@ -256,6 +256,17 @@ int main()
         return fail("cache-control register access validation");
     }
 
+    // Module startup resets/configures SIO2 before any controller transfer.
+    // Preserve that register state without inventing peripheral data or IRQs.
+    if (!hardware.write(iop::c_hw::k_sio2_ctrl, 4u, 0x3bcu) ||
+        !hardware.read(iop::c_hw::k_sio2_ctrl, 4u, &actual) ||
+        actual != 0x3bcu || hardware.pending_interrupts() != 0u ||
+        hardware.write(iop::c_hw::k_sio2_ctrl, 2u, 0u) ||
+        hardware.read(iop::c_hw::k_sio2_ctrl + 4u, 4u, &actual))
+    {
+        return fail("SIO2 control register storage and width validation");
+    }
+
     // The ROM0 entrypoint performs actual R3000 load/store operations
     // against scratchpad, cache control and IOP interrupt mask.
     // These are original synthetic instructions, not copied BIOS data.

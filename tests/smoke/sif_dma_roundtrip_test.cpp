@@ -257,7 +257,10 @@ struct s_fixture
         };
         const uint32_t header[4] =
         {
-            0xc0000000u | k_iop_request, k_payload_bytes, 0u, 0u
+            // ERT (bit 30) ends DMA10. Deliberately omit INT_O (bit 31)
+            // so this catches the two IOP destination-tag flags being
+            // accidentally interchanged.
+            0x40000000u | k_iop_request, k_payload_bytes, 0u, 0u
         };
         for (uint32_t i = 0u; i < 4u; ++i)
         {

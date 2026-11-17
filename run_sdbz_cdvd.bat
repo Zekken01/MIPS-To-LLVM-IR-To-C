@@ -23,6 +23,16 @@ if not exist "%CXX%" (
 set "SDBZ_IOP_ROM0=%CD%\build\openps2bios\rom0.bin"
 set "SDBZ_ISO=D:\Games\PS2_ISO\Super Dragon Ball Z (USA).iso"
 set "SDBZ_WORK=build\sdbz-cdvd"
+rem OpenPS2BIOS scans the real IOPRP image after the RESET command before
+rem it publishes BOOTEND. The general 256-poll diagnostic is intentionally
+rem short, but cuts off that legitimate firmware work.
+if not defined SIF_POLL_LIMIT set "SIF_POLL_LIMIT=2048"
+echo IOP SMFLAG poll diagnostic limit: %SIF_POLL_LIMIT%
+set "TRACE_FLAG="
+if "%SDBZ_TRACE%"=="1" (
+    set "TRACE_FLAG=--trace"
+    echo Native EE syscall/thread trace enabled.
+)
 if not exist "%SDBZ_WORK%" mkdir "%SDBZ_WORK%"
 
 del /q "%SDBZ_WORK%\run.log" 2>nul
@@ -32,7 +42,15 @@ goto show_result
 
 :run_pass
 if "%RUN_RESULT%"=="0" exit /b 0
-echo ==== cached expansion pass %1 ==== >> "%SDBZ_WORK%\run.log"
+set "RECOMPILE_FLAG=--no-recompile"
+set "PASS_KIND=cached expansion"
+if "%1"=="1" (
+    rem Runtime source fingerprints must be refreshed before later cached
+    rem auto-expansion passes can reuse this translated game library.
+    set "RECOMPILE_FLAG="
+    set "PASS_KIND=fresh translation"
+)
+echo ==== %PASS_KIND% pass %1 ==== >> "%SDBZ_WORK%\run.log"
 python tools\run_game.py PS2_GAME\SLUS_214.42 ^
     --work-dir="%SDBZ_WORK%" ^
     --report="%SDBZ_WORK%\first-boot.json" ^
@@ -44,10 +62,10 @@ python tools\run_game.py PS2_GAME\SLUS_214.42 ^
     --emit-opt=0 ^
     --max-dispatches=100000 ^
     --loop-budget=1000000 ^
-    --sif-poll-limit=256 ^
+    --sif-poll-limit=%SIF_POLL_LIMIT% ^
     --timeout-seconds=120 ^
-    --auto-expand=128 ^
-    --no-recompile ^
+    --auto-expand=128 %TRACE_FLAG% ^
+    %RECOMPILE_FLAG% ^
     --disc-image="%SDBZ_ISO%" >> "%SDBZ_WORK%\run.log" 2>&1
 set "RUN_RESULT=%errorlevel%"
 exit /b 0

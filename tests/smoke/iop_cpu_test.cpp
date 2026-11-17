@@ -125,6 +125,27 @@ int main()
         return fail("signed MULT/DIV and HI/LO semantics");
     }
 
+    // MIPS trap instructions continue normally when their predicate is
+    // false. OpenPS2BIOS uses TEQ as an assertion on a successful path.
+    cpu.reset(0u);
+    const uint32_t trap_not_taken[] =
+    {
+        0x240c0001u, // addiu t4,zero,1
+        0x018001f4u, // teq t4,zero,7: false, so continue
+        0x240d0055u, // addiu t5,zero,0x55
+        0x0000000du  // break
+    };
+    if (!write_program(cpu, 0u, trap_not_taken, 4u))
+    {
+        return fail("cannot populate non-trapping trap fixture");
+    }
+    result = cpu.run(10u);
+    if (result.m_result != iop::e_step_result::breakpoint ||
+        result.m_instructions != 3u || cpu.state().m_gpr[13] != 0x55u)
+    {
+        return fail("false MIPS trap predicate did not continue");
+    }
+
     // Unaligned MIPS I paired LWL/LWR loads reconstruct a 32-bit word.
     cpu.reset(0u);
     const uint32_t unaligned[] =

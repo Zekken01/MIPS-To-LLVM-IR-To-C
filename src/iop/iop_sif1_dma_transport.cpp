@@ -201,9 +201,10 @@ bool c_sif1_dma_transport::consume_one_iop_word_or_tag()
         }
         m_iop_destination = destination;
         m_iop_words_remaining = count / 4u;
-        // IOP DMA tag bit 31 ends the chain. Bit 30 requests a tag
-        // interrupt and must not independently terminate DMA10.
-        m_iop_final_tag = (tag & 0x80000000u) != 0u;
+        // IOP SIF DMA destination tags use bit 30 for ERT (end receive
+        // transfer) and bit 31 for INT_O (interrupt on the IOP side).
+        // INT_O alone must not terminate DMA10.
+        m_iop_final_tag = (tag & 0x40000000u) != 0u;
         return true;
     }
 
@@ -339,14 +340,14 @@ bool c_sif1_dma_transport::set_dma(
 
         const size_t tag_offset = packet.size();
         packet.resize(tag_offset + 16u + static_cast<size_t>(padded), 0u);
-        // IOP DMA10 tag: bit 31 = END, bit 30 = IRQ-on-tag.
+        // IOP DMA10 tag: bit 30 = ERT, bit 31 = INT_O.
         // The bounded syscall transfer ends at its final descriptor.
         // SIF_DMA_INT_O requests a tag IRQ on the terminal SIFCMD
         // packet; it is distinct from ending the destination chain.
         const uint32_t destination_tag =
             destination_address |
-            (index + 1u == count ? 0x80000000u : 0u) |
-            ((attributes & 0x04u) != 0u ? 0x40000000u : 0u);
+            (index + 1u == count ? 0x40000000u : 0u) |
+            ((attributes & 0x04u) != 0u ? 0x80000000u : 0u);
         for (uint32_t lane = 0u; lane < 4u; ++lane)
         {
             packet[tag_offset + lane] =

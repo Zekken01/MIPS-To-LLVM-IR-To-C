@@ -39,6 +39,7 @@ public:
         m_intc.reset();
         m_dmac.reset();
         m_sif.reset();
+        m_gs_imr = 0u;
     }
 
     c_ee_intc& intc()
@@ -54,6 +55,20 @@ public:
     c_ee_sif& sif()
     {
         return m_sif;
+    }
+
+    // GS_IMR is a privileged GS register, rather than a GIF packet register.
+    // It is reached by the EE kernel's GsPutIMR syscall.  The current GS
+    // model has no IRQ delivery, but retains the documented mask field so
+    // kernel calls and later reads observe coherent hardware state.
+    void set_gs_imr(uint64_t value)
+    {
+        m_gs_imr = value & 0x0000ff00ULL;
+    }
+
+    uint64_t gs_imr() const
+    {
+        return m_gs_imr;
     }
 
     static bool mmio_read(void* user, uint32_t address,
@@ -88,5 +103,6 @@ private:
     c_ee_intc m_intc;
     c_ee_dmac m_dmac;
     c_ee_sif m_sif;
+    uint64_t m_gs_imr = 0u;
 };
 } // namespace ee
