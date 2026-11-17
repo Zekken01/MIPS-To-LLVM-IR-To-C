@@ -166,8 +166,8 @@ Create feature branches from up-to-date `main`, commit incremental source/tests,
 
 | Field | Verified checkpoint (2026-11-17) |
 |---|---|
-| Base commit | `5f6f24b8f80584d6dc0b16db6c0b28d9e46a0360` (squash PR #131) |
-| Latest merged change | PR #131 — guarded matrix FMAC path; PR #132 candidate registers real VSync flag pointers without an event |
+| Base commit | `1f906fd490e407e76028232dba58317959cbb7a4` (squash PR #132) |
+| Latest merged change | PR #132 — authentic SetVSyncFlag registration; PR #133 is a scanout model (not runtime-wired) |
 | Original game | Super Dragon Ball Z (US), `SLUS_214.42` |
 | IOP firmware | genuine OpenPS2BIOS v0.6 |
 | Verified real-CDVD transfer | LBA 16, 261, 289 × 135, 450 × 4 |
@@ -176,7 +176,7 @@ Create feature branches from up-to-date `main`, commit incremental source/tests,
 | Last focused replay | **12,232 EE dispatches** using authentic USA ELF/ISO and OpenPS2BIOS 0.6; loop budget, not boot |
 | Last guest PC | **`0x00175210`** (guest VBlank wait loop), after genuine SetVSyncFlag registration |
 | Stop class | **LOOP_BUDGET(5)** while polling EE INTC_STAT VBlank-start bit and registered guest VSync flag; **not boot complete** |
-| Next action | Add **genuine** GS scanout/VBlank event scheduling, assert EE INTC_STAT bit `0x4` at actual VBlank start, deliver the real sampled GS_CSR to registered guest pointer, and invoke guest interrupt path only through enabled INTC bits; no immediate fake completion |
+| Next action | Validate the new cycle-driven scanout device model (#133); then add exact native EE guest-cycle accounting and loop preemption **before connecting VBlank to the runner**. Do not substitute dispatch count, loop visits or elapsed host time |
 
 ### 2026-11-17 — Stage 0/1 authentic replay evidence (PR #129)
 
@@ -202,5 +202,13 @@ Create feature branches from up-to-date `main`, commit incremental source/tests,
 - **New verified stop:** **12,232 EE dispatches**, `LOOP_BUDGET(5)`, guest PC **`0x00175210`**. Original code at `0x001751EC` writes `0x4` to EE INTC_STAT `0x1000f000` to acknowledge VBlank-start, then at `0x00175210` reads `INTC_STAT & 0x4`. If that is not asserted, it checks the guest registered flag at `0x01ffeeb0`. Neither is set because **no genuine VBlank event producer** exists in this native runner. Increasing dispatch or loop budgets cannot solve the hardware dependency.
 - **Next acceptance milestone:** real scanout/VBlank producer driven by the guest CRT configuration and emulated EE timing, correct EE INTC_STAT start interrupt and enable/mask logic, actual GS CSR on VBlank, and guest flag write only from that event. First add focused timing/edge/acknowledge/reject tests against reliable GS behavior. Do not create an unconditional periodic host callback, forged interrupt or write-at-registration shortcut.
 - **CI for PR #132 pre-document head `4aa9ccf2`:** Build and test, SIF DMA acceptance, and OpenPS2BIOS ROM0 execution all succeeded. Recheck the final head after this document change before squash merge. This replay is not a running main menu or a rendered frame.
+
+### 2026-11-17 — Stage 2 scanout timing foundation (PR #133)
+
+- **Why:** The original US game continues through genuine `SetVSyncFlag(0x01ffeeb0,0x01ffeeb8)` and then polls `EE INTC_STAT & 0x4` at `0x00175210`; 12,232 dispatches end in `LOOP_BUDGET`. This is a real missing VBlank producer, not a missing translated entry.
+- **Read-only reference:** `SetGsCrt(1,2,0)` from the original startup trace selects interlaced NTSC. PS2 EE runs at **294,912,000 Hz**; NTSC mode 2 uses **60,000/1001 fields per second**, PAL mode 3 uses **50 fields per second**. A field boundary is therefore **4,920,115.2** EE cycles for NTSC and **5,898,240** for PAL. Use rational phase accumulation to prevent drift.
+- **Implemented separately:** `c_ee_scanout_clock` accepts **explicit authoritative EE cycle timestamps**, rejects unconfigured/malformed/non-monotonic timing, and emits a scheduled field-start only at the proper boundary. It latches GS `CSR.VSINT`, toggles `CSR.FIELD` for interlaced output, raises INTC cause 2 (with the existing mask logic), and invokes the prior one-shot guest flag/CSR callback. Invalid memory refuses delivery without partially updating GS/INTC state. New `ee_scanout_clock` CTest exercises timing, masks, edge acknowledgements, callback lifetime, and refusal.
+- **IMPORTANT: not enabled in the native game runner.** The current EE dispatcher has no trustworthy instruction/cycle clock and no interruptible mid-function guest-loop safepoint. Driving this model with host wall time, dispatch count, or `m_loop_safepoint_remaining` would fabricate VBlank. Do **not** claim new boot progress; the last authentic replay remains **12,232 dispatches, LOOP_BUDGET at 0x00175210**.
+- **Next required work:** introduce instrumented accurate guest EE cycle accounting across translated basic blocks, branch-likely annulled slots, delay slots and long loops; add a bounded, resumable timed-event exit; keep scheduler state outside guest CPU context; connect the scanout clock only after differential/reference tests demonstrate the clock is credible. Validate hardware INTC/GS CSR and field semantics with authentic guest tracing before calling native rendering ready.
 
 **Next developer instruction:** The authentic run now reaches the real VBlank polling loop at `0x00175210`. Implement cycle-driven GS VBlank scheduling only after verifying guest CRT timing, EE cycle accounting and INTC masks/callback delivery. The verified SetVSyncFlag registration alone does not create a VSync. Preserve all prior genuine CDVD/SIF/GIF and VMAC state; continue through a new trace-proven blocker.
