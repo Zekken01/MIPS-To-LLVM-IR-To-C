@@ -21,10 +21,12 @@ if errorlevel 1 exit /b %errorlevel%
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 if errorlevel 1 exit /b %errorlevel%
 
-cmake --build build --target iop_cdvd_test iop_hw_test ee_game_runner -j 8
+rem run_sdbz_cdvd.bat regenerates guest IR via ee_recomp.exe; build it with
+rem the runner so native boot probes never silently use a stale lifter.
+cmake --build build --target iop_cdvd_test iop_hw_test ee_decoder_test ee_vu0_macro_fmac_test ee_recomp ee_game_runner -j 8
 if errorlevel 1 exit /b %errorlevel%
 
-ctest --test-dir build -C Release --output-on-failure -R "^(iop_cdvd|iop_hw)$"
+ctest --test-dir build -C Release --output-on-failure -R "^(iop_cdvd|iop_hw|decoder|vu0_macro_fmac)$"
 if errorlevel 1 exit /b %errorlevel%
 
 echo CDVD focused build and tests passed.

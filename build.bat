@@ -22,12 +22,15 @@ echo === Configuring ===
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 if errorlevel 1 exit /b %errorlevel%
 
-echo === Building focused SIF and native-runner targets ===
-cmake --build build --target iop_cpu_test iop_hw_test sif_dma_roundtrip_test iop_sif1_bridge_test ee_game_runner -j 8
+echo === Building focused SIF, recompilation, and native-runner targets ===
+rem run_game.py invokes ee_recomp.exe to produce the LLVM modules.  Keeping
+rem that executable out of this target list can replay stale lowering code
+rem even when ee_game_runner has been rebuilt.
+cmake --build build --target iop_cpu_test iop_hw_test sif_dma_roundtrip_test iop_sif1_bridge_test ee_decoder_test ee_vu0_macro_fmac_test ee_recomp ee_game_runner -j 8
 if errorlevel 1 exit /b %errorlevel%
 
 echo === Running focused SIF regressions ===
-ctest --test-dir build -C Release --output-on-failure -R "^(iop_cpu|iop_hw|sif_dma_roundtrip|iop_sif1_bridge)$"
+ctest --test-dir build -C Release --output-on-failure -R "^(iop_cpu|iop_hw|sif_dma_roundtrip|iop_sif1_bridge|decoder|vu0_macro_fmac)$"
 if errorlevel 1 exit /b %errorlevel%
 
 echo === Running the real OpenPS2BIOS / SDBZ probe ===
