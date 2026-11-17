@@ -2,7 +2,7 @@
 
 **Repository:** [twist84/MIPS-To-LLVM-IR-To-C](https://github.com/twist84/MIPS-To-LLVM-IR-To-C)  
 **Status date:** 2026-11-17  
-**Baseline:** `main` at `d81a8e2ae5437434d485883ca2afd720e0e46152` (squash-merged [PR #127](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/pull/127))  
+**Baseline:** `main` at `c2ab5b11d99e28067935d6d007e412b784ec2690` (squash-merged [PR #128](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/pull/128)); Stage 1 validated on feature [PR #129](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/pull/129) before squash merge.  
 **Goal:** Boot and eventually play **Super Dragon Ball Z (USA, `SLUS_214.42`)** using recompiled EE code, genuine guest IOP execution, and a native runtime, without PCSX2.
 
 > This is a milestone and acceptance plan, **not** a statement that the game currently boots or renders a usable frame. Update the checkpoint and evidence as new PRs merge. Re-check `main` and any newer work before acting on these instructions.
@@ -38,9 +38,9 @@ The following were implemented and merged by 2026-11-17:
 
 **GIF/GS evidence:** normal `CHCR=0x101` transfers reached the PATH3 parser; 32 GIF tags, 16,384 IMAGE QWC and 65,536 written GS VRAM pixels were recorded. The next observed source-chain transfer used `CHCR=0x105`, `TADR=0x00503310`, a 9-QWC `END` tag (`0x70000009`), and was accepted by the GS consumer.
 
-**Last confirmed focused full-game replay:** **12,168 EE dispatches**, final guest PC **`0x00102E24`**, reason **untranslated native entry** (`DISPATCH`, status 0). This occurred *after* the source-chain DMA blocker at `0x00105034` was passed; it was **not** evidence of complete gameplay. A later `END` tag (19 QWC at `0x005033B0`) was observed in the diagnostic stream; do not infer another missing DMA mode from this without a fresh guest trace.
+**Previously confirmed replay:** **12,168 EE dispatches**, final PC **`0x00102E24`**, untranslated native entry. **PR #129 Stage 1 validation replay:** **12,190 EE dispatches**, final PC **`0x00108240`**, reason **`UNSUPPORTED(4)`** on a genuine VU0/COP2 macro instruction `0x4BE821BC`. The `0x00102E24` entry and its two jump-table siblings were recovered/translated. No boot completion or rendered frame is implied. A later `END` tag (19 QWC at `0x005033B0`) was observed in the diagnostic stream; do not infer another missing DMA mode from this without a fresh guest trace.
 
-**Next-entry ELF evidence:** a guest `jr $3` at `0x00102E1C` loads its destination through a table based at **`0x004B7000`** (`lw $3,0($3)` at `0x00102E18`). The first six table words are `0x00102E24`, `0x00102E5C`, `0x00102DA4`, then `0x00102E24` repeated three times. This is a **three-distinct-target indirect switch**, whereas the existing generic `pointer_table_siblings()` deliberately requires at least four distinct executable entries before bulk expansion. That conservative generic threshold should be retained; recover small tables only when grounded by the actual guest indirect branch and its dataflow.
+**Resolved Stage 1 ELF evidence:** a guest `jr $3` at `0x00102E1C` loads its destination through a table based at **`0x004B7000`** (`lw $3,0($3)` at `0x00102E18`). The first six table words are `0x00102E24`, `0x00102E5C`, `0x00102DA4`, then `0x00102E24` repeated three times. This is a **three-distinct-target indirect switch**, whereas the existing generic `pointer_table_siblings()` deliberately requires at least four distinct executable entries before bulk expansion. That conservative generic threshold should be retained; recover small tables only when grounded by the actual guest indirect branch and its dataflow.
 
 Historical local full-library work reached approximately **8,047 LLVM-verified translated modules**. These were scratch build artifacts, not source checked into `main`. The source-controlled pipeline is authoritative.
 
@@ -151,16 +151,24 @@ Create feature branches from up-to-date `main`, commit incremental source/tests,
 
 | Field | Verified checkpoint (2026-11-17) |
 |---|---|
-| Base commit | `d81a8e2ae5437434d485883ca2afd720e0e46152` |
-| Latest merged change | PR #127 — GIF source-chain END |
+| Base commit | `c2ab5b11d99e28067935d6d007e412b784ec2690` (PR #128) |
+| Latest merged change | PR #128 — native boot plan; Stage 1 candidate PR #129 validated but merge pending |
 | Original game | Super Dragon Ball Z (US), `SLUS_214.42` |
 | IOP firmware | genuine OpenPS2BIOS v0.6 |
 | Verified real-CDVD transfer | LBA 16, 261, 289 × 135, 450 × 4 |
 | SIF/WaitSema | real DMA5 callback + `iSignalSema(8)` verified |
 | GIF/GS | PATH3 normal and nine-QWC END chain accepted; VRAM transfer observed |
-| Last focused replay | **12,168 EE dispatches** |
-| Last guest PC | **`0x00102E24`** |
-| Stop class | untranslated EE entry; **not boot complete** |
-| Next action | recover branch-anchored 3-target jump table at `0x004B7000`; compile/discover `0x00102E24` |
+| Last focused replay | **12,190 EE dispatches** using authentic USA ELF/ISO and OpenPS2BIOS 0.6 |
+| Last guest PC | **`0x00108240`** |
+| Stop class | **`UNSUPPORTED(4)`**, true COP2/VU0 macro instruction; **not boot complete** |
+| Next action | Implement and validate only the required VU0 macro instructions beginning at `0x00108240`, with exact guest flag/ACC semantics and differential checks; do not mark them supported prematurely |
 
-**Next developer instruction:** inspect the latest merged code and actual original-game inputs; begin with Stage 0 and Stage 1, then implement the next concrete blocker. Do not stop at a high-level proposal. Keep this file updated with each merged milestone and the exact proof that advanced the game.
+### 2026-11-17 — Stage 0/1 authentic replay evidence (PR #129)
+
+- **Source:** original `SLUS_214.42` SHA-256 `1b213a85a2c305dc0f893c007a502c93e0851d1bb7db6164f9e0b72adb074a16`; raw USA ISO **4,259,610,624 bytes**, SHA-256 `d432b3ccaafe6ddf50ed3dedcf683dbac9bf06556d4e843d12fdee1a821231e1`; OpenPS2BIOS **v0.6 ROM0** SHA-256 `3702baa508ff40498fab4a95429a2ae1f903d11f5bbcdd4e1a87dbe9f5d21a84`.
+- **Builder:** `ee-recomp-linux` binaries and exact checked-out source from passing PR #129 Build and test workflow; `--functions=all --hle-startup --kseg-ram --disc-image=<original US ISO> --max-dispatches=100000 --loop-budget=1000000 --sif-poll-limit=2048 --timeout-seconds=180 --auto-expand=128 --auto-expand-table=24 --emit-opt=0 --emit-jobs=6` with `SDBZ_IOP_ROM0` pointing to the verified ROM.
+- **Compilation:** 7,901 initial LLVM-verified native modules, zero invalid modules. Restarted `--auto-expand=128` using the verified, provenance-checked `--no-recompile` cache after the first expansion limit was reached. The final replay linked **8,046** verified modules and dispatched **12,190** guest entries. `0x00102E24` was actually executed and its small switch at `0x004B7000` supplied **two** additional targets; overlapping CFG block ownership remained with existing native modules.
+- **First new genuine dependency:** `0x00108240`, report `exit_reason=4`, `exit_name=UNSUPPORTED`, `dispatch_status=0`, not a DMA/IRQ stall. Original MIPS word is `0x4BE821BC` (COP2/VU0 macro). The game has eight preceding genuine `LQC2` loads and continues with additional COP2 operations. Implement macro execution only when exact ACC/flag semantics can be justified.
+- **CI (PR #129, pre-document-update head `7f331070`):** Build and test, SIF DMA acceptance, and OpenPS2BIOS ROM0 execution all passed. Rerun after any further head update before merge. The OpenPS2BIOS CI authentic ROM0 run is a separate IOP test; the focused full-game replay is the evidence above.
+
+**Next developer instruction:** Stage 0/1 are validated on authentic inputs; Stage 2 begins with the VU0/COP2 macro `0x4BE821BC` at `0x00108240`. Implement semantic lowering with regression and compare against real hardware/differential evidence before advancing. Do not stop at a high-level proposal. Keep this file updated with each merged milestone and the exact proof that advanced the game.
