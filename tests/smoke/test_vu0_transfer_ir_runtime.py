@@ -247,8 +247,18 @@ def run_guest(fixture, temp_dir, target, mode, setup=None,
     runtime_backing = ctypes.create_string_buffer(
         max(ctypes.sizeof(Runtime), counter_offset + ctypes.sizeof(ctypes.c_uint64))
     )
+    # Pointer.contents assignment would *retarget* the ctypes pointer to
+    # the original 48-byte Runtime object, rather than copy into the
+    # extended allocation. Copy the ABI prefix into the owned backing.
+    ctypes.memmove(
+        ctypes.addressof(runtime_backing),
+        ctypes.addressof(runtime),
+        ctypes.sizeof(Runtime),
+    )
     runtime_ptr = ctypes.cast(runtime_backing, ctypes.POINTER(Runtime))
-    runtime_ptr.contents = runtime
+    require(ctypes.addressof(runtime_ptr.contents) ==
+            ctypes.addressof(runtime_backing),
+            "runtime pointer must address the entire allocated ABI backing")
     if not vu0_state_available:
         runtime_ptr.contents.vu0_state = None
 
