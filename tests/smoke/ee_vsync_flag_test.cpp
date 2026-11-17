@@ -66,8 +66,15 @@ int main()
           "event delivery requires memory");
     check(flags.deliver_actual_vsync(&ram, real_csr) &&
           ram.read32(0x100u) == 1u &&
-          ram.read64(0x108u) == real_csr,
-          "only explicit VSync delivery updates the registered flag and actual CSR");
+          ram.read64(0x108u) == real_csr &&
+          flags.flag_address() == 0u && flags.csr_address() == 0u,
+          "only real VSync delivery writes flag/CSR and consumes one-shot registration");
+    ram.write32(0x100u, 0x76543210u);
+    ram.write64(0x108u, 0xabcdefabcdeffedcull);
+    check(flags.deliver_actual_vsync(&ram, 0x1111ull) &&
+          ram.read32(0x100u) == 0x76543210u &&
+          ram.read64(0x108u) == 0xabcdefabcdeffedcull,
+          "second VSync cannot re-fire already consumed registration");
 
     // Re-registering with nullable pointers clears the corresponding
     // consumer, without backfilling or inventing a historical event.
@@ -79,14 +86,15 @@ int main()
           "partial re-registration does not imply VSync");
     check(flags.deliver_actual_vsync(&ram, 0xfedcba9876543210ull) &&
           ram.read32(0x100u) == 0x10203040u &&
-          ram.read64(0x108u) == 0xfedcba9876543210ull,
-          "event delivery honors a null flag pointer");
+          ram.read64(0x108u) == 0x1122334455667788ull,
+          "null flag pointer disables delivery (including optional CSR)");
     check(flags.register_guest_pointers(&ram, 0x100u, 0u),
           "null CSR pointer registration");
     check(flags.deliver_actual_vsync(&ram, real_csr) &&
           ram.read32(0x100u) == 1u &&
-          ram.read64(0x108u) == 0xfedcba9876543210ull,
-          "event delivery honors a null CSR pointer");
+          ram.read64(0x108u) == 0x1122334455667788ull &&
+          flags.flag_address() == 0u && flags.csr_address() == 0u,
+          "event delivery honors a null CSR pointer and clears both pointers");
     check(flags.register_guest_pointers(&ram, 0u, 0u) &&
           flags.flag_address() == 0u &&
           flags.csr_address() == 0u,
