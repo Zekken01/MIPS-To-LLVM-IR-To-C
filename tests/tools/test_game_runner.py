@@ -2918,7 +2918,7 @@ def main():
         assert state["final_pc"] == 0x00100008, state
         assert state["gpr_lo"][8] == 12, state
         assert state["guest_instruction_attempts"] >= 24, state
-        assert (state["cop0_cause"] & 0x7cu) == 0, state
+        assert (state["cop0_cause"] & 0x7c) == 0, state
 
     # Resuming without a bounded guest-loop watchdog would spin forever;
     # reject an invalid command before loading or mutating guest state.
