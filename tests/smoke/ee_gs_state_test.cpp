@@ -325,6 +325,44 @@ int main()
         return fail("GS state reset did not release captured registers/data");
     }
 
+    // The retail game's boot path starts normal GIF DMA with CHCR=0x101
+    // (DIR|STR), then polls STR at 0x1000A000. The actual GS PATH3
+    // sink must consume the packet before the DMAC clears STR or
+    // announces a channel-2 completion.
+    tag(&runtime, 0x700u, 1u, 0u, 1u, 0xeull);
+    ad(&runtime, 0x710u, 0x4cu, 0x11223344ull);
+    ee::ee_mem_write32(&runtime, k_gif + 0x10u, 0x700u);
+    ee::ee_mem_write32(&runtime, k_gif + 0x20u, 2u);
+    ee::ee_mem_write32(&runtime, k_gif, 0x101u);
+    if (!gs.was_written(0x4cu) ||
+        gs.register_value(0x4cu) != 0x11223344ull ||
+        gs.state().m_tag_count != 1u ||
+        mmio(&runtime, k_gif + 0x10u) != 0x720u ||
+        mmio(&runtime, k_gif + 0x20u) != 0u ||
+        (mmio(&runtime, k_gif) & k_str) != 0u ||
+        (hardware.dmac().status() & k_gif_bit) == 0u)
+    {
+        return fail("retail CHCR=0x101 GIF DMA did not reach the GS sink");
+    }
+
+    // A rejected SIGNAL packet may not complete the same CHCR mode.
+    hardware.reset();
+    gif.reset();
+    gs.reset();
+    tag(&runtime, 0x740u, 1u, 0u, 1u, 0xeull);
+    ad(&runtime, 0x750u, 0x60u, 0x1u);
+    ee::ee_mem_write32(&runtime, k_gif + 0x10u, 0x740u);
+    ee::ee_mem_write32(&runtime, k_gif + 0x20u, 2u);
+    ee::ee_mem_write32(&runtime, k_gif, 0x101u);
+    if (gs.state().m_tag_count != 0u ||
+        mmio(&runtime, k_gif + 0x10u) != 0x740u ||
+        mmio(&runtime, k_gif + 0x20u) != 2u ||
+        (mmio(&runtime, k_gif) & k_str) == 0u ||
+        hardware.dmac().status() != 0u)
+    {
+        return fail("unsupported CHCR=0x101 GIF packet fabricated DMA completion");
+    }
+
     std::puts("EE GS register capture via DMA/GIF with atomic IMAGE: PASS");
     return 0;
 }
