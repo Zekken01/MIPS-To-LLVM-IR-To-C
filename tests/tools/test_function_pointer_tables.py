@@ -67,6 +67,80 @@ class PointerTableTests(unittest.TestCase):
         self.assertEqual(self.discover(0x200020), [])  # non-executable
         self.assertEqual(self.discover(0x100049), [])  # unaligned
 
+    def make_guarded_switch(self):
+        """Six indexed entries, only three unique, all reached through JR v1."""
+        blob = bytearray(self.image.read_bytes())
+        # Branch at 0x00100100: sltiu v1,6; beqz guard; nop.
+        # Build the guest table base from LUI/ADDIU, not from host hints.
+        instructions = (
+            0x2c610006,  # sltiu at, v1, 6
+            0x10200010,  # beq at, zero, default (past the indexed branch)
+            0x00000000,  # delay slot
+            0x3c050020,  # lui a1, 0x0020
+            0x00031880,  # sll v1, v1, 2
+            0x24a50100,  # addiu a1, a1, 0x100
+            0x00651821,  # addu v1, v1, a1
+            0x8c630000,  # lw v1, 0(v1)
+            0x00600008,  # jr v1
+            0x00000000,  # delay slot
+        )
+        for index, opcode in enumerate(instructions):
+            struct.pack_into("<I", blob, 0x200 + index * 4, opcode)
+        # Guest table 0x00200100 is file offset 0x400.
+        target = 0x100160
+        siblings = (0x100174, 0x100188)
+        for index, pc in enumerate(
+            (target, *siblings, target, target, target)
+        ):
+            struct.pack_into("<I", blob, 0x400 + index * 4, pc)
+        self.image.write_bytes(blob)
+        return target, siblings
+
+    def discover_branch(self, target, limit=16):
+        return run_game.branch_anchored_jump_table_siblings(
+            self.image, target, run_game.executable_segments(self.image),
+            limit,
+        )
+
+    def test_branch_anchored_three_target_switch(self):
+        target, siblings = self.make_guarded_switch()
+        # Generic callback-table discovery stays conservative.
+        self.assertEqual(self.discover(target), [])
+        self.assertEqual(self.discover_branch(target), list(siblings))
+        self.assertEqual(self.discover_branch(target, limit=1),
+                         [siblings[0]])
+        self.assertEqual(self.discover_branch(target, limit=0), [])
+        self.assertEqual(self.discover_branch(0x10001c), [])
+        self.assertEqual(self.discover_branch(0x100161), [])
+
+    def test_branch_anchored_switch_rejects_malformed_provenance(self):
+        target, _ = self.make_guarded_switch()
+        original = self.image.read_bytes()
+        for offset, invalid in (
+            (0x200, 0x2c610081),  # guard bounds larger than 128
+            (0x200, 0x2c810006),  # guard bounds a different index
+            (0x204, 0x00000000),  # missing bounds-check branch
+            (0x20c, 0x3c030020),  # base overwrites index
+            (0x210, 0x00031840),  # shift by one, not pointer width
+            (0x214, 0x24a50101),  # misaligned table base
+            (0x218, 0x00451821),  # adds a different register
+            (0x21c, 0x8c620000),  # loads a different JR register
+            (0x400, 0x200020),    # table contains a non-executable PC
+        ):
+            with self.subTest(offset=offset):
+                image = bytearray(original)
+                struct.pack_into("<I", image, offset, invalid)
+                self.image.write_bytes(image)
+                self.assertEqual(self.discover_branch(target), [])
+
+    def test_branch_anchored_switch_requires_file_backed_table(self):
+        target, _ = self.make_guarded_switch()
+        blob = bytearray(self.image.read_bytes())
+        # Lie about the data segment's backed size: no readable entries.
+        struct.pack_into("<I", blob, 84 + 16, 0x80)
+        self.image.write_bytes(blob)
+        self.assertEqual(self.discover_branch(target), [])
+
     def test_truncated_segment_rejected(self):
         blob = bytearray(self.image.read_bytes())
         struct.pack_into("<I", blob, 52 + 16, len(blob))
