@@ -1879,7 +1879,8 @@ int main(int argc, char** argv)
                 }
                 continue;
             }
-            if ((service >= 0x10u && service <= 0x17u) ||
+            if (service == 0x02u ||
+                (service >= 0x10u && service <= 0x17u) ||
                 (service >= 0x1au && service <= 0x1du) ||
                 (service >= 0x20u && service <= 0x24u) ||
                 service == 0x29u || service == 0x2au || service == 0x2bu ||
@@ -1920,7 +1921,35 @@ int main(int argc, char** argv)
                     );
                 }
 
-                if (service >= 0x10u && service <= 0x13u)
+                if (service == 0x02u)
+                {
+                    // SetGsCrt configures the privileged GS display timing
+                    // registers. The runner preserves the configuration but
+                    // does not fabricate scanout, vblank or presentation.
+                    const uint32_t interlace =
+                        static_cast<uint32_t>(cpu.m_gpr[4].m_lo);
+                    const uint32_t mode =
+                        static_cast<uint32_t>(cpu.m_gpr[5].m_lo);
+                    const uint32_t ffmd =
+                        static_cast<uint32_t>(cpu.m_gpr[6].m_lo);
+                    if (!hardware.set_gs_crt(interlace, mode, ffmd))
+                    {
+                        std::fprintf(stderr,
+                            "SetGsCrt HLE refused invalid configuration "
+                            "interlace=%u mode=%u ffmd=%u\n",
+                            interlace, mode, ffmd);
+                        break;
+                    }
+                    if (trace)
+                    {
+                        std::printf(
+                            "HLE SetGsCrt: interlace=%u mode=%u ffmd=%u "
+                            "result=void\n",
+                            interlace, mode, ffmd);
+                    }
+                }
+
+                else if (service >= 0x10u && service <= 0x13u)
                 {
                     const bool intc = service == 0x10u || service == 0x11u;
                     std::vector<s_kernel_interrupt_handler>& handlers =
