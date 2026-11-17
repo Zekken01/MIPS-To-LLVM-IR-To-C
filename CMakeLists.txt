@@ -515,6 +515,20 @@ if(EE_HAVE_LLVM_JIT_TEST)
                 --work-dir ${CMAKE_BINARY_DIR}/ee-sif0-stop-test)
     set_tests_properties(ee_sif0_stop_dma PROPERTIES TIMEOUT 180)
 
+    # These Python integration tests invoke link_native_objects.py in fresh
+    # subprocesses. Do not assume Unix's 'c++' exists on Windows, or that
+    # a shell which launches ctest exported CXX. Use the same host compiler
+    # that produced the CMake tools (including its absolute executable path).
+    # This test-only environment never changes guest IR or cached native DLLs.
+    set_tests_properties(
+        object_emission_and_dispatch
+        game_runner_end_to_end
+        ee_native_thread_scheduler
+        ee_r5900_mult_gpr
+        ee_sif0_stop_dma
+        PROPERTIES ENVIRONMENT "CXX=${CMAKE_CXX_COMPILER}"
+    )
+
     add_test(NAME control_flow_ir_runtime
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/smoke/test_control_flow_ir_runtime.py
