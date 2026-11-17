@@ -2,6 +2,7 @@
 """JIT-test COP2 transfers through the real VU0 runtime helper ABI."""
 
 import ctypes
+import faulthandler
 import pathlib
 import re
 import subprocess
@@ -232,6 +233,7 @@ def run_guest(fixture, temp_dir, target, mode, setup=None,
               sync_result=VU0_SYNC_COMPLETE,
               control_result=VU0_SYNC_COMPLETE,
               vu0_state_available=True):
+    print("VU0 JIT: compile/execute mode=", mode, flush=True)
     guest_fn, engine, module, target_machine, counter_offset = compile_jit(
         fixture, temp_dir, mode, target
     )
@@ -253,7 +255,10 @@ def run_guest(fixture, temp_dir, target, mode, setup=None,
     if setup:
         setup(cpu, vu0)
 
+    print("VU0 JIT: call", mode, "counter_offset", counter_offset,
+          "runtime_backing_bytes", ctypes.sizeof(runtime_backing), flush=True)
     result = guest_fn(ctypes.pointer(cpu), ctypes.byref(runtime_ptr.contents))
+    print("VU0 JIT: returned", mode, "exit", result, flush=True)
     retained = (
         cpu_backing, vu0_backing, runtime_backing, engine, module, target_machine,
         sync_ref, control_ref,
@@ -268,6 +273,7 @@ def check_sync(sync_state, mode, pc, label):
 
 
 def main():
+    faulthandler.enable()
     require(
         len(sys.argv) == 3,
         "usage: test_vu0_transfer_ir_runtime.py fixture helper_library",
