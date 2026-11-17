@@ -91,6 +91,25 @@ void module_builder::declare_memory_helpers()
     m_out += "declare i32 @ee_vu0_macro_fmac(ptr, ptr, i32, i32)\n";
     m_out += "declare i32 @ee_vu0_get_branch_condition(ptr)\n";
     m_out += "\n";
+
+    // Private helper avoids unresolved external symbols in MCJIT fixtures.
+    // Count executed VALID guest instructions, not host dispatches/loops.
+    // This is NOT an EE cycle counter and must not drive GS scanout.
+    m_out += "define internal void @ee_count_guest_instruction(ptr %rt) {\n";
+    m_out += "entry:\n";
+    m_out += "  %valid_rt = icmp ne ptr %rt, null\n";
+    m_out += "  br i1 %valid_rt, label %count, label %done\n";
+    m_out += "count:\n";
+    m_out += "  %counter_ptr = getelementptr i8, ptr %rt, i64 " +
+             std::to_string(offsetof(ee::s_ee_runtime, m_guest_instruction_attempts)) +
+             "\n";
+    m_out += "  %old_count = load i64, ptr %counter_ptr\n";
+    m_out += "  %new_count = add i64 %old_count, 1\n";
+    m_out += "  store i64 %new_count, ptr %counter_ptr\n";
+    m_out += "  br label %done\n";
+    m_out += "done:\n";
+    m_out += "  ret void\n";
+    m_out += "}\n\n";
 }
 
 std::string module_builder::gptr_lo(uint8_t reg)
@@ -701,6 +720,10 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
         m_out += "unsup_cont_" + std::string(pcbuf) + "_" + std::to_string(m_temp_counter++) + ":\n";
         return;
     }
+
+    // Instructions that the code generator refuses remain uncounted.
+    // The call is internal to each IR module, so it has no host ABI cost.
+    m_out += "  call void @ee_count_guest_instruction(ptr %rt)\n";
 
     if (fallthrough_pc == 0)
         fallthrough_pc = ins.pc + 8;
@@ -2534,6 +2557,7 @@ void module_builder::emit_block(const std::vector<ee::s_ee_instruction>& block,
             // Split into taken (delay + target) and not-taken (skip delay, ft).
             // ---------------------------------------------------------------
             // The branch condition reads the PRE-delay-slot register values.
+            m_out += "  call void @ee_count_guest_instruction(ptr %rt)\n";
             std::string cmp = make_cond(ctrl);
 
             // BLTZALL/BGEZALL write the link unconditionally, including when
@@ -2599,6 +2623,7 @@ void module_builder::emit_block(const std::vector<ee::s_ee_instruction>& block,
                   ctrl.rs == static_cast<uint8_t>(e_ee_opcode::COP2_BC2)));
             if (supported_conditional)
             {
+                m_out += "  call void @ee_count_guest_instruction(ptr %rt)\n";
                 const std::string cmp = make_cond(ctrl);
 
                 // BLTZAL/BGEZAL always set $ra to PC+8 before the ordinary
@@ -2619,6 +2644,7 @@ void module_builder::emit_block(const std::vector<ee::s_ee_instruction>& block,
             }
             else if (ctrl.opcode == e_ee_opcode::OP_JAL)
             {
+                m_out += "  call void @ee_count_guest_instruction(ptr %rt)\n";
                 // JAL writes $ra before the delay slot executes.
                 std::string link = newtemp();
                 char link_pc[32];
@@ -2641,6 +2667,7 @@ void module_builder::emit_block(const std::vector<ee::s_ee_instruction>& block,
                      (ctrl.funct == static_cast<uint8_t>(e_ee_opcode::FUNCT_JR) ||
                       ctrl.funct == static_cast<uint8_t>(e_ee_opcode::FUNCT_JALR)))
             {
+                m_out += "  call void @ee_count_guest_instruction(ptr %rt)\n";
                 // Register-indirect targets are sampled before the delay slot:
                 // the slot may overwrite rs, or rd may alias rs in JALR.
                 const std::string jump_target = src_lo(ctrl.rs);
