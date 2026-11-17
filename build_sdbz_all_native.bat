@@ -42,26 +42,5 @@ python tools\run_game.py PS2_GAME\SLUS_214.42 ^
     --link-only
 if errorlevel 1 exit /b %errorlevel%
 
-echo === Probing the prebuilt native SDBZ DLL ===
-set "SDBZ_ISO=D:\Games\PS2_ISO\Super Dragon Ball Z (USA).iso"
-if not exist "%SDBZ_ISO%" (
-    echo ERROR: SDBZ ISO was not found at %SDBZ_ISO%.
-    exit /b 1
-)
-python tools\run_game.py PS2_GAME\SLUS_214.42 ^
-    --work-dir=build\sdbz-all-native ^
-    --build-dir=build ^
-    --config=Release ^
-    --no-recompile ^
-    --auto-expand=128 ^
-    --emit-jobs=8 ^
-    --emit-opt=0 ^
-    --max-dispatches=100000 ^
-    --loop-budget=1000000 ^
-    --sif-poll-limit=2048 ^
-    --timeout-seconds=120 ^
-    --report=build\sdbz-all-native\first-boot.json ^
-    --hle-startup ^
-    --kseg-ram ^
-    --disc-image="%SDBZ_ISO%"
+call probe_sdbz_all_native.bat
 exit /b %ERRORLEVEL%
