@@ -202,6 +202,7 @@ void usage(const char* program)
         "  --entry=0xADDR       Override ELF entry PC\n"
         "  --stack=0xADDR       Initial EE stack pointer (default 0x01fff000)\n"
         "  --loop-budget=N       Stop at a guest CFG loop after N header entries (0=off)\n"
+        "  --loop-yield-resumes=N  Resume at most N host yields; requires loop-budget\n"
         "  --sif-poll-limit=N    Diagnose N repeated IOP SMFLAG zero reads (0=off)\n"
         "  --iop-irx=FILE       Repeat in dependency order; last IRX starts by default\n"
         "  --iop-rom0=FILE      Boot caller-supplied 4 MiB PS2 BIOS ROM at BFC00000\n"
@@ -235,6 +236,7 @@ const char* exit_name(uint32_t reason)
     case ee::e_ee_exit_reason::EE_EXIT_DISPATCH: return "DISPATCH";
     case ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED: return "UNSUPPORTED";
     case ee::e_ee_exit_reason::EE_EXIT_LOOP_BUDGET: return "LOOP_BUDGET";
+    case ee::e_ee_exit_reason::EE_EXIT_HOST_YIELD: return "HOST_YIELD";
     default: return "UNKNOWN";
     }
 }
@@ -539,6 +541,7 @@ int main(int argc, char** argv)
     bool iop_start_all = false;
     uint32_t budget = k_default_dispatch_budget;
     uint32_t loop_budget = 0u;
+    uint32_t loop_yield_resumes = 0u;
     uint32_t sif_poll_limit = 0u;
     uint32_t iop_quantum = 256u;
     bool iop_quantum_explicit = false;
@@ -673,6 +676,10 @@ int main(int argc, char** argv)
         }
         if (parsed == 0)
         {
+            parsed = parse_option("--loop-yield-resumes=", &loop_yield_resumes);
+        }
+        if (parsed == 0)
+        {
             parsed = parse_option("--sif-poll-limit=", &sif_poll_limit);
         }
         if (parsed == 0)
@@ -746,6 +753,14 @@ int main(int argc, char** argv)
             std::fprintf(stderr, "unexpected positional argument: %s\n", argument.c_str());
             return 2;
         }
+    }
+
+    if (loop_yield_resumes != 0u && loop_budget == 0u)
+    {
+        std::fprintf(stderr,
+            "--loop-yield-resumes requires --loop-budget > 0; "
+            "no guest-cycle clock is provided by this option\n");
+        return 2;
     }
 
     if (iop_rom0_path == nullptr)
@@ -1101,6 +1116,7 @@ int main(int argc, char** argv)
     runtime.m_mmio_write = &ee::c_ee_hw_bus::mmio_write;
     runtime.m_loop_safepoint_limit = loop_budget;
     runtime.m_loop_safepoint_remaining = loop_budget;
+    runtime.m_loop_safepoint_yield_enabled = loop_yield_resumes != 0u ? 1u : 0u;
     runtime.m_guest_store_trace_enabled = has_trace_store;
     runtime.m_guest_store_trace_word = trace_store;
     runtime.m_guest_store_trace_remaining = has_trace_store ? 64u : 0u;
@@ -1358,6 +1374,7 @@ int main(int argc, char** argv)
     }
     uint32_t status = 0;
     uint32_t reason = cpu.m_exit_reason;
+    uint32_t completed_loop_yields = 0u;
     uint64_t last_snapshot_dispatch = 0;
     uint64_t last_progress_dispatch = 0;
     bool last_snapshot_callback_active = false;
@@ -1699,6 +1716,32 @@ int main(int argc, char** argv)
             std::printf("dispatch=%llu pc=0x%08x -> 0x%08x reason=%s(%u) status=%u\n",
                         static_cast<unsigned long long>(dispatched), from_pc,
                         out_pc, exit_name(reason), reason, status);
+        }
+
+        // A translated-loop yield has already committed the preceding
+        // branch, delay slot, and architectural register writes. Resume
+        // only within this explicitly bounded host option. Do not turn
+        // yield counts or instruction attempts into EE cycles; neither
+        // GS/INTC VBlank nor DMA readiness is manufactured here.
+        if (reason == static_cast<uint32_t>(
+                ee::e_ee_exit_reason::EE_EXIT_HOST_YIELD))
+        {
+            if (count == 0u || status == 2u ||
+                completed_loop_yields >= loop_yield_resumes)
+            {
+                break;
+            }
+            ++completed_loop_yields;
+            if (trace)
+            {
+                std::printf("EE host loop resume: count=%u/%u pc=0x%08x "
+                            "(guest EE cycles unchanged)\n",
+                            completed_loop_yields,
+                            loop_yield_resumes, cpu.m_pc);
+            }
+            cpu.m_exit_reason = static_cast<uint32_t>(
+                ee::e_ee_exit_reason::EE_EXIT_DISPATCH);
+            continue;
         }
 
         // A bounded one-dispatch slice reports DISPATCH_LIMIT even when
@@ -3922,6 +3965,14 @@ int main(int argc, char** argv)
             ee::e_ee_exit_reason::EE_EXIT_EXCEPTION))
     {
         std::fprintf(stderr, "ELF entry has no translated host block; emit the entry function\n");
+        return 3;
+    }
+    if (reason == static_cast<uint32_t>(ee::e_ee_exit_reason::EE_EXIT_HOST_YIELD))
+    {
+        std::fprintf(stderr,
+            "guest host loop yield cap reached: pc=0x%08x "
+            "resumes=%u cap=%u (NO GS VBlank or EE cycles invented)\n",
+            cpu.m_pc, completed_loop_yields, loop_yield_resumes);
         return 3;
     }
     if (reason == static_cast<uint32_t>(ee::e_ee_exit_reason::EE_EXIT_LOOP_BUDGET))
