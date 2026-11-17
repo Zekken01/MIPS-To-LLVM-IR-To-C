@@ -2,7 +2,7 @@
 
 **Repository:** [twist84/MIPS-To-LLVM-IR-To-C](https://github.com/twist84/MIPS-To-LLVM-IR-To-C)  
 **Status date:** 2026-11-17  
-**Baseline:** `main` at `5f6f24b8f80584d6dc0b16db6c0b28d9e46a0360` (squash-merged [PR #131](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/pull/131)); VSync pointer registration in [PR #132](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/pull/132).  
+**Baseline:** `main` at `37b99f4e0bc0d021662b04be09ab5b20273adf37` (squash-merged [PR #133](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/pull/133)); guest-instruction accounting candidate in [PR #134](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/pull/134).  
 **Goal:** Boot and eventually play **Super Dragon Ball Z (USA, `SLUS_214.42`)** using recompiled EE code, genuine guest IOP execution, and a native runtime, without PCSX2.
 
 > This is a milestone and acceptance plan, **not** a statement that the game currently boots or renders a usable frame. Update the checkpoint and evidence as new PRs merge. Re-check `main` and any newer work before acting on these instructions.
