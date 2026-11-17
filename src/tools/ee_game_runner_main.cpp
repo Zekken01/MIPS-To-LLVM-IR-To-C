@@ -3114,7 +3114,7 @@ int main(int argc, char** argv)
                     {
                         std::fprintf(stderr,
                             "SetVSyncFlag HLE refused invalid guest pointers "
-                            "flag=0x%08x csr=0x%08x\\n",
+                            "flag=0x%08x csr=0x%08x\n",
                             flag_address, csr_address);
                         break;
                     }
@@ -3122,7 +3122,7 @@ int main(int argc, char** argv)
                     {
                         std::printf(
                             "HLE SetVSyncFlag: flag=0x%08x csr=0x%08x "
-                            "result=void, no VSync event\\n",
+                            "result=void, no VSync event\n",
                             flag_address, csr_address);
                     }
                 }
