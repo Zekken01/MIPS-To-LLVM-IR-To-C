@@ -130,7 +130,10 @@ enum class e_ee_exit_reason : uint32_t
     EE_EXIT_UNSUPPORTED = 4,
     // Diagnostic fail-closed exit at an instrumented CFG loop header.
     // Not an architectural EE exception or a completed guest boot.
-    EE_EXIT_LOOP_BUDGET = 5
+    EE_EXIT_LOOP_BUDGET = 5,
+    // Host scheduling yield at a completed translated loop header. This
+    // is neither an EE exception nor a hardware event or completed boot.
+    EE_EXIT_YIELD = 6
 };
 
 // Forward declaration; the runtime owns the memory/peripheral subsystems.
