@@ -469,6 +469,73 @@ bool c_ee_dmac::transfer_device_normal(uint32_t channel_index)
     return raise(channel_index);
 }
 
+// The initial observed SDBZ GIF chain has one END source tag and nine
+// inline PATH3 quadwords. Deliver the actual bytes before completing DMAC.
+bool c_ee_dmac::transfer_gif_chain_end()
+{
+    s_spr_channel& channel = m_device_channels[2u];
+    if (m_memory == nullptr || m_device_transfer == nullptr ||
+        (channel.m_chcr & k_chcr_str) == 0u ||
+        ((channel.m_chcr >> 2u) & 3u) != 1u ||
+        (channel.m_chcr & 1u) == 0u ||
+        channel.m_qwc != 0u)
+    {
+        return false;
+    }
+
+    const uint64_t tag_address = channel.m_tadr;
+    if ((tag_address & 15u) != 0u ||
+        tag_address >= 0x02000000ull ||
+        tag_address + 16u > 0x02000000ull ||
+        !m_memory->contains(static_cast<uint32_t>(tag_address), 16u))
+    {
+        return false;
+    }
+
+    const uint32_t tag = static_cast<uint32_t>(
+        m_memory->read64(static_cast<uint32_t>(tag_address)));
+    const uint32_t tag_id = (tag >> 28u) & 7u;
+    const uint32_t qwc = tag & 0xffffu;
+    const uint64_t data_address = tag_address + 16u;
+    const uint64_t end_address = data_address + uint64_t(qwc) * 16u;
+    if (tag_id != 7u ||
+        end_address > 0x02000000ull ||
+        !m_memory->contains(
+            static_cast<uint32_t>(data_address),
+            static_cast<size_t>(qwc) * 16u))
+    {
+        return false;
+    }
+
+    // The GIF sink must accept the complete stream atomically. No DMA
+    // state changes or completion IRQ are reported on rejection.
+    std::vector<uint8_t> packet(static_cast<size_t>(qwc) * 16u);
+    for (uint32_t i = 0u; i < qwc; ++i)
+    {
+        s_ee_u128 quad{};
+        m_memory->read128(static_cast<uint32_t>(data_address) + i * 16u, &quad);
+        for (uint32_t lane = 0u; lane < 8u; ++lane)
+        {
+            packet[static_cast<size_t>(i) * 16u + lane] =
+                static_cast<uint8_t>(quad.m_lo >> (lane * 8u));
+            packet[static_cast<size_t>(i) * 16u + lane + 8u] =
+                static_cast<uint8_t>(quad.m_hi >> (lane * 8u));
+        }
+    }
+    if (qwc != 0u &&
+        !m_device_transfer(m_device_user, 2u, packet.data(), qwc))
+    {
+        return false;
+    }
+
+    channel.m_chcr = ((channel.m_chcr & 0x0000ffffu) |
+                       (tag & 0xffff0000u)) & ~k_chcr_str;
+    channel.m_madr = static_cast<uint32_t>(end_address);
+    channel.m_tadr = static_cast<uint32_t>(end_address);
+    channel.m_qwc = 0u;
+    return raise(2u);
+}
+
 bool c_ee_dmac::transfer_spr_normal(uint32_t channel_index)
 {
     if (m_memory == nullptr || channel_index < 8u || channel_index > 9u)
@@ -1018,7 +1085,14 @@ bool c_ee_dmac::write_spr_channel(uint32_t address, uint32_t value)
             }
             else if (device_channel)
             {
-                (void)transfer_device_normal(channel_index);
+                if (channel_index == 2u && mode == 1u)
+                {
+                    (void)transfer_gif_chain_end();
+                }
+                else
+                {
+                    (void)transfer_device_normal(channel_index);
+                }
             }
             else if (channel_index == 8u && mode == 1u)
             {

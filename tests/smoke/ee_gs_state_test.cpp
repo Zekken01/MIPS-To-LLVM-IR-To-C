@@ -363,6 +363,84 @@ int main()
         return fail("unsupported CHCR=0x101 GIF packet fabricated DMA completion");
     }
 
+    // Genuine SDBZ boot starts GIF source-chain DMA with CHCR=0x105,
+    // QWC=0 and TADR pointing to an END tag with nine inline qwords.
+    // Deliver the nine quadwords through the ordinary GS PATH3 sink.
+    hardware.reset();
+    gif.reset();
+    gs.reset();
+    quad(&runtime, 0x700u, 0x70000009u, 0u); // DMAC END, QWC=9
+    tag(&runtime, 0x710u, 8u, 0u, 1u, 0xeull);
+    for (uint32_t index = 0u; index < 8u; ++index)
+    {
+        ad(&runtime, 0x720u + index * 16u, 0x4cu, 0xabcd0000u + index);
+    }
+    ee::ee_mem_write32(&runtime, k_gif + 0x30u, 0x700u);
+    ee::ee_mem_write32(&runtime, k_gif + 0x20u, 0u);
+    ee::ee_mem_write32(&runtime, k_gif, 0x105u);
+    if (gs.state().m_tag_count != 1u ||
+        gs.register_value(0x4cu) != 0xabcd0007u ||
+        mmio(&runtime, k_gif + 0x10u) != 0x7a0u ||
+        mmio(&runtime, k_gif + 0x30u) != 0x7a0u ||
+        mmio(&runtime, k_gif + 0x20u) != 0u ||
+        (mmio(&runtime, k_gif) & k_str) != 0u ||
+        (hardware.dmac().status() & k_gif_bit) == 0u)
+    {
+        return fail("real GIF source-chain END nine-qword transfer");
+    }
+
+    // The parser refuses unsupported GS SIGNAL, retaining DMA source
+    // state and STR. A partially parsed A+D batch must not commit.
+    hardware.reset();
+    gif.reset();
+    gs.reset();
+    quad(&runtime, 0x800u, 0x70000003u, 0u); // END with three qwords
+    tag(&runtime, 0x810u, 2u, 0u, 1u, 0xeull);
+    ad(&runtime, 0x820u, 0x4cu, 0x55aau);
+    ad(&runtime, 0x830u, 0x60u, 1u); // GS SIGNAL is not yet supported
+    ee::ee_mem_write32(&runtime, k_gif + 0x30u, 0x800u);
+    ee::ee_mem_write32(&runtime, k_gif + 0x20u, 0u);
+    ee::ee_mem_write32(&runtime, k_gif, 0x105u);
+    if (gs.state().m_tag_count != 0u ||
+        gs.was_written(0x4cu) ||
+        mmio(&runtime, k_gif + 0x30u) != 0x800u ||
+        mmio(&runtime, k_gif + 0x20u) != 0u ||
+        (mmio(&runtime, k_gif) & k_str) == 0u ||
+        hardware.dmac().status() != 0u)
+    {
+        return fail("rejected chain payload fabricated GS/DMA completion");
+    }
+
+    // Unsupported CALL/RET tags must not be treated as zero-byte END.
+    hardware.reset();
+    gif.reset();
+    gs.reset();
+    quad(&runtime, 0x900u, 0x50000001u, 0u);
+    ee::ee_mem_write32(&runtime, k_gif + 0x30u, 0x900u);
+    ee::ee_mem_write32(&runtime, k_gif + 0x20u, 0u);
+    ee::ee_mem_write32(&runtime, k_gif, 0x105u);
+    if (mmio(&runtime, k_gif + 0x30u) != 0x900u ||
+        (mmio(&runtime, k_gif) & k_str) == 0u ||
+        hardware.dmac().status() != 0u)
+    {
+        return fail("unsupported GIF chain tag was retired");
+    }
+
+    // In-bounds DMA tag, but the advertised payload crosses RAM end.
+    hardware.reset();
+    gif.reset();
+    gs.reset();
+    quad(&runtime, 0x7ff0u, 0x70000009u, 0u);
+    ee::ee_mem_write32(&runtime, k_gif + 0x30u, 0x7ff0u);
+    ee::ee_mem_write32(&runtime, k_gif + 0x20u, 0u);
+    ee::ee_mem_write32(&runtime, k_gif, 0x105u);
+    if (mmio(&runtime, k_gif + 0x30u) != 0x7ff0u ||
+        (mmio(&runtime, k_gif) & k_str) == 0u ||
+        hardware.dmac().status() != 0u)
+    {
+        return fail("out-of-bounds GIF chain payload was accepted");
+    }
+
     std::puts("EE GS register capture via DMA/GIF with atomic IMAGE: PASS");
     return 0;
 }
