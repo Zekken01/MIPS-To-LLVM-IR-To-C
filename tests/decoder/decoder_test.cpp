@@ -167,6 +167,39 @@ int main()
     expect("ctc2 bad funct", R(0x12,6,4,6,0,1), "ctc2", X);
     expect("vadd",    R(0x12,0x10,4,5,0,0x28), "vu0_macro", U);
     expect("vadda",   R(0x12,0x10,4,5,0,0x3c), "vu0_macro", U); // SPECIAL2 index 0
+
+    // Directly from SDBZ (US) 0x00108240..0x0010827C: a 4x4 matrix
+    // multiply using the VU0 accumulator. Decode the actual 16 words
+    // without promoting them to executable IR until FMAC semantics exist.
+    {
+        const uint32_t matrix_words[] =
+        {
+            0x4be821bcu, 0x4be828bdu, 0x4be830beu, 0x4be83a0bu,
+            0x4be921bcu, 0x4be928bdu, 0x4be930beu, 0x4be93a4bu,
+            0x4bea21bcu, 0x4bea28bdu, 0x4bea30beu, 0x4bea3a8bu,
+            0x4beb21bcu, 0x4beb28bdu, 0x4beb30beu, 0x4beb3acbu,
+        };
+        const char* const names[] = {"vmulax", "vmadday", "vmaddaz", "vmaddw"};
+        for (uint32_t index = 0; index < 16; ++index)
+        {
+            const auto inst = decode(0x00108240u + 4u * index, matrix_words[index]);
+            const uint32_t column = 8u + (index / 4u);
+            const uint32_t row = index % 4u;
+            const bool ok = inst.valid == U &&
+                            inst.opcode == e_ee_opcode::OP_COP2 &&
+                            inst.rs == 31u && inst.rt == column &&
+                            inst.rd == row + 4u &&
+                            std::strcmp(inst.mnemonic, names[row]) == 0 &&
+                            lift(inst).kind == LOP_UNSUPPORTED;
+            ok ? ++g_pass : ++g_fail;
+            if (!ok)
+            {
+                std::printf("FAIL SDBZ VU0 matrix macro %u: %08x -> %s/%d\\n",
+                            index, matrix_words[index], inst.mnemonic, (int)inst.valid);
+            }
+        }
+    }
+
     expect("reserved macro", R(0x12,0x10,4,5,0,0x33), "cop2_reserved", X);
     expect("reserved special2", R(0x12,0x10,4,5,20,0x3c), "cop2_reserved", X); // index 80
     expect("reserved rs", R(0x12,0,4,5,0,0), "cop2_reserved", X);
