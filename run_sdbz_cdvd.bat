@@ -37,7 +37,10 @@ if not exist "%SDBZ_WORK%" mkdir "%SDBZ_WORK%"
 
 del /q "%SDBZ_WORK%\run.log" 2>nul
 set "RUN_RESULT=1"
-for /l %%P in (1,1,4) do call :run_pass %%P
+rem A fresh runtime fingerprint starts with only the entry function.  Give the
+rem chunked auto-expander enough bounded replays to rebuild its reachable
+rem native call frontier before reporting the next genuine runtime boundary.
+for /l %%P in (1,1,32) do call :run_pass %%P
 goto show_result
 
 :run_pass
