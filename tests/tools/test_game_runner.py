@@ -2880,6 +2880,52 @@ def main():
         assert state["guest_instruction_attempts"] > 32, state
         assert state["guest_instruction_attempts"] > state["dispatches"], state
 
+    # A translated loop can yield back to the host at its exact guest
+    # header PC, then resume without resetting t0 or inventing an EE
+    # interrupt/GS event. The host is explicitly capped: no infinite
+    # "resume forever" that hides a permanently blocked hardware wait.
+    for max_yields, expected_dispatches, expected_t0 in (
+        (0, 1, 4),
+        (2, 3, 12),
+    ):
+        with tempfile.TemporaryDirectory(prefix="ee-resumable-loop-yield-") as tmp:
+            root = Path(tmp)
+            elf = root / "yield-loop.elf"
+            make_counting_loop_elf(elf)
+            report_path = root / "loop-yield.json"
+            result = subprocess.run(
+                [
+                    sys.executable, str(source / "tools" / "run_game.py"),
+                    str(elf),
+                    "--build-dir", str(build),
+                    "--work-dir", str(root / "out"),
+                    "--max-dispatches=8",
+                    "--timeout-seconds=10",
+                    "--loop-budget=32",
+                    "--loop-yield-budget=4",
+                    f"--max-loop-yields={max_yields}",
+                    "--report", str(report_path),
+                    "--trace",
+                ],
+                capture_output=True, text=True, check=False, timeout=40,
+            )
+            assert result.returncode == 3, result.stdout + result.stderr
+            assert "guest loop yielded at safe PC" in result.stderr, (
+                result.stdout, result.stderr
+            )
+            assert result.stdout.count("EE host loop yield:") == max_yields, (
+                result.stdout, result.stderr
+            )
+            state = json.loads(report_path.read_text(encoding="utf-8"))
+            assert state["snapshot_kind"] == "stopped", state
+            assert state["exit_reason"] == 6, state
+            assert state["exit_name"] == "YIELD", state
+            assert state["dispatches"] == expected_dispatches, state
+            assert state["final_pc"] == 0x00100008, state
+            assert state["gpr_lo"][8] == expected_t0, state
+            assert state["guest_instruction_attempts"] >= expected_t0, state
+            assert state["cop0_cause"] & 0x7cu == 0u, state
+
     for blocking_wait, invalid_status in (
         (False, False), (True, False), (False, True),
     ):
