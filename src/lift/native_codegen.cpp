@@ -343,8 +343,8 @@ void native_codegen::emit_op_body(const s_lifted_op& op)
         out_ += "    g_cpu.m_gpr[" + std::to_string(op.rt) + "].m_hi = 0;\n";
         break;
     case K::LOP_MTC0:
-        out_ += "    g_cpu.m_cop0[" + std::to_string(op.rd) + "] = (uint32_t)g_cpu.m_gpr[" +
-                std::to_string(op.rt) + "].m_lo;\n";
+        out_ += "    ee_cop0_write(&g_cpu, " + std::to_string(op.rd) +
+                ", (uint32_t)g_cpu.m_gpr[" + std::to_string(op.rt) + "].m_lo);\n";
         break;
     case K::LOP_MFC1:
         out_ += "    g_cpu.m_gpr[" + std::to_string(op.rt) + "].m_lo = (uint64_t)(uint32_t)g_cpu.m_fpr[" +
