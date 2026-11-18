@@ -3161,6 +3161,15 @@ def main():
         assert "guest host loop yield cap reached:" in result.stderr, (
             result.stdout, result.stderr
         )
+        assert "EE host loop state: pc=0x00100008" in result.stderr, (
+            result.stdout, result.stderr
+        )
+        assert "EE host loop ELF: > 0x00100008 opcode=0x25080001" in result.stderr, (
+            result.stdout, result.stderr
+        )
+        assert "r08=0x000000000000000c" in result.stderr, (
+            result.stdout, result.stderr
+        )
         state = json.loads(report_path.read_text(encoding="utf-8"))
         assert state["snapshot_kind"] == "stopped", state
         assert state["exit_reason"] == 6, state
