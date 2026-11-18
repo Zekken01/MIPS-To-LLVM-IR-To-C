@@ -511,6 +511,50 @@ int main()
           clock.issue(read_cp0, &at) && at == 8u,
           "COP0 readiness survives VU0 and host-execution boundaries");
 
+    // Full-width MMI operand coverage must agree with the ordinary GPR
+    // scoreboard. The latter is already whole-register and catches
+    // dependencies between scalar and packed operations without guessed
+    // per-lane forwarding rules.
+    clock.reset();
+    s_ee_probe_instruction packed{};
+    packed.m_pipe = e_ee_probe_pipe::PACKED_MMI;
+    packed.m_gpr_read_mask = (1u << 4u) | (1u << 5u);
+    packed.m_gpr_write_mask = 1u << 6u;
+    packed.m_gpr_128_read_mask = packed.m_gpr_read_mask;
+    packed.m_gpr_128_write_mask = packed.m_gpr_write_mask;
+    packed.m_result_latency = 5u;
+    s_ee_probe_instruction scalar_consumer{};
+    scalar_consumer.m_gpr_read_mask = 1u << 6u;
+    scalar_consumer.m_gpr_write_mask = 1u << 7u;
+    check(clock.issue(packed, &at) && at == 0u &&
+          clock.issue(scalar_consumer, &at) && at == 5u,
+          "full-128 packed writer blocks later scalar GPR read");
+
+    clock.reset();
+    const s_ee_probe_instruction independent_scalar{
+        1u << 12u, 1u << 13u
+    };
+    check(clock.issue(packed, &at) && at == 0u &&
+          clock.issue(independent_scalar, &at) && at == 1u,
+          "unverified packed-MMI pairing remains conservatively disabled");
+
+    clock.reset();
+    s_ee_probe_instruction invalid_packed = packed;
+    invalid_packed.m_gpr_128_read_mask |= 1u << 18u;
+    check(!clock.issue(invalid_packed) &&
+          clock.instructions_issued() == 0u &&
+          clock.estimated_cycles() == 0u &&
+          clock.issue(packed, &at) && at == 0u,
+          "packed full-width read coverage cannot omit dependencies");
+
+    clock.reset();
+    invalid_packed = packed;
+    invalid_packed.m_gpr_128_write_mask |= 1u << 19u;
+    check(!clock.issue(invalid_packed) &&
+          clock.instructions_issued() == 0u &&
+          clock.issue(packed, &at) && at == 0u,
+          "packed full-width write coverage rejects inconsistent masks");
+
     std::printf("ee_issue_timing_probe_test: %d failure(s)\n", g_failures);
     return g_failures != 0 ? 1 : 0;
 }
