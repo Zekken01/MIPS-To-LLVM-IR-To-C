@@ -17,6 +17,18 @@ import time
 from iop_disc_catalog import build_catalog
 
 
+LINKED_COUNT_PATTERN = re.compile(
+    r"link_native_objects: PASS \((\d+) functions?,"
+)
+
+
+def read_function_count(path):
+    """Read how many guest functions were actually committed."""
+    report = read_report(path)
+    count = report.get("function_count")
+    return count if type(count) is int and count >= 0 else None
+
+
 REPLAY_PATTERN = re.compile(r"== Executing translated EE code \(replay (\d+)\) ==")
 
 
@@ -142,6 +154,7 @@ def main(argv=None):
 
     expansion_log = work / "expansion.log"
     boot_log = work / "boot.log"
+    metadata_path = work / "ir" / "ee_functions.json"
     expansion_log.write_text("", encoding="utf-8")
     base = [
         sys.executable, str(args.driver.resolve()), str(args.elf.resolve()),
@@ -158,14 +171,32 @@ def main(argv=None):
             f"(up to {args.expansion_per_pass} new functions) ===",
             flush=True,
         )
+        # Cache mode starts from a persisted count. Fresh translation
+        # creates its initial linked baseline before replay zero.
+        # A jump-table relink can compile many functions in one replay.
+        prior_count = read_function_count(metadata_path) if reuse else None
         code, output, elapsed = run_session(command, expansion_log, append=True)
         state = read_report(report)
         replays = REPLAY_PATTERN.findall(output)
         last_replay = int(replays[-1]) if replays else -1
         final_pc = state.get("final_pc")
         pc_text = f"0x{final_pc:08x}" if isinstance(final_pc, int) else "unknown"
+        if not reuse:
+            initial_links = LINKED_COUNT_PATTERN.findall(
+                output.split("== Executing translated EE code (replay ", 1)[0]
+            )
+            prior_count = int(initial_links[-1]) if initial_links else None
+        current_count = read_function_count(metadata_path)
+        added = (
+            current_count - prior_count
+            if prior_count is not None and current_count is not None and
+               current_count >= prior_count
+            else None
+        )
+        added_text = str(added) if added is not None else "unknown"
         print(
             f"pass {index + 1}: replay={last_replay} "
+            f"new_functions={added_text} "
             f"dispatches={state.get('dispatches', '?')} "
             f"stop={pc_text} exit={code} elapsed={elapsed:.2f}s",
             flush=True,
@@ -179,12 +210,16 @@ def main(argv=None):
             )
             return code
 
-        # A missing compiled guest function at the *last allowed replay*
-        # means the driver hit its bound before it could append that PC.
-        # Other failures (syscalls, non-executable PCs, timeouts or budget
-        # exhaustion) must not be blindly retried.
+        # The expansion cap counts newly emitted FUNCTIONS, not replays.
+        # Prefer the metadata delta; use the legacy replay sentinel only
+        # when the driver supplies no usable function-count metadata.
+        # Unknown guest stops must not trigger an unbounded retry.
+        hit_cap = (
+            added >= args.expansion_per_pass
+            if added is not None else last_replay == args.expansion_per_pass
+        )
         exhausted = (
-            code == 3 and last_replay == args.expansion_per_pass and
+            code == 3 and hit_cap and
             state.get("exit_reason") == 3 and
             state.get("dispatch_status") == 0 and
             isinstance(final_pc, int) and final_pc != 0

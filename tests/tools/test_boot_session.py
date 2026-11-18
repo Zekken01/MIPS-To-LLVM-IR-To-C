@@ -18,13 +18,21 @@ SESSION = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(SESSION)
 
 
-def run_case(passes, initial_reuse=False, diagnostics=False):
+def run_case(passes, initial_reuse=False, diagnostics=False,
+             initial_function_count=None):
     with tempfile.TemporaryDirectory(prefix="ee-boot-session-") as temp:
         work = Path(temp) / "work"
         report = work / "first-boot.json"
         elf = Path(temp) / "synthetic.elf"
         elf.write_bytes(b"synthetic test input, never executed")
         calls = []
+        metadata = work / "ir" / "ee_functions.json"
+        if initial_function_count is not None:
+            metadata.parent.mkdir(parents=True, exist_ok=True)
+            metadata.write_text(
+                json.dumps({"function_count": initial_function_count}),
+                encoding="utf-8",
+            )
 
         def fake_run(command, **kwargs):
             assert kwargs["check"] is False
@@ -43,11 +51,22 @@ def run_case(passes, initial_reuse=False, diagnostics=False):
                 "final_pc": 0x004E2640 + 16 * index,
             }
             report.write_text(json.dumps(state), encoding="utf-8")
+            if "function_count" in item:
+                metadata.parent.mkdir(parents=True, exist_ok=True)
+                metadata.write_text(
+                    json.dumps({"function_count": item["function_count"]}),
+                    encoding="utf-8",
+                )
             replay = item.get("replay")
             output = (
                 f"== Executing translated EE code (replay {replay}) ==\\n"
                 if replay is not None else ""
             ) + item.get("message", "EE stopped")
+            if "initial_link" in item:
+                output = (
+                    f"link_native_objects: PASS ({item['initial_link']} functions, "
+                    "fixture)\\n" + output
+                )
             return SimpleNamespace(
                 returncode=item.get("code", 3),
                 stdout=output + "\\n",
@@ -108,6 +127,39 @@ def main():
     assert "TRACE FINAL" not in expansion
     assert "TRACE FINAL" in boot
     assert "--no-recompile" not in calls[0]
+
+    # Regression from the first PS2_GAME boot: 128 functions were added
+    # in only 76 replays because jump-table siblings are batched.
+    code, calls, expansion, boot = run_case([
+        {"trace": False, "replay": 76, "initial_link": 1,
+         "function_count": 129},
+        {"trace": False, "replay": 4, "function_count": 138,
+         "exit_reason": 1, "message": "REAL BLOCKER"},
+        {"trace": True, "replay": 0, "exit_reason": 1,
+         "message": "FINAL TRACE"},
+    ])
+    assert code == 3 and len(calls) == 3
+    assert "new_functions=128" in expansion
+    assert "new_functions=9" in expansion
+    assert "--no-recompile" in calls[1]
+    assert "FINAL TRACE" in boot
+
+    # Cached passes measure relative to their existing function count.
+    code, calls, expansion, boot = run_case([
+        {"trace": False, "replay": 12, "function_count": 257},
+        {"trace": False, "replay": 1, "function_count": 258,
+         "exit_reason": 1},
+        {"trace": True, "replay": 0, "exit_reason": 1},
+    ], initial_reuse=True, initial_function_count=129)
+    assert len(calls) == 3 and "new_functions=128" in expansion
+
+    # Never retry unless the actual number of added functions hit cap.
+    code, calls, expansion, boot = run_case([
+        {"trace": False, "replay": 76, "initial_link": 1,
+         "function_count": 100},
+        {"trace": True, "replay": 0},
+    ])
+    assert len(calls) == 2 and "new_functions=99" in expansion
 
     # The SDBZ launcher forwards its diagnostic addresses through this
     # wrapper on both the expansion pass and the final traced replay.

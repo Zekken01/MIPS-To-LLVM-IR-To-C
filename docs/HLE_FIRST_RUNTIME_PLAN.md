@@ -183,3 +183,21 @@ Implement the remaining guest-observed IOP kernel library services and
 game-requested IRX lifecycle, keeping the `cdvdman` #10-only import boundary
 strictly fail-closed. Preserve ROM0-specific firmware execution separately. Keep the original 8,046
 LLVM guest modules unchanged until a genuine guest translation change is needed.
+
+### Extracted-folder boot — 18 November 2026
+
+The first local `run_ps2_game.bat` trace resolved `PS2_GAME/SLUS_214.42`
+via `SYSTEM.CNF` and mounted 428,680 virtual ISO9660 sectors without
+ROM0. Its first expansion pass emitted 128 additional native functions
+(1 to 129 total) over only 76 replays, due to batched jump-table siblings.
+The final run reached 1,552 EE dispatches and stopped at
+`0x00305E60` (next function not compiled). All seven static IRX
+paths resolved, but zero IOP modules were actually started.
+
+The wrapper erroneously compared replay count (76) against its function
+cap (128), skipping the second expansion pass. This is corrected by
+comparing the linked baseline to the committed `ee_functions.json`
+function count, preserving `run_game.py` and all guest translation-cache
+fingerprints. The trace also contains an ignored HLE `SetSyscall`
+registration for service `0x12C` with handler `0x80076488`; investigate
+its role rather than reporting it as implemented.
