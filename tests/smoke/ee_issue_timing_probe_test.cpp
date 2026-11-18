@@ -464,6 +464,7 @@ int main()
           "VU0 overlapping VF writers cannot overtake earlier completion");
 
     clock.reset();
+    read_cp0.m_cop0_read_mask = 1u << 12u;
     check(clock.issue(write_cp0, &at) && at == 0u &&
           clock.issue(write_vf, &at) && at == 1u &&
           clock.issue(read_cp0, &at) && at == 8u,
