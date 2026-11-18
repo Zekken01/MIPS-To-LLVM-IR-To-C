@@ -19,7 +19,9 @@ enum class e_ee_probe_pipe : uint8_t
     MULT_DIV_1,   // MAC1: logical Pipe 1
     COPROCESSOR_MOVE, // COP1 move: logical Pipe 1
     COPROCESSOR_OP,   // COP1 operation: logical Pipe 0
-    COPROCESSOR = COPROCESSOR_OP // compatibility with existing probes
+    COPROCESSOR = COPROCESSOR_OP, // compatibility with existing probes
+    SYSTEM_CONTROL, // COP0 transfer: single-issue candidate until verified
+    VU0_TRANSFER // COP2 VF/VI transfer: single-issue candidate
 };
 
 // Only a candidate functional-unit occupancy scoreboard. Real hardware
@@ -58,6 +60,15 @@ struct s_ee_probe_instruction
     uint32_t m_hilo_write_mask = 0u;
     uint32_t m_fpr_read_mask = 0u;
     uint32_t m_fpr_write_mask = 0u;
+    // COP0 registers, VU0 VF and VU0 VI are separate architectural
+    // resources. All 32 bits are valid, including register index zero;
+    // special architectural constant/read-only aliases remain conservative.
+    uint32_t m_cop0_read_mask = 0u;
+    uint32_t m_cop0_write_mask = 0u;
+    uint32_t m_vu0_vf_read_mask = 0u;
+    uint32_t m_vu0_vf_write_mask = 0u;
+    uint32_t m_vu0_vi_read_mask = 0u;
+    uint32_t m_vu0_vi_write_mask = 0u;
     bool m_acc_read = false;
     bool m_acc_write = false;
     // FCR31 status/condition bits share an architectural control register.
@@ -72,6 +83,9 @@ struct s_ee_probe_instruction
     uint32_t m_fpr_result_latency = 0u;
     uint32_t m_acc_result_latency = 0u;
     uint32_t m_fcsr_result_latency = 0u;
+    uint32_t m_cop0_result_latency = 0u;
+    uint32_t m_vu0_vf_result_latency = 0u;
+    uint32_t m_vu0_vi_result_latency = 0u;
 
     // Throughput is distinct from result latency: the next instruction
     // using this unit may not issue until m_initiation_interval cycles
@@ -111,6 +125,18 @@ public:
             ready = 0u;
         }
         for (uint64_t& ready : m_fpr_ready)
+        {
+            ready = 0u;
+        }
+        for (uint64_t& ready : m_cop0_ready)
+        {
+            ready = 0u;
+        }
+        for (uint64_t& ready : m_vu0_vf_ready)
+        {
+            ready = 0u;
+        }
+        for (uint64_t& ready : m_vu0_vi_ready)
         {
             ready = 0u;
         }
@@ -180,6 +206,12 @@ public:
         const uint32_t hwrites = instruction.m_hilo_write_mask;
         const uint32_t freads = instruction.m_fpr_read_mask;
         const uint32_t fwrites = instruction.m_fpr_write_mask;
+        const uint32_t creads = instruction.m_cop0_read_mask;
+        const uint32_t cwrites = instruction.m_cop0_write_mask;
+        const uint32_t vfreads = instruction.m_vu0_vf_read_mask;
+        const uint32_t vfwrites = instruction.m_vu0_vf_write_mask;
+        const uint32_t vireads = instruction.m_vu0_vi_read_mask;
+        const uint32_t viwrites = instruction.m_vu0_vi_write_mask;
         const bool independent =
             (reads & m_pair_writes) == 0u &&
             (writes & (m_pair_reads | m_pair_writes)) == 0u &&
@@ -187,6 +219,12 @@ public:
             (hwrites & (m_pair_hilo_reads | m_pair_hilo_writes)) == 0u &&
             (freads & m_pair_fpr_writes) == 0u &&
             (fwrites & (m_pair_fpr_reads | m_pair_fpr_writes)) == 0u &&
+            (creads & m_pair_cop0_writes) == 0u &&
+            (cwrites & (m_pair_cop0_reads | m_pair_cop0_writes)) == 0u &&
+            (vfreads & m_pair_vu0_vf_writes) == 0u &&
+            (vfwrites & (m_pair_vu0_vf_reads | m_pair_vu0_vf_writes)) == 0u &&
+            (vireads & m_pair_vu0_vi_writes) == 0u &&
+            (viwrites & (m_pair_vu0_vi_reads | m_pair_vu0_vi_writes)) == 0u &&
             (!instruction.m_acc_read || !m_pair_acc_write) &&
             (!instruction.m_acc_write ||
                 (!m_pair_acc_read && !m_pair_acc_write)) &&
@@ -237,6 +275,25 @@ public:
                 candidate = m_fpr_ready[reg];
             }
         }
+        for (uint32_t reg = 0u; reg < 32u; ++reg)
+        {
+            const uint32_t bit = 1u << reg;
+            if (((creads | (wait_for_waw ? cwrites : 0u)) & bit) != 0u &&
+                candidate < m_cop0_ready[reg])
+            {
+                candidate = m_cop0_ready[reg];
+            }
+            if (((vfreads | (wait_for_waw ? vfwrites : 0u)) & bit) != 0u &&
+                candidate < m_vu0_vf_ready[reg])
+            {
+                candidate = m_vu0_vf_ready[reg];
+            }
+            if (((vireads | (wait_for_waw ? viwrites : 0u)) & bit) != 0u &&
+                candidate < m_vu0_vi_ready[reg])
+            {
+                candidate = m_vu0_vi_ready[reg];
+            }
+        }
         if ((instruction.m_acc_read ||
              (wait_for_waw && instruction.m_acc_write)) &&
             candidate < m_acc_ready)
@@ -269,6 +326,17 @@ public:
         const uint32_t fcsr_latency = instruction.m_fcsr_result_latency == 0u
             ? instruction.m_result_latency
             : instruction.m_fcsr_result_latency;
+        const uint32_t cop0_latency = instruction.m_cop0_result_latency == 0u
+            ? instruction.m_result_latency
+            : instruction.m_cop0_result_latency;
+        const uint32_t vu0_vf_latency =
+            instruction.m_vu0_vf_result_latency == 0u
+                ? instruction.m_result_latency
+                : instruction.m_vu0_vf_result_latency;
+        const uint32_t vu0_vi_latency =
+            instruction.m_vu0_vi_result_latency == 0u
+                ? instruction.m_result_latency
+                : instruction.m_vu0_vi_result_latency;
 
         // A failed issue cannot change the scoreboard. Validate ALL result
         // domains before mutating any state or accepting a new issue.
@@ -281,6 +349,9 @@ public:
                 acc_latency > max_cycle - candidate) ||
             (instruction.m_fcsr_write &&
                 fcsr_latency > max_cycle - candidate) ||
+            (cwrites != 0u && cop0_latency > max_cycle - candidate) ||
+            (vfwrites != 0u && vu0_vf_latency > max_cycle - candidate) ||
+            (viwrites != 0u && vu0_vi_latency > max_cycle - candidate) ||
             (unit_index != 0u &&
                 instruction.m_initiation_interval > max_cycle - candidate))
         {
@@ -319,6 +390,19 @@ public:
                     return false;
                 }
             }
+            for (uint32_t reg = 0u; reg < 32u; ++reg)
+            {
+                const uint32_t bit = 1u << reg;
+                if (((cwrites & bit) != 0u &&
+                     candidate + cop0_latency <= m_cop0_ready[reg]) ||
+                    ((vfwrites & bit) != 0u &&
+                     candidate + vu0_vf_latency <= m_vu0_vf_ready[reg]) ||
+                    ((viwrites & bit) != 0u &&
+                     candidate + vu0_vi_latency <= m_vu0_vi_ready[reg]))
+                {
+                    return false;
+                }
+            }
             if (instruction.m_acc_write &&
                 candidate + acc_latency <= m_acc_ready)
             {
@@ -349,6 +433,18 @@ public:
         {
             completes_at = candidate + fcsr_latency;
         }
+        if (cwrites != 0u && candidate + cop0_latency > completes_at)
+        {
+            completes_at = candidate + cop0_latency;
+        }
+        if (vfwrites != 0u && candidate + vu0_vf_latency > completes_at)
+        {
+            completes_at = candidate + vu0_vf_latency;
+        }
+        if (viwrites != 0u && candidate + vu0_vi_latency > completes_at)
+        {
+            completes_at = candidate + vu0_vi_latency;
+        }
 
         if (candidate != m_cycle)
         {
@@ -362,6 +458,12 @@ public:
         m_pair_hilo_writes |= hwrites;
         m_pair_fpr_reads |= freads;
         m_pair_fpr_writes |= fwrites;
+        m_pair_cop0_reads |= creads;
+        m_pair_cop0_writes |= cwrites;
+        m_pair_vu0_vf_reads |= vfreads;
+        m_pair_vu0_vf_writes |= vfwrites;
+        m_pair_vu0_vi_reads |= vireads;
+        m_pair_vu0_vi_writes |= viwrites;
         m_pair_acc_read |= instruction.m_acc_read;
         m_pair_acc_write |= instruction.m_acc_write;
         m_pair_fcsr_read |= instruction.m_fcsr_read;
@@ -388,6 +490,22 @@ public:
             if ((fwrites & (1u << reg)) != 0u)
             {
                 m_fpr_ready[reg] = candidate + fpr_latency;
+            }
+        }
+        for (uint32_t reg = 0u; reg < 32u; ++reg)
+        {
+            const uint32_t bit = 1u << reg;
+            if ((cwrites & bit) != 0u)
+            {
+                m_cop0_ready[reg] = candidate + cop0_latency;
+            }
+            if ((vfwrites & bit) != 0u)
+            {
+                m_vu0_vf_ready[reg] = candidate + vu0_vf_latency;
+            }
+            if ((viwrites & bit) != 0u)
+            {
+                m_vu0_vi_ready[reg] = candidate + vu0_vi_latency;
             }
         }
         if (instruction.m_acc_write)
@@ -505,6 +623,9 @@ private:
         case e_ee_probe_pipe::MULT_DIV:
         case e_ee_probe_pipe::COPROCESSOR_OP:
             return 0x1u;
+        case e_ee_probe_pipe::SYSTEM_CONTROL:
+        case e_ee_probe_pipe::VU0_TRANSFER:
+            return 0x3u; // Valid only as nonpairable conservative classes
         default:
             return 0u;
         }
@@ -513,6 +634,14 @@ private:
     static bool compatible_pipes(e_ee_probe_pipe first,
                                  e_ee_probe_pipe second)
     {
+        if (first == e_ee_probe_pipe::SYSTEM_CONTROL ||
+            second == e_ee_probe_pipe::SYSTEM_CONTROL ||
+            first == e_ee_probe_pipe::VU0_TRANSFER ||
+            second == e_ee_probe_pipe::VU0_TRANSFER)
+        {
+            // Their actual R5900 pairing/resource rules are not calibrated.
+            return false;
+        }
         if ((first == e_ee_probe_pipe::BRANCH &&
              second == e_ee_probe_pipe::BRANCH) ||
             (first == e_ee_probe_pipe::COPROCESSOR_OP &&
@@ -541,6 +670,12 @@ private:
         m_pair_hilo_writes = 0u;
         m_pair_fpr_reads = 0u;
         m_pair_fpr_writes = 0u;
+        m_pair_cop0_reads = 0u;
+        m_pair_cop0_writes = 0u;
+        m_pair_vu0_vf_reads = 0u;
+        m_pair_vu0_vf_writes = 0u;
+        m_pair_vu0_vi_reads = 0u;
+        m_pair_vu0_vi_writes = 0u;
         m_pair_acc_read = false;
         m_pair_acc_write = false;
         m_pair_fcsr_read = false;
@@ -559,6 +694,9 @@ private:
     uint64_t m_gpr_ready[32]{};
     uint64_t m_hilo_ready[4]{};
     uint64_t m_fpr_ready[32]{};
+    uint64_t m_cop0_ready[32]{};
+    uint64_t m_vu0_vf_ready[32]{};
+    uint64_t m_vu0_vi_ready[32]{};
     uint64_t m_acc_ready = 0u;
     uint64_t m_fcsr_ready = 0u;
     uint64_t m_unit_next_issue[4]{};
@@ -570,6 +708,12 @@ private:
     uint32_t m_pair_hilo_writes = 0u;
     uint32_t m_pair_fpr_reads = 0u;
     uint32_t m_pair_fpr_writes = 0u;
+    uint32_t m_pair_cop0_reads = 0u;
+    uint32_t m_pair_cop0_writes = 0u;
+    uint32_t m_pair_vu0_vf_reads = 0u;
+    uint32_t m_pair_vu0_vf_writes = 0u;
+    uint32_t m_pair_vu0_vi_reads = 0u;
+    uint32_t m_pair_vu0_vi_writes = 0u;
     bool m_pair_acc_read = false;
     bool m_pair_acc_write = false;
     bool m_pair_fcsr_read = false;
