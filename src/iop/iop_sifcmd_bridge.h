@@ -4,6 +4,7 @@
 #include "ee_sif.h"
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace iop
@@ -28,6 +29,8 @@ public:
         uint32_t m_index = 0u;
         uint32_t m_value = 0u;
         bool m_request_sreg_reply = false;
+        bool m_reboot_request = false;
+        std::string m_reboot_argument;
     };
 
     c_sifcmd_bridge(c_kernel& kernel, ee::c_ee_sif& sif);
@@ -38,6 +41,10 @@ public:
     // twist84/ps2-web-recomp (SDBZ). Never invoked by mere installation,
     // guest polling, ROM0 or an ordinary IRX import.
     bool initialize_hle_bootstrap();
+    // A validated reset packet is delivered separately from completed
+    // IOP reboot. Only the explicit HLE reset coordinator consumes it.
+    bool take_reboot_request(std::string* argument);
+    void reset_for_reboot();
     bool handle_syscall(c_kernel& kernel, uint32_t service);
 
     bool initialized() const;
@@ -65,5 +72,7 @@ private:
     bool m_initialized = false;
     bool m_installed = false;
     bool m_hle_bootstrapped = false;
+    bool m_reboot_pending = false;
+    std::string m_reboot_argument;
 };
 } // namespace iop
