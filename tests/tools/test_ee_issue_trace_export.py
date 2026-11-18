@@ -34,6 +34,35 @@ def main() -> int:
         ), events
         assert events[5]["kind"] == "1", events[5]
 
+        # Optional COP1 control/compare and separate SQRT/RSQRT groups
+        # must be accepted without changing the old 4-argument CLI.
+        numeric = ["1", "3", "4", "37", "1", "4",
+                   "2", "4", "8", "4", "2", "4"]
+        for extension in ([], ["8", "14"]):
+            extended_path = root / f"extended-{len(extension)}.csv"
+            extended = subprocess.run(
+                [str(binary), str(fixture), *numeric, *extension,
+                 f"--candidate-events={extended_path}"],
+                text=True, capture_output=True, check=False
+            )
+            assert extended.returncode == 0, (
+                extended.stdout, extended.stderr
+            )
+            assert extended_path.exists(), extended_path
+
+        for values in (
+            numeric[:-1],  # incomplete FCR31 group
+            numeric[:-2] + ["0", "4"],  # unconfigured FCR31 control
+            numeric + ["8", "0"],  # unconfigured RSQRT.S
+        ):
+            bad = subprocess.run(
+                [str(binary), str(fixture), *values],
+                text=True, capture_output=True, check=False
+            )
+            assert bad.returncode == 2, (
+                values, bad.stdout, bad.stderr
+            )
+
         # The replay must refuse HLE transitions and a partial trace,
         # without producing a deceptively complete candidate CSV.
         original = fixture.read_text(encoding="utf-8")
