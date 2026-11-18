@@ -27,6 +27,7 @@ public:
         uint32_t m_cid = 0u;
         uint32_t m_index = 0u;
         uint32_t m_value = 0u;
+        bool m_request_sreg_reply = false;
     };
 
     c_sifcmd_bridge(c_kernel& kernel, ee::c_ee_sif& sif);

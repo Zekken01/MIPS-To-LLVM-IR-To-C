@@ -130,17 +130,34 @@ bool c_sifcmd_bridge::prepare_command(
     // DMA transfers round to 16 bytes, but the header records the
     // original 20/24-byte packet size.
     if (!m_initialized || command == nullptr ||
-        (size != 20u && size != 24u) ||
+        (size != 16u && size != 20u && size != 24u) ||
         words.size() < size / 4u ||
         (words[0] & 0xffu) != size ||
-        words[1] != 0u || words[3] != 0u)
+        words[1] != 0u)
+    {
+        return false;
+    }
+
+    // EE's 16-byte INIT_CMD with opt=1 requests an IOP->EE
+    // SET_SREG command (SREG[0] = 1). ps2-web-recomp/SDBZ
+    // sends that packet to the EE through the SIF0 command receiver.
+    // This is not the 20-byte receive-address publication, and it
+    // must never update an EE SREG without an actual reply packet.
+    const uint32_t cid = words[2];
+    if (cid == 0x80000002u && size == 16u &&
+        words[3] == 1u)
+    {
+        *command = {cid, 0u, 0u, true};
+        return true;
+    }
+
+    if (words[3] != 0u)
     {
         return false;
     }
 
     // The IOP consumes only validated command packets. Neither a
     // published address nor a DMA flag synthesizes an RPC reply.
-    const uint32_t cid = words[2];
     const uint32_t index_or_address = words[4];
     if (cid == 0x80000001u && size == 24u &&
         index_or_address < 32u)
@@ -176,8 +193,9 @@ void c_sifcmd_bridge::commit_command(const s_command& command)
     {
         m_sregs[command.m_index] = command.m_value;
     }
-    else if (command.m_cid == 0x80000000u ||
-             command.m_cid == 0x80000002u)
+    else if ((command.m_cid == 0x80000000u ||
+              command.m_cid == 0x80000002u) &&
+             !command.m_request_sreg_reply)
     {
         m_ee_receive_address = command.m_value;
     }

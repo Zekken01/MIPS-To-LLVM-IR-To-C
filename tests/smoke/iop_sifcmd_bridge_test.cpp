@@ -272,6 +272,25 @@ int main()
         return fail("terminal SIFCMD flags were accepted on ordinary DMA");
     }
 
+    // A 16-byte opt=1 INIT_CMD needs an IOP->EE reply transport.
+    // This fixture has no RPC/SIF0 reply backend; reject before
+    // changing command state, RAM, or DMAC.
+    dmac.acknowledge(6u);
+    ee_ram.write32(k_source, 16u);
+    ee_ram.write32(k_source + 4u, 0u);
+    ee_ram.write32(k_source + 8u, 0x80000002u);
+    ee_ram.write32(k_source + 12u, 1u);
+    descriptor(
+        ee_ram, k_list, k_source,
+        iop::c_sifcmd_bridge::k_command_buffer, 16u, 0x44u
+    );
+    if (transport.set_dma(k_list, 1u, &dma_id) ||
+        commands.ee_receive_address() != 0x00182000u ||
+        dmac.status() != 0u)
+    {
+        return fail("INIT_CMD reply accepted without SIF0 backend");
+    }
+
     // An unsupported RPC CID may not be mistaken for a completed
     // operation or reply. Check that earlier transfers in the same
     // descriptor list are not partially committed on rejection.

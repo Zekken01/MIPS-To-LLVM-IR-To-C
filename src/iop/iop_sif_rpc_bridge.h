@@ -55,6 +55,12 @@ public:
     // Service execution occurs after SIF1 DMA staging/commit.
     void commit_command(const s_request& request);
 
+    // The 16-byte EE INIT_CMD/opt=1 packet requests the original
+    // IOP SET_SREG[0]=1 command. Reserve queue capacity during SIF1
+    // validation; commit only after the entire batch is accepted.
+    bool can_queue_replies(size_t count) const;
+    void queue_init_sreg_reply();
+
     // Deliver at most one queued real service reply if SIF0 is armed.
     // Pending replies remain queued if the EE cannot accept them yet.
     bool pump();
@@ -65,6 +71,7 @@ private:
     struct s_reply
     {
         uint32_t m_words[12]{};
+        uint32_t m_word_count = 12u;
     };
 
     c_disc_loader& m_loader;

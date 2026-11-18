@@ -183,6 +183,25 @@ void c_sif_rpc_bridge::commit_command(const s_request& request)
     (void)pump();
 }
 
+bool c_sif_rpc_bridge::can_queue_replies(size_t count) const
+{
+    return count <= 64u && m_replies.size() <= 64u - count;
+}
+
+void c_sif_rpc_bridge::queue_init_sreg_reply()
+{
+    // This packet exists only in response to a validated EE INIT_CMD
+    // opt=1 request. The guest EE handler consumes it via armed SIF0;
+    // do not write its SREG or mark any IOP module as started here.
+    s_reply reply{};
+    reply.m_word_count = 6u;
+    reply.m_words[0] = 24u;
+    reply.m_words[2] = 0x80000001u; // SET_SREG
+    reply.m_words[4] = 0u;          // SREG index
+    reply.m_words[5] = 1u;          // initialized
+    m_replies.push_back(reply);
+}
+
 bool c_sif_rpc_bridge::pump()
 {
     if (m_reply_in_flight)
@@ -201,10 +220,11 @@ bool c_sif_rpc_bridge::pump()
     }
 
     const uint32_t destination = m_sifcmd.ee_receive_address();
+    const s_reply& reply = m_replies.front();
     ee::s_ee_u128 chcr{};
     if (destination == 0u ||
         (destination & 0x0fu) != 0u ||
-        !m_ee_ram.contains(destination, 48u) ||
+        !m_ee_ram.contains(destination, reply.m_word_count * 4u) ||
         !ee::c_ee_dmac::mmio_read(
             &m_dmac, ee::c_ee_dmac::k_sif0_base, 4u, &chcr) ||
         (chcr.m_lo & ee::c_ee_dmac::k_chcr_str) == 0u)
@@ -212,8 +232,7 @@ bool c_sif_rpc_bridge::pump()
         return false;
     }
 
-    const s_reply& reply = m_replies.front();
-    for (uint32_t index = 0u; index < 12u; ++index)
+    for (uint32_t index = 0u; index < reply.m_word_count; ++index)
     {
         m_ee_ram.write32(destination + index * 4u,
                          reply.m_words[index]);

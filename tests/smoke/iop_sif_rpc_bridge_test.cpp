@@ -354,6 +354,50 @@ int main()
         return fail("LOADFILE RPC fabricated IOP SMFLAG readiness");
     }
 
+    // The guest's second initialization command has a 16-byte
+    // header (CID INIT_CMD, opt=1), not a 20-byte address payload.
+    // The IOP must return SET_SREG[0]=1 through the already-armed
+    // EE SIF0 receiver, not directly mutate an EE register.
+    dmac.acknowledge(5u);
+    dmac.acknowledge(6u);
+    packet(memory, bind_source, {
+        16u, 0u, 0x80000002u, 1u
+    });
+    memory.write32(ee_receive + 20u, 0xdeadbeefu);
+    descriptor(
+        memory, list, bind_source,
+        iop::c_sifcmd_bridge::k_command_buffer, 16u
+    );
+    memory.write32(list + 12u, 0x44u);
+    if (!sif1.set_dma(list, 1u, &dma_id) ||
+        rpc.pending_replies() != 0u ||
+        memory.read32(ee_receive + 0u) != 24u ||
+        memory.read32(ee_receive + 8u) != 0x80000001u ||
+        memory.read32(ee_receive + 12u) != 0u ||
+        memory.read32(ee_receive + 16u) != 0u ||
+        memory.read32(ee_receive + 20u) != 1u ||
+        (dmac.status() & (1u << 5u)) == 0u ||
+        commands.ee_receive_address() != ee_receive ||
+        !sif.get_reg(4u, &smflag) || smflag != 0u)
+    {
+        return fail("INIT_CMD option 1 did not deliver SREG via SIF0");
+    }
+
+    // No other 16-byte option value is a valid initialization
+    // request, and it must not raise either DMA completion bit.
+    dmac.acknowledge(5u);
+    dmac.acknowledge(6u);
+    memory.write32(bind_source + 12u, 2u);
+    iop::s_sif1_dma_diagnostic reject{};
+    if (sif1.set_dma(list, 1u, &dma_id, &reject) ||
+        reject.m_failure !=
+            iop::e_sif1_dma_failure::unsupported_sifcmd_packet ||
+        rpc.pending_replies() != 0u ||
+        (dmac.status() & ((1u << 5u) | (1u << 6u))) != 0u)
+    {
+        return fail("unsupported INIT_CMD option generated a reply");
+    }
+
     std::printf("IOP LOADFILE RPC: PASS\n");
     return 0;
 }

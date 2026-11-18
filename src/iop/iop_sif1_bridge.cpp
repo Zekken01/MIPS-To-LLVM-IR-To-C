@@ -139,6 +139,7 @@ bool c_sif1_bridge::set_dma(
     transfers.reserve(count);
     uint32_t rpc_payload_source = 0u;
     uint32_t rpc_payload_length = 0u;
+    size_t init_reply_count = 0u;
     for (uint32_t index = 0u; index < count; ++index)
     {
         const uint32_t descriptor = list_physical + index * 16u;
@@ -272,6 +273,17 @@ bool c_sif1_bridge::set_dma(
                 {
                     return refuse(e_sif1_dma_failure::unsupported_sifcmd_packet);
                 }
+                if (transfer.m_command_effect.m_request_sreg_reply)
+                {
+                    ++init_reply_count;
+                    if (m_rpc == nullptr ||
+                        !m_rpc->can_queue_replies(init_reply_count))
+                    {
+                        // A valid initialization request cannot be
+                        // acknowledged if no HLE SIF0 reply path exists.
+                        return refuse(e_sif1_dma_failure::unsupported_sifcmd_packet);
+                    }
+                }
                 transfer.m_command = true;
             }
         }
@@ -303,6 +315,10 @@ bool c_sif1_bridge::set_dma(
         if (transfer.m_command)
         {
             m_sifcmd->commit_command(transfer.m_command_effect);
+            if (transfer.m_command_effect.m_request_sreg_reply)
+            {
+                m_rpc->queue_init_sreg_reply();
+            }
         }
         else if (transfer.m_rpc_command)
         {
