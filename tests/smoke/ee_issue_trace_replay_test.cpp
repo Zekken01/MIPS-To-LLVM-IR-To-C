@@ -491,9 +491,9 @@ int main()
           replay.failure_pc() == 0x6004u,
           "shorter FCR31 producer cannot overtake older result in ordered mode");
 
-    // COP0 and VU0 transfers have distinct architectural resources
-    // but no implicit timing values. The observed guest decoder remains
-    // the authority on valid instruction encodings.
+    // COP0 is independent of VU0; VF[n]/VI[n] share macro-mode hazard
+    // identity by index, but retain different functional values.
+    // All result latencies remain caller-supplied and experimental.
     const uint32_t mtc0_status = (0x10u << 26u) | (4u << 21u) |
                                  (8u << 16u) | (12u << 11u);
     const uint32_t mfc0_status = (0x10u << 26u) |
@@ -508,6 +508,14 @@ int main()
                               (8u << 16u) | (4u << 11u);
     const uint32_t cfc2_vi4 = (0x12u << 26u) | (2u << 21u) |
                               (9u << 16u) | (4u << 11u);
+    const uint32_t cfc2_vi5 = (0x12u << 26u) | (2u << 21u) |
+                              (9u << 16u) | (5u << 11u);
+    const uint32_t qmtc2_vf0 = (0x12u << 26u) | (5u << 21u) |
+                               (8u << 16u);
+    const uint32_t qmfc2_vf0 = (0x12u << 26u) | (1u << 21u) |
+                               (9u << 16u);
+    const uint32_t ctc2_vi0 = (0x12u << 26u) | (6u << 21u) |
+                              (8u << 16u);
     ee::s_ee_issue_replay_profile transfer_profile{1u, 3u};
 
     replay.configure(transfer_profile);
@@ -562,8 +570,40 @@ int main()
           e_ee_issue_replay_status::ISSUED &&
           replay.observe(record(2u, 0x7004u, cfc2_vi4, 0u, 2u)) ==
           e_ee_issue_replay_status::ISSUED &&
+          replay.last_event_candidate_cycle() == 5u,
+          "VU0 VF4 writes block VI4 reads by shared macro hazard identity");
+
+    replay.configure(transfer_profile);
+    check(replay.observe(record(1u, 0x7000u, ctc2_vi4, 0u, 1u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(2u, 0x7004u, qmfc2_vf4, 0u, 2u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.last_event_candidate_cycle() == 7u,
+          "VU0 VI4 writes block VF4 reads by shared macro hazard identity");
+
+    replay.configure(transfer_profile);
+    check(replay.observe(record(1u, 0x7000u, qmtc2_vf4, 0u, 1u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(2u, 0x7004u, cfc2_vi5, 0u, 2u)) ==
+          e_ee_issue_replay_status::ISSUED &&
           replay.last_event_candidate_cycle() == 1u,
-          "VU0 VF writes do not stall reads from unrelated VI registers");
+          "VU0 VF4 does not falsely alias different-index VI5");
+
+    replay.configure(transfer_profile);
+    check(replay.observe(record(1u, 0x7000u, qmtc2_vf0, 0u, 1u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(2u, 0x7004u, qmfc2_vf0, 0u, 2u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.last_event_candidate_cycle() == 1u,
+          "VF00 register does not create a macro transfer RAW hazard");
+
+    replay.configure(transfer_profile);
+    check(replay.observe(record(1u, 0x7000u, ctc2_vi0, 0u, 1u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(2u, 0x7004u, qmfc2_vf0, 0u, 2u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.last_event_candidate_cycle() == 1u,
+          "VI00 register does not create a macro cross-bank hazard");
 
     // Known valid system / VU0 macro / packed MMI instructions still
     // require a separate evidence-backed timing class. This extension
