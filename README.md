@@ -61,3 +61,30 @@ ctest --test-dir build --output-on-failure
 
 For full-image validation and the PCSX2 differential workflow, see
 FULL_GAME_NATIVE_LINK_VALIDATION.md and tools/vu0_diff/README.md.
+
+## BIOS-free extracted disc launcher (Windows)
+
+Place the original, extracted game disc files under `PS2_GAME/` at the
+repository root, including `SYSTEM.CNF`. Run:
+
+```bat
+run_ps2_game.bat
+```
+
+The script reads the `BOOT2 = cdrom0:\\...;1` entry from
+`PS2_GAME/SYSTEM.CNF` and resolves its ELF case-insensitively, with no
+hardcoded region or executable filename. It configures/builds the native host
+tools, then runs `tools/run_boot_session.py` with
+`--disc-folder=PS2_GAME` and `--disc-root=PS2_GAME`.
+It neither requires a raw ISO nor downloads/executes ROM0, and does not
+change your Git branch. Logs and the JSON report go to
+`build/ps2-game-hle/`. `PS2_GAME/` is gitignored.
+
+You may run `set PS2_GAME_RESOLVE_ONLY=1` first to verify the BOOT2
+resolution without building or running the game. Optional
+`EMIT_JOBS` and `SIF_POLL_LIMIT` environment variables adjust the
+native session diagnostics.
+
+This remains a work-in-progress HLE bootstrap, **not a playable game**;
+unknown IOP kernel services and guest execution failures are reported
+rather than silently synthesized.
