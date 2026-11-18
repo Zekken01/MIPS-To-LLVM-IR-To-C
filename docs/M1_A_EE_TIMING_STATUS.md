@@ -177,3 +177,27 @@ complete guest-cycle or boot-validation timeline.
 ### Native JIT observer regression
 
 `ee_timing_observer_ir_runtime` runs a generated BLTZALL function with a real C-compatible callback pointer installed in a properly sized runtime instance. It verifies exact reached/annulled event PCs, opcodes, attempt/slot ordinals, absence of guest delay-slot effects and first-rejection latching. This fixture does not publish EE cycles. Native and RAM rejection now have separate test coverage.
+
+
+## Reference-compatible HLE boot timing (pragmatic compatibility mode)
+
+In `--hle-startup` mode, the native runner now defaults to a
+`reference_compatibility` event clock. `--ee-clock=off` disables it.
+This follows `twist84/ps2-web-recomp:SDBZ`'s guest-execution-budget and
+event-deadline architecture, not its R5900 instruction pipeline accuracy.
+The native runner currently charges one approximate budget unit per reached
+guest instruction at dispatch safepoints. It does not calibrate real EE
+pipelines, HLE syscall time, cache stalls, DMA contention or VU timing.
+If a loop-header watchdog is configured, compatibility mode defaults to
+up to 256 bounded safepoint resumes when no resume budget was supplied.
+It never converts host dispatches, loop visits or elapsed wall time to cycles.
+
+Compatibility time advances **the existing** scanout/CSR/INTC/VSync path;
+no flag, frame or interrupt is injected to skip guest code. The boot JSON
+and console explicitly identify `reference_compatibility`, distinct from
+`validated_r5900`. Tests verify its monotonic event deadlines and real
+hardware-delivery route. This is a practical boot mode, **not** evidence of
+hardware-accurate EE timing or completion of M1-A calibration. A new matched
+real-game boot is needed to check whether SDBZ passes `0x00175210` and
+which actual next system blocker appears. Offline issue-timing tooling remains
+available for later accuracy work without blocking HLE-first boot progress.

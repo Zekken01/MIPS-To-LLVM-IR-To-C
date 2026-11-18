@@ -312,6 +312,7 @@ void usage(const char* program)
         "  --stack=0xADDR       Initial EE stack pointer (default 0x01fff000)\n"
         "  --loop-budget=N       Stop at a guest CFG loop after N header entries (0=off)\n"
         "  --loop-yield-resumes=N  Resume at most N host yields; requires loop-budget\n"
+        "  --ee-clock=off|reference-compat  HLE compatibility clock (default: reference-compat)\n"
         "  --sif-poll-limit=N    Diagnose N repeated IOP SMFLAG zero reads (0=off)\n"
         "  --iop-irx=FILE       Repeat in dependency order; last IRX starts by default\n"
         "  --iop-rom0=FILE      Boot caller-supplied 4 MiB PS2 BIOS ROM at BFC00000\n"
@@ -455,6 +456,19 @@ struct s_dispatch_sample
     uint32_t m_status = 0;
 };
 
+const char* ee_cycle_source_name(ee::e_ee_cycle_source source)
+{
+    switch (source)
+    {
+    case ee::e_ee_cycle_source::VALIDATED_R5900:
+        return "validated_r5900";
+    case ee::e_ee_cycle_source::REFERENCE_COMPATIBILITY:
+        return "reference_compatibility";
+    default:
+        return "unavailable";
+    }
+}
+
 bool write_report(
     const char* path,
     const ee::elf_loader& image,
@@ -518,8 +532,7 @@ bool write_report(
         ",\n  \"gs_csr\": %llu"
         ",\n  \"intc_stat\": %u, \"intc_mask\": %u"
         ",\n  \"vsync_flag_address\": %u, \"vsync_csr_address\": %u",
-        runtime.m_ee_cycle_scheduler.source() == ee::e_ee_cycle_source::VALIDATED_R5900
-            ? "validated_r5900" : "unavailable",
+        ee_cycle_source_name(runtime.m_ee_cycle_scheduler.source()),
         static_cast<unsigned long long>(runtime.m_ee_cycle_scheduler.current_cycle()),
         static_cast<unsigned long long>(runtime.m_reference_instruction_slots),
         static_cast<unsigned long long>(runtime.m_hle_timing_boundaries),
@@ -674,6 +687,7 @@ int main(int argc, char** argv)
     const char* library_path = nullptr;
     bool trace = false;
     bool hle_startup = false;
+    bool compatibility_clock = true;
     bool kseg_ram = false;
     const char* kernel_ram_path = nullptr;
     const char* report_path = nullptr;
@@ -799,6 +813,16 @@ int main(int argc, char** argv)
         if (argument == "--hle-startup")
         {
             hle_startup = true;
+            continue;
+        }
+        if (argument == "--ee-clock=off")
+        {
+            compatibility_clock = false;
+            continue;
+        }
+        if (argument == "--ee-clock=reference-compat")
+        {
+            compatibility_clock = true;
             continue;
         }
         if (argument.compare(0, 10, "--iop-irx=") == 0)
@@ -1447,6 +1471,23 @@ int main(int argc, char** argv)
         instruction_trace.resize(k_instruction_trace_limit);
     }
     ee::s_ee_runtime runtime{};
+    if (hle_startup && compatibility_clock)
+    {
+        if (!runtime.m_ee_cycle_scheduler.install_reference_compatibility_source())
+        {
+            std::fprintf(stderr, "EE compatibility clock installation failed\n");
+            return 1;
+        }
+        // ps2-web-recomp runs guest execution against an event budget.
+        // Preserve real safepoints for due GS fields; do not derive time
+        // from host dispatches, loop visits, or wall-clock duration.
+        if (loop_budget != 0u && loop_yield_resumes == 0u)
+        {
+            loop_yield_resumes = 256u;
+        }
+        std::printf("EE clock: reference-compatible guest-execution budget "
+                    "(approximate, not R5900 calibrated)\n");
+    }
     runtime.m_user = memory.get();
     runtime.m_vu0_state = &vu0;
     runtime.m_vu0_sync = runner_vu0_sync;
@@ -2045,14 +2086,22 @@ int main(int argc, char** argv)
 
         dispatched += count;
         remaining -= count;
-        // A source must be independently validated and installed before
-        // this can ever produce a GS field. Dispatches and loop visits are
-        // intentionally not converted to cycles.
+        // Model ps2-web-recomp's execution-budget/event architecture using
+        // reached guest instructions as approximate budget units. This is
+        // deliberately not a pipeline, cache, or HLE timing calibration.
+        if (runtime.m_ee_cycle_scheduler.source() ==
+            ee::e_ee_cycle_source::REFERENCE_COMPATIBILITY &&
+            !runtime.m_ee_cycle_scheduler.publish_cycle(
+                runtime.m_guest_instruction_attempts))
+        {
+            std::fprintf(stderr, "EE compatibility cycle publication rejected\n");
+            return 1;
+        }
         const auto scanout_result = runtime.m_ee_cycle_scheduler.service_scanout(
             hardware, vsync_flags, *memory);
         if (scanout_result == ee::e_ee_scheduled_event_result::INVALID_TIMESTAMP_OR_DELIVERY)
         {
-            std::fprintf(stderr, "EE validated-cycle scheduler rejected scanout delivery at cycle=%llu\n",
+            std::fprintf(stderr, "EE scheduler rejected scanout delivery at cycle=%llu\n",
                 static_cast<unsigned long long>(runtime.m_ee_cycle_scheduler.current_cycle()));
             return 1;
         }
@@ -4728,15 +4777,14 @@ int main(int argc, char** argv)
 
     std::printf(
         "EE timing: source=%s current_cycles=%llu scheduler_yields=%llu next_gs_field=%llu fields=%llu\n",
-        runtime.m_ee_cycle_scheduler.source() == ee::e_ee_cycle_source::VALIDATED_R5900
-            ? "validated_r5900" : "unavailable",
+        ee_cycle_source_name(runtime.m_ee_cycle_scheduler.source()),
         static_cast<unsigned long long>(runtime.m_ee_cycle_scheduler.current_cycle()),
         static_cast<unsigned long long>(runtime.m_ee_cycle_scheduler.scheduler_yields()),
         static_cast<unsigned long long>(hardware.scanout().next_field_cycle()),
         static_cast<unsigned long long>(hardware.scanout().fields_started()));
     std::printf(
         "EE reference-interpreter instruction slots: %llu "
-        "(not R5900 cycles; no GS events)\n",
+        "(not R5900 cycles)\n",
         static_cast<unsigned long long>(
             runtime.m_reference_instruction_slots)
     );
@@ -4860,8 +4908,9 @@ int main(int argc, char** argv)
     {
         std::fprintf(stderr,
             "guest host loop yield cap reached: pc=0x%08x "
-            "resumes=%u cap=%u (NO GS VBlank or EE cycles invented)\n",
-            cpu.m_pc, completed_loop_yields, loop_yield_resumes);
+            "resumes=%u cap=%u (clock=%s)\n",
+            cpu.m_pc, completed_loop_yields, loop_yield_resumes,
+            ee_cycle_source_name(runtime.m_ee_cycle_scheduler.source()));
         return 3;
     }
     if (reason == static_cast<uint32_t>(ee::e_ee_exit_reason::EE_EXIT_LOOP_BUDGET))
@@ -4880,14 +4929,15 @@ int main(int argc, char** argv)
                 "flag=0x%08x value=0x%08x csr_dst=0x%08x "
                 "csr_dst_value=0x%016llx GS_CSR=0x%016llx "
                 "CRT_configured=%u fields=%llu "
-                "cycle_source=unavailable (no VBlank synthesized)\n",
+                "cycle_source=%s\n",
                 hardware.intc().status(), hardware.intc().mask(),
                 flag_address, flag_value, csr_address,
                 static_cast<unsigned long long>(csr_value),
                 static_cast<unsigned long long>(hardware.scanout().csr()),
                 hardware.scanout().enabled() ? 1u : 0u,
                 static_cast<unsigned long long>(
-                    hardware.scanout().fields_started()));
+                    hardware.scanout().fields_started()),
+                ee_cycle_source_name(runtime.m_ee_cycle_scheduler.source()));
         }
         std::fprintf(
             stderr,
