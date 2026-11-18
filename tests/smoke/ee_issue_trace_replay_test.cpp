@@ -317,6 +317,42 @@ int main()
           e_ee_issue_replay_status::ISSUED,
           "nontrapping ADDIU and DADDIU use explicit scalar-ALU timing");
 
+    // The EE Core manual lists DIV.S, SQRT.S and RSQRT.S separately.
+    // No one class may inherit another's configured candidate latency.
+    const uint32_t sqrt_s = (0x11u << 26u) | (0x10u << 21u) |
+                            (2u << 11u) | (4u << 6u) | 0x04u;
+    const uint32_t rsqrt_s = (0x11u << 26u) | (0x10u << 21u) |
+                             (3u << 16u) | (2u << 11u) |
+                             (5u << 6u) | 0x16u;
+    const uint32_t mfc1_sqrt = (0x11u << 26u) |
+                               (8u << 16u) | (4u << 11u);
+    const uint32_t mfc1_rsqrt = (0x11u << 26u) |
+                                (8u << 16u) | (5u << 11u);
+
+    replay.configure({1u, 3u, 7u, 11u, 4u, 8u,
+                      2u, 5u, 8u, 5u, 6u, 7u});
+    check(replay.observe(record(1u, 0x3000u, sqrt_s, 0u, 1u)) ==
+          e_ee_issue_replay_status::UNMODELED_INSTRUCTION,
+          "DIV.S latency must not silently cover SQRT.S");
+
+    replay.configure({1u, 3u, 7u, 11u, 4u, 8u,
+                      2u, 5u, 8u, 5u, 6u, 7u, 8u, 14u});
+    check(replay.observe(record(1u, 0x3000u, sqrt_s, 0u, 1u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(2u, 0x3004u, mfc1_sqrt, 0u, 2u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.last_event_candidate_cycle() == 8u,
+          "SQRT.S result availability uses separately supplied latency");
+
+    replay.configure({1u, 3u, 7u, 11u, 4u, 8u,
+                      2u, 5u, 8u, 5u, 6u, 7u, 8u, 14u});
+    check(replay.observe(record(1u, 0x3000u, rsqrt_s, 0u, 1u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(2u, 0x3004u, mfc1_rsqrt, 0u, 2u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.last_event_candidate_cycle() == 14u,
+          "RSQRT.S result availability is independent of DIV.S and SQRT.S");
+
     replay.configure({1u, 3u, 7u, 11u, 4u, 8u});
     const uint32_t dependent_add = (6u << 21u) | (7u << 16u) |
                                    (8u << 11u) | 0x21u;
