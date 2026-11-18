@@ -303,6 +303,87 @@ int main()
           clock.issue(fpu_unit, &at) && at == 9u,
           "reset clears all unit reservations");
 
+    // Counterfactual result overlap is opt-in, separate from real EE
+    // pipeline/retirement modeling. A second same-register producer may
+    // issue at the explicitly supplied unit interval, but its result
+    // must not overtake the first producer's completion deadline.
+    clock.reset();
+    s_ee_probe_instruction overlapping_mac{};
+    overlapping_mac.m_pipe = e_ee_probe_pipe::MULT_DIV;
+    overlapping_mac.m_unit = ee::e_ee_probe_unit::MAC0;
+    overlapping_mac.m_initiation_interval = 2u;
+    overlapping_mac.m_hilo_write_mask = 0x3u;
+    overlapping_mac.m_hilo_result_latency = 8u;
+    uint64_t completion = 99u;
+    check(clock.issue(overlapping_mac, &at, &completion) && at == 0u &&
+          completion == 8u &&
+          clock.issue(overlapping_mac, &at, &completion) && at == 8u &&
+          completion == 16u,
+          "conservative repeated MAC waits for prior HI/LO completion");
+
+    clock.reset();
+    check(clock.configure_waw_policy(
+              ee::e_ee_probe_waw_policy::ORDERED_OVERLAP) &&
+          clock.issue(overlapping_mac, &at, &completion) && at == 0u &&
+          completion == 8u &&
+          clock.issue(overlapping_mac, &at, &completion) && at == 2u &&
+          completion == 10u &&
+          clock.last_completion_cycle() == 10u &&
+          clock.max_completion_cycle() == 10u &&
+          clock.estimated_cycles() == 3u,
+          "ordered-overlap separates MAC throughput from result completion");
+    s_ee_probe_instruction read_lo{};
+    read_lo.m_pipe = e_ee_probe_pipe::MULT_DIV;
+    read_lo.m_hilo_read_mask = 0x2u;
+    check(clock.issue(read_lo, &at) && at == 10u,
+          "consumer waits for latest overlapping HI/LO result");
+
+    clock.reset();
+    s_ee_probe_instruction overlapping_fcsr{};
+    overlapping_fcsr.m_pipe = e_ee_probe_pipe::COPROCESSOR_OP;
+    overlapping_fcsr.m_unit = ee::e_ee_probe_unit::COP1_SCALAR;
+    overlapping_fcsr.m_initiation_interval = 2u;
+    overlapping_fcsr.m_fcsr_write = true;
+    overlapping_fcsr.m_fcsr_result_latency = 9u;
+    check(clock.configure_waw_policy(
+              ee::e_ee_probe_waw_policy::ORDERED_OVERLAP) &&
+          clock.issue(overlapping_fcsr, &at) && at == 0u &&
+          clock.issue(overlapping_fcsr, &at) && at == 2u &&
+          clock.last_completion_cycle() == 11u,
+          "explicit FCR31 overlap retains in-order candidate completion");
+    s_ee_probe_instruction read_fcsr{};
+    read_fcsr.m_pipe = e_ee_probe_pipe::BRANCH;
+    read_fcsr.m_fcsr_read = true;
+    check(clock.issue(read_fcsr, &at) && at == 11u,
+          "BC1-like FCR31 read waits for most recent overlapping writer");
+
+    clock.reset();
+    overlapping_mac.m_hilo_result_latency = 9u;
+    s_ee_probe_instruction overtaking_mac = overlapping_mac;
+    overtaking_mac.m_hilo_result_latency = 1u;
+    check(clock.configure_waw_policy(
+              ee::e_ee_probe_waw_policy::ORDERED_OVERLAP) &&
+          clock.issue(overlapping_mac, &at, &completion) && at == 0u &&
+          completion == 9u &&
+          !clock.issue(overtaking_mac, &at, &completion) &&
+          completion == 9u &&
+          clock.instructions_issued() == 1u &&
+          clock.estimated_cycles() == 1u &&
+          clock.last_completion_cycle() == 9u &&
+          clock.issue(overlapping_mac, &at, &completion) && at == 2u &&
+          completion == 11u,
+          "out-of-order HI/LO completion is rejected without state mutation");
+
+    clock.reset();
+    check(clock.waw_policy() ==
+              ee::e_ee_probe_waw_policy::WAIT_FOR_RESULT &&
+          !clock.configure_waw_policy(
+              static_cast<ee::e_ee_probe_waw_policy>(255u)) &&
+          clock.issue(a) &&
+          !clock.configure_waw_policy(
+              ee::e_ee_probe_waw_policy::ORDERED_OVERLAP),
+          "invalid or midstream overlap-mode changes fail closed");
+
     std::printf("ee_issue_timing_probe_test: %d failure(s)\n", g_failures);
     return g_failures != 0 ? 1 : 0;
 }
