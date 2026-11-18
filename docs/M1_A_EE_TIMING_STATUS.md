@@ -93,3 +93,7 @@ The native LLVM emitter now invokes an **internal** function-pointer observer (n
 ### Rejection safepoints
 
 An installed observer that refuses a RAM-interpreted committed step now terminates that interpreter immediately with `TIMING_OBSERVER_REJECTED`; the runner checks the same failure latch at the start of each host dispatch iteration so HLE continuations cannot silently proceed. Native translated code checks at the dispatch boundary. The default observer is null, preserving the baseline boot. No issue model or observer installs an EE timing source implicitly.
+
+### Native JIT observer regression
+
+`ee_timing_observer_ir_runtime` runs a generated BLTZALL function with a real C-compatible callback pointer installed in a properly sized runtime instance. It verifies exact reached/annulled event PCs, opcodes, attempt/slot ordinals, absence of guest delay-slot effects and first-rejection latching. This fixture does not publish EE cycles. Native and RAM rejection now have separate test coverage.

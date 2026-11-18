@@ -278,6 +278,20 @@ int main(int argc, char** argv)
     llvm::module_builder builder(context);
     builder.emit_function_cfg(functions[0], insn_map, function_name);
 
+    if (mode == "bltzall")
+    {
+        // The Python JIT test reads authoritative runtime byte offsets
+        // rather than guessing the layout of a large C++ host structure.
+        std::printf(
+            "TIMING_OBSERVER_LAYOUT %zu %zu %zu %zu %zu %zu\n",
+            sizeof(ee::s_ee_runtime),
+            offsetof(ee::s_ee_runtime, m_timing_observer_user),
+            offsetof(ee::s_ee_runtime, m_timing_observer),
+            offsetof(ee::s_ee_runtime, m_timing_observer_failed),
+            offsetof(ee::s_ee_runtime, m_guest_instruction_attempts),
+            offsetof(ee::s_ee_runtime, m_reference_instruction_slots));
+    }
+
     if (mode == "loop_yield")
     {
         // The Python JIT fixture allocates the full C++ runtime from these
