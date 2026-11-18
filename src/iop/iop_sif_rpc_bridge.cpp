@@ -144,14 +144,43 @@ bool c_sif_rpc_bridge::configure_reboot_image_version(
     return true;
 }
 
+const char* c_sif_rpc_bridge::rejection_name(e_rpc_rejection reason)
+{
+    switch (reason)
+    {
+    case e_rpc_rejection::none: return "none";
+    case e_rpc_rejection::invalid_envelope: return "invalid_envelope";
+    case e_rpc_rejection::unknown_server: return "unknown_server";
+    case e_rpc_rejection::unsupported_method: return "unsupported_method";
+    case e_rpc_rejection::unavailable_backend: return "unavailable_backend";
+    case e_rpc_rejection::invalid_arguments: return "invalid_arguments";
+    }
+    return "invalid_reason";
+}
+
 bool c_sif_rpc_bridge::prepare_command(
     const std::vector<uint32_t>& packet,
     uint32_t size,
     uint32_t payload_source,
     uint32_t payload_length,
-    s_request* request
+    s_request* request,
+    e_rpc_rejection* rejected_reason
 ) const
 {
+    // Local diagnostic only. No staged guest DMA or reply can be committed
+    // by this validator, even when it classifies an unsupported request.
+    const auto refuse = [rejected_reason](e_rpc_rejection reason) -> bool
+    {
+        if (rejected_reason != nullptr)
+        {
+            *rejected_reason = reason;
+        }
+        return refuse(e_rpc_rejection::invalid_arguments);
+    };
+    if (rejected_reason != nullptr)
+    {
+        *rejected_reason = e_rpc_rejection::invalid_envelope;
+    }
     if (!m_sifcmd.initialized() ||
         request == nullptr ||
         m_replies.size() >= 64u ||
@@ -167,7 +196,7 @@ bool c_sif_rpc_bridge::prepare_command(
         packet[4] == 0u || packet[5] == 0u ||
         packet[6] == 0u || packet[7] == 0u)
     {
-        return false;
+        return refuse(e_rpc_rejection::invalid_envelope);
     }
 
     s_request candidate{};
@@ -186,32 +215,44 @@ bool c_sif_rpc_bridge::prepare_command(
         // CDVDFSV's CdInit server is a built-in HLE service,
         // as in ps2-web-recomp/SDBZ. This only binds the client;
         // unsupported CDVD RPC methods must still fail closed.
+        const bool cdvd_server =
+            packet[8] == k_cdvd_s_server ||
+            packet[8] == k_cdvd_n_server ||
+            packet[8] == k_cdvd_stream_server ||
+            packet[8] == k_cdvd_search_server ||
+            packet[8] == k_cdvd_ready_server ||
+            packet[8] == k_cdvd_ready_alt_server;
         if (packet[8] != k_loadfile_server &&
             packet[8] != k_iop_heap_server &&
-            packet[8] != k_cdvd_init_server &&
-            !(m_sectors != nullptr && m_sectors->sector_count() != 0u &&
-              (packet[8] == k_cdvd_s_server ||
-               packet[8] == k_cdvd_n_server ||
-               packet[8] == k_cdvd_stream_server ||
-               packet[8] == k_cdvd_search_server ||
-               packet[8] == k_cdvd_ready_server ||
-               packet[8] == k_cdvd_ready_alt_server)))
+            packet[8] != k_cdvd_init_server && !cdvd_server)
         {
-            return false;
+            return refuse(e_rpc_rejection::unknown_server);
+        }
+        if (cdvd_server &&
+            (m_sectors == nullptr || m_sectors->sector_count() == 0u))
+        {
+            return refuse(e_rpc_rejection::unavailable_backend);
         }
         candidate.m_server_id = packet[8];
         *request = std::move(candidate);
+        if (rejected_reason != nullptr)
+        {
+            *rejected_reason = e_rpc_rejection::none;
+        }
         return true;
     }
 
-    if (cid != k_call_cid ||
-        (size != 56u && size != 64u) ||
+    if (cid != k_call_cid)
+    {
+        return refuse(e_rpc_rejection::invalid_envelope);
+    }
+    if ((size != 56u && size != 64u) ||
         packet[9] > 4096u ||
         packet[11] > 4096u ||
         packet[12] > 1u ||
         payload_length < packet[9])
     {
-        return false;
+        return refuse(e_rpc_rejection::invalid_arguments);
     }
 
     const uint32_t server_id = packet[13] ^ k_server_xor;
@@ -219,12 +260,16 @@ bool c_sif_rpc_bridge::prepare_command(
     uint32_t result = 0u;
     if (!normalize_ee_ram(packet[10], &result))
     {
-        return false;
+        return refuse(e_rpc_rejection::invalid_arguments);
     }
     candidate.m_server_id = server_id;
     candidate.m_result_destination = result;
     if (server_id == k_loadfile_server)
     {
+        if (method != 0xffu && method != 0u)
+        {
+            return refuse(e_rpc_rejection::unsupported_method);
+        }
         if (method == 0xffu)
         {
             // The retail post-reboot request carries no payload.
@@ -233,7 +278,7 @@ bool c_sif_rpc_bridge::prepare_command(
                 packet[11] < 4u ||
                 !m_ee_ram.contains(result, packet[11]))
             {
-                return false;
+                return refuse(e_rpc_rejection::invalid_arguments);
             }
         }
         else if (method != 0u || packet[9] < 260u ||
@@ -244,11 +289,15 @@ bool c_sif_rpc_bridge::prepare_command(
                      m_ee_ram, payload_source, packet[9],
                      &candidate.m_guest_path))
         {
-            return false;
+            return refuse(e_rpc_rejection::invalid_arguments);
         }
     }
     else if (server_id == k_cdvd_init_server)
     {
+        if (method != 0u)
+        {
+            return refuse(e_rpc_rejection::unsupported_method);
+        }
         // Retail SDBZ calls CdInit method 0. The observed word[4] = 5
         // is the RPC record ID, not the method (which is word[8]).
         // The reference HLE accepts a bounded receive size. Only a
@@ -259,11 +308,15 @@ bool c_sif_rpc_bridge::prepare_command(
             (packet[9] != 0u &&
              !m_ee_ram.contains(payload_source, packet[9])))
         {
-            return false;
+            return refuse(e_rpc_rejection::invalid_arguments);
         }
     }
     else if (server_id == k_iop_heap_server)
     {
+        if (method < 1u || method > 7u)
+        {
+            return refuse(e_rpc_rejection::unsupported_method);
+        }
         // IOPHEAP 1/2/4/5/6/7 share the real kernel allocator.
         // Method 3 transfers actual mounted file bytes to a live
         // IOPHEAP buffer, rather than writing kernel or IRX memory.
@@ -278,7 +331,7 @@ bool c_sif_rpc_bridge::prepare_command(
             (packet[9] != 0u &&
              !m_ee_ram.contains(payload_source, packet[9])))
         {
-            return false;
+            return refuse(e_rpc_rejection::invalid_arguments);
         }
         if (has_argument)
         {
@@ -290,14 +343,14 @@ bool c_sif_rpc_bridge::prepare_command(
                 dynamic_cast<c_folder_sector_source*>(m_sectors);
             if (folder == nullptr)
             {
-                return false;
+                return refuse(e_rpc_rejection::invalid_arguments);
             }
             const uint32_t region =
                 candidate.m_heap_argument & 0xe0000000u;
             if (region != 0u && region != 0x80000000u &&
                 region != 0xa0000000u)
             {
-                return false;
+                return refuse(e_rpc_rejection::invalid_arguments);
             }
             candidate.m_heap_argument &= 0x1fffffffu;
             std::string path;
@@ -314,14 +367,14 @@ bool c_sif_rpc_bridge::prepare_command(
                 if (ch < 0x21u || ch > 0x7eu ||
                     path.size() >= 255u)
                 {
-                    return false;
+                    return refuse(e_rpc_rejection::invalid_arguments);
                 }
                 path.push_back(static_cast<char>(ch));
             }
             if (!terminated || path.size() < 8u ||
                 path.find("..") != std::string::npos)
             {
-                return false;
+                return refuse(e_rpc_rejection::invalid_arguments);
             }
             s_folder_file_info file{};
             if (!folder->find_file(path, &file))
@@ -343,7 +396,7 @@ bool c_sif_rpc_bridge::prepare_command(
                         file.m_lba, count, candidate.m_heap_file_bytes) ||
                     candidate.m_heap_file_bytes.size() < file.m_size)
                 {
-                    return false;
+                    return refuse(e_rpc_rejection::invalid_arguments);
                 }
                 candidate.m_heap_file_size = file.m_size;
                 candidate.m_heap_file_bytes.resize(file.m_size);
@@ -360,12 +413,15 @@ bool c_sif_rpc_bridge::prepare_command(
     {
         // These HLE services exist only when actual disc media is mounted.
         // Every request is fully validated before SIF1 changes guest RAM.
-        if (m_sectors == nullptr || m_sectors->sector_count() == 0u ||
-            !m_ee_ram.contains(result, packet[11]) ||
+        if (m_sectors == nullptr || m_sectors->sector_count() == 0u)
+        {
+            return refuse(e_rpc_rejection::unavailable_backend);
+        }
+        if (!m_ee_ram.contains(result, packet[11]) ||
             (packet[9] != 0u &&
              !m_ee_ram.contains(payload_source, packet[9])))
         {
-            return false;
+            return refuse(e_rpc_rejection::invalid_arguments);
         }
         candidate.m_payload_source = payload_source;
         const uint32_t reply_size = packet[11];
@@ -382,7 +438,7 @@ bool c_sif_rpc_bridge::prepare_command(
                 if (dynamic_cast<c_folder_sector_source*>(m_sectors) ==
                     nullptr)
                 {
-                    return false;
+                    return refuse(e_rpc_rejection::invalid_arguments);
                 }
                 needed = 12u;
                 break;
@@ -392,11 +448,11 @@ bool c_sif_rpc_bridge::prepare_command(
             case 0x16u:
             case 0x22u:
                 break;
-            default: return false;
+            default: return refuse(e_rpc_rejection::unsupported_method);
             }
             if (reply_size < needed)
             {
-                return false;
+                return refuse(e_rpc_rejection::invalid_arguments);
             }
         }
         else if (server_id == k_cdvd_n_server)
@@ -409,7 +465,7 @@ bool c_sif_rpc_bridge::prepare_command(
             case 0x0du:
                 if (packet[9] < 12u)
                 {
-                    return false;
+                    return refuse(e_rpc_rejection::invalid_arguments);
                 }
                 candidate.m_cdvd_lba = m_ee_ram.read32(payload_source);
                 candidate.m_cdvd_count =
@@ -423,7 +479,7 @@ bool c_sif_rpc_bridge::prepare_command(
             case 0x09u:
                 if (packet[9] < 16u)
                 {
-                    return false;
+                    return refuse(e_rpc_rejection::invalid_arguments);
                 }
                 candidate.m_cdvd_lba = m_ee_ram.read32(payload_source);
                 candidate.m_cdvd_count =
@@ -444,7 +500,7 @@ bool c_sif_rpc_bridge::prepare_command(
                          candidate.m_cdvd_stream_command != 6u &&
                          candidate.m_cdvd_stream_command != 9u)
                 {
-                    return false;
+                    return refuse(e_rpc_rejection::invalid_arguments);
                 }
                 needed = 4u;
                 break;
@@ -455,11 +511,11 @@ bool c_sif_rpc_bridge::prepare_command(
             case 0x05u:
             case 0x08u:
                 break;
-            default: return false;
+            default: return refuse(e_rpc_rejection::unsupported_method);
             }
             if (reply_size < needed)
             {
-                return false;
+                return refuse(e_rpc_rejection::invalid_arguments);
             }
             if (read_media)
             {
@@ -471,7 +527,7 @@ bool c_sif_rpc_bridge::prepare_command(
                     static_cast<uint64_t>(candidate.m_cdvd_lba) +
                         candidate.m_cdvd_count > m_sectors->sector_count())
                 {
-                    return false;
+                    return refuse(e_rpc_rejection::invalid_arguments);
                 }
                 uint32_t destination = candidate.m_cdvd_destination;
                 if (candidate.m_cdvd_to_iop)
@@ -482,14 +538,14 @@ bool c_sif_rpc_bridge::prepare_command(
                         (destination & 0x1fffffffu) >
                             c_cpu::k_ram_size - bytes)
                     {
-                        return false;
+                        return refuse(e_rpc_rejection::invalid_arguments);
                     }
                 }
                 else if (!normalize_ee_ram(destination, &destination) ||
                          !m_ee_ram.contains(
                              destination, static_cast<size_t>(bytes)))
                 {
-                    return false;
+                    return refuse(e_rpc_rejection::invalid_arguments);
                 }
                 candidate.m_cdvd_destination = destination;
                 if (!m_sectors->read_sectors(
@@ -497,7 +553,7 @@ bool c_sif_rpc_bridge::prepare_command(
                         candidate.m_cdvd_bytes) ||
                     candidate.m_cdvd_bytes.size() != bytes)
                 {
-                    return false;
+                    return refuse(e_rpc_rejection::invalid_arguments);
                 }
             }
         }
@@ -510,7 +566,7 @@ bool c_sif_rpc_bridge::prepare_command(
             if (folder == nullptr || packet[9] <= offset ||
                 reply_size < 4u)
             {
-                return false;
+                return refuse(e_rpc_rejection::invalid_arguments);
             }
             std::string path;
             bool terminated = false;
@@ -526,13 +582,13 @@ bool c_sif_rpc_bridge::prepare_command(
                 if (ch < 0x20u || ch > 0x7eu ||
                     path.size() >= 255u)
                 {
-                    return false;
+                    return refuse(e_rpc_rejection::invalid_arguments);
                 }
                 path.push_back(static_cast<char>(ch));
             }
             if (!terminated || path.empty())
             {
-                return false;
+                return refuse(e_rpc_rejection::invalid_arguments);
             }
             const std::string qualified =
                 path.size() >= 7u &&
@@ -554,19 +610,23 @@ bool c_sif_rpc_bridge::prepare_command(
             // scheduling that operation is not available yet.
             if (method == 1u)
             {
-                return false;
+                return refuse(e_rpc_rejection::unavailable_backend);
             }
         }
         else if (reply_size < 4u)
         {
-            return false;
+            return refuse(e_rpc_rejection::invalid_arguments);
         }
     }
     else
     {
-        return false;
+        return refuse(e_rpc_rejection::unknown_server);
     }
     *request = std::move(candidate);
+    if (rejected_reason != nullptr)
+    {
+        *rejected_reason = e_rpc_rejection::none;
+    }
     return true;
 }
 
