@@ -49,12 +49,6 @@ struct s_ee_probe_instruction
 {
     uint32_t m_gpr_read_mask = 0u;
     uint32_t m_gpr_write_mask = 0u;
-    // Explicit full-128-bit operands. These must be subsets of the ordinary
-    // GPR masks: the existing whole-register scoreboard already enforces
-    // cross-class RAW/WAR/WAW, including scalar <-> packed aliases. Keeping
-    // separate coverage masks prevents silently treating MMI as low-64-only.
-    uint32_t m_gpr_128_read_mask = 0u;
-    uint32_t m_gpr_128_write_mask = 0u;
     e_ee_probe_pipe m_pipe = e_ee_probe_pipe::INTEGER;
     // Experimental scoreboard reservation, supplied by a validated caller.
     // A latency of one allows a dependent instruction in the next probe cycle.
@@ -101,6 +95,13 @@ struct s_ee_probe_instruction
     // unit requires an explicitly configured, nonzero interval.
     e_ee_probe_unit m_unit = e_ee_probe_unit::NONE;
     uint32_t m_initiation_interval = 0u;
+
+    // Explicit full-128-bit operands. These must be subsets of the ordinary
+    // GPR masks: the existing whole-register scoreboard already enforces
+    // cross-class RAW/WAR/WAW, including scalar <-> packed aliases. Keeping
+    // separate coverage masks prevents silently treating MMI as low-64-only.
+    uint32_t m_gpr_128_read_mask = 0u;
+    uint32_t m_gpr_128_write_mask = 0u;
 };
 
 // A conservative, deterministic two-wide issue *candidate* for evaluating
