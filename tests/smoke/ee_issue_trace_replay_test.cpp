@@ -387,6 +387,58 @@ int main()
           replay.last_event_candidate_cycle() == 8u,
           "MADD rd does not inherit fast generic scalar ALU timing");
 
+    // The legacy offline candidate accepts explicit result latency alone
+    // for compatibility; strict replay must reject an operation lacking
+    // its separately configured functional-unit initiation interval.
+    ee::s_ee_issue_replay_profile throughput_profile{
+        1u, 3u, 7u, 11u, 4u, 8u,
+        2u, 5u, 14u, 9u, 6u, 7u, 8u, 14u
+    };
+    throughput_profile.m_require_throughput = true;
+    replay.configure(throughput_profile);
+    check(replay.observe(record(1u, 0x5000u, mult, 0u, 1u)) ==
+          e_ee_issue_replay_status::UNMODELED_INSTRUCTION,
+          "strict throughput rejects MULT with an unavailable interval");
+
+    throughput_profile.m_mac_multiply_interval = 3u;
+    replay.configure(throughput_profile);
+    check(replay.observe(record(1u, 0x5000u, mult, 0u, 1u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.last_event_candidate_cycle() == 0u,
+          "strict throughput admits MULT only with explicit MAC interval");
+
+    replay.configure(throughput_profile);
+    check(replay.observe(record(1u, 0x5000u, sqrt_s, 0u, 1u)) ==
+          e_ee_issue_replay_status::UNMODELED_INSTRUCTION,
+          "strict throughput rejects SQRT.S without its initiation interval");
+
+    throughput_profile.m_cop1_sqrt_interval = 9u;
+    replay.configure(throughput_profile);
+    const uint32_t sqrt_s_fd6 = (sqrt_s & ~(0x1fu << 6u)) | (6u << 6u);
+    check(replay.observe(record(1u, 0x5000u, sqrt_s, 0u, 1u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(2u, 0x5004u, sqrt_s_fd6, 0u, 2u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.last_event_candidate_cycle() == 9u,
+          "COP1 SQRT.S initiation interval is independent of FPR result latency");
+
+    throughput_profile.m_cop1_rsqrt_interval = 13u;
+    replay.configure(throughput_profile);
+    check(replay.observe(record(1u, 0x5000u, sqrt_s, 0u, 1u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(2u, 0x5004u, rsqrt_s, 0u, 2u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.last_event_candidate_cycle() == 9u,
+          "SQRT.S and RSQRT.S conservatively share COP1 scalar unit");
+
+    replay.configure(throughput_profile);
+    check(replay.observe(record(1u, 0x5000u, 0x24080001u, 0u, 1u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(2u, 0x5004u, 0x24090001u, 2u, 2u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.candidate_cycles() == 1u,
+          "strict throughput still accepts classes without a special unit");
+
     std::printf("ee_issue_trace_replay_test: %d failure(s)\n", s_failures);
     return s_failures == 0 ? 0 : 1;
 }
