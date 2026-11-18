@@ -253,6 +253,73 @@ def main() -> int:
                 invalid, rejected.stdout, rejected.stderr
             )
 
+        # Packed MMI uses its own explicit result-latency option. The
+        # synthetic profile tests a dependency, not physical issue cycles.
+        def make_mmi(rs, rt, rd, sa, funct):
+            return ((0x1C << 26) | (rs << 21) | (rt << 16) |
+                    (rd << 11) | (sa << 6) | funct)
+
+        packed_trace = root / "mmi-full-128.csv"
+        packed_trace.write_text(
+            "attempt,pc,opcode_word,kind,reference_slot,hle_service\\n"
+            f"1,0x00001000,0x{make_mmi(8, 9, 10, 0, 8):08x},0,1,0\\n"
+            f"2,0x00001004,0x{make_mmi(10, 11, 12, 5, 8):08x},0,2,0\\n"
+            "# truncated=false range=0x00001000:0x00001004\\n",
+            encoding="utf-8",
+        )
+        unconfigured = subprocess.run(
+            [str(binary), str(packed_trace), "1", "3"],
+            text=True, capture_output=True, check=False,
+        )
+        assert unconfigured.returncode == 3, (
+            unconfigured.stdout, unconfigured.stderr
+        )
+        mmi_result = root / "mmi-full-128-results.csv"
+        candidate = subprocess.run(
+            [str(binary), str(packed_trace), "1", "3",
+             "--packed-mmi-latency=5",
+             f"--candidate-completions={mmi_result}"],
+            text=True, capture_output=True, check=False,
+        )
+        assert candidate.returncode == 0, (
+            candidate.stdout, candidate.stderr
+        )
+        with mmi_result.open("r", encoding="utf-8",
+                             newline="") as stream:
+            mmi_rows = list(csv.DictReader(stream))
+        assert [int(row["candidate_issue_cycle"]) for row in mmi_rows] == [
+            0, 5
+        ], mmi_rows
+        assert [int(row["candidate_completion_cycle"])
+                for row in mmi_rows] == [5, 10], mmi_rows
+
+        for invalid in ("--packed-mmi-latency=0",
+                        "--packed-mmi-latency=-1",
+                        "--packed-mmi-latency=abc"):
+            rejected = subprocess.run(
+                [str(binary), str(packed_trace), "1", "3", invalid],
+                text=True, capture_output=True, check=False,
+            )
+            assert rejected.returncode == 2, (
+                invalid, rejected.stdout, rejected.stderr
+            )
+
+        qfsrv_trace = root / "mmi-qfsrv.csv"
+        qfsrv_trace.write_text(
+            "attempt,pc,opcode_word,kind,reference_slot,hle_service\\n"
+            f"1,0x00001000,0x{make_mmi(8, 9, 10, 27, 0x28):08x},0,1,0\\n"
+            "# truncated=false range=0x00001000:0x00001000\\n",
+            encoding="utf-8",
+        )
+        qfsrv = subprocess.run(
+            [str(binary), str(qfsrv_trace), "1", "3",
+             "--packed-mmi-latency=5"],
+            text=True, capture_output=True, check=False,
+        )
+        assert qfsrv.returncode == 3, (
+            qfsrv.stdout, qfsrv.stderr
+        )
+
         # The replay must refuse HLE transitions and a partial trace,
         # without producing a deceptively complete candidate CSV.
         original = fixture.read_text(encoding="utf-8")
