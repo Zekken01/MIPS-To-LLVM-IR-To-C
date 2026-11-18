@@ -605,7 +605,106 @@ int main()
           replay.last_event_candidate_cycle() == 1u,
           "VI00 register does not create a macro cross-bank hazard");
 
-    // Known valid system / VU0 macro / packed MMI instructions still
+    // Packed MMI accesses full 128-bit GPR values. Replaying any of
+    // these decoded operations requires an independent, explicit profile.
+    // Numeric test latencies below are synthetic, never a game clock.
+    const auto mmi = [](uint32_t rs, uint32_t rt, uint32_t rd,
+                        uint32_t sa, uint32_t funct) -> uint32_t
+    {
+        return (0x1cu << 26u) | (rs << 21u) | (rt << 16u) |
+               (rd << 11u) | (sa << 6u) | funct;
+    };
+    const uint32_t mmi_paddw = mmi(8u, 9u, 10u, 0u, 0x08u);
+    const uint32_t mmi_psubh = mmi(10u, 11u, 12u, 5u, 0x08u);
+    const uint32_t mmi_pabsw = mmi(0u, 10u, 13u, 1u, 0x28u);
+    const uint32_t mmi_pextuw = mmi(10u, 11u, 14u, 18u, 0x28u);
+    const uint32_t mmi_pcpyld = mmi(10u, 11u, 15u, 14u, 0x09u);
+    const uint32_t mmi_pcpyud = mmi(10u, 11u, 16u, 14u, 0x29u);
+    const uint32_t mmi_pcpyh = mmi(0u, 10u, 17u, 27u, 0x29u);
+    const uint32_t mmi_qfsrv = mmi(10u, 11u, 18u, 27u, 0x28u);
+    const uint32_t mmi_unsupported = mmi(8u, 9u, 10u, 2u, 0x08u);
+    ee::s_ee_issue_replay_profile packed_profile{1u, 3u};
+
+    replay.configure(packed_profile);
+    check(replay.observe(record(1u, 0x7100u, mmi_paddw, 0u, 1u)) ==
+          e_ee_issue_replay_status::UNMODELED_INSTRUCTION &&
+          !replay.usable_prefix(),
+          "packed MMI cannot use an implicit scalar integer latency");
+
+    packed_profile.m_packed_mmi_latency = 5u;
+    replay.configure(packed_profile);
+    check(replay.observe(record(1u, 0x7100u, mmi_paddw, 0u, 1u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(2u, 0x7104u, mmi_psubh, 0u, 2u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.last_event_candidate_cycle() == 5u &&
+          replay.last_candidate_completion_cycle() == 10u,
+          "PADDW full-register producer feeds PSUBH on all packed lanes");
+
+    replay.configure(packed_profile);
+    const uint32_t addiu_from_packed =
+        (0x09u << 26u) | (10u << 21u) | (19u << 16u) | 1u;
+    check(replay.observe(record(1u, 0x7100u, mmi_paddw, 0u, 1u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(2u, 0x7104u, addiu_from_packed, 0u, 2u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.last_event_candidate_cycle() == 5u,
+          "scalar GPR reader respects packed full-128 producer");
+
+    replay.configure(packed_profile);
+    check(replay.observe(record(1u, 0x7100u, mmi_paddw, 0u, 1u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(2u, 0x7104u, mmi_paddw, 0u, 2u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.last_event_candidate_cycle() == 5u,
+          "packed same-destination WAW respects caller result deadline");
+
+    replay.configure(packed_profile);
+    const uint32_t packed_families[] = {
+        mmi_pabsw, mmi_pextuw, mmi_pcpyld, mmi_pcpyud, mmi_pcpyh
+    };
+    bool family_covered = true;
+    for (const uint32_t opcode : packed_families)
+    {
+        replay.configure(packed_profile);
+        family_covered &= replay.observe(
+            record(1u, 0x7100u, opcode, 0u, 1u)) ==
+            e_ee_issue_replay_status::ISSUED;
+    }
+    check(family_covered,
+          "decoder-verified MMI0/1/2/3 subset uses explicit packed profile");
+
+    replay.configure(packed_profile);
+    const uint32_t mmi_zero_dest = mmi(8u, 9u, 0u, 0u, 0x08u);
+    check(replay.observe(record(1u, 0x7100u, mmi_zero_dest, 0u, 1u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(2u, 0x7104u,
+              (0x09u << 26u) | (0u << 21u) | (19u << 16u) | 1u,
+              0u, 2u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.last_event_candidate_cycle() == 1u,
+          "packed GPR0 destination does not create artificial zero hazards");
+
+    packed_profile.m_allow_ordered_waw_overlap = true;
+    replay.configure(packed_profile);
+    check(replay.observe(record(1u, 0x7100u, mmi_paddw, 0u, 1u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(2u, 0x7104u, mmi_paddw, 0u, 2u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.last_event_candidate_cycle() == 1u,
+          "explicit candidate ordered-overlap remains opt-in for packed WAW");
+    packed_profile.m_allow_ordered_waw_overlap = false;
+
+    replay.configure(packed_profile);
+    check(replay.observe(record(1u, 0x7100u, mmi_qfsrv, 0u, 1u)) ==
+          e_ee_issue_replay_status::UNMODELED_INSTRUCTION,
+          "QFSRV requires independently modeled SA register hazards");
+    replay.configure(packed_profile);
+    check(replay.observe(record(1u, 0x7100u, mmi_unsupported, 0u, 1u)) ==
+          e_ee_issue_replay_status::UNMODELED_INSTRUCTION,
+          "unknown packed sub-op does not gain fabricated timing");
+
+    // Known valid system / VU0 macro / unprofiled MMI instructions still
     // require a separate evidence-backed timing class. This extension
     // must not turn them into automatically timed scalar operations.
     const uint32_t eret = 0x42000018u;
