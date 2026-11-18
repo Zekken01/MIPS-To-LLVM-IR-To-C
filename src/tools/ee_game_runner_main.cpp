@@ -2439,19 +2439,22 @@ int main(int argc, char** argv)
         {
             const int32_t signed_service =
                 static_cast<int32_t>(cpu.m_gpr[3].m_lo);
-            // The EE kernel exposes interrupt-context SIF variants with
-            // negative syscall numbers. Only map the genuine DMA/SIF
-            // services when invoked from a registered guest DMAC callback;
-            // keep unknown negative syscalls unsupported.
+            // ps2-web-recomp's kernel maps negative EE syscall numbers
+            // to their interrupt-safe variants. In our HLE-first runner,
+            // allow only explicitly modeled variants while a registered
+            // guest INTC/DMAC callback owns the kernel interrupt context.
+            // Never turn an unknown negative service into a successful HLE.
             const bool interrupt_sif_service = irq_callback_active &&
                 (signed_service == -0x76 || signed_service == -0x77 ||
                  signed_service == -0x78);
-            // Genuine EE DMA5 SIFCMD handlers signal semaphores via the
-            // kernel's negative interrupt-context iSignalSema number.
+            // Genuine guest interrupt handlers signal semaphores through
+            // iSignalSema; SDBZ's VBlank callback also calls iFlushCache.
             const bool interrupt_semaphore_service = irq_callback_active &&
                 signed_service == -0x43;
+            const bool interrupt_cache_service = irq_callback_active &&
+                signed_service == -0x68;
             const bool interrupt_safe_service = interrupt_sif_service ||
-                interrupt_semaphore_service;
+                interrupt_semaphore_service || interrupt_cache_service;
             const uint32_t service = interrupt_safe_service
                 ? static_cast<uint32_t>(-signed_service)
                 : static_cast<uint32_t>(signed_service);
