@@ -341,16 +341,16 @@ int main()
         return fail("64-byte CDVD Init BIND did not reply through SIF0");
     }
 
-    // CDVDFSV's other services have not been implemented. A valid
+    // An unregistered CDVDFSV server remains unsupported. A valid
     // identity alone must not synthesize another server or interrupt.
     dmac.acknowledge(5u);
     dmac.acknowledge(6u);
-    memory.write32(bind_source + 32u, 0x80000593u);
+    memory.write32(bind_source + 32u, 0x80000594u);
     iop::s_sif1_dma_diagnostic cdvd_rejection{};
     if (sif1.set_dma(list, 1u, &dma_id, &cdvd_rejection) ||
         cdvd_rejection.m_failure !=
             iop::e_sif1_dma_failure::unsupported_rpc_packet ||
-        cdvd_rejection.m_rpc_server != 0x80000593u ||
+        cdvd_rejection.m_rpc_server != 0x80000594u ||
         cdvd_rejection.m_rpc_client != 0x005688a8u ||
         memory.read32(ee_receive + 36u) !=
             (iop::c_sif_rpc_bridge::k_cdvd_init_server ^
