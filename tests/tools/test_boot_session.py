@@ -19,7 +19,7 @@ SPEC.loader.exec_module(SESSION)
 
 
 def run_case(passes, initial_reuse=False, diagnostics=False,
-             initial_function_count=None):
+             initial_function_count=None, expansion_per_pass=2):
     with tempfile.TemporaryDirectory(prefix="ee-boot-session-") as temp:
         work = Path(temp) / "work"
         report = work / "first-boot.json"
@@ -74,7 +74,8 @@ def run_case(passes, initial_reuse=False, diagnostics=False,
 
         argv = [
             str(elf), "--work-dir", str(work), "--report", str(report),
-            "--expansion-passes=2", "--expansion-per-pass=2",
+            "--expansion-passes=2",
+            f"--expansion-per-pass={expansion_per_pass}",
             "--driver", str(ROOT / "tools" / "run_game.py"),
             "--hle-startup", "--kseg-ram", "--max-dispatches=1000",
         ]
@@ -137,7 +138,7 @@ def main():
          "exit_reason": 1, "message": "REAL BLOCKER"},
         {"trace": True, "replay": 0, "exit_reason": 1,
          "message": "FINAL TRACE"},
-    ])
+    ], expansion_per_pass=128)
     assert code == 3 and len(calls) == 3
     assert "new_functions=128" in expansion
     assert "new_functions=9" in expansion
@@ -150,7 +151,8 @@ def main():
         {"trace": False, "replay": 1, "function_count": 258,
          "exit_reason": 1},
         {"trace": True, "replay": 0, "exit_reason": 1},
-    ], initial_reuse=True, initial_function_count=129)
+    ], initial_reuse=True, initial_function_count=129,
+       expansion_per_pass=128)
     assert len(calls) == 3 and "new_functions=128" in expansion
 
     # Never retry unless the actual number of added functions hit cap.
@@ -158,7 +160,7 @@ def main():
         {"trace": False, "replay": 76, "initial_link": 1,
          "function_count": 100},
         {"trace": True, "replay": 0},
-    ])
+    ], expansion_per_pass=128)
     assert len(calls) == 2 and "new_functions=99" in expansion
 
     # The SDBZ launcher forwards its diagnostic addresses through this
