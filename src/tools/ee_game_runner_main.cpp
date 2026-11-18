@@ -511,6 +511,7 @@ bool write_report(
         ",\n  \"ee_cycles\": %llu"
         ",\n  \"reference_instruction_slots\": %llu"
         ",\n  \"hle_timing_boundaries\": %llu"
+        ",\n  \"timing_observer_failed\": %s"
         ",\n  \"scheduler_yields\": %llu"
         ",\n  \"next_gs_field_cycle\": %llu"
         ",\n  \"gs_fields_started\": %llu"
@@ -522,6 +523,7 @@ bool write_report(
         static_cast<unsigned long long>(runtime.m_ee_cycle_scheduler.current_cycle()),
         static_cast<unsigned long long>(runtime.m_reference_instruction_slots),
         static_cast<unsigned long long>(runtime.m_hle_timing_boundaries),
+        runtime.m_timing_observer_failed != 0u ? "true" : "false",
         static_cast<unsigned long long>(runtime.m_ee_cycle_scheduler.scheduler_yields()),
         static_cast<unsigned long long>(hardware.scanout().next_field_cycle()),
         static_cast<unsigned long long>(hardware.scanout().fields_started()),
@@ -2005,6 +2007,13 @@ int main(int argc, char** argv)
         // with LOOP_BUDGET if this count is exhausted.
         runtime.m_loop_safepoint_remaining = runtime.m_loop_safepoint_limit;
         reason = native_run(&cpu, &runtime, slice, &count, &out_pc, &status);
+        if (runtime.m_timing_observer_failed != 0u)
+        {
+            std::fprintf(stderr,
+                "EE timing observation producer rejected native instruction "
+                "(no hardware event published)\n");
+            return 1;
+        }
         if (report_path != nullptr)
         {
             const double duration_ms = std::chrono::duration<double, std::milli>(
@@ -4728,6 +4737,8 @@ int main(int argc, char** argv)
         "(latencies not calibrated; no EE time charged)\n",
         static_cast<unsigned long long>(runtime.m_hle_timing_boundaries)
     );
+    std::printf("EE timing observer: %s (stock runner does not install one)\n",
+                runtime.m_timing_observer_failed ? "rejected" : "not validated");
     std::printf(
         "EE stopped: dispatched=%llu pc=0x%08x reason=%s(%u) status=%u\n",
         static_cast<unsigned long long>(dispatched), cpu.m_pc,

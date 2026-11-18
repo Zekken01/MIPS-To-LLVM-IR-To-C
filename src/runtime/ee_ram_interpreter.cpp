@@ -375,6 +375,10 @@ s_ee_ram_execution ee_execute_ram_callback(
                     runtime->m_instruction_trace_overflow = 1u;
                 }
             }
+            ee_observe_timing_event(
+                *runtime, pc, instruction, 2u, 0u,
+                runtime->m_guest_instruction_attempts,
+                runtime->m_reference_instruction_slots);
         }
         if (delay_slot)
         {

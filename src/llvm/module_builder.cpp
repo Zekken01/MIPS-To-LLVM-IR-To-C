@@ -156,6 +156,39 @@ void module_builder::declare_memory_helpers()
     m_out += "  ret void\n";
     m_out += "}\n\n";
 
+    // Optional native issue-timing observation, with no host symbol
+    // dependency. The callback is explicitly installed by the host and
+    // may reject an event; a rejection is latched, never converted into
+    // guessed cycles or a guest-visible interrupt.
+    m_out += "define internal void @ee_observe_timing_event(ptr %rt, i32 %pc, i32 %opcode, i32 %kind, i64 %attempt, i64 %reference_slot) {\n";
+    m_out += "entry:\n";
+    m_out += "  %null = icmp eq ptr %rt, null\n";
+    m_out += "  br i1 %null, label %done, label %check\n";
+    m_out += "check:\n";
+    m_out += "  %failed_ptr = getelementptr i8, ptr %rt, i64 " +
+             std::to_string(offsetof(ee::s_ee_runtime, m_timing_observer_failed)) + "\n";
+    m_out += "  %failed = load i32, ptr %failed_ptr\n";
+    m_out += "  %already_failed = icmp ne i32 %failed, 0\n";
+    m_out += "  br i1 %already_failed, label %done, label %check_callback\n";
+    m_out += "check_callback:\n";
+    m_out += "  %cb_ptr = getelementptr i8, ptr %rt, i64 " +
+             std::to_string(offsetof(ee::s_ee_runtime, m_timing_observer)) + "\n";
+    m_out += "  %callback = load ptr, ptr %cb_ptr\n";
+    m_out += "  %enabled = icmp ne ptr %callback, null\n";
+    m_out += "  br i1 %enabled, label %invoke, label %done\n";
+    m_out += "invoke:\n";
+    m_out += "  %user_ptr = getelementptr i8, ptr %rt, i64 " +
+             std::to_string(offsetof(ee::s_ee_runtime, m_timing_observer_user)) + "\n";
+    m_out += "  %user = load ptr, ptr %user_ptr\n";
+    m_out += "  %ok = call i1 %callback(ptr %user, i32 %pc, i32 %opcode, i32 %kind, i32 0, i64 %attempt, i64 %reference_slot)\n";
+    m_out += "  br i1 %ok, label %done, label %reject\n";
+    m_out += "reject:\n";
+    m_out += "  store i32 1, ptr %failed_ptr\n";
+    m_out += "  br label %done\n";
+    m_out += "done:\n";
+    m_out += "  ret void\n";
+    m_out += "}\n\n";
+
     // Private helper avoids unresolved external symbols in MCJIT fixtures.
     // Count executed VALID guest instructions, not host dispatches/loops.
     // This is NOT an EE cycle counter and must not drive GS scanout.
@@ -179,6 +212,7 @@ void module_builder::declare_memory_helpers()
     m_out += "  %ref_old = load i64, ptr %ref_counter_ptr\n";
     m_out += "  %ref_new = add i64 %ref_old, 1\n";
     m_out += "  store i64 %ref_new, ptr %ref_counter_ptr\n";
+    m_out += "  call void @ee_observe_timing_event(ptr %rt, i32 %pc, i32 %opcode, i32 0, i64 %new_count, i64 %ref_new)\n";
     m_out += "  call void @ee_trace_instruction_observation(ptr %rt, i32 %pc, i32 %opcode, i32 0, i64 %new_count, i64 %ref_new)\n";
     m_out += "  br label %done\n";
     m_out += "done:\n";
@@ -203,6 +237,7 @@ void module_builder::declare_memory_helpers()
     m_out += "  %attempt_ptr = getelementptr i8, ptr %rt, i64 " +
              std::to_string(offsetof(ee::s_ee_runtime, m_guest_instruction_attempts)) + "\n";
     m_out += "  %attempt = load i64, ptr %attempt_ptr\n";
+    m_out += "  call void @ee_observe_timing_event(ptr %rt, i32 %pc, i32 %opcode, i32 1, i64 %attempt, i64 %new)\n";
     m_out += "  call void @ee_trace_instruction_observation(ptr %rt, i32 %pc, i32 %opcode, i32 1, i64 %attempt, i64 %new)\n";
     m_out += "  br label %done\n";
     m_out += "done:\n";

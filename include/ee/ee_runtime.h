@@ -224,6 +224,14 @@ struct s_ee_instruction_trace_entry
     uint32_t m_hle_service = 0u;
 };
 
+// Pure observation only. Implementations may compare externally validated
+// reference issue timestamps, but cannot enable hardware time themselves.
+// Returning false latches a host-side failure, never a guest exception.
+using t_ee_timing_observer = bool (*)(
+    void* user, uint32_t pc, uint32_t opcode, uint32_t kind,
+    uint32_t service, uint64_t attempt, uint64_t reference_slot
+);
+
 struct s_ee_runtime
 {
     // Opaque EE memory/runtime context; retained as the first ABI member.
@@ -302,7 +310,33 @@ struct s_ee_runtime
     // Number of recognized host EE HLE transitions, not issue cycles.
     // Appended after all existing translated ABI fields.
     uint64_t m_hle_timing_boundaries = 0u;
+
+    // Optional host timing-observation sink. The stock runner installs
+    // neither a sink nor a validated EE cycle source. New fields append
+    // after the existing native runtime ABI prefix.
+    void* m_timing_observer_user = nullptr;
+    t_ee_timing_observer m_timing_observer = nullptr;
+    uint32_t m_timing_observer_failed = 0u;
 };
+
+// Never infer cycles from these observations or implicitly install
+// c_ee_cycle_scheduler. A rejected event is latched for the host to detect
+// at the next architectural safepoint.
+inline void ee_observe_timing_event(
+    s_ee_runtime& runtime, uint32_t pc, uint32_t opcode,
+    uint32_t kind, uint32_t service,
+    uint64_t attempt, uint64_t reference_slot)
+{
+    if (runtime.m_timing_observer != nullptr &&
+        runtime.m_timing_observer_failed == 0u &&
+        !runtime.m_timing_observer(
+            runtime.m_timing_observer_user,
+            pc, opcode, kind, service, attempt, reference_slot))
+    {
+        runtime.m_timing_observer_failed = 1u;
+    }
+}
+
 
 // Record host HLE handoff without guessing a latency or advancing any
 // guest instruction/slot counter. The trace is optional and bounded.
@@ -336,6 +370,10 @@ inline void ee_record_hle_timing_boundary(
             runtime.m_instruction_trace_overflow = 1u;
         }
     }
+    ee_observe_timing_event(
+        runtime, pc, opcode, 3u, service,
+        runtime.m_guest_instruction_attempts,
+        runtime.m_reference_instruction_slots);
 }
 
 

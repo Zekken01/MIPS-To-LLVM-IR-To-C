@@ -204,6 +204,46 @@ int main()
           !replay.usable_prefix(),
           "unknown HLE cost cannot produce a continuous candidate clock");
 
+    // A bound host observer receives explicit observations, including HLE
+    // service identity. Rejection must latch without creating EE cycles.
+    struct s_observer_sample
+    {
+        uint32_t m_kind = 0u;
+        uint32_t m_service = 0u;
+        uint64_t m_attempt = 0u;
+        uint64_t m_slot = 0u;
+        uint32_t m_calls = 0u;
+    } observer_sample;
+    const auto observer = [](void* user, uint32_t, uint32_t,
+                             uint32_t kind, uint32_t service,
+                             uint64_t attempt, uint64_t slot) -> bool
+    {
+        auto& sample = *static_cast<s_observer_sample*>(user);
+        sample.m_kind = kind;
+        sample.m_service = service;
+        sample.m_attempt = attempt;
+        sample.m_slot = slot;
+        ++sample.m_calls;
+        return false; // Reject: external timing has not been validated.
+    };
+    ee::s_ee_runtime callback_runtime{};
+    callback_runtime.m_timing_observer_user = &observer_sample;
+    callback_runtime.m_timing_observer = observer;
+    ee::ee_record_hle_timing_boundary(
+        callback_runtime, 0x2000u, 0x0000000cu, 0x76u);
+    check(callback_runtime.m_timing_observer_failed == 1u &&
+          observer_sample.m_kind == 3u &&
+          observer_sample.m_service == 0x76u &&
+          observer_sample.m_calls == 1u &&
+          callback_runtime.m_ee_cycle_scheduler.source() ==
+              ee::e_ee_cycle_source::UNAVAILABLE,
+          "rejected host HLE observation cannot install an EE cycle source");
+    ee::ee_record_hle_timing_boundary(
+        callback_runtime, 0x2004u, 0x0000000cu, 0x77u);
+    check(observer_sample.m_calls == 1u &&
+          callback_runtime.m_hle_timing_boundaries == 2u,
+          "timing observation rejection is latched; execution diagnostics continue");
+
     std::printf("ee_issue_trace_replay_test: %d failure(s)\n", s_failures);
     return s_failures == 0 ? 0 : 1;
 }
