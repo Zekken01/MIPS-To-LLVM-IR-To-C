@@ -491,6 +491,102 @@ int main()
           replay.failure_pc() == 0x6004u,
           "shorter FCR31 producer cannot overtake older result in ordered mode");
 
+    // COP0 and VU0 transfers have distinct architectural resources
+    // but no implicit timing values. The observed guest decoder remains
+    // the authority on valid instruction encodings.
+    const uint32_t mtc0_status = (0x10u << 26u) | (4u << 21u) |
+                                 (8u << 16u) | (12u << 11u);
+    const uint32_t mfc0_status = (0x10u << 26u) |
+                                 (9u << 16u) | (12u << 11u);
+    const uint32_t mfc0_cause = (0x10u << 26u) |
+                                (9u << 16u) | (13u << 11u);
+    const uint32_t qmtc2_vf4 = (0x12u << 26u) | (5u << 21u) |
+                               (8u << 16u) | (4u << 11u);
+    const uint32_t qmfc2_vf4 = (0x12u << 26u) | (1u << 21u) |
+                               (9u << 16u) | (4u << 11u);
+    const uint32_t ctc2_vi4 = (0x12u << 26u) | (6u << 21u) |
+                              (8u << 16u) | (4u << 11u);
+    const uint32_t cfc2_vi4 = (0x12u << 26u) | (2u << 21u) |
+                              (9u << 16u) | (4u << 11u);
+    ee::s_ee_issue_replay_profile transfer_profile{1u, 3u};
+
+    replay.configure(transfer_profile);
+    check(replay.observe(record(1u, 0x7000u, mtc0_status, 0u, 1u)) ==
+          e_ee_issue_replay_status::UNMODELED_INSTRUCTION,
+          "COP0 transfers require an explicitly configured latency");
+
+    transfer_profile.m_cop0_transfer_latency = 6u;
+    replay.configure(transfer_profile);
+    check(replay.observe(record(1u, 0x7000u, mtc0_status, 0u, 1u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(2u, 0x7004u, mfc0_status, 0u, 2u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.last_event_candidate_cycle() == 6u &&
+          replay.last_candidate_completion_cycle() == 12u,
+          "MTC0/MFC0 share CP0 status dependencies and explicit latency");
+
+    replay.configure(transfer_profile);
+    check(replay.observe(record(1u, 0x7000u, mtc0_status, 0u, 1u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(2u, 0x7004u, mfc0_cause, 0u, 2u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.last_event_candidate_cycle() == 1u,
+          "different COP0 registers do not inherit status RAW stalls");
+
+    replay.configure(transfer_profile);
+    check(replay.observe(record(1u, 0x7000u, qmtc2_vf4, 0u, 1u)) ==
+          e_ee_issue_replay_status::UNMODELED_INSTRUCTION,
+          "VU0 VF transfer cannot borrow COP0 or integer latency");
+
+    transfer_profile.m_vu0_vf_transfer_latency = 5u;
+    transfer_profile.m_vu0_vi_transfer_latency = 7u;
+    replay.configure(transfer_profile);
+    check(replay.observe(record(1u, 0x7000u, qmtc2_vf4, 0u, 1u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(2u, 0x7004u, qmfc2_vf4, 0u, 2u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.last_event_candidate_cycle() == 5u &&
+          replay.last_candidate_completion_cycle() == 10u,
+          "QMTC2/QMFC2 preserve the VF4 register dependency");
+
+    replay.configure(transfer_profile);
+    check(replay.observe(record(1u, 0x7000u, ctc2_vi4, 0u, 1u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(2u, 0x7004u, cfc2_vi4, 0u, 2u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.last_event_candidate_cycle() == 7u,
+          "CTC2/CFC2 preserve independent VI4 register dependencies");
+
+    replay.configure(transfer_profile);
+    check(replay.observe(record(1u, 0x7000u, qmtc2_vf4, 0u, 1u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(2u, 0x7004u, cfc2_vi4, 0u, 2u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.last_event_candidate_cycle() == 1u,
+          "VU0 VF writes do not stall reads from unrelated VI registers");
+
+    // Known valid system / VU0 macro / packed MMI instructions still
+    // require a separate evidence-backed timing class. This extension
+    // must not turn them into automatically timed scalar operations.
+    const uint32_t eret = 0x42000018u;
+    const uint32_t ei = 0x42000038u;
+    const uint32_t bc2t = (0x12u << 26u) | (8u << 21u) |
+                          (1u << 16u) | 1u;
+    const uint32_t vmaddw = (0x12u << 26u) | (0x10u << 21u) | 0x0bu;
+    const uint32_t paddw = (0x1cu << 26u) | (4u << 21u) |
+                           (5u << 16u) | (6u << 11u) | 0x08u;
+    const uint32_t cache_op = (0x2fu << 26u) | (8u << 21u);
+    for (const uint32_t opcode : {
+             eret, ei, bc2t, vmaddw, paddw, cache_op
+         })
+    {
+        replay.configure(transfer_profile);
+        check(replay.observe(record(1u, 0x7000u, opcode, 0u, 1u)) ==
+              e_ee_issue_replay_status::UNMODELED_INSTRUCTION &&
+              !replay.usable_prefix(),
+              "system transition, VU0 macro, packed MMI and cache fail closed");
+    }
+
     std::printf("ee_issue_trace_replay_test: %d failure(s)\n", s_failures);
     return s_failures == 0 ? 0 : 1;
 }
