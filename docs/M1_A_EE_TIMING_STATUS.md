@@ -201,3 +201,26 @@ hardware-accurate EE timing or completion of M1-A calibration. A new matched
 real-game boot is needed to check whether SDBZ passes `0x00175210` and
 which actual next system blocker appears. Offline issue-timing tooling remains
 available for later accuracy work without blocking HLE-first boot progress.
+
+
+### Matched 23:24 boot — first reference-compatible field and INTC HLE handoff
+
+Matched USA diagnostic batch `20261118-232435` confirms the reference
+compatibility clock delivered the first GS field: `ee_cycles=9001660`
+(approximate), `gs_fields_started=1`, `gs_csr=0x2008`,
+`INTC_STAT=4`, and `INTC_MASK=0x804`. The guest registered a VBlank
+INTC handler at `0x00104b30`, cause 2, then took genuine exception code 0
+at vector `0x80000180` with `EPC=0x00175210`. The missing capability
+is HLE-first INTC interrupt dispatch, not missing VBlank timing.
+
+The existing registered guest IRQ callback owner now dispatches both DMAC
+and INTC: it acknowledges only a genuinely masked pending INTC bit through
+the hardware W1C register, runs ordered registered guest handlers on the
+existing kernel callback stack, stops on negative handler return, restores
+full interrupted EE/VU0 context, clears EXL and retries EPC (not EPC+4).
+The bridge excludes branch-delay interrupts and all other exceptions,
+which remain unsupported. No synthetic timer, VBlank or handler result.
+A focused regression checks real scanout->COP0 IP2 exception, INTC W1C
+acknowledgement and ERET resume. A subsequent matched real-game run must
+verify actual guest INTC callback execution and progression beyond the
+previous exception at `0x80000180`.

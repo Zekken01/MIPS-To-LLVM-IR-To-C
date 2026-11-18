@@ -1,4 +1,5 @@
 #include "ee_cycle_scheduler.h"
+#include "ee_exceptions.h"
 #include "ee_runtime.h"
 #include "ee_hw_bus.h"
 #include "ee_vsync_flags.h"
@@ -130,6 +131,28 @@ int main()
           compatibility_memory.read32(0x100u) == 1u &&
           !timeline.publish_cycle(4920114ull),
           "compatibility deadline delivers CSR/INTC/VSync and rejects regressions");
+
+    // The first compatibility VBlank must enter a genuine EE IRQ and
+    // remain pending until INTC_STAT is acknowledged. Restore EPC exactly,
+    // since the interrupted load has not yet executed.
+    compatibility_cpu.m_cop0[12] = 0x70010c01u;
+    compatibility_cpu.m_pc = 0x00175210u;
+    check(ee::ee_check_interrupts(
+              &compatibility_cpu, &runtime, compatibility_cpu.m_pc, 0u) ==
+              ee::VEC_COMMON_BEV0 &&
+          compatibility_cpu.m_cop0[14] == 0x00175210u &&
+          (compatibility_cpu.m_cop0[12] & ee::STATUS_EXL) != 0u &&
+          (compatibility_cpu.m_cop0[13] & 0x00000400u) != 0u,
+          "compatibility field creates genuine EE IP2 exception at EPC");
+    const ee::s_ee_u128 intc_ack{4u, 0u};
+    check(ee::c_ee_intc::mmio_write(
+              &compatibility_hardware.intc(),
+              ee::c_ee_intc::k_stat_address, 4u, &intc_ack) &&
+          compatibility_hardware.intc().pending() == 0u &&
+          (compatibility_cpu.m_cop0[13] & 0x00000400u) == 0u &&
+          ee::ee_exception_return(&compatibility_cpu) == 0x00175210u &&
+          (compatibility_cpu.m_cop0[12] & ee::STATUS_EXL) == 0u,
+          "real INTC acknowledgement and ERET resume interrupted instruction");
 
     std::printf("ee_cycle_scheduler_test: %d failure(s)\n", g_failures);
     return g_failures == 0 ? 0 : 1;

@@ -1696,21 +1696,22 @@ int main(int argc, char** argv)
     uint32_t callback_resume_pc = 0u;
     ee::s_ee_u128 callback_saved_ra{};
 
-    // The HLE EE kernel dispatches *registered guest* DMAC callbacks at
-    // native safepoints. DMA5's pending level originates only from the
-    // hardware-backed IOP DMA9 -> FIFO -> EE DMA5 transport; the host
-    // does not fabricate any completion, response or guest memory flag.
-    bool dmac_callback_active = false;
-    uint32_t dmac_callback_channel = 0u;
-    size_t dmac_callback_index = 0u;
-    std::vector<s_kernel_interrupt_handler> dmac_callback_handlers;
-    ee::s_ee_cpu_state dmac_interrupted_cpu{};
-    ee::s_ee_vu0_state dmac_interrupted_vu0{};
-    constexpr uint32_t k_dmac_kernel_stack = 0x8007fff0u;
-    const auto enter_dmac_callback = [&](const s_kernel_interrupt_handler& handler)
+    // HLE EE kernel dispatches registered guest INTC/DMAC callbacks at
+    // native safepoints. DMA5 pending comes from real IOP DMA transport;
+    // INTC pending comes from masked hardware status, including scanout.
+    // Neither path fabricates callbacks, completion or guest flags.
+    bool irq_callback_active = false;
+    bool irq_callback_is_intc = false;
+    uint32_t irq_callback_cause = 0u;
+    size_t irq_callback_index = 0u;
+    std::vector<s_kernel_interrupt_handler> irq_callback_handlers;
+    ee::s_ee_cpu_state irq_interrupted_cpu{};
+    ee::s_ee_vu0_state irq_interrupted_vu0{};
+    constexpr uint32_t k_irq_kernel_stack = 0x8007fff0u;
+    const auto enter_irq_callback = [&](const s_kernel_interrupt_handler& handler)
     {
-        cpu.m_cop0[12] = (dmac_interrupted_cpu.m_cop0[12] & ~0x10001u) | 2u;
-        cpu.m_gpr[4] = {dmac_callback_channel, 0u};
+        cpu.m_cop0[12] = (irq_interrupted_cpu.m_cop0[12] & ~0x10001u) | 2u;
+        cpu.m_gpr[4] = {irq_callback_cause, 0u};
         cpu.m_gpr[5] = {handler.m_arg, 0u};
         cpu.m_gpr[6] = {0u, 0u};
         cpu.m_gpr[7] = {0u, 0u};
@@ -1720,7 +1721,7 @@ int main(int argc, char** argv)
         }
         cpu.m_gpr[29] = {
             static_cast<uint64_t>(static_cast<int64_t>(
-                static_cast<int32_t>(k_dmac_kernel_stack))), 0u
+                static_cast<int32_t>(k_irq_kernel_stack))), 0u
         };
         cpu.m_gpr[31] = {static_cast<uint64_t>(-16ll), 0u};
         cpu.m_pc = handler.m_address;
@@ -1728,9 +1729,10 @@ int main(int argc, char** argv)
             ee::e_ee_exit_reason::EE_EXIT_DISPATCH);
         if (trace)
         {
-            std::printf("HLE DMAC callback enter: channel=%u "
+            std::printf("HLE %s callback enter: cause=%u "
                         "handler=0x%08x arg=0x%08x gp=0x%08x\n",
-                        dmac_callback_channel, handler.m_address,
+                        irq_callback_is_intc ? "INTC" : "DMAC",
+                        irq_callback_cause, handler.m_address,
                         handler.m_arg, handler.m_gp);
         }
     };
@@ -1817,7 +1819,7 @@ int main(int argc, char** argv)
         // Its syscall exception keeps EXL set, but the kernel must still
         // enter the registered DMA callback that supplies iSignalSema.
         const bool external_iop_wait = iop_semaphore_wait_turns != 0u;
-        if (hle_startup && !dmac_callback_active && !callback_active &&
+        if (hle_startup && !irq_callback_active && !callback_active &&
             (ee::ee_interrupts_enabled(&cpu) || external_iop_wait) &&
             hardware.dmac().pending() != 0u)
         {
@@ -1834,25 +1836,25 @@ int main(int argc, char** argv)
                 status = 0u;
                 break;
             }
-            dmac_callback_handlers.clear();
+            irq_callback_handlers.clear();
             for (const s_kernel_interrupt_handler& handler : dmac_handlers)
             {
                 if (handler.m_cause == channel)
                 {
-                    dmac_callback_handlers.push_back(handler);
+                    irq_callback_handlers.push_back(handler);
                 }
             }
             if (trace)
             {
                 std::printf("HLE DMAC IRQ: channel=%u pending=0x%08x "
                             "handlers=%zu\n", channel, pending,
-                            dmac_callback_handlers.size());
+                            irq_callback_handlers.size());
             }
-            if (dmac_callback_handlers.empty())
+            if (irq_callback_handlers.empty())
             {
                 continue;
             }
-            if (!memory->contains(k_dmac_kernel_stack - 0x1000u, 0x1000u))
+            if (!memory->contains(k_irq_kernel_stack - 0x1000u, 0x1000u))
             {
                 std::fprintf(stderr,
                     "HLE DMAC callback refused unmapped kernel stack\n");
@@ -1861,12 +1863,13 @@ int main(int argc, char** argv)
                 status = 0u;
                 break;
             }
-            dmac_interrupted_cpu = cpu;
-            dmac_interrupted_vu0 = vu0;
-            dmac_callback_channel = channel;
-            dmac_callback_index = 0u;
-            dmac_callback_active = true;
-            enter_dmac_callback(dmac_callback_handlers[dmac_callback_index++]);
+            irq_interrupted_cpu = cpu;
+            irq_interrupted_vu0 = vu0;
+            irq_callback_is_intc = false;
+            irq_callback_cause = channel;
+            irq_callback_index = 0u;
+            irq_callback_active = true;
+            enter_irq_callback(irq_callback_handlers[irq_callback_index++]);
             continue;
         }
         if (report_path != nullptr &&
@@ -2206,7 +2209,7 @@ int main(int argc, char** argv)
 
         // A bounded one-dispatch slice reports DISPATCH_LIMIT even when
         // the translated callback just returned to the synthetic sentinel.
-        if (dmac_callback_active &&
+        if (irq_callback_active &&
             count != 0u &&
             cpu.m_pc == k_callback_return_pc &&
             status != 2u &&
@@ -2214,18 +2217,18 @@ int main(int argc, char** argv)
              reason == static_cast<uint32_t>(ee::e_ee_exit_reason::EE_EXIT_DISPATCH)))
         {
             const int32_t result = static_cast<int32_t>(cpu.m_gpr[2].m_lo);
-            if (result >= 0 && dmac_callback_index < dmac_callback_handlers.size())
+            if (result >= 0 && irq_callback_index < irq_callback_handlers.size())
             {
-                enter_dmac_callback(dmac_callback_handlers[dmac_callback_index++]);
+                enter_irq_callback(irq_callback_handlers[irq_callback_index++]);
                 continue;
             }
-            cpu = dmac_interrupted_cpu;
-            vu0 = dmac_interrupted_vu0;
+            cpu = irq_interrupted_cpu;
+            vu0 = irq_interrupted_vu0;
             hardware.intc().bind_cpu(&cpu);
             hardware.dmac().bind_cpu(&cpu);
-            dmac_callback_active = false;
-            dmac_callback_handlers.clear();
-            if (iop_semaphore_wait_turns != 0u)
+            irq_callback_active = false;
+            irq_callback_handlers.clear();
+            if (!irq_callback_is_intc && iop_semaphore_wait_turns != 0u)
             {
                 // The interrupted EE context is a WaitSema syscall trap,
                 // so its architectural PC is the exception vector. Replay
@@ -2238,9 +2241,10 @@ int main(int argc, char** argv)
                 ee::e_ee_exit_reason::EE_EXIT_DISPATCH);
             if (trace)
             {
-                std::printf("HLE DMAC callback returned: channel=%u "
+                std::printf("HLE %s callback returned: cause=%u "
                             "v0=%d resume=0x%08x\n",
-                            dmac_callback_channel, result, cpu.m_pc);
+                            irq_callback_is_intc ? "INTC" : "DMAC",
+                            irq_callback_cause, result, cpu.m_pc);
             }
             // A genuine interrupt-safe SignalSema may have promoted an EE
             // waiter to READY. The kernel must finish restoring interrupted
@@ -2285,7 +2289,7 @@ int main(int argc, char** argv)
 
         // Returning from a worker's entry makes it dormant.
         if (count != 0u && cpu.m_pc == k_thread_return_pc &&
-            current_thread_id > 1u && !dmac_callback_active &&
+            current_thread_id > 1u && !irq_callback_active &&
             !callback_active)
         {
             s_kernel_thread& finished = threads[current_thread_id];
@@ -2312,6 +2316,102 @@ int main(int argc, char** argv)
             break;
         }
 
+        // ps2-web-recomp/kernel.cpp::run_intc acknowledges the actual
+        // masked INTC cause and runs the registered guest callbacks, then
+        // restores the interrupted EE thread. The ROM0 exception vector
+        // is not executable in HLE-first mode, so bridge only an observed,
+        // architecturally taken INTC exception; all other exceptions
+        // remain unsupported. Never manufacture a VBlank or interrupt.
+        if (hle_startup && !irq_callback_active && !callback_active &&
+            reason == static_cast<uint32_t>(
+                ee::e_ee_exit_reason::EE_EXIT_EXCEPTION) &&
+            ((cpu.m_cop0[13] >> 2u) & 31u) == ee::EX_Int &&
+            cpu.m_pc == ee::ee_exception_vector(
+                cpu.m_cop0[12] & ~ee::STATUS_EXL, ee::EX_Int) &&
+            (cpu.m_cop0[12] & (ee::STATUS_EXL | ee::STATUS_IE |
+                                 ee::STATUS_EIE)) ==
+                (ee::STATUS_EXL | ee::STATUS_IE | ee::STATUS_EIE) &&
+            (cpu.m_cop0[12] & ee::STATUS_ERL) == 0u &&
+            (cpu.m_cop0[13] & ee::CAUSE_BD) == 0u &&
+            (ee::ee_pending_interrupts(&cpu) &
+                (1u << (ee::CAUSE_IP_SHIFT + ee::INT_INTC))) != 0u &&
+            hardware.intc().pending() != 0u)
+        {
+            const uint32_t pending = hardware.intc().pending();
+            uint32_t cause = 0u;
+            while (cause < 32u && (pending & (1u << cause)) == 0u)
+            {
+                ++cause;
+            }
+            if (cause >= 32u)
+            {
+                reason = static_cast<uint32_t>(
+                    ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED);
+                status = 0u;
+                break;
+            }
+
+            irq_callback_handlers.clear();
+            for (const s_kernel_interrupt_handler& handler : intc_handlers)
+            {
+                if (handler.m_cause == cause)
+                {
+                    irq_callback_handlers.push_back(handler);
+                }
+            }
+            if (!irq_callback_handlers.empty() &&
+                !memory->contains(k_irq_kernel_stack - 0x1000u, 0x1000u))
+            {
+                std::fprintf(stderr,
+                    "HLE INTC callback refused unmapped kernel stack\n");
+                reason = static_cast<uint32_t>(
+                    ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED);
+                status = 0u;
+                break;
+            }
+
+            const ee::s_ee_u128 acknowledge{1u << cause, 0u};
+            if (!ee::c_ee_intc::mmio_write(
+                    &hardware.intc(), ee::c_ee_intc::k_stat_address,
+                    4u, &acknowledge))
+            {
+                std::fprintf(stderr, "HLE INTC acknowledgement failed\n");
+                reason = static_cast<uint32_t>(
+                    ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED);
+                status = 0u;
+                break;
+            }
+            // Resume at EPC, not EPC+4. The interrupted instruction did
+            // not execute, and a branch-delay interrupt is excluded above.
+            ee::s_ee_cpu_state resume_cpu = cpu;
+            resume_cpu.m_pc = cpu.m_cop0[14];
+            resume_cpu.m_cop0[12] &= ~ee::STATUS_EXL;
+            resume_cpu.m_exit_reason = static_cast<uint32_t>(
+                ee::e_ee_exit_reason::EE_EXIT_DISPATCH);
+            if (trace)
+            {
+                std::printf("HLE INTC IRQ: cause=%u pending=0x%08x "
+                            "handlers=%zu epc=0x%08x\n",
+                            cause, pending, irq_callback_handlers.size(),
+                            resume_cpu.m_pc);
+            }
+            if (irq_callback_handlers.empty())
+            {
+                cpu = resume_cpu;
+                hardware.intc().bind_cpu(&cpu);
+                hardware.dmac().bind_cpu(&cpu);
+                continue;
+            }
+            irq_interrupted_cpu = resume_cpu;
+            irq_interrupted_vu0 = vu0;
+            irq_callback_is_intc = true;
+            irq_callback_cause = cause;
+            irq_callback_index = 0u;
+            irq_callback_active = true;
+            enter_irq_callback(irq_callback_handlers[irq_callback_index++]);
+            continue;
+        }
+
         // Experimental PS2 EE startup HLE. Handle only explicitly
         // recognized syscalls; unknown services still stop at the exception.
         if (hle_startup &&
@@ -2325,12 +2425,12 @@ int main(int argc, char** argv)
             // negative syscall numbers. Only map the genuine DMA/SIF
             // services when invoked from a registered guest DMAC callback;
             // keep unknown negative syscalls unsupported.
-            const bool interrupt_sif_service = dmac_callback_active &&
+            const bool interrupt_sif_service = irq_callback_active &&
                 (signed_service == -0x76 || signed_service == -0x77 ||
                  signed_service == -0x78);
             // Genuine EE DMA5 SIFCMD handlers signal semaphores via the
             // kernel's negative interrupt-context iSignalSema number.
-            const bool interrupt_semaphore_service = dmac_callback_active &&
+            const bool interrupt_semaphore_service = irq_callback_active &&
                 signed_service == -0x43;
             const bool interrupt_safe_service = interrupt_sif_service ||
                 interrupt_semaphore_service;
@@ -2344,7 +2444,7 @@ int main(int argc, char** argv)
                 // In interrupt context R5900 EPC still refers to the
                 // interrupted thread, not the nested syscall. The runtime
                 // separately records the actual trap instruction PC.
-                const uint32_t epc = dmac_callback_active
+                const uint32_t epc = irq_callback_active
                     ? cpu.m_pad : cpu.m_cop0[14];
                 const uint32_t handler = installed_syscall_handlers[service];
                 uint32_t opcode = 0;
@@ -2424,7 +2524,7 @@ int main(int argc, char** argv)
                 // In interrupt context R5900 EPC still refers to the
                 // interrupted thread, not the nested syscall. The runtime
                 // separately records the actual trap instruction PC.
-                const uint32_t epc = dmac_callback_active
+                const uint32_t epc = irq_callback_active
                     ? cpu.m_pad : cpu.m_cop0[14];
                 uint32_t opcode = 0;
                 if (!image.read32_at(epc, &opcode) ||
@@ -3206,10 +3306,10 @@ int main(int argc, char** argv)
                                 }
                             }
                             if (!other_ready || callback_active ||
-                                dmac_callback_active)
+                                irq_callback_active)
                             {
                                 if (!other_ready && !callback_active &&
-                                    !dmac_callback_active &&
+                                    !irq_callback_active &&
                                     iop_rom0_path != nullptr &&
                                     iop_kernel != nullptr &&
                                     iop_sif0_transport != nullptr)
@@ -4617,7 +4717,7 @@ int main(int argc, char** argv)
                 // Do not clear EXL for an interrupt-safe SIF syscall:
                 // the registered DMA5 callback still owns its kernel
                 // context until it returns via the callback sentinel.
-                if (!dmac_callback_active)
+                if (!irq_callback_active)
                 {
                     cpu.m_cop0[12] &= ~2u;
                 }
@@ -4625,7 +4725,7 @@ int main(int argc, char** argv)
                 cpu.m_exit_reason = static_cast<uint32_t>(
                     ee::e_ee_exit_reason::EE_EXIT_DISPATCH
                 );
-                if (reschedule_requested && !dmac_callback_active &&
+                if (reschedule_requested && !irq_callback_active &&
                     !callback_active && !schedule_threads())
                 {
                     reason = static_cast<uint32_t>(
