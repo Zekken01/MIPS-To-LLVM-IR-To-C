@@ -36,6 +36,7 @@ struct s_candidate_event
     uint32_t m_opcode = 0u;
     uint32_t m_kind = 0u;
     uint64_t m_cycle = 0u;
+    uint64_t m_completion_cycle = 0u;
 };
 
 bool parse_entry(const std::string& line,
@@ -69,9 +70,13 @@ bool parse_entry(const std::string& line,
 int main(int argc, char** argv)
 {
     constexpr const char* k_output_option = "--candidate-events=";
+    constexpr const char* k_completion_option = "--candidate-completions=";
     const std::string last_arg = argc > 1 ? argv[argc - 1] : "";
     const bool export_events = last_arg.rfind(k_output_option, 0u) == 0u;
-    const int argc_without_export = argc - (export_events ? 1 : 0);
+    const bool export_completions =
+        last_arg.rfind(k_completion_option, 0u) == 0u;
+    const bool export_any = export_events || export_completions;
+    const int argc_without_export = argc - (export_any ? 1 : 0);
     const bool ordered_waw_overlap =
         argc_without_export > 1 &&
         std::string(argv[argc_without_export - 1]) == "--ordered-waw-overlap";
@@ -83,14 +88,15 @@ int main(int argc, char** argv)
     const bool explicit_throughput =
         throughput_arg.rfind(k_throughput_option, 0u) == 0u;
     const int profile_argc = argc_without_overlap - (explicit_throughput ? 1 : 0);
-    const std::string output_path = export_events
-        ? last_arg.substr(std::char_traits<char>::length(k_output_option))
+    const std::string output_path = export_any
+        ? last_arg.substr(std::char_traits<char>::length(
+            export_completions ? k_completion_option : k_output_option))
         : std::string{};
 
     if ((profile_argc != 4 && profile_argc != 8 && profile_argc != 12 &&
          profile_argc != 14 && profile_argc != 16) ||
         (ordered_waw_overlap && !explicit_throughput) ||
-        (export_events && (output_path.empty() || output_path == argv[1])))
+        (export_any && (output_path.empty() || output_path == argv[1])))
     {
         std::fprintf(stderr,
             "usage: ee_issue_trace_candidate <trace.csv> "
@@ -103,7 +109,8 @@ int main(int argc, char** argv)
             "[<fpu-sqrt-latency> <fpu-rsqrt-latency>] "
             "[--throughput=<mac-mult>,<mac-div>,<mac-acc>,"
             "<cop1-arith>,<cop1-div>,<cop1-sqrt>,<cop1-rsqrt>] "
-            "[--ordered-waw-overlap] [--candidate-events=<path>]\n"
+            "[--ordered-waw-overlap] "
+            "[--candidate-events=<path>|--candidate-completions=<path>]\n"
             "Diagnostic only. Supplied latencies are NOT verified R5900 cycles.\n");
         return 2;
     }
@@ -258,7 +265,7 @@ int main(int argc, char** argv)
                 static_cast<unsigned>(result));
             return 3;
         }
-        if (export_events)
+        if (export_any)
         {
             // Native runner captures at most 65536 observations. Leave
             // generous room for external traces without unbounded memory.
@@ -269,7 +276,10 @@ int main(int argc, char** argv)
             }
             candidates.push_back({
                 entry.m_reference_slot, entry.m_pc, entry.m_opcode_word,
-                entry.m_kind, replay.last_event_candidate_cycle()
+                entry.m_kind, replay.last_event_candidate_cycle(),
+                // Annulled delay slots do not produce a result.
+                entry.m_kind == 1u ? 0u
+                    : replay.last_candidate_completion_cycle()
             });
         }
         ++event_count;
@@ -282,7 +292,7 @@ int main(int argc, char** argv)
         return 3;
     }
 
-    if (export_events)
+    if (export_any)
     {
         FILE* output = std::fopen(output_path.c_str(), "wb");
         if (output == nullptr)
@@ -290,14 +300,35 @@ int main(int argc, char** argv)
             std::fprintf(stderr, "cannot open output: %s\n", output_path.c_str());
             return 3;
         }
-        std::fprintf(output,
-            "reference_slot,pc,opcode_word,kind,candidate_issue_cycle\n");
+        if (export_completions)
+        {
+            std::fprintf(output,
+                "reference_slot,pc,opcode_word,kind,"
+                "candidate_issue_cycle,candidate_completion_cycle\n");
+        }
+        else
+        {
+            std::fprintf(output,
+                "reference_slot,pc,opcode_word,kind,candidate_issue_cycle\n");
+        }
         for (const s_candidate_event& item : candidates)
         {
-            std::fprintf(output, "%llu,0x%08x,0x%08x,%u,%llu\n",
+            std::fprintf(output, "%llu,0x%08x,0x%08x,%u,%llu",
                 static_cast<unsigned long long>(item.m_slot),
                 item.m_pc, item.m_opcode, item.m_kind,
                 static_cast<unsigned long long>(item.m_cycle));
+            if (export_completions && item.m_kind != 1u)
+            {
+                std::fprintf(output, ",%llu",
+                    static_cast<unsigned long long>(
+                        item.m_completion_cycle));
+            }
+            else if (export_completions)
+            {
+                // An annulled slot has no result or retirement event.
+                std::fprintf(output, ",");
+            }
+            std::fprintf(output, "\n");
         }
         const bool written = std::ferror(output) == 0;
         const bool closed = std::fclose(output) == 0;
