@@ -1378,6 +1378,34 @@ int main(int argc, char** argv)
     uint64_t last_snapshot_dispatch = 0;
     uint64_t last_progress_dispatch = 0;
     bool last_snapshot_callback_active = false;
+    // Optional host-only probe pacing. Preserve the normal per-128-dispatch
+    // checkpoints unless explicitly overridden. This only changes disk I/O:
+    // the guest still returns to the host after EVERY native dispatch while
+    // --report is enabled, so DMA/interrupt/callback scheduling is unchanged.
+    uint32_t report_snapshot_milliseconds = 0u;
+    const char* snapshot_interval = std::getenv("SDBZ_REPORT_SNAPSHOT_MS");
+    if (snapshot_interval != nullptr && *snapshot_interval != '\0')
+    {
+        char* end = nullptr;
+        errno = 0;
+        const unsigned long parsed = std::strtoul(snapshot_interval, &end, 10);
+        if (errno != 0 || end == snapshot_interval || *end != '\0' ||
+            parsed > 60000ul)
+        {
+            std::fprintf(stderr,
+                         "invalid SDBZ_REPORT_SNAPSHOT_MS (expected 0..60000): %s\n",
+                         snapshot_interval);
+            return 1;
+        }
+        report_snapshot_milliseconds = static_cast<uint32_t>(parsed);
+    }
+    if (report_path != nullptr && report_snapshot_milliseconds != 0u)
+    {
+        std::fprintf(stderr,
+                     "EE report snapshots: every %u ms (native dispatch slice unchanged)\n",
+                     report_snapshot_milliseconds);
+    }
+    std::chrono::steady_clock::time_point last_snapshot_time{};
     const auto wall_start = std::chrono::steady_clock::now();
     double report_time_ms = 0.0;
     double native_time_ms = 0.0;
@@ -1445,14 +1473,19 @@ int main(int argc, char** argv)
             continue;
         }
         if (report_path != nullptr &&
-            (dispatched == 0 ||
-             dispatched - last_snapshot_dispatch >= k_report_snapshot_interval ||
-             callback_active != last_snapshot_callback_active))
+            (report_snapshot_milliseconds != 0u
+                ? (last_snapshot_time == std::chrono::steady_clock::time_point{} ||
+                   std::chrono::steady_clock::now() - last_snapshot_time >=
+                       std::chrono::milliseconds(report_snapshot_milliseconds))
+                : (dispatched == 0 ||
+                   dispatched - last_snapshot_dispatch >= k_report_snapshot_interval ||
+                   callback_active != last_snapshot_callback_active)))
         {
             // Durable progress state survives an external wall-clock kill.
-            // Report every 128 dispatches instead of reopening and writing
-            // the full JSON report every 16 dispatches. Guest code can still
-            // loop internally without returning to the dispatcher.
+            // Default snapshots preserve the previous 128-dispatch/callback
+            // policy. Probe mode writes at bounded wall-clock intervals to
+            // avoid repeated JSON I/O in fast guest paths, without using host
+            // time to advance any EE, IOP, DMA, scanout or interrupt state.
             const auto report_start = std::chrono::steady_clock::now();
             const bool report_ok = write_report(
                 report_path, image, cpu, entry, dispatched,
@@ -1468,6 +1501,7 @@ int main(int argc, char** argv)
             }
             last_snapshot_dispatch = dispatched;
             last_snapshot_callback_active = callback_active;
+            last_snapshot_time = std::chrono::steady_clock::now();
         }
         if (callback_active && !image.is_executable_address(cpu.m_pc))
         {

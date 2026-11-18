@@ -6,6 +6,7 @@ bounded native dispatcher. This is not a claim of PS2 BIOS bootability.
 """
 from pathlib import Path
 import json
+import os
 import struct
 import subprocess
 import sys
@@ -1302,6 +1303,58 @@ def main():
         assert report["history"][-1]["dispatch"] == report["dispatches"], report
         assert len(report["gpr_lo"]) == 32, report
         assert (root / "out" / "ir" / "ee_functions.json").is_file()
+
+        # Probe-only time-paced JSON snapshots must preserve the exact
+        # one-dispatch host slicing, guest state and terminal report.
+        paced_report_path = root / "first_boot_paced.json"
+        paced_environment = dict(os.environ)
+        paced_environment["SDBZ_REPORT_SNAPSHOT_MS"] = "1000"
+        paced_result = subprocess.run(
+            [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf), "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--max-dispatches=8", "--trace", "--kseg-ram",
+                "--no-recompile", "--report", str(paced_report_path),
+            ],
+            capture_output=True, text=True, check=False,
+            env=paced_environment,
+        )
+        assert paced_result.returncode == result.returncode, (
+            paced_result.stdout + paced_result.stderr
+        )
+        assert "EE report snapshots: every 1000 ms" in paced_result.stderr, (
+            paced_result.stdout + paced_result.stderr
+        )
+        paced_report = json.loads(
+            paced_report_path.read_text(encoding="utf-8")
+        )
+        for key in (
+            "entry_pc", "final_pc", "dispatches", "exit_reason", "exit_name",
+            "dispatch_status", "guest_instruction_attempts", "gpr_lo",
+            "history", "syscall_history",
+        ):
+            assert paced_report[key] == report[key], (key, report, paced_report)
+
+        invalid_environment = dict(os.environ)
+        invalid_environment["SDBZ_REPORT_SNAPSHOT_MS"] = "not-a-number"
+        invalid_result = subprocess.run(
+            [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf), "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--max-dispatches=8", "--no-recompile",
+                "--report", str(root / "invalid-snapshot.json"),
+            ],
+            capture_output=True, text=True, check=False,
+            env=invalid_environment,
+        )
+        assert invalid_result.returncode != 0, (
+            invalid_result.stdout + invalid_result.stderr
+        )
+        assert "invalid SDBZ_REPORT_SNAPSHOT_MS" in invalid_result.stderr, (
+            invalid_result.stdout + invalid_result.stderr
+        )
         assert (root / "out" / "objects" / "objects.json").is_file()
         link_only = subprocess.run(
             [
