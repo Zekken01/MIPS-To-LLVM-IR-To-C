@@ -659,6 +659,15 @@ void c_sif_rpc_bridge::commit_command(const s_request& request)
     (void)pump();
 }
 
+void c_sif_rpc_bridge::reset_for_reboot()
+{
+    m_cdvd_streaming = false;
+    m_cdvd_stream_position = 0u;
+    m_replies.clear();
+    m_load_requests = 0u;
+    m_reply_in_flight = false;
+}
+
 bool c_sif_rpc_bridge::can_queue_replies(size_t count) const
 {
     return count <= 64u && m_replies.size() <= 64u - count;
