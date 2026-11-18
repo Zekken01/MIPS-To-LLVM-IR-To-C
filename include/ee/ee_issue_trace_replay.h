@@ -36,6 +36,7 @@ enum class e_ee_issue_replay_status : uint8_t
     UNCONFIGURED,
     INCOMPLETE_STREAM,
     UNMODELED_INSTRUCTION,
+    UNMODELED_HLE_BOUNDARY,
     INVALID_SLOT,
     HALTED
 };
@@ -73,6 +74,17 @@ public:
         if (m_failed)
         {
             return e_ee_issue_replay_status::HALTED;
+        }
+        // A host HLE transition has no issue/retirement cycle cost until
+        // it is independently calibrated. It retains the preceding slot.
+        if (entry.m_kind == 3u)
+        {
+            return fail(e_ee_issue_replay_status::UNMODELED_HLE_BOUNDARY,
+                        entry.m_pc);
+        }
+        if (entry.m_hle_service != 0u)
+        {
+            return fail(e_ee_issue_replay_status::INVALID_SLOT, entry.m_pc);
         }
         if (entry.m_reference_slot != m_next_slot)
         {

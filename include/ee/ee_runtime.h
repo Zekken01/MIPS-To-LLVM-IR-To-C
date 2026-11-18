@@ -216,9 +216,12 @@ struct s_ee_instruction_trace_entry
     uint32_t m_pc = 0u;
     uint32_t m_opcode_word = 0u;
     // 0=native reached, 1=annulled branch-likely slot,
-    // 2=RAM interpreter committed. None is a cycle timestamp.
+    // 2=RAM interpreter committed, 3=host HLE boundary.
+    // None is a cycle timestamp; kind=3 does not advance a slot.
     uint32_t m_kind = 0u;
     uint64_t m_reference_slot = 0u;
+    // For kind=3 only, the normalized EE HLE service number.
+    uint32_t m_hle_service = 0u;
 };
 
 struct s_ee_runtime
@@ -295,7 +298,46 @@ struct s_ee_runtime
     // R5900 instruction/issue timing producer publishes actual EE cycles.
     // Appended to preserve all existing translated runtime field offsets.
     c_ee_cycle_scheduler m_ee_cycle_scheduler{};
+
+    // Number of recognized host EE HLE transitions, not issue cycles.
+    // Appended after all existing translated ABI fields.
+    uint64_t m_hle_timing_boundaries = 0u;
 };
+
+// Record host HLE handoff without guessing a latency or advancing any
+// guest instruction/slot counter. The trace is optional and bounded.
+inline void ee_record_hle_timing_boundary(
+    s_ee_runtime& runtime, uint32_t pc, uint32_t opcode,
+    uint32_t service)
+{
+    if (runtime.m_hle_timing_boundaries != UINT64_MAX)
+    {
+        ++runtime.m_hle_timing_boundaries;
+    }
+
+    if (runtime.m_instruction_trace != nullptr &&
+        pc >= runtime.m_instruction_trace_first_pc &&
+        pc <= runtime.m_instruction_trace_last_pc)
+    {
+        if (runtime.m_instruction_trace_count <
+            runtime.m_instruction_trace_capacity)
+        {
+            s_ee_instruction_trace_entry& entry =
+                runtime.m_instruction_trace[runtime.m_instruction_trace_count++];
+            entry.m_attempt = runtime.m_guest_instruction_attempts;
+            entry.m_pc = pc;
+            entry.m_opcode_word = opcode;
+            entry.m_kind = 3u;
+            entry.m_reference_slot = runtime.m_reference_instruction_slots;
+            entry.m_hle_service = service;
+        }
+        else
+        {
+            runtime.m_instruction_trace_overflow = 1u;
+        }
+    }
+}
+
 
 // Outside a branch delay slot, all four transfer forms only catch VU0 up to
 // the EE cycle. In a delay slot, reads finish to E while writes wait to E or M.

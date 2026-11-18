@@ -141,6 +141,9 @@ void module_builder::declare_memory_helpers()
     m_out += "  %slot_reference = getelementptr i8, ptr %slot, i64 " +
              std::to_string(offsetof(ee::s_ee_instruction_trace_entry, m_reference_slot)) + "\n";
     m_out += "  store i64 %reference_slot, ptr %slot_reference\n";
+    m_out += "  %slot_hle = getelementptr i8, ptr %slot, i64 " +
+             std::to_string(offsetof(ee::s_ee_instruction_trace_entry, m_hle_service)) + "\n";
+    m_out += "  store i32 0, ptr %slot_hle\n";
     m_out += "  %next_used = add i32 %used, 1\n";
     m_out += "  store i32 %next_used, ptr %count_field\n";
     m_out += "  br label %done\n";

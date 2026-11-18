@@ -36,12 +36,13 @@ bool parse_entry(const std::string& line,
     unsigned int pc = 0u;
     unsigned int opcode = 0u;
     unsigned int kind = 0u;
+    unsigned int service = 0u;
     int consumed = 0;
     const int parsed = std::sscanf(
-        line.c_str(), "%llu,0x%x,0x%x,%u,%llu%n",
-        &attempt, &pc, &opcode, &kind, &slot, &consumed
+        line.c_str(), "%llu,0x%x,0x%x,%u,%llu,%u%n",
+        &attempt, &pc, &opcode, &kind, &slot, &service, &consumed
     );
-    if (parsed != 5 || consumed != static_cast<int>(line.size()))
+    if (parsed != 6 || consumed != static_cast<int>(line.size()))
     {
         return false;
     }
@@ -50,6 +51,7 @@ bool parse_entry(const std::string& line,
     entry->m_opcode_word = static_cast<uint32_t>(opcode);
     entry->m_kind = static_cast<uint32_t>(kind);
     entry->m_reference_slot = static_cast<uint64_t>(slot);
+    entry->m_hle_service = static_cast<uint32_t>(service);
     return true;
 }
 }
@@ -114,7 +116,7 @@ int main(int argc, char** argv)
     {
         line.pop_back();
     }
-    if (line != "attempt,pc,opcode_word,kind,reference_slot")
+    if (line != "attempt,pc,opcode_word,kind,reference_slot,hle_service")
     {
         std::fprintf(stderr, "unsupported issue trace CSV schema\n");
         return 2;

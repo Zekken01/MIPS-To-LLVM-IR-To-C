@@ -510,6 +510,7 @@ bool write_report(
         ",\n  \"ee_cycle_source\": \"%s\""
         ",\n  \"ee_cycles\": %llu"
         ",\n  \"reference_instruction_slots\": %llu"
+        ",\n  \"hle_timing_boundaries\": %llu"
         ",\n  \"scheduler_yields\": %llu"
         ",\n  \"next_gs_field_cycle\": %llu"
         ",\n  \"gs_fields_started\": %llu"
@@ -520,6 +521,7 @@ bool write_report(
             ? "validated_r5900" : "unavailable",
         static_cast<unsigned long long>(runtime.m_ee_cycle_scheduler.current_cycle()),
         static_cast<unsigned long long>(runtime.m_reference_instruction_slots),
+        static_cast<unsigned long long>(runtime.m_hle_timing_boundaries),
         static_cast<unsigned long long>(runtime.m_ee_cycle_scheduler.scheduler_yields()),
         static_cast<unsigned long long>(hardware.scanout().next_field_cycle()),
         static_cast<unsigned long long>(hardware.scanout().fields_started()),
@@ -2298,6 +2300,9 @@ int main(int argc, char** argv)
                         service, handler);
                     break;
                 }
+                // The guest handler runs natively, but handing control to
+                // it through host syscall dispatch has an uncalibrated cost.
+                ee::ee_record_hle_timing_boundary(runtime, epc, opcode, service);
                 callback_saved_ra = cpu.m_gpr[31];
                 callback_resume_pc = epc + 4u;
                 if (report_path != nullptr)
@@ -2363,6 +2368,10 @@ int main(int argc, char** argv)
                     std::fprintf(stderr, "startup HLE refused invalid syscall context\n");
                     break;
                 }
+
+                // Explicitly mark entry to modeled host kernel services.
+                // Never convert this boundary into an invented EE delay.
+                ee::ee_record_hle_timing_boundary(runtime, epc, opcode, service);
 
                 if (interrupt_sif_service && trace)
                 {
@@ -4715,6 +4724,11 @@ int main(int argc, char** argv)
             runtime.m_guest_instruction_attempts)
     );
     std::printf(
+        "EE observed HLE timing boundaries: %llu "
+        "(latencies not calibrated; no EE time charged)\n",
+        static_cast<unsigned long long>(runtime.m_hle_timing_boundaries)
+    );
+    std::printf(
         "EE stopped: dispatched=%llu pc=0x%08x reason=%s(%u) status=%u\n",
         static_cast<unsigned long long>(dispatched), cpu.m_pc,
         exit_name(reason), reason, status
@@ -4776,14 +4790,15 @@ int main(int argc, char** argv)
                          instruction_trace_path);
             return 1;
         }
-        std::fprintf(output, "attempt,pc,opcode_word,kind,reference_slot\n");
+        std::fprintf(output, "attempt,pc,opcode_word,kind,reference_slot,hle_service\n");
         for (uint32_t index = 0u; index < runtime.m_instruction_trace_count; ++index)
         {
             const auto& item = instruction_trace[index];
-            std::fprintf(output, "%llu,0x%08x,0x%08x,%u,%llu\n",
+            std::fprintf(output, "%llu,0x%08x,0x%08x,%u,%llu,%u\n",
                          static_cast<unsigned long long>(item.m_attempt),
                          item.m_pc, item.m_opcode_word, item.m_kind,
-                         static_cast<unsigned long long>(item.m_reference_slot));
+                         static_cast<unsigned long long>(item.m_reference_slot),
+                         item.m_hle_service);
         }
         std::fprintf(output, "# truncated=%s range=0x%08x:0x%08x\n",
                      runtime.m_instruction_trace_overflow ? "true" : "false",

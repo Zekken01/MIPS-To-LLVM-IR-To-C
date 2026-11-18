@@ -172,6 +172,36 @@ int main()
           e_ee_issue_replay_status::UNMODELED_INSTRUCTION,
           "FCSR-dependent BC1 remains unavailable");
 
+    // Host-side HLE handoffs are not instructions or cycles. The service
+    // identity is visible and the issue replay must refuse an unknown cost.
+    ee::s_ee_runtime runtime{};
+    ee::s_ee_instruction_trace_entry buffer[1]{};
+    runtime.m_instruction_trace = buffer;
+    runtime.m_instruction_trace_capacity = 1u;
+    runtime.m_guest_instruction_attempts = 10u;
+    runtime.m_reference_instruction_slots = 11u;
+    ee::ee_record_hle_timing_boundary(runtime, 0x2000u, 0x0000000cu, 0x76u);
+    check(runtime.m_hle_timing_boundaries == 1u &&
+          runtime.m_guest_instruction_attempts == 10u &&
+          runtime.m_reference_instruction_slots == 11u &&
+          runtime.m_instruction_trace_count == 1u &&
+          buffer[0].m_kind == 3u &&
+          buffer[0].m_hle_service == 0x76u &&
+          buffer[0].m_reference_slot == 11u,
+          "HLE event preserves instruction and slot ordinals");
+
+    ee::ee_record_hle_timing_boundary(runtime, 0x2000u, 0x0000000cu, 0x77u);
+    check(runtime.m_hle_timing_boundaries == 2u &&
+          runtime.m_instruction_trace_count == 1u &&
+          runtime.m_instruction_trace_overflow == 1u,
+          "HLE boundary on full trace is reported, not silently dropped");
+
+    replay.configure({1u, 3u});
+    check(replay.observe(buffer[0]) ==
+          e_ee_issue_replay_status::UNMODELED_HLE_BOUNDARY &&
+          !replay.usable_prefix(),
+          "unknown HLE cost cannot produce a continuous candidate clock");
+
     std::printf("ee_issue_trace_replay_test: %d failure(s)\n", s_failures);
     return s_failures == 0 ? 0 : 1;
 }

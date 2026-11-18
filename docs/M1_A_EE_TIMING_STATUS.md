@@ -73,3 +73,7 @@ The offline issue candidate now classifies scalar `MULT/MULTU/DIV/DIVU`, `MFHI/M
 ### Scalar COP1 issue classes
 
 The offline candidate can now replay supported MFC1/MTC1, COP1.S scalar arithmetic, DIV/SQRT/RSQRT, ACC operations and CVT.S.W when **four separate caller-provided COP1 latencies** are available: transfer, arithmetic, divide/sqrt and accumulate. FPR0 is modeled as writable, independently from GPR0. Unmodeled FCSR/FCC0, COP0, VU0 and packed-MMI hazards still fail closed, so these cases cannot be used to authorize GS timing. CTests exercise FPR and ACC cross-instruction dependency sequencing.
+
+### Explicit host HLE entry boundaries
+
+Native and RAM instructions, annulled slots and recognized EE startup/registered syscall HLE handoffs now share one bounded observation stream. `kind=3` identifies an HLE boundary, carries `hle_service`, and records the *current* instruction/slot ordinals without consuming any new slot or time. The runner also exposes a cumulative `hle_timing_boundaries` diagnostic. The offline replay rejects HLE boundaries as unmodeled rather than silently assigning guessed kernel time. This is not a calibrated HLE cost and does not enable GS/INTC events.

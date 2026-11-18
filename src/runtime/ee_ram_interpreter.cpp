@@ -368,6 +368,7 @@ s_ee_ram_execution ee_execute_ram_callback(
                     entry.m_opcode_word = instruction;
                     entry.m_kind = 2u;
                     entry.m_reference_slot = runtime->m_reference_instruction_slots;
+                    entry.m_hle_service = 0u;
                 }
                 else
                 {
