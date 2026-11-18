@@ -145,6 +145,11 @@ def main():
                 updated, rpc_commit(2) + "\n" + rpc_commit(1)
             ), "non-monotonic"
         )
+        expect_error(
+            lambda: MODULE.reconcile_runtime_loadfile(
+                updated, rpc_commit(1) + "\n" + rpc_commit(3)
+            ), "gapped"
+        )
         assert json.dumps(updated, sort_keys=True) == before_rejection
         assert result["candidates"][0]["host_path"] == str(
             disc / "padman.irx"
