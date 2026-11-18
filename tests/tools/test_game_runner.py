@@ -1609,6 +1609,62 @@ def main():
             "libgame-translated.so"
         )
         library = root / "out" / library_name
+
+        # A folder-backed HLE IOP backend must not require an ISO or ROM0,
+        # even when the legacy ROM0 environment variable is present.
+        disc_folder = root / "extracted-disc"
+        disc_folder.mkdir()
+        (disc_folder / "SYSTEM.CNF").write_text(
+            "BOOT2 = cdrom0:\\MINIMAL-MIPS.ELF;1\n", encoding="ascii"
+        )
+        hle_environment = dict(os.environ)
+        hle_environment["SDBZ_IOP_ROM0"] = str(root / "absent-rom0.bin")
+        folder_command = [
+            str(runner), str(elf), str(library),
+            "--max-dispatches=8", f"--disc-folder={disc_folder}",
+        ]
+        folder_result = subprocess.run(
+            folder_command, capture_output=True, text=True, check=False,
+            env=hle_environment,
+        )
+        assert "[disc] HLE folder mounted:" in folder_result.stdout, (
+            folder_result.stdout + folder_result.stderr
+        )
+        assert "IOP ROM0 reset:" not in folder_result.stdout, folder_result.stdout
+        assert "EE stopped:" in folder_result.stdout, folder_result.stdout
+
+        wrapper_folder = subprocess.run(
+            [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf), "--build-dir", str(build),
+                "--work-dir", str(root / "out"), "--no-recompile",
+                "--max-dispatches=8", "--disc-folder", str(disc_folder),
+            ],
+            capture_output=True, text=True, check=False,
+            env=hle_environment,
+        )
+        assert "[disc] HLE folder mounted:" in wrapper_folder.stdout, (
+            wrapper_folder.stdout + wrapper_folder.stderr
+        )
+        assert "EE stopped:" in wrapper_folder.stdout, wrapper_folder.stdout
+
+        invalid_folder = subprocess.run(
+            folder_command[:-1] +
+            [f"--disc-folder={root / 'missing-disc-folder'}"],
+            capture_output=True, text=True, check=False,
+            env=hle_environment,
+        )
+        assert invalid_folder.returncode == 2, invalid_folder
+        assert "disc folder must be an existing" in invalid_folder.stderr
+
+        conflicting_sources = subprocess.run(
+            folder_command + ["--disc-image=dummy.iso"],
+            capture_output=True, text=True, check=False,
+            env=hle_environment,
+        )
+        assert conflicting_sources.returncode == 2, conflicting_sources
+        assert "usage:" in conflicting_sources.stdout, conflicting_sources.stdout
+
         original_library = library.read_bytes()
         altered_library = bytearray(original_library)
         altered_library[-1] ^= 1
