@@ -34,6 +34,28 @@ def main() -> int:
         ), events
         assert events[5]["kind"] == "1", events[5]
 
+        # Completion is a *separate* candidate result deadline. Annulled
+        # likely slots do not have an instruction result to timestamp.
+        completion_output = root / "completions.csv"
+        completion_run = subprocess.run(
+            [str(binary), str(fixture), "1", "3",
+             f"--candidate-completions={completion_output}"],
+            text=True, capture_output=True, check=False
+        )
+        assert completion_run.returncode == 0, (
+            completion_run.stdout, completion_run.stderr
+        )
+        with completion_output.open("r", encoding="utf-8",
+                                    newline="") as stream:
+            completion_rows = list(csv.DictReader(stream))
+        assert len(completion_rows) == len(events)
+        assert completion_rows[5]["candidate_completion_cycle"] == ""
+        for row in completion_rows:
+            if row["kind"] != "1":
+                assert int(row["candidate_completion_cycle"]) >= (
+                    int(row["candidate_issue_cycle"])
+                ), row
+
         # Optional COP1 control/compare and separate SQRT/RSQRT groups
         # must be accepted without changing the old 4-argument CLI.
         numeric = ["1", "3", "4", "37", "1", "4",
@@ -146,6 +168,25 @@ def main() -> int:
                 "ordered_waw_overlap=enabled" if overlap
                 else "ordered_waw_overlap=disabled"
             ) in candidate.stdout, candidate.stdout
+
+        completion_mac = root / "overlap-completions.csv"
+        completed = subprocess.run(
+            [str(binary), str(two_mac), "1", "3", "7", "11", "4",
+             "8", strict_option, "--ordered-waw-overlap",
+             f"--candidate-completions={completion_mac}"],
+            text=True, capture_output=True, check=False
+        )
+        assert completed.returncode == 0, completed.stderr
+        with completion_mac.open("r", encoding="utf-8",
+                                 newline="") as stream:
+            rows = list(csv.DictReader(stream))
+        assert [int(row["candidate_issue_cycle"]) for row in rows] == (
+            [0, 2]
+        ), rows
+        assert [int(row["candidate_completion_cycle"]) for row in rows] == (
+            [7, 9]
+        ), rows
+        assert "max_candidate_completion=9" in completed.stdout
 
         invalid_overlap = subprocess.run(
             [str(binary), str(two_mac), "1", "3", "7", "11",
