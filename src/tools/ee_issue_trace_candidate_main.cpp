@@ -71,7 +71,13 @@ int main(int argc, char** argv)
     constexpr const char* k_output_option = "--candidate-events=";
     const std::string last_arg = argc > 1 ? argv[argc - 1] : "";
     const bool export_events = last_arg.rfind(k_output_option, 0u) == 0u;
-    const int profile_argc = argc - (export_events ? 1 : 0);
+    const int argc_without_export = argc - (export_events ? 1 : 0);
+    constexpr const char* k_throughput_option = "--throughput=";
+    const std::string throughput_arg = argc_without_export > 1
+        ? argv[argc_without_export - 1] : "";
+    const bool explicit_throughput =
+        throughput_arg.rfind(k_throughput_option, 0u) == 0u;
+    const int profile_argc = argc_without_export - (explicit_throughput ? 1 : 0);
     const std::string output_path = export_events
         ? last_arg.substr(std::char_traits<char>::length(k_output_option))
         : std::string{};
@@ -89,6 +95,8 @@ int main(int argc, char** argv)
             "<fpu-divide-latency> <fpu-accumulate-latency>] "
             "[<fpu-control-latency> <fpu-compare-latency>] "
             "[<fpu-sqrt-latency> <fpu-rsqrt-latency>] "
+            "[--throughput=<mac-mult>,<mac-div>,<mac-acc>,"
+            "<cop1-arith>,<cop1-div>,<cop1-sqrt>,<cop1-rsqrt>] "
             "[--candidate-events=<path>]\n"
             "Diagnostic only. Supplied latencies are NOT verified R5900 cycles.\n");
         return 2;
@@ -138,6 +146,44 @@ int main(int argc, char** argv)
         std::fprintf(stderr,
             "SQRT.S/RSQRT.S require separate positive latencies\n");
         return 2;
+    }
+
+    if (explicit_throughput)
+    {
+        const std::string values = throughput_arg.substr(
+            std::char_traits<char>::length(k_throughput_option));
+        uint32_t intervals[7]{};
+        std::size_t cursor = 0u;
+        bool complete = true;
+        for (uint32_t index = 0u; index < 7u && complete; ++index)
+        {
+            const std::size_t end = values.find(',', cursor);
+            if ((index < 6u && end == std::string::npos) ||
+                (index == 6u && end != std::string::npos))
+            {
+                complete = false;
+                break;
+            }
+            const std::string token = values.substr(
+                cursor, end == std::string::npos
+                    ? std::string::npos : end - cursor);
+            complete = parse_latency(token.c_str(), &intervals[index]);
+            cursor = end == std::string::npos ? values.size() : end + 1u;
+        }
+        if (!complete)
+        {
+            std::fprintf(stderr,
+                "throughput requires seven explicit positive intervals\n");
+            return 2;
+        }
+        profile.m_mac_multiply_interval = intervals[0];
+        profile.m_mac_divide_interval = intervals[1];
+        profile.m_mac_accumulate_interval = intervals[2];
+        profile.m_cop1_arithmetic_interval = intervals[3];
+        profile.m_cop1_divide_interval = intervals[4];
+        profile.m_cop1_sqrt_interval = intervals[5];
+        profile.m_cop1_rsqrt_interval = intervals[6];
+        profile.m_require_throughput = true;
     }
 
     std::ifstream input(argv[1]);
@@ -259,12 +305,14 @@ int main(int argc, char** argv)
     std::printf(
         "candidate_issue_cycles=%llu reached=%llu annulled=%llu "
         "events=%llu profile_integer=%u profile_load=%u "
+        "throughput_mode=%s "
         "(EXPERIMENTAL; NOT validated R5900 cycles; NO GS events)\n",
         static_cast<unsigned long long>(replay.candidate_cycles()),
         static_cast<unsigned long long>(replay.executed_instructions()),
         static_cast<unsigned long long>(replay.annulled_slots()),
         static_cast<unsigned long long>(event_count),
-        profile.m_integer_latency, profile.m_load_latency
+        profile.m_integer_latency, profile.m_load_latency,
+        profile.m_require_throughput ? "explicit" : "unconfigured"
     );
     return 0;
 }
