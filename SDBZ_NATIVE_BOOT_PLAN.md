@@ -357,3 +357,27 @@ The runner displays this *reference accounting only* for diagnostics,
 and does not feed `c_ee_scanout_clock` or synthesize VBlank. This
 phase supplies a measurable timing baseline, not a boot-unblocking
 claim.
+
+### 2026-11-18 15:44 — verified VBlank blocker and isolated issue-timing probe
+
+The matched `boot(20261118-154418).log`, `expansion(20261118-154419).log`,
+`first-boot(20261118-154418).json`, `iop-disc-catalog(20261118-154418).json`,
+and `translation-cache(20261118-154419).json` retain the USA retail ELF SHA-256
+`1b213a85a2c305dc0f893c007a502c93e0851d1bb7db6164f9e0b72adb074a16`.
+The final expansion has **zero newly discovered functions** and agrees with the
+boot report: 10,491 dispatches, 9,001,372 guest attempts, 9,001,546
+reference slots, `LOOP_BUDGET(5)` at `0x00175210`. SIO2MAN.IRX links,
+starts and executes a 256-instruction IOP slice. GS still accepts 33 tags,
+16,384 image QWC and 65,536 pixels. VBlank has no authoritative EE
+cycle source: INTC_STAT=0, GS_CSR=0, flag [0x01ffeeb0]=0, fields=0.
+
+`ee_issue_timing_probe.h` adds an **isolated experimental** two-wide issue
+scoreboard and explicit dependency/result-latency, serialization, branch-delay
+reservation and configured HLE overhead hooks, plus CTest regression. It
+models timing **candidates**, not validated R5900 issue rules. Latencies are
+provided explicitly by the caller; no hardware latency table is presumed.
+This probe is not connected to translated EE instruction execution or the
+GS/INTC scheduler, and therefore deliberately **does not unblock VBlank**.
+Next: obtain and validate instruction-class pairing/latency evidence, connect
+reached guest instructions to a separately controlled timing pipeline, verify
+boundary preemption against a reference before granting scanout cycle authority.
