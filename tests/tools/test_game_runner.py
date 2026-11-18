@@ -1340,12 +1340,13 @@ def main():
         assert "NO cycle timestamps" in trace_result.stdout, trace_result.stdout
         trace_lines = trace_path.read_text(encoding="utf-8").splitlines()
         assert trace_lines == [
-            "attempt,pc,opcode_word",
-            "1,0x00100008,0x24080001",
-            "2,0x0010000c,0x51000001",
-            "3,0x00100014,0x24020009",
-            "4,0x00100018,0x03e00008",
-            "5,0x0010001c,0x00000000",
+            "attempt,pc,opcode_word,kind,reference_slot",
+            "1,0x00100008,0x24080001,0,1",
+            "2,0x0010000c,0x51000001,0,2",
+            "2,0x00100010,0x24090005,1,3",
+            "3,0x00100014,0x24020009,0,4",
+            "4,0x00100018,0x03e00008,0,5",
+            "5,0x0010001c,0x00000000,0,6",
             "# truncated=false range=0x00100008:0x0010001c",
         ], trace_lines
         traced_state = json.loads(trace_report_path.read_text(encoding="utf-8"))
@@ -1395,8 +1396,8 @@ def main():
         )
         loop_lines = loop_trace_path.read_text(encoding="utf-8").splitlines()
         assert len(loop_lines) == 65538, len(loop_lines)
-        assert loop_lines[1] == "1,0x00100008,0x1000ffff", loop_lines[1]
-        assert loop_lines[-2] == "65536,0x0010000c,0x25080001", loop_lines[-2]
+        assert loop_lines[1] == "1,0x00100008,0x1000ffff,0,1", loop_lines[1]
+        assert loop_lines[-2] == "65536,0x0010000c,0x25080001,0,65536", loop_lines[-2]
         assert loop_lines[-1] == (
             "# truncated=true range=0x00100008:0x0010000c"
         ), loop_lines[-1]
