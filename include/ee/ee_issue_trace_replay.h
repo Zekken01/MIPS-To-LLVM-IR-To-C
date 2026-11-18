@@ -226,6 +226,12 @@ private:
                 instruction->m_gpr_read_mask = rs | rt;
                 // EE MULT can also put the low product directly in rd.
                 instruction->m_gpr_write_mask = multiply ? rd : 0u;
+                // Do not infer an early GPR multiply result from generic ALU
+                // timing; conservatively use the explicit multiply category.
+                if (multiply)
+                {
+                    instruction->m_result_latency = special_latency;
+                }
                 instruction->m_hilo_write_mask = 0x3u;
                 instruction->m_hilo_result_latency = special_latency;
                 return true;
@@ -282,6 +288,12 @@ private:
                 }
                 instruction->m_gpr_read_mask = rs | rt;
                 instruction->m_gpr_write_mask = multiply ? rd : 0u;
+                // Do not infer an early GPR multiply result from generic ALU
+                // timing; conservatively use the explicit multiply category.
+                if (multiply)
+                {
+                    instruction->m_result_latency = special_latency;
+                }
                 instruction->m_hilo_write_mask = 0xcu;
                 instruction->m_hilo_result_latency = special_latency;
                 return true;
