@@ -3472,7 +3472,7 @@ int main(int argc, char** argv)
                             std::fprintf(
                                 stderr,
                                 "IOP HLE rejected RPC payload: "
-                                "source=0x%08x bytes=%u header_words=%u\\n",
+                                "source=0x%08x bytes=%u header_words=%u\n",
                                 dma_diagnostic.m_rpc_payload_source,
                                 dma_diagnostic.m_rpc_payload_length,
                                 dma_diagnostic.m_rpc_packet_word_count
@@ -3487,7 +3487,7 @@ int main(int argc, char** argv)
                                     dma_diagnostic.m_rpc_packet_words[word]
                                 );
                             }
-                            std::fprintf(stderr, "\\n");
+                            std::fprintf(stderr, "\n");
                         }
                         if (iop_rom0_path != nullptr && count != 0u &&
                             memory->contains(descriptors, 16u))
