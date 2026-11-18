@@ -74,4 +74,58 @@ bool c_ee_gs_display::readback(
     return true;
 }
 
+bool c_ee_gs_display::readback_upload(
+    const c_ee_gs_state& gs, std::vector<uint32_t>& pixels,
+    uint32_t& width, uint32_t& height
+)
+{
+    const s_ee_gs_state& state = gs.state();
+    if (!state.m_transfer_started ||
+        !state.m_written[0x50u] || !state.m_written[0x51u] ||
+        !state.m_written[0x52u] || !state.m_written[0x53u] ||
+        (state.m_registers[0x53u] & 3u) != 0u)
+    {
+        return false;
+    }
+
+    const uint64_t buffer = state.m_registers[0x50u];
+    const uint64_t position = state.m_registers[0x51u];
+    const uint64_t size = state.m_registers[0x52u];
+    const uint32_t base = static_cast<uint32_t>((buffer >> 32u) & 0x3fffu);
+    const uint32_t buffer_width = static_cast<uint32_t>(
+        (buffer >> 48u) & 0x3fu);
+    const uint32_t psm = static_cast<uint32_t>((buffer >> 56u) & 0x3fu);
+    const uint32_t dx = static_cast<uint32_t>((position >> 32u) & 0x7ffu);
+    const uint32_t dy = static_cast<uint32_t>((position >> 48u) & 0x7ffu);
+    const uint32_t w = static_cast<uint32_t>(size & 0xfffu);
+    const uint32_t h = static_cast<uint32_t>((size >> 32u) & 0xfffu);
+
+    // A partial upload must never be shown as a complete texture.
+    if (w == 0u || h == 0u || w > 2048u || h > 2048u ||
+        buffer_width == 0u || dx + w > 2048u || dy + h > 2048u ||
+        static_cast<uint64_t>(w) * h != state.m_transfer_pixels_written)
+    {
+        return false;
+    }
+
+    std::vector<uint32_t> next(static_cast<size_t>(w) * h);
+    for (uint32_t y = 0u; y < h; ++y)
+    {
+        for (uint32_t x = 0u; x < w; ++x)
+        {
+            uint32_t color = 0u;
+            if (!gs.read_color_pixel(
+                    psm, base, buffer_width, dx + x, dy + y, color))
+            {
+                return false;
+            }
+            next[static_cast<size_t>(y) * w + x] = color;
+        }
+    }
+    pixels.swap(next);
+    width = w;
+    height = h;
+    return true;
+}
+
 } // namespace ee

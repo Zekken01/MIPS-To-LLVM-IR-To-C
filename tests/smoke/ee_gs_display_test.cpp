@@ -76,7 +76,24 @@ int main()
         source[p * 4u + 1u] = static_cast<uint8_t>(p + 21u);
         source[p * 4u + 2u] = static_cast<uint8_t>(p + 41u);
     }
+    // The upload preview reads the *real destination rectangle* and
+    // refuses incomplete transfers; it is not a presented frame.
+    std::vector<uint32_t> upload_pixels{0x12345678u};
+    uint32_t upload_width = 10u;
+    uint32_t upload_height = 11u;
+    check(!ee::c_ee_gs_display::readback_upload(
+              gs, upload_pixels, upload_width, upload_height) &&
+          upload_width == 10u && upload_height == 11u,
+          "no upload cannot produce a texture preview");
+
     check(upload(gs, 0u, source), "real GS IMAGE upload accepted");
+    check(ee::c_ee_gs_display::readback_upload(
+              gs, upload_pixels, upload_width, upload_height) &&
+          upload_width == 8u && upload_height == 1u &&
+          upload_pixels.size() == 8u &&
+          upload_pixels.front() == 0xff291501u &&
+          upload_pixels.back() == 0xff301c08u,
+          "upload preview recovers completed GIF transfer, not a frame");
     check(ee::c_ee_gs_display::readback(
               gs, regs, 2u, pixels, width, height) &&
           width == 8u && height == 1u && pixels.size() == 8u &&

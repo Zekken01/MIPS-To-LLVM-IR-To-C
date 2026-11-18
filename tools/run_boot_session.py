@@ -61,6 +61,14 @@ def main(argv=None):
     parser.add_argument("elf", type=Path)
     parser.add_argument("--work-dir", required=True, type=Path)
     parser.add_argument("--report", required=True, type=Path)
+    parser.add_argument(
+        "--gs-snapshot", type=Path,
+        help="Capture the final trace's real guest display buffer, if configured",
+    )
+    parser.add_argument(
+        "--gs-upload-snapshot", type=Path,
+        help="Capture final trace's completed GS upload, not a frame",
+    )
     parser.add_argument("--expansion-passes", type=int, default=2)
     parser.add_argument("--expansion-per-pass", type=int, default=128)
     parser.add_argument("--no-recompile", action="store_true")
@@ -155,6 +163,17 @@ def main(argv=None):
     expansion_log = work / "expansion.log"
     boot_log = work / "boot.log"
     metadata_path = work / "ir" / "ee_functions.json"
+    snapshots = [
+        ("--gs-snapshot", args.gs_snapshot),
+        ("--gs-upload-snapshot", args.gs_upload_snapshot),
+    ]
+    requested_paths = [
+        path.resolve() for _, path in snapshots if path is not None
+    ]
+    if len(requested_paths) != len(set(requested_paths)) or any(
+            path in (report, expansion_log, boot_log, catalog_path)
+            for path in requested_paths):
+        parser.error("GS snapshot paths must be distinct from diagnostic outputs")
     expansion_log.write_text("", encoding="utf-8")
     base = [
         sys.executable, str(args.driver.resolve()), str(args.elf.resolve()),
@@ -246,10 +265,17 @@ def main(argv=None):
     # repetitive dispatch logs, but the final snapshot must stay useful
     # for diagnosing the next kernel service or translation failure.
     print(f"=== Final traced replay: {boot_log} ===", flush=True)
-    code, _, elapsed = run_session(
-        [*base, "--no-recompile", "--auto-expand=0", "--trace"],
-        boot_log,
-    )
+    # Request images only for the FINAL traced boot, never for temporary
+    # auto-expansion replays. A missing image must not be a stale file from
+    # a previous local invocation.
+    final_command = [*base, "--no-recompile", "--auto-expand=0", "--trace"]
+    for option, path in snapshots:
+        if path is not None:
+            target = path.resolve()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.unlink(missing_ok=True)
+            final_command.append(f"{option}={target}")
+    code, _, elapsed = run_session(final_command, boot_log)
     state = read_report(report)
     final_pc = state.get("final_pc")
     pc_text = f"0x{final_pc:08x}" if isinstance(final_pc, int) else "unknown"

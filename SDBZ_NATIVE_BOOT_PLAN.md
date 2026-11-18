@@ -414,3 +414,25 @@ the **guest-selected display buffer only when configured and readable**
 at the eventual stop. No synthetic frame, GS event, rasterizer,
 exception or interrupt is ever generated. Failure to obtain a display
 image is reported distinctly from guest boot status.
+
+### 2026-11-18 16:58 — matched HLE trace and automatic GS diagnostics
+
+The single 16:58 local session expanded the guest translation coverage by
+128 functions in pass one and 5 functions in pass two (133 total new
+functions), then replayed the same 10,491-dispatch boot to
+`0x00175210`/`LOOP_BUDGET(5)`. 9,001,372 instruction attempts,
+33 accepted GS GIF tags, zero vertices and 65,536 VRAM-transfer pixels
+remain unchanged. VBlank is still blocked by missing cycle authority;
+zero fields started and `INTC_STAT=0`.
+
+The launcher now requests two *diagnostic-only* snapshots automatically:
+`build/ps2-game-hle/gs-display.ppm` from a valid configured display
+circuit and `build/ps2-game-hle/gs-upload.ppm` from the **fully completed**
+current host-to-local GIF IMAGE rectangle. The two images are not
+interchangeable: uploaded textures are not final scanout. Neither
+snapshot affects guest execution, VBlank, DMA completion, or the stop.
+The batch wrapper passes image options **only on its final traced
+replay**, clearing previous PPM files beforehand; incomplete/unsupported
+transfer or absent display state remains explicitly unavailable.
+A regression covers actual GIF IMAGE upload preview, its rejection
+before completion and snapshot orchestration.

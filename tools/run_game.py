@@ -707,6 +707,8 @@ def main(argv=None):
                         help="Trace guest store PCs and operands overlapping a 32-bit guest word")
     parser.add_argument("--gs-snapshot", type=Path,
                         help="Optional PPM display VRAM readback (not a completed frame)")
+    parser.add_argument("--gs-upload-snapshot", type=Path,
+                        help="Optional completed GS IMAGE transfer PPM (not a rendered frame)")
     parser.add_argument("--report", type=Path,
                         help="Save structured EE stop state and last 64 native dispatches as JSON")
     parser.add_argument("--kernel-ram", type=Path,
@@ -951,6 +953,10 @@ def main(argv=None):
             command.append(f"--trace-v0={args.trace_v0}")
         if args.gs_snapshot is not None:
             command.append(f"--gs-snapshot={args.gs_snapshot.resolve()}")
+        if args.gs_upload_snapshot is not None:
+            command.append(
+                f"--gs-upload-snapshot={args.gs_upload_snapshot.resolve()}"
+            )
         if args.report is not None:
             report_path = args.report.resolve()
             report_path.parent.mkdir(parents=True, exist_ok=True)

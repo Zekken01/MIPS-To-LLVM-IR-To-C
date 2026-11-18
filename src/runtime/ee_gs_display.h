@@ -64,5 +64,15 @@ public:
         uint32_t& width,
         uint32_t& height
     );
+
+    // Interpret only a *completed, real* GIF host-to-local transfer's
+    // destination rectangle. A texture upload is NOT a rendered frame.
+    // The transfer registers and pixel count must agree exactly.
+    static bool readback_upload(
+        const c_ee_gs_state& gs,
+        std::vector<uint32_t>& pixels,
+        uint32_t& width,
+        uint32_t& height
+    );
 };
 } // namespace ee

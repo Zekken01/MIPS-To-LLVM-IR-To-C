@@ -87,6 +87,8 @@ echo === Starting extracted-disc HLE boot session ===
 echo Boot log: "%WORK_DIR%\boot.log"
 echo Expansion log: "%WORK_DIR%\expansion.log"
 echo Report: "%WORK_DIR%\first-boot.json"
+echo Guest display VRAM: "%WORK_DIR%\gs-display.ppm" (only if configured)
+echo GS texture upload: "%WORK_DIR%\gs-upload.ppm" (only if complete)
 python tools\run_boot_session.py "%GAME_ELF%" ^
     --disc-root "%DISC_ROOT%" ^
     --disc-folder "%DISC_ROOT%" ^
@@ -94,6 +96,8 @@ python tools\run_boot_session.py "%GAME_ELF%" ^
     --config Release ^
     --work-dir "%WORK_DIR%" ^
     --report "%WORK_DIR%\first-boot.json" ^
+    --gs-snapshot "%WORK_DIR%\gs-display.ppm" ^
+    --gs-upload-snapshot "%WORK_DIR%\gs-upload.ppm" ^
     --expansion-passes=2 ^
     --expansion-per-pass=128 ^
     --hle-startup ^

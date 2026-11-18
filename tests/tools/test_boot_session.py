@@ -19,7 +19,8 @@ SPEC.loader.exec_module(SESSION)
 
 
 def run_case(passes, initial_reuse=False, diagnostics=False,
-             initial_function_count=None, expansion_per_pass=2):
+             initial_function_count=None, expansion_per_pass=2,
+             snapshots=False):
     with tempfile.TemporaryDirectory(prefix="ee-boot-session-") as temp:
         work = Path(temp) / "work"
         report = work / "first-boot.json"
@@ -81,6 +82,16 @@ def run_case(passes, initial_reuse=False, diagnostics=False,
         ]
         if initial_reuse:
             argv.append("--no-recompile")
+        if snapshots:
+            work.mkdir(parents=True, exist_ok=True)
+            display = work / "gs-display.ppm"
+            upload = work / "gs-upload.ppm"
+            display.write_bytes(b"stale display")
+            upload.write_bytes(b"stale upload")
+            argv.extend((
+                "--gs-snapshot", str(display),
+                "--gs-upload-snapshot", str(upload),
+            ))
         if diagnostics:
             argv.extend((
                 "--trace-entry=0x0018cf68",
@@ -96,6 +107,17 @@ def run_case(passes, initial_reuse=False, diagnostics=False,
             assert "--trace" in calls[-1], calls
         if initial_reuse:
             assert "--no-recompile" in calls[0], calls
+        if snapshots:
+            # Temporary expansion passes must not emit image artifacts;
+            # the final replay is the only one with the two options.
+            assert all(
+                not any(arg.startswith("--gs-") for arg in call)
+                for call in calls[:-1]
+            ), calls
+            assert f"--gs-snapshot={display.resolve()}" in calls[-1]
+            assert f"--gs-upload-snapshot={upload.resolve()}" in calls[-1]
+            # No emulated images were produced: old files were removed.
+            assert not display.exists() and not upload.exists()
         if diagnostics:
             assert all(
                 "--trace-entry=0x0018cf68" in call and
@@ -176,6 +198,15 @@ def main():
     assert "--trace-entry=0x0018cf68" in boot
     assert "--trace-store=0x01ffec14" in boot
     assert "--trace-v0=0x00194478:0x00194794" in boot
+
+    # Final-only GS diagnostics must not leak into 128-function
+    # expansion passes, nor preserve previous session's misleading PPMs.
+    code, calls, expansion, boot = run_case([
+        {"trace": False, "replay": 1, "exit_reason": 5},
+        {"trace": True, "replay": 0, "exit_reason": 5},
+    ], initial_reuse=True, snapshots=True)
+    assert code == 3 and "gs-snapshot" in boot
+    assert "gs-snapshot" not in expansion
 
     # Even if the second pass also hits its cap, stop at the session
     # budget and preserve the translated DLL for next local invocation.
