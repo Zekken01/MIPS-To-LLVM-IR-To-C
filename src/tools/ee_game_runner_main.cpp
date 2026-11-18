@@ -5043,6 +5043,56 @@ int main(int argc, char** argv)
             "resumes=%u cap=%u (clock=%s)\n",
             cpu.m_pc, completed_loop_yields, loop_yield_resumes,
             ee_cycle_source_name(runtime.m_ee_cycle_scheduler.source()));
+        // A repeated guest loop may be waiting for DMA, an IOP response,
+        // an MMIO bit, or an ordinary RAM flag. More time or extra VBlank
+        // fields must not be assumed to satisfy it. Record bounded,
+        // read-only diagnostics from the original guest ELF and live CPU
+        // state so the actual poll can be identified without a full
+        // instruction trace or resetting the translated-function cache.
+        std::fprintf(stderr,
+            "EE host loop state: pc=0x%08x cause=0x%08x "
+            "status=0x%08x epc=0x%08x intc_stat=0x%08x "
+            "intc_mask=0x%08x fields=%llu ee_cycles=%llu\n",
+            cpu.m_pc, cpu.m_cop0[13], cpu.m_cop0[12],
+            cpu.m_cop0[14], hardware.intc().status(),
+            hardware.intc().mask(),
+            static_cast<unsigned long long>(hardware.scanout().fields_started()),
+            static_cast<unsigned long long>(
+                runtime.m_ee_cycle_scheduler.current_cycle()));
+        for (uint32_t index = 0u; index < 32u; index += 4u)
+        {
+            std::fprintf(stderr,
+                "EE host loop GPR: r%02u=0x%016llx r%02u=0x%016llx "
+                "r%02u=0x%016llx r%02u=0x%016llx\n",
+                index, static_cast<unsigned long long>(cpu.m_gpr[index].m_lo),
+                index + 1u,
+                static_cast<unsigned long long>(cpu.m_gpr[index + 1u].m_lo),
+                index + 2u,
+                static_cast<unsigned long long>(cpu.m_gpr[index + 2u].m_lo),
+                index + 3u,
+                static_cast<unsigned long long>(cpu.m_gpr[index + 3u].m_lo));
+        }
+        // Only examine a small static window around the exact yielded
+        // loop header. This is not a guest execution trace: dynamic RAM
+        // writes and MMIO reads are never performed to collect it.
+        for (int32_t relative = -64; relative <= 64; relative += 4)
+        {
+            const int64_t address =
+                static_cast<int64_t>(cpu.m_pc) + relative;
+            if (address < 0 || address > 0xffffffffll)
+            {
+                continue;
+            }
+            uint32_t instruction = 0u;
+            if (image.read32_at(static_cast<uint32_t>(address),
+                                &instruction))
+            {
+                std::fprintf(stderr,
+                    "EE host loop ELF: %c 0x%08x opcode=0x%08x\n",
+                    relative == 0 ? '>' : ' ',
+                    static_cast<uint32_t>(address), instruction);
+            }
+        }
         return 3;
     }
     if (reason == static_cast<uint32_t>(ee::e_ee_exit_reason::EE_EXIT_LOOP_BUDGET))
