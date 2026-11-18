@@ -156,8 +156,8 @@ public:
             {
                 return false;
             }
-            const uint64_t data = bus->m_gs_display.m_values[
-                static_cast<size_t>(display_index)];
+            const uint64_t data = bus->m_gs_display.register_value(
+                static_cast<uint32_t>(display_index));
             value->m_lo = (address & 4u) != 0u ? data >> 32u : data;
             value->m_hi = 0u;
             return true;
@@ -198,7 +198,8 @@ public:
                 return false;
             }
             const size_t index = static_cast<size_t>(display_index);
-            uint64_t data = bus->m_gs_display.m_values[index];
+            uint64_t data = bus->m_gs_display.register_value(
+                static_cast<uint32_t>(index));
             if (width == 8u)
             {
                 data = value->m_lo;
@@ -213,7 +214,8 @@ public:
                 data = (data & 0xffffffff00000000ull) |
                     (value->m_lo & 0xffffffffull);
             }
-            bus->m_gs_display.m_values[index] = data;
+            bus->m_gs_display.set_register(
+                static_cast<uint32_t>(index), data);
             return true;
         }
         if (value != nullptr && (width == 4u || width == 8u) &&
