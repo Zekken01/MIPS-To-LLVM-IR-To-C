@@ -84,6 +84,7 @@ void module_builder::declare_memory_helpers()
     m_out += "declare float @llvm.fabs.f32(float)\n";
     m_out += "declare i32 @ee_raise_exception(ptr, ptr, i32, i32, i32, i32)\n";
     m_out += "declare i32 @ee_exception_return(ptr)\n";
+    m_out += "declare void @ee_cop0_write(ptr, i32, i32)\n";
     m_out += "declare i32 @ee_vu0_qmfc2(ptr, ptr, i32, i32, i32, i32)\n";
     m_out += "declare i32 @ee_vu0_qmtc2(ptr, ptr, i32, i32, i32, i32)\n";
     m_out += "declare i32 @ee_vu0_cfc2(ptr, ptr, i32, i32, i32, i32)\n";
@@ -1693,12 +1694,12 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
         }
         else if (fmt == static_cast<uint8_t>(ee::e_ee_opcode::COP0_MTC0))
         {
-            // COP0[rd] = low32(GPR.rt)
-            std::string p = newtemp();
-            std::string v32 = newtemp();
+            // Guest MTC0 side effects are owned by the runtime (not a raw
+            // store into m_cop0). In particular Compare writes clear IP7.
+            const std::string v32 = newtemp();
             m_out += "  " + v32 + " = trunc i64 " + src_lo(gpr) + " to i32\n";
-            m_out += "  " + p + " = " + cop0_ptr(cp0_reg) + "\n";
-            m_out += "  store i32 " + v32 + ", ptr " + p + "\n";
+            m_out += "  call void @ee_cop0_write(ptr %cpu, i32 " +
+                     std::to_string(cp0_reg) + ", i32 " + v32 + ")\n";
         }
         else if (fmt == static_cast<uint8_t>(ee::e_ee_opcode::COP0_BC0))
         {
