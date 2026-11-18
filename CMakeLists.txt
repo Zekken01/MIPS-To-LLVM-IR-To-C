@@ -198,6 +198,9 @@ target_link_libraries(ee_issue_timing_probe_test PRIVATE ee_core)
 add_executable(ee_cycle_scheduler_test tests/smoke/ee_cycle_scheduler_test.cpp)
 target_link_libraries(ee_cycle_scheduler_test PRIVATE ee_core)
 
+add_executable(ee_issue_trace_replay_test tests/smoke/ee_issue_trace_replay_test.cpp)
+target_link_libraries(ee_issue_trace_replay_test PRIVATE ee_core)
+
 # Emit a deterministic per-pair VU0 trace from the in-tree candidate runtime.
 add_executable(ee_vu0_trace_candidate tests/tools/vu0_trace_candidate.cpp)
 target_link_libraries(ee_vu0_trace_candidate PRIVATE ee_core)
@@ -495,6 +498,7 @@ add_test(NAME ee_vsync_flag COMMAND ee_vsync_flag_test)
 add_test(NAME ee_scanout_clock COMMAND ee_scanout_clock_test)
 add_test(NAME ee_issue_timing_probe COMMAND ee_issue_timing_probe_test)
 add_test(NAME ee_cycle_scheduler COMMAND ee_cycle_scheduler_test)
+add_test(NAME ee_issue_trace_replay COMMAND ee_issue_trace_replay_test)
 add_test(NAME multi_function COMMAND ee_multi_test)
 add_test(NAME function_discovery COMMAND ee_function_discovery_test)
 add_test(NAME smoke COMMAND ee_smoke_test)

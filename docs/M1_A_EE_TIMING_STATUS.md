@@ -53,3 +53,7 @@ Do not mark M1-A or M1-B complete until their separate acceptance gates are sati
   Effects must not be inferred from a native observation alone.
 - This batch intentionally does **not** authorize or publish EE hardware
   cycles and cannot unblock VBlank without separately validated timing.
+
+## Trace-driven, uncalibrated issue replay
+
+An explicit-latency candidate consumes complete, ordered native/interpreted/annulled trace prefixes, and uses the existing two-wide issue probe to track scalar integer and load RAW dependencies across execution boundaries. Non-covered instructions, gaps, malformed delay slots and unknown latencies fail closed. This replay cannot publish hardware EE cycles or activate GS scanout. It is a calibration aid, **not** a validated R5900 timing source.
