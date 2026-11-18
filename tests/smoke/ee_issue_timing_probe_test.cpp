@@ -172,6 +172,43 @@ int main()
           clock.issue(dependent_hilo, &at) && at == 1u,
           "HI/LO same-cycle pairing observes RAW hazards");
 
+    // An outstanding write also reserves its architectural destination.
+    // Conservative WAW ordering applies across issue cycles and to FCR31.
+    clock.reset();
+    s_ee_probe_instruction long_gpr{};
+    long_gpr.m_gpr_write_mask = 1u << 9u;
+    long_gpr.m_result_latency = 8u;
+    s_ee_probe_instruction replace_gpr{};
+    replace_gpr.m_gpr_write_mask = 1u << 9u;
+    check(clock.issue(long_gpr, &at) && at == 0u &&
+          clock.issue(replace_gpr, &at) && at == 8u &&
+          clock.estimated_cycles() == 9u,
+          "long-latency GPR WAW is ordered across cycles");
+
+    clock.reset();
+    s_ee_probe_instruction fcsr_writer{};
+    fcsr_writer.m_pipe = e_ee_probe_pipe::COPROCESSOR;
+    fcsr_writer.m_fcsr_write = true;
+    fcsr_writer.m_fcsr_result_latency = 6u;
+    s_ee_probe_instruction fcsr_reader{};
+    fcsr_reader.m_pipe = e_ee_probe_pipe::BRANCH;
+    fcsr_reader.m_fcsr_read = true;
+    check(clock.issue(fcsr_writer, &at) && at == 0u &&
+          clock.issue(fcsr_reader, &at) && at == 6u &&
+          clock.estimated_cycles() == 7u,
+          "FCR31 compare-to-condition-branch RAW waits for availability");
+
+    clock.reset();
+    check(clock.issue(fcsr_writer, &at) && at == 0u &&
+          clock.issue(fcsr_writer, &at) && at == 6u &&
+          clock.estimated_cycles() == 7u,
+          "FCR31 WAW cannot reorder pending condition/control writes");
+
+    clock.reset();
+    check(clock.issue(fcsr_reader, &at) && at == 0u &&
+          clock.issue(fcsr_writer, &at) && at == 1u,
+          "FCR31 read/write do not pair in the same probe cycle");
+
     std::printf("ee_issue_timing_probe_test: %d failure(s)\n", g_failures);
     return g_failures != 0 ? 1 : 0;
 }
