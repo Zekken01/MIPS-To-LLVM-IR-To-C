@@ -21,6 +21,54 @@ import time
 from pathlib import Path
 
 
+def select_native_link_compiler(requested=None, platform=None, environment=None):
+    """Choose a driver compatible with this linker's Clang/GNU-style options.
+
+    The CMake CXX compiler may be MSVC cl.exe. That is a valid host-project
+    compiler, but it cannot compile our generated dispatcher/runtime objects
+    with -std, -O, -c/-o or link LLVM's Windows MSVC-target objects this way.
+    Keep guest translation and provenance untouched: select only the native
+    *link* toolchain here.
+    """
+    platform = sys.platform if platform is None else platform
+    environment = os.environ if environment is None else environment
+    override = requested if requested is not None else environment.get("CXX")
+
+    if platform != "win32":
+        return override or "c++"
+
+    if override:
+        candidates = [override]
+    else:
+        candidates = ["clang++.exe", "clang++"]
+        llvm_dir = environment.get("LLVM_INSTALL_DIR")
+        if llvm_dir:
+            candidates.append(str(Path(llvm_dir) / "bin" / "clang++.exe"))
+        for variable in ("ProgramFiles", "ProgramW6432"):
+            program_files = environment.get(variable)
+            if program_files:
+                candidates.append(str(Path(program_files) / "LLVM" / "bin" / "clang++.exe"))
+        candidates.append(str(Path("C:/Program Files/LLVM/bin/clang++.exe")))
+
+    for candidate in candidates:
+        # Distinguish clang++ (GNU-style driver for MSVC-target objects) from
+        # clang-cl/cl.exe (MSVC-style command-line parser). No silent fallback.
+        if Path(candidate).name.lower() not in ("clang++", "clang++.exe"):
+            raise ValueError(
+                f"native Windows linker requires clang++.exe, not {candidate!r}; "
+                "set CXX or --cxx to the LLVM clang++.exe executable"
+            )
+        resolved = shutil.which(candidate) or candidate
+        if Path(resolved).is_file():
+            return str(Path(resolved).resolve())
+
+    raise ValueError(
+        "LLVM clang++.exe not found for native Windows linking; "
+        "install LLVM, add clang++ to PATH, or set CXX/--cxx to "
+        "the absolute path of clang++.exe"
+    )
+
+
 def cpp_string(value):
     return (
         '"'
@@ -527,7 +575,8 @@ def main():
     parser.add_argument("object_dir", type=Path, help="directory containing .o files and objects.json")
     parser.add_argument("output", type=Path, help="output shared library path")
     parser.add_argument("--source-root", type=Path, default=Path(__file__).resolve().parents[1])
-    parser.add_argument("--cxx", default=os.environ.get("CXX", "c++"))
+    parser.add_argument("--cxx", default=None,
+                        help="native C++ compiler (Windows requires clang++.exe)")
     parser.add_argument(
         "--pdb", action="store_true",
         help="Generate a matching Windows PDB using Clang, CodeView and LLD",
@@ -543,6 +592,9 @@ def main():
 
     source_root = args.source_root.resolve()
     try:
+        # Prefer an explicitly supplied CXX. Otherwise discover Windows
+        # LLVM clang++ rather than using CMake's potentially MSVC cl.exe.
+        args.cxx = select_native_link_compiler(args.cxx)
         if args.pdb and sys.platform != "win32":
             raise ValueError("--pdb requires a Windows host and a Clang/LLD MinGW toolchain")
         pdb_path = args.output.with_suffix(".pdb") if args.pdb else None
