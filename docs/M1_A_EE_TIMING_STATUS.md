@@ -137,8 +137,11 @@ No device timing source was installed and M1-B remains blocked.
 ### COP0 and VU0 transfer architectural-resource coverage
 
 Decoder-recognized MFC0/MTC0, QMFC2/QMTC2 and CFC2/CTC2 now
-use separate COP0/VU0 VF/VU0 VI register masks in the offline
-timing scoreboard. Every transfer class requires an individual
+retain separate COP0/VU0 VF/VU0 VI *instruction masks*, but the
+macro-mode issue scoreboard now aliases VF[n]/VI[n] by register number
+for n=1..31 and excludes VF00/VI00 from ordinary dependencies
+(VU User's Manual v6.0 section 5.4.2). Every transfer class
+still requires an individual
 positive latency supplied explicitly by the caller; the analyzer's
 optional last profile group is
 `<cop0-transfer> <vu0-vf-transfer> <vu0-vi-transfer>`.
