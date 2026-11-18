@@ -197,6 +197,62 @@ def main() -> int:
             invalid_overlap.stdout, invalid_overlap.stderr
         )
 
+        # Decoder-aligned COP0 and VU0 architectural transfers must be
+        # explicitly opted in; the guest's actual system transitions,
+        # VU0 macros and memory effects remain unmodeled.
+        extended = numeric + ["8", "14", "6", "5", "7"]
+        transfer_cases = (
+            ("cop0", "0x40886000", "0x40096000", [0, 6], [6, 12]),
+            ("vu0-vf", "0x48a82000", "0x48292000", [0, 5], [5, 10]),
+            ("vu0-vi", "0x48c82000", "0x48492000", [0, 7], [7, 14]),
+        )
+        for label, producer, consumer, issued, completed in transfer_cases:
+            transfer_trace = root / f"{label}.csv"
+            transfer_trace.write_text(
+                "attempt,pc,opcode_word,kind,reference_slot,hle_service\n"
+                f"1,0x00001000,{producer},0,1,0\n"
+                f"2,0x00001004,{consumer},0,2,0\n"
+                "# truncated=false range=0x00001000:0x00001004\n",
+                encoding="utf-8"
+            )
+            omitted = subprocess.run(
+                [str(binary), str(transfer_trace), "1", "3"],
+                text=True, capture_output=True, check=False
+            )
+            assert omitted.returncode == 3, (
+                label, omitted.stdout, omitted.stderr
+            )
+            completions = root / f"{label}-completions.csv"
+            result = subprocess.run(
+                [str(binary), str(transfer_trace), *extended,
+                 f"--candidate-completions={completions}"],
+                text=True, capture_output=True, check=False
+            )
+            assert result.returncode == 0, (
+                label, result.stdout, result.stderr
+            )
+            with completions.open("r", encoding="utf-8",
+                                  newline="") as stream:
+                rows = list(csv.DictReader(stream))
+            assert [int(row["candidate_issue_cycle"]) for row in rows] == (
+                issued
+            ), (label, rows)
+            assert [int(row["candidate_completion_cycle"])
+                    for row in rows] == completed, (label, rows)
+
+        for invalid in (
+            extended[:-1],
+            extended[:-3] + ["6", "0", "7"],
+            extended[:-3] + ["6", "5", "-1"],
+        ):
+            rejected = subprocess.run(
+                [str(binary), str(fixture), *invalid],
+                text=True, capture_output=True, check=False
+            )
+            assert rejected.returncode == 2, (
+                invalid, rejected.stdout, rejected.stderr
+            )
+
         # The replay must refuse HLE transitions and a partial trace,
         # without producing a deceptively complete candidate CSV.
         original = fixture.read_text(encoding="utf-8")
