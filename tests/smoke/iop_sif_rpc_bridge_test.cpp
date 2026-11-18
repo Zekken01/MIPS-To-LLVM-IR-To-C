@@ -1,6 +1,7 @@
 #include "iop_sif1_bridge.h"
 #include "iop_sifcmd_bridge.h"
 #include "iop_sif_rpc_bridge.h"
+#include "iop_folder_sector_source.h"
 
 #include <chrono>
 #include <cstdint>
@@ -163,8 +164,13 @@ int main()
     iop::c_kernel kernel;
     iop::c_sifcmd_bridge commands(kernel, sif);
     iop::c_disc_loader loader(kernel, folder.m_path);
+    iop::c_folder_sector_source sectors(folder.m_path);
+    if (!sectors.valid())
+    {
+        return fail("synthetic extracted disc could not mount");
+    }
     iop::c_sif_rpc_bridge rpc(
-        loader, kernel, commands, memory, dmac
+        loader, kernel, commands, memory, dmac, &sectors
     );
     iop::c_sif1_bridge sif1(
         memory, kernel.cpu(), dmac, &commands, &rpc
@@ -679,6 +685,170 @@ int main()
         (dmac.status() & ((1u << 5u) | (1u << 6u))) != 0u)
     {
         return fail("unsupported INIT_CMD option generated a reply");
+    }
+
+
+    // Exercise the entire implemented CDVDFSV service family through
+    // actual SIF1 descriptor lists, SIF0 replies and mounted disc bytes.
+    // These tests are independent of the retail SDBZ boot sequence.
+    const uint32_t cdvd_servers[] = {
+        iop::c_sif_rpc_bridge::k_cdvd_s_server,
+        iop::c_sif_rpc_bridge::k_cdvd_n_server,
+        iop::c_sif_rpc_bridge::k_cdvd_stream_server,
+        iop::c_sif_rpc_bridge::k_cdvd_search_server,
+        iop::c_sif_rpc_bridge::k_cdvd_ready_server,
+        iop::c_sif_rpc_bridge::k_cdvd_ready_alt_server
+    };
+    for (uint32_t server : cdvd_servers)
+    {
+        std::vector<uint32_t> service_bind = bind64;
+        service_bind[8] = server;
+        packet(memory, bind_source, service_bind);
+        descriptor(memory, list, bind_source,
+                   iop::c_sifcmd_bridge::k_command_buffer, 64u);
+        memory.write32(list + 12u, 0x44u);
+        dmac.acknowledge(5u);
+        dmac.acknowledge(6u);
+        if (!sif1.set_dma(list, 1u, &dma_id) ||
+            memory.read32(ee_receive + 32u) !=
+                iop::c_sif_rpc_bridge::k_bind_cid ||
+            memory.read32(ee_receive + 36u) !=
+                (server ^ iop::c_sif_rpc_bridge::k_server_xor) ||
+            (dmac.status() & (1u << 5u)) == 0u)
+        {
+            return fail("CDVDFSV server bind not delivered via SIF0");
+        }
+    }
+
+    const auto cdvd_call = [&](uint32_t server, uint32_t method,
+                               uint32_t send_size, uint32_t recv_size) -> bool
+    {
+        packet(memory, call_source, {
+            64u, 0u, iop::c_sif_rpc_bridge::k_call_cid, 0u,
+            8u, 0x110a0u, 0x1234u, 0x005688a8u,
+            method, send_size, rpc_result, recv_size, 1u,
+            server ^ iop::c_sif_rpc_bridge::k_server_xor, 0u, 0u
+        });
+        descriptor(memory, list, args_source,
+                   iop::c_sif_rpc_bridge::k_rpc_data_destination,
+                   send_size);
+        descriptor(memory, list + 16u, call_source,
+                   iop::c_sifcmd_bridge::k_command_buffer, 64u);
+        memory.write32(list + 28u, 0x44u);
+        dmac.acknowledge(5u);
+        dmac.acknowledge(6u);
+        return sif1.set_dma(list, 2u, &dma_id);
+    };
+
+    packet(memory, args_source, {0u, 0u, 0u, 0u});
+    packet(memory, rpc_result, {0x11111111u, 0x22222222u, 0u, 0u});
+    if (!cdvd_call(iop::c_sif_rpc_bridge::k_cdvd_s_server,
+                   0x03u, 16u, 4u) ||
+        memory.read32(rpc_result) != 0x14u ||
+        !cdvd_call(iop::c_sif_rpc_bridge::k_cdvd_s_server,
+                   0x05u, 16u, 8u) ||
+        memory.read32(rpc_result) != 1u ||
+        memory.read32(rpc_result + 4u) != 0u ||
+        !cdvd_call(iop::c_sif_rpc_bridge::k_cdvd_s_server,
+                   0x27u, 16u, 12u) ||
+        memory.read32(rpc_result + 8u) != 0u)
+    {
+        return fail("CDVDFSV S command results were incorrect");
+    }
+    if (!cdvd_call(iop::c_sif_rpc_bridge::k_cdvd_ready_server,
+                   0u, 16u, 4u) ||
+        memory.read32(rpc_result) != 2u ||
+        !cdvd_call(iop::c_sif_rpc_bridge::k_cdvd_ready_alt_server,
+                   0u, 16u, 4u) ||
+        memory.read32(rpc_result) != 2u ||
+        !cdvd_call(iop::c_sif_rpc_bridge::k_cdvd_n_server,
+                   0x04u, 16u, 4u) ||
+        memory.read32(rpc_result) != 1u)
+    {
+        return fail("CDVDFSV media-backed status query failed");
+    }
+
+    iop::s_folder_file_info padman{};
+    if (!sectors.find_file("cdrom0:\\PADMAN.IRX;1", &padman) ||
+        padman.m_size != 0x220u)
+    {
+        return fail("CDVDFSV test disc file lookup failed");
+    }
+    packet(memory, args_source, {padman.m_lba, 1u, 0x001a0000u, 0u});
+    if (!cdvd_call(iop::c_sif_rpc_bridge::k_cdvd_n_server,
+                   0x01u, 16u, 4u) ||
+        memory.read32(rpc_result) != 0u ||
+        memory.read32(0x001a0000u) != 0x464c457fu)
+    {
+        return fail("CDVDFSV N sector read did not copy real disc data");
+    }
+    packet(memory, args_source, {padman.m_lba, 1u, 0x00040000u, 0u});
+    uint32_t iop_readback = 0u;
+    if (!cdvd_call(iop::c_sif_rpc_bridge::k_cdvd_n_server,
+                   0x0du, 16u, 4u) ||
+        !kernel.cpu().read32(0x00040000u, &iop_readback) ||
+        iop_readback != 0x464c457fu)
+    {
+        return fail("CDVDFSV IOP sector read did not write actual IOP RAM");
+    }
+
+    const std::string cdvd_path = "cdrom0:\\PADMAN.IRX;1";
+    packet(memory, args_source, {0xaabbccddu, 0x11223344u});
+    for (size_t index = 0u; index <= cdvd_path.size(); ++index)
+    {
+        memory.write8(
+            args_source + 0x24u + static_cast<uint32_t>(index),
+            index == cdvd_path.size() ? 0u :
+                static_cast<uint8_t>(cdvd_path[index])
+        );
+    }
+    if (!cdvd_call(iop::c_sif_rpc_bridge::k_cdvd_search_server,
+                   0u, 0x80u, 4u) ||
+        memory.read32(rpc_result) != 1u ||
+        memory.read32(args_source) != padman.m_lba ||
+        memory.read32(args_source + 4u) != padman.m_size)
+    {
+        return fail("CDVDFSV search result did not match mounted ISO map");
+    }
+
+    packet(memory, args_source, {padman.m_lba, 1u, 0x001a0800u, 1u});
+    if (!cdvd_call(iop::c_sif_rpc_bridge::k_cdvd_n_server,
+                   0x09u, 16u, 4u) ||
+        !cdvd_call(iop::c_sif_rpc_bridge::k_cdvd_s_server,
+                   0x0cu, 16u, 4u) ||
+        memory.read32(rpc_result) != 0x12u)
+    {
+        return fail("CDVDFSV stream-start state did not become visible");
+    }
+    packet(memory, args_source, {0u, 1u, 0x001a0800u, 2u});
+    if (!cdvd_call(iop::c_sif_rpc_bridge::k_cdvd_n_server,
+                   0x09u, 16u, 4u) ||
+        memory.read32(0x001a0800u) != 0x464c457fu)
+    {
+        return fail("CDVDFSV stream read did not use mounted sectors");
+    }
+    packet(memory, args_source, {0u, 0u, 0u, 3u});
+    if (!cdvd_call(iop::c_sif_rpc_bridge::k_cdvd_n_server,
+                   0x09u, 16u, 4u) ||
+        !cdvd_call(iop::c_sif_rpc_bridge::k_cdvd_s_server,
+                   0x0cu, 16u, 4u) ||
+        memory.read32(rpc_result) != 0x0au)
+    {
+        return fail("CDVDFSV stream stop did not restore idle status");
+    }
+
+    // Reject unknown methods without memory or DMA side effects.
+    dmac.acknowledge(5u);
+    dmac.acknowledge(6u);
+    packet(memory, args_source, {0u, 0u, 0u, 0u});
+    const uint32_t preceding = memory.read32(rpc_result);
+    if (cdvd_call(iop::c_sif_rpc_bridge::k_cdvd_n_server,
+                  0xffffu, 16u, 4u) ||
+        memory.read32(rpc_result) != preceding ||
+        rpc.pending_replies() != 0u ||
+        (dmac.status() & ((1u << 5u) | (1u << 6u))) != 0u)
+    {
+        return fail("unknown CDVDFSV RPC invented a completion");
     }
 
     std::printf("IOP LOADFILE RPC: PASS\n");
