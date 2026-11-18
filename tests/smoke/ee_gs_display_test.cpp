@@ -109,6 +109,19 @@ int main()
           pixels[4] == 0xff2d1905u,
           "second GS display circuit uses its own guest registers");
 
+    // SDBZ at the VBlank wait writes DISPFB1/2 with FBW=0.
+    // The reference GS page_address() treats this as one page per row;
+    // the diagnostic display must still read the real VRAM buffer.
+    regs.m_dispfb[1] = 0u; // FBP=0 FBW=0 PSMCT32
+    check(ee::c_ee_gs_display::readback(
+              gs, regs, 2u, pixels, width, height) &&
+          width == 8u && height == 1u &&
+          pixels[0] == 0xff291501u &&
+          pixels[7] == 0xff301c08u &&
+          gs.read_color_pixel(0u, 0u, 0u, 0u, 0u, pixels[0]) &&
+          pixels[0] == 0xff291501u,
+          "zero-FBW display uses reference one-page VRAM stride");
+
     regs.m_dispfb[1] |= uint64_t{0x13u} << 15u;
     const std::vector<uint32_t> before = pixels;
     check(!ee::c_ee_gs_display::readback(

@@ -4576,6 +4576,19 @@ int main(int argc, char** argv)
             static_cast<unsigned long long>(display.m_display[1]),
             hardware.gs_crt_mode()
         );
+        const uint32_t circuit = (display.m_pmode & 2u) != 0u ? 1u : 0u;
+        const uint64_t fb = display.m_dispfb[circuit];
+        const uint64_t disp = display.m_display[circuit];
+        const uint32_t fbp = static_cast<uint32_t>(fb & 0x1ffu);
+        const uint32_t fbw = static_cast<uint32_t>((fb >> 9u) & 0x3fu);
+        const uint32_t psm = static_cast<uint32_t>((fb >> 15u) & 0x1fu);
+        const uint32_t magh = static_cast<uint32_t>((disp >> 23u) & 15u) + 1u;
+        const uint32_t dw = static_cast<uint32_t>((disp >> 32u) & 0xfffu) + 1u;
+        std::printf(
+            "GS display source: circuit=%u FBP=%u FBW=%u PSM=%u "
+            "DW=%u MAGH=%u (FBW=0 uses reference one-page stride; "
+            "no rasterization or VBlank inferred)\n",
+            circuit + 1u, fbp, fbw, psm, dw, magh);
     }
 
     if (gs_snapshot_path != nullptr)

@@ -46,7 +46,7 @@ bool c_ee_gs_display::readback(
         std::min(lines, below != 0u ? span - below : lines));
     const uint32_t w = dw / magh;
     const uint32_t h = dh / magv;
-    if (fbw == 0u || w == 0u || h == 0u || w > 2048u || h > 2048u)
+    if (w == 0u || h == 0u || w > 2048u || h > 2048u)
     {
         return false;
     }

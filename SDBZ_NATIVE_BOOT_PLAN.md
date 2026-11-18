@@ -436,3 +436,29 @@ replay**, clearing previous PPM files beforehand; incomplete/unsupported
 transfer or absent display state remains explicitly unavailable.
 A regression covers actual GIF IMAGE upload preview, its rejection
 before completion and snapshot orchestration.
+
+### 2026-11-18 17:31 — real GS image inspection and zero-FBW display
+
+The five matched files produced by the new launcher show the same
+10,491 EE dispatches, 9,001,372 guest instruction attempts and
+`0x00175210`/`LOOP_BUDGET` stop, with GS tags=33, vertices=0,
+IMAGE QWC=16,384, and transfer pixels=65,536. The uploaded
+`gs-upload.ppm` is a genuine 1024 × 64 P6 RGB export from GS VRAM,
+entirely black (all 65,536 pixels). This is not a rendered frame.
+The captured guest display regs are PMODE=`0x7F27`, SMODE2=1,
+DISPFB1/2=`0xA0000070`, DISPLAY1=`0x001BF9FF0203327C` and
+DISPLAY2=`0x001BF9FF0203227C`, CRT mode=NTSC.
+
+Before this change `gs-display.ppm` was not generated because both
+DISPFB registers decode FBW=0, which readback incorrectly rejected.
+The ps2-web-recomp GS `page_address()` calculation instead uses
+`max(1, FBW * 64 / page_width)`, i.e., one page per row for FBW=0.
+Read-only PSMCT32/24/16/16S display access now matches that reference
+without changing the guest register, rasterizing a primitive or
+generating VBlank. The selected display circuit/FBP/FBW/PSM and DW/MAGH
+are reported separately. The zero-FBW address normalization is tested
+against actual nonzero swizzled VRAM pixels.
+
+The known boot blocker remains the absence of a validated EE cycle
+source for scanout fields and interrupt delivery. Do not claim the
+resulting display PPM is a presented game frame.

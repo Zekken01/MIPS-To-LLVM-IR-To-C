@@ -290,13 +290,18 @@ bool c_ee_gs_state::read_color_pixel(
 {
     // The GS display circuit uses color formats only. Refuse indexed and
     // depth VRAM so a texture upload is never mislabelled a framebuffer.
-    if (fbw == 0u || fbw > 63u || base > 0x3fffu ||
+    if (fbw > 63u || base > 0x3fffu ||
         x >= 2048u || y >= 2048u ||
         (psm != 0u && psm != 1u && psm != 2u && psm != 0x0au))
     {
         return false;
     }
-    const uint32_t raw = read_pixel(m_vram, psm, base, fbw, x, y);
+    // Match ps2-web-recomp's page_address(): a zero FBW has a minimum
+    // page stride of one, not an invalid read. SDBZ writes FBW=0 to
+    // DISPFB1/2 before its first VBlank. Preserve the actual register;
+    // normalize only the swizzled VRAM addressing used for readback.
+    const uint32_t stride = std::max(1u, fbw);
+    const uint32_t raw = read_pixel(m_vram, psm, base, stride, x, y);
     uint32_t rgb = raw & 0x00ffffffu;
     if (psm == 2u || psm == 0x0au)
     {
