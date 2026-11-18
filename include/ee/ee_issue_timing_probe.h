@@ -22,6 +22,16 @@ enum class e_ee_probe_pipe : uint8_t
     COPROCESSOR = COPROCESSOR_OP // compatibility with existing probes
 };
 
+// Only a candidate functional-unit occupancy scoreboard. Real hardware
+// throughput and resource sharing require independent validation.
+enum class e_ee_probe_unit : uint8_t
+{
+    NONE,
+    MAC0,
+    MAC1,
+    COP1_SCALAR
+};
+
 struct s_ee_probe_instruction
 {
     uint32_t m_gpr_read_mask = 0u;
@@ -52,6 +62,13 @@ struct s_ee_probe_instruction
     uint32_t m_fpr_result_latency = 0u;
     uint32_t m_acc_result_latency = 0u;
     uint32_t m_fcsr_result_latency = 0u;
+
+    // Throughput is distinct from result latency: the next instruction
+    // using this unit may not issue until m_initiation_interval cycles
+    // after the previous one. NONE requires interval zero; every named
+    // unit requires an explicitly configured, nonzero interval.
+    e_ee_probe_unit m_unit = e_ee_probe_unit::NONE;
+    uint32_t m_initiation_interval = 0u;
 };
 
 // A conservative, deterministic two-wide issue *candidate* for evaluating
@@ -86,6 +103,10 @@ public:
         }
         m_acc_ready = 0u;
         m_fcsr_ready = 0u;
+        for (uint64_t& ready : m_unit_next_issue)
+        {
+            ready = 0u;
+        }
     }
 
     // Returns false without mutation on overflow or invalid input.
@@ -94,6 +115,10 @@ public:
     {
         if (instruction.m_result_latency == 0u ||
             logical_pipes(instruction.m_pipe) == 0u ||
+            static_cast<uint32_t>(instruction.m_unit) >
+                static_cast<uint32_t>(e_ee_probe_unit::COP1_SCALAR) ||
+            (instruction.m_unit == e_ee_probe_unit::NONE) !=
+                (instruction.m_initiation_interval == 0u) ||
             ((instruction.m_hilo_read_mask | instruction.m_hilo_write_mask) &
                 ~0x0fu) != 0u ||
             m_issued == std::numeric_limits<uint64_t>::max())
@@ -174,6 +199,13 @@ public:
             candidate = m_fcsr_ready;
         }
 
+        const uint32_t unit_index =
+            static_cast<uint32_t>(instruction.m_unit);
+        if (unit_index != 0u && candidate < m_unit_next_issue[unit_index])
+        {
+            candidate = m_unit_next_issue[unit_index];
+        }
+
         const uint32_t hilo_latency = instruction.m_hilo_result_latency == 0u
             ? instruction.m_result_latency
             : instruction.m_hilo_result_latency;
@@ -197,7 +229,9 @@ public:
             (instruction.m_acc_write &&
                 acc_latency > max_cycle - candidate) ||
             (instruction.m_fcsr_write &&
-                fcsr_latency > max_cycle - candidate))
+                fcsr_latency > max_cycle - candidate) ||
+            (unit_index != 0u &&
+                instruction.m_initiation_interval > max_cycle - candidate))
         {
             return false;
         }
@@ -249,6 +283,11 @@ public:
         if (instruction.m_fcsr_write)
         {
             m_fcsr_ready = candidate + fcsr_latency;
+        }
+        if (unit_index != 0u)
+        {
+            m_unit_next_issue[unit_index] =
+                candidate + instruction.m_initiation_interval;
         }
         ++m_issued;
         if (issue_cycle != nullptr)
@@ -395,6 +434,7 @@ private:
     uint64_t m_fpr_ready[32]{};
     uint64_t m_acc_ready = 0u;
     uint64_t m_fcsr_ready = 0u;
+    uint64_t m_unit_next_issue[4]{};
     uint32_t m_pair_count = 0u;
     bool m_pair_annulled = false;
     uint32_t m_pair_reads = 0u;
