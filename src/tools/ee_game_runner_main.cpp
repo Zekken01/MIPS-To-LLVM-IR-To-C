@@ -4492,6 +4492,12 @@ int main(int argc, char** argv)
     }
 
     std::printf(
+        "EE reference-interpreter instruction slots: %llu "
+        "(not R5900 cycles; no GS events)\n",
+        static_cast<unsigned long long>(
+            runtime.m_reference_instruction_slots)
+    );
+    std::printf(
         "EE diagnostic guest-instruction attempts: %llu (NOT EE cycles)\n",
         static_cast<unsigned long long>(
             runtime.m_guest_instruction_attempts)

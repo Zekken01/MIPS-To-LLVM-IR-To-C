@@ -277,6 +277,14 @@ struct s_ee_runtime
     uint32_t m_instruction_trace_first_pc = 0u;
     uint32_t m_instruction_trace_last_pc = 0xffffffffu;
     uint32_t m_instruction_trace_overflow = 0u;
+
+    // Deterministic instruction-slot count matching the *simplified*
+    // ps2-web-recomp interpreter's basic pending+branch accounting:
+    // reached instruction = one slot; annulled branch-likely delay slot
+    // still consumes its reserved slot. Excludes syscall overhead and
+    // pipeline stalls. NOT authoritative R5900 cycles, NOT a GS clock.
+    // Append only: the compiled runtime ABI prefix must remain stable.
+    uint64_t m_reference_instruction_slots = 0u;
 };
 
 // Outside a branch delay slot, all four transfer forms only catch VU0 up to

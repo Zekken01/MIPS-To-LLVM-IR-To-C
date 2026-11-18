@@ -106,6 +106,15 @@ void module_builder::declare_memory_helpers()
     m_out += "  %old_count = load i64, ptr %counter_ptr\n";
     m_out += "  %new_count = add i64 %old_count, 1\n";
     m_out += "  store i64 %new_count, ptr %counter_ptr\n";
+    // Reference interpreter slot accounting is distinct from reached
+    // instructions: a not-taken branch-likely reserves its annulled slot.
+    // It is explicitly NOT an R5900 cycle clock or a scanout source.
+    m_out += "  %ref_counter_ptr = getelementptr i8, ptr %rt, i64 " +
+             std::to_string(offsetof(ee::s_ee_runtime,
+                                     m_reference_instruction_slots)) + "\n";
+    m_out += "  %ref_old = load i64, ptr %ref_counter_ptr\n";
+    m_out += "  %ref_new = add i64 %ref_old, 1\n";
+    m_out += "  store i64 %ref_new, ptr %ref_counter_ptr\n";
     m_out += "  %trace_ptr_field = getelementptr i8, ptr %rt, i64 " +
              std::to_string(offsetof(ee::s_ee_runtime, m_instruction_trace)) + "\n";
     m_out += "  %trace_ptr = load ptr, ptr %trace_ptr_field\n";
@@ -150,6 +159,26 @@ void module_builder::declare_memory_helpers()
     m_out += "  %overflow_field = getelementptr i8, ptr %rt, i64 " +
              std::to_string(offsetof(ee::s_ee_runtime, m_instruction_trace_overflow)) + "\n";
     m_out += "  store i32 1, ptr %overflow_field\n";
+    m_out += "  br label %done\n";
+    m_out += "done:\n";
+    m_out += "  ret void\n";
+    m_out += "}\n\n";
+
+    // The ps2-web-recomp reference interpreter charges two instruction
+    // slots for a branch, including when branch-likely annuls its delay
+    // instruction. This helper never increments the actual executed
+    // instruction counter or touches the guest's architectural state.
+    m_out += "define internal void @ee_count_reference_annulled_slot(ptr %rt) {\n";
+    m_out += "entry:\n";
+    m_out += "  %is_null = icmp eq ptr %rt, null\n";
+    m_out += "  br i1 %is_null, label %done, label %count\n";
+    m_out += "count:\n";
+    m_out += "  %ref_ptr = getelementptr i8, ptr %rt, i64 " +
+             std::to_string(offsetof(ee::s_ee_runtime,
+                                     m_reference_instruction_slots)) + "\n";
+    m_out += "  %old = load i64, ptr %ref_ptr\n";
+    m_out += "  %new = add i64 %old, 1\n";
+    m_out += "  store i64 %new, ptr %ref_ptr\n";
     m_out += "  br label %done\n";
     m_out += "done:\n";
     m_out += "  ret void\n";
@@ -2663,6 +2692,7 @@ void module_builder::emit_block(const std::vector<ee::s_ee_instruction>& block,
             // --- not-taken path: delay slot annulled, state already flushed ---
             m_out += nottaken_buf;
             m_out += ":\n";
+            m_out += "  call void @ee_count_reference_annulled_slot(ptr %rt)\n";
             m_out += "  br label %" + block_label(ft) + "\n";
         } else if (delay_idx >= 0) {
             // Ordinary conditional branches sample their condition before the

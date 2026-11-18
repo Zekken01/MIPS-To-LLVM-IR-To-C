@@ -319,3 +319,41 @@ instruction attempts, native dispatch count, safepoint visits and host
 wall time are *not* treated as EE cycles. This prepares a real
 cycle-budget scheduler but **does not fix the VBlank wait** until
 architecturally credible EE cycle accounting is implemented.
+
+### 2026-11-18 15:10 — matched HLE-first VBlank wait; reference instruction-slot foundation
+
+The five-file set `boot(20261118-151007).log`,
+`expansion(20261118-151007).log`,
+`first-boot(20261118-151007).json`,
+`iop-disc-catalog(20261118-151008).json` and
+`translation-cache(20261118-151007).json` share the USA retail
+ELF SHA-256 `1b213a85a2c305dc0f893c007a502c93e0851d1bb7db6164f9e0b72adb074a16`.
+The final stop is unchanged from 14:37: **10,491 dispatches**, **9,001,372
+actual reached-instruction attempts**, `LOOP_BUDGET(5)` at
+`0x00175210`. `SIO2MAN.IRX` links/starts correctly, executing a
+bounded initial 256 R3000 instructions without a memory fault. GS
+PATH3 still accepts 33 tags and 16,384 image QWC. No later module or
+presented framebuffer is established.
+
+New runtime diagnostics prove `INTC_STAT=0`, `INTC_MASK=0x804`,
+guest flag `[0x01ffeeb0]=0`, CSR destination `[0x01ffeeb8]=0`,
+`GS_CSR=0`, `CRT_configured=1`, `fields_started=0`, and
+`cycle_source=unavailable`. The missing timed VBlank producer, not
+IRX linkage or translation cache, remains the first blocker.
+The 126 expansion-run attempts are not separate independent boots.
+
+**Reference-only clock-model step:** `ps2-web-recomp` currently uses a
+simplified interpreter budget: 1 slot for ordinary guest instructions,
+2 slots for a branch including its reserved delay slot, and separately
+configurable syscall overhead (default 300). The generated EE IR now
+maintains an ABI-appended, host-only `m_reference_instruction_slots`
+distinct from `m_guest_instruction_attempts`, including an extra
+reserved slot when a branch-likely annuls a delay instruction. Runtime
+MCJIT regressions cover JR, BEQ, JAL and both branch-likely outcomes,
+plus resumed native guest loops. No reference slots are promoted to
+hardware-accurate R5900 cycles; syscall cost, dual issue, pipeline
+stalls, VU timing and event-edge scheduling require further validation.
+The runner displays this *reference accounting only* for diagnostics,
+and does not feed `c_ee_scanout_clock` or synthesize VBlank. This
+phase supplies a measurable timing baseline, not a boot-unblocking
+claim.

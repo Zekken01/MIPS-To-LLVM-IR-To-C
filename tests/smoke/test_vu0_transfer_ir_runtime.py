@@ -183,6 +183,13 @@ def compile_jit(fixture, temp_dir, mode, target):
     )
     require(match is not None, "missing guest-instruction accounting offset")
     counter_offset = int(match.group(1))
+    reference_match = re.search(
+        r"%ref_counter_ptr = getelementptr i8, ptr %rt, i64 ([0-9]+)",
+        ir_text,
+    )
+    require(reference_match is not None,
+            "missing reference interpreter slot counter")
+    counter_offset = max(counter_offset, int(reference_match.group(1)))
     require(counter_offset >= ctypes.sizeof(Runtime),
             "instrumentation counter overlaps VU0 callback ABI")
 
