@@ -175,6 +175,8 @@ target_link_libraries(ee_dispatcher_test PRIVATE ee_core)
 
 add_executable(ee_dispatch_interrupt_test tests/smoke/ee_dispatch_interrupt_test.cpp)
 target_link_libraries(ee_dispatch_interrupt_test PRIVATE ee_core)
+add_executable(ee_cop0_write_test tests/smoke/ee_cop0_write_test.cpp)
+target_link_libraries(ee_cop0_write_test PRIVATE ee_core)
 
 # VU0 transfer scheduler contract and architectural state regression tests.
 add_executable(ee_vu0_runtime_test tests/smoke/vu0_runtime_test.cpp)
@@ -212,6 +214,11 @@ target_link_libraries(ee_vu0_trace_candidate PRIVATE ee_core)
 # MCJIT regression can resolve the helper calls exactly as generated.
 add_library(ee_vu0_jit_helpers SHARED src/runtime/ee_vu0.cpp)
 set_target_properties(ee_vu0_jit_helpers PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+
+# Expose the same runtime COP0 side-effect helper to the emitted LLVM JIT
+# regression; this is real C++ guest state behavior, not a Python mock.
+add_library(ee_cop0_jit_helpers SHARED src/runtime/ee_exceptions.cpp)
+set_target_properties(ee_cop0_jit_helpers PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
 
 add_executable(ee_vu0_transfer_ir_fixture
     tests/smoke/vu0_transfer_ir_fixture.cpp
@@ -360,6 +367,9 @@ target_link_libraries(ee_control_flow_ir_fixture PRIVATE ee_core)
 add_executable(ee_compare_ir_fixture tests/smoke/compare_ir_fixture.cpp)
 target_link_libraries(ee_compare_ir_fixture PRIVATE ee_core)
 
+add_executable(ee_cop0_write_ir_fixture tests/smoke/cop0_write_ir_fixture.cpp)
+target_link_libraries(ee_cop0_write_ir_fixture PRIVATE ee_core)
+
 # R5900 single-precision FCC0 comparison normalization regression.
 add_executable(ee_fpu_compare_ir_fixture tests/smoke/fpu_compare_ir_fixture.cpp)
 target_link_libraries(ee_fpu_compare_ir_fixture PRIVATE ee_core)
@@ -473,6 +483,7 @@ add_test(NAME iop_sif_rpc_bridge COMMAND iop_sif_rpc_bridge_test)
 add_test(NAME decoder COMMAND ee_decoder_test)
 add_test(NAME dispatcher COMMAND ee_dispatcher_test)
 add_test(NAME ee_dispatch_interrupt COMMAND ee_dispatch_interrupt_test)
+add_test(NAME ee_cop0_write COMMAND ee_cop0_write_test)
 add_test(NAME ee_memory_alias COMMAND ee_memory_alias_test)
 add_test(NAME ee_physical_bus COMMAND ee_physical_bus_test)
 add_test(NAME ee_intc COMMAND ee_intc_test)
@@ -530,6 +541,11 @@ if(EE_HAVE_LLVM_JIT_TEST)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/smoke/test_compare_ir_runtime.py
                 $<TARGET_FILE:ee_compare_ir_fixture>)
+    add_test(NAME cop0_write_ir_runtime
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/smoke/test_cop0_write_ir_runtime.py
+                $<TARGET_FILE:ee_cop0_write_ir_fixture>
+                $<TARGET_FILE:ee_cop0_jit_helpers>)
     add_test(NAME object_emission_and_dispatch
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_object_emission.py
