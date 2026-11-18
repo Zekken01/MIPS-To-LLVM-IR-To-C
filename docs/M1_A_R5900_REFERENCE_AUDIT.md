@@ -135,6 +135,46 @@ missing events. **No independent physical-console completion trace has
 been supplied**, so passing these synthetic tests does not calibrate
 the R5900.
 
+## Decoder-grounded COP0 and VU0 transfer coverage
+
+The shared decoder (`src/ee/decoder.cpp`) already admits exact
+`MFC0/MTC0`, `QMFC2/QMTC2` (VU0 VF), and `CFC2/CTC2`
+(VU0 VI) encodings. The offline probe now tracks **three independent
+architectural register banks**: COP0[0..31], VU0 VF[0..31],
+and VU0 VI[0..31]. Their read/write dependencies are independent
+of GPR, COP1 FPR, FCR31, HI/LO and one another. The issue model
+handles RAW, conservative WAW, same-cycle pairing exclusions and
+atomic ordered-overlap rejection for these banks. Index zero is kept
+as a conservative tracked resource rather than assuming the same
+constant-register semantics as EE GPR0.
+
+**No new hardware timing constants were introduced.** The three
+transfer classes require individually supplied candidate result
+latencies (`m_cop0_transfer_latency`,
+`m_vu0_vf_transfer_latency`, `m_vu0_vi_transfer_latency`).
+The CLI adds an all-or-nothing final three-number optional latency
+group after the existing 14 input values. The single-issue
+`SYSTEM_CONTROL` and `VU0_TRANSFER` categories explicitly
+avoid claiming unverified mixed-pipeline pairing.
+
+**Remaining hard stop:** A COP0 register scoreboard cannot model
+implicit changes to Count/Compare/Status/Cause, interrupts,
+TLB operations or `EI/DI/ERET` transitions. The VU0 VF/VI register
+scoreboard cannot model vector lanes, VU0 ACC/flags, asynchronous
+VU0 execution, macro FMAC, `BC2` flag dependencies, VU0 memory
+transfers (`LQC2/SQC2`) or memory/cache stalls. These instructions
+still produce `UNMODELED_INSTRUCTION`, even when all three new
+transfer latency fields are supplied. Packed MMI and CACHE also
+remain rejected. Thus the expanded candidate stream **cannot**
+drive the EE cycle scheduler, GS scanout or INTC events.
+
+The new regression fixture covers decoder-supported transfers,
+unconfigured-latency rejection, isolated COP0/VU0 hazards,
+VF-versus-VI separation, conservative index-zero tracking,
+overlap ordering and deliberately unmodeled system/vector/MMI
+operations. Synthetic test vectors prove software behavior
+only, not R5900 cycle calibration.
+
 ## Outstanding correctness gates
 
 - The Table 1-3 Y combinations (e.g. COP1 operate plus COP1 move)
@@ -149,9 +189,11 @@ the R5900.
   resource identities are candidate assumptions, not independent timing
   validation. Short-loop hazards, execution/retirement distinctions,
   cached/uncached access and cache-miss stalls remain unmodeled.
-- Complete COP0, VU0/COP2, MMI, FCR0, TLB/cache ops and memory-side hazard
-  coverage remains absent. Treat each as a deterministic rejection until
-  independently verified timing semantics exist.
+- COP0 register transfers and VU0 VF/VI transfers now have explicit,
+  isolated offline hazard resources. COP0 system state (ERET/EI/DI,
+  interrupts, TLB, implicit register changes), VU0 macros, vector
+  flags/ACC, packed MMI, cache and memory-side hazards remain unavailable.
+  Reject these rather than assigning default costs.
 - HLE entry/exit overhead and scheduler handoffs have no independently
   measured instruction/cycle trace. Do not add arbitrary costs.
 - The candidate replay's synthetic regressions are **not** independent
