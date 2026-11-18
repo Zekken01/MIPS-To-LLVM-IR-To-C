@@ -206,6 +206,16 @@ using t_ee_mmio_write_callback = bool (*)(
     void* user, uint32_t physical_address, uint32_t width, const s_ee_u128* value
 );
 
+// Host-only ordered event for a reached native-translated guest instruction.
+// An attempt ordinal is NOT an EE cycle timestamp. Never use this record
+// as a GS scanout scheduler input without external timing validation.
+struct s_ee_instruction_trace_entry
+{
+    uint64_t m_attempt = 0u;
+    uint32_t m_pc = 0u;
+    uint32_t m_opcode_word = 0u;
+};
+
 struct s_ee_runtime
 {
     // Opaque EE memory/runtime context; retained as the first ABI member.
@@ -257,6 +267,16 @@ struct s_ee_runtime
     // Default false keeps the existing terminal LOOP_BUDGET diagnostic.
     // A HOST_YIELD never creates a clock tick, VBlank or guest exception.
     uint32_t m_loop_safepoint_yield_enabled = 0u;
+
+    // Optional bounded instruction-PC trace. No host callbacks, clocks or
+    // guest state writes; zero initialization is fully disabled. Append only
+    // after the existing runtime ABI, so older translated IR remains valid.
+    s_ee_instruction_trace_entry* m_instruction_trace = nullptr;
+    uint32_t m_instruction_trace_capacity = 0u;
+    uint32_t m_instruction_trace_count = 0u;
+    uint32_t m_instruction_trace_first_pc = 0u;
+    uint32_t m_instruction_trace_last_pc = 0xffffffffu;
+    uint32_t m_instruction_trace_overflow = 0u;
 };
 
 // Outside a branch delay slot, all four transfer forms only catch VU0 up to

@@ -23,6 +23,10 @@ enum e_lift_op_kind
     LOP_MUL_S, LOP_DIV_S, LOP_C_LT_S, LOP_C_LE_S, LOP_C_EQ_S, LOP_SQRT_S, LOP_ABS_S, LOP_NEG_S,
     LOP_CVT_S_D, LOP_CVT_D_S, LOP_ROUND_LS, LOP_TRUNC_LS, LOP_CEIL_LS, LOP_FLOOR_LS,
     LOP_MFC2, LOP_MTC2, LOP_LQC2, LOP_SQC2,
+    // A decoded COP2 macro operation lowered through the VU0 runtime helper.
+    // The decoder admits only macro encodings for which that helper provides
+    // architectural semantics.
+    LOP_VU0_MACRO,
     LOP_VADD_XYZW, LOP_VSUB_XYZW, LOP_VMUL_XYZW, LOP_VMULA_XYZW,
     LOP_VADD_X, LOP_VSUB_X, LOP_VMUL_X, LOP_VMULA_X,
     LOP_VADD_Y, LOP_VSUB_Y, LOP_VMUL_Y, LOP_VMULA_Y,

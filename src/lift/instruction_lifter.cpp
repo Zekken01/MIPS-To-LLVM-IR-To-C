@@ -313,10 +313,17 @@ s_lifted_op lift(const s_ee_instruction& insn)
         }
         break;
     case e_ee_opcode::OP_COP2:
-        // The COP2 rs field selects broad transfer/branch/macro classes; it is
-        // not itself a vector arithmetic opcode. Until the complete VU0 macro
-        // decoder and 128-bit transfer semantics are implemented, fail closed.
-        op.kind = LOP_UNSUPPORTED;
+        // COP2 macro instructions are dispatched by the VU0 runtime helper.
+        // Keep all unimplemented macro classes fail-closed: the decoder marks
+        // only the FMAC subset backed by that helper VALID.
+        if (insn.rs >= 0x10u && insn.valid == e_ee_valid::VALID)
+        {
+            op.kind = LOP_VU0_MACRO;
+        }
+        else
+        {
+            op.kind = LOP_UNSUPPORTED;
+        }
         break;
     default:
         op.kind = LOP_UNSUPPORTED;

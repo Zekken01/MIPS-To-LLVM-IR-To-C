@@ -380,6 +380,10 @@ if(Python3_Interpreter_FOUND)
             COMMAND ${Python3_EXECUTABLE}
                     ${CMAKE_SOURCE_DIR}/tests/tools/test_verify_ir_incremental.py)
     endif()
+    add_test(NAME ee_instruction_trace_comparator
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/tools/test_compare_ee_instruction_traces.py
+                ${CMAKE_SOURCE_DIR}/tools/compare_ee_instruction_traces.py)
     add_test(NAME vu0_trace_comparator
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_compare_vu0_traces.py)
@@ -511,6 +515,13 @@ if(EE_HAVE_LLVM_JIT_TEST)
                 --work-dir ${CMAKE_BINARY_DIR}/ee-sif0-stop-test)
     set_tests_properties(ee_sif0_stop_dma PROPERTIES TIMEOUT 180)
 
+    # Native Python integration tests select their own compatible linker:
+    # Windows LLVM clang++ accepts the generated GNU-style driver flags,
+    # while the configured CMake compiler may be MSVC cl.exe. Never force
+    # CMAKE_CXX_COMPILER into the test environment, since it can override
+    # an explicit caller CXX and make link_native_objects.py invoke cl.exe.
+    # See select_native_link_compiler() in tools/link_native_objects.py.
+
     add_test(NAME control_flow_ir_runtime
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/smoke/test_control_flow_ir_runtime.py
@@ -523,6 +534,10 @@ if(EE_HAVE_LLVM_JIT_TEST)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/smoke/test_guest_loop_yield_ir_runtime.py
                 $<TARGET_FILE:ee_control_flow_ir_fixture>)
+    add_test(NAME ee_trace_helper_optimizer
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/smoke/test_trace_helper_optimizer.py
+                $<TARGET_FILE:ee_mmi_ir_fixture>)
     add_test(NAME mmi_ir_runtime
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/smoke/test_mmi_ir_runtime.py
