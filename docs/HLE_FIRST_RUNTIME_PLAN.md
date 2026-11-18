@@ -58,11 +58,14 @@ especially `runtime/src/disc_folder.cpp` and
 
 **Current first slice:** `--disc-folder=DIR` mounts a validated directory,
 constructs the existing HLE IOP service bridge without a ROM0, and passes
-guest `LOADFILE` requests to the existing `c_disc_loader`. It deliberately
-does not yet synthesize a virtual ISO9660 sector map, implement
-`sceCdSearchFile`, enable full IOP kernel boot services or bypass
-`ARKD_DVD.IRX`. Those are subsequent milestones and no playable boot
-is implied.
+guest `LOADFILE` requests to the existing `c_disc_loader`.
+The folder-backed `c_folder_sector_source` now synthesizes an ISO9660
+primary volume descriptor, path tables, directories and deterministic virtual
+sector extents in memory, and is wired to authentic IOP CDVD DMA3 reads.
+Its `find_file` API returns file LBAs and sizes, but no IOP HLE
+`sceCdSearchFile` guest service is yet registered. Full IOP kernel boot
+services, GAME archive virtualization and any ARKD bypass remain future work;
+no playable boot is implied.
 
 ## Existing implementation to preserve
 
@@ -86,10 +89,10 @@ is implied.
    foundation, but a complete no-BIOS boot/service lifecycle remains missing.
 2. The existing `c_disc_loader` resolves `cdrom0:` IRX requests from an
    extracted directory safely. It is not a general ISO9660 directory service.
-3. CDVD raw-sector and DMA3 consumers still use the ROM0-only ISO source.
-   Port the SDBZ fork's **in-memory virtual ISO9660 mapping** to a
-   `c_sector_source` implementation; do not copy its unrelated native
-   asset/resource-pack features into the kernel runtime.
+3. The extracted-folder virtual ISO9660 `c_sector_source` and CDVD DMA3
+   wiring exist. The guest-facing `sceCdSearchFile` service and remaining
+   CDVD library imports are not yet implemented. No INFO/GAME synthesis or
+   unrelated native asset/resource-pack features are ported.
 4. The non-ROM0 SIFCMD/SIFMAN compatibility path lacks a complete HLE kernel
    reset, service library registry, scheduler and game-driven IRX lifecycle.
 5. Guest modules such as `ARKD_DVD.IRX` may use `sceCdSearchFile` to locate
@@ -170,7 +173,7 @@ is implied.
 
 ## Immediate follow-up
 
-Finish virtual ISO9660 folder-sector mapping and `sceCdSearchFile` semantics
-against synthetic nested-directory fixtures. Then wire the general HLE IOP
-kernel bootstrap and game-requested IRX modules. Keep the original 8,046
+Implement the guest-facing `sceCdSearchFile` and CDVD HLE library service
+against the synthetic folder-sector index, with negative path/lookup tests.
+Then wire the general HLE IOP kernel bootstrap and game-requested IRX modules. Keep the original 8,046
 LLVM guest modules unchanged until a genuine guest translation change is needed.

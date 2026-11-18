@@ -9,6 +9,7 @@
 #include "elf_loader.h"
 #include "iop_kernel.h"
 #include "iop_cdvd.h"
+#include "iop_folder_sector_source.h"
 #include "iop_sifman_bridge.h"
 #include "iop_sif1_bridge.h"
 #include "iop_sif1_dma_transport.h"
@@ -256,7 +257,7 @@ struct s_kernel_interrupt_handler
 
 struct s_cdvd_context
 {
-    std::unique_ptr<iop::c_iso_sector_source> m_source;
+    std::unique_ptr<iop::c_sector_source> m_source;
     std::unique_ptr<iop::c_cdvd_dma_transport> m_transport;
 };
 
@@ -1021,11 +1022,11 @@ int main(int argc, char** argv)
             if (disc_image_path != nullptr)
             {
                 cdvd = std::make_unique<s_cdvd_context>();
-                cdvd->m_source =
+                auto iso_source =
                     std::make_unique<iop::c_iso_sector_source>(
                     std::filesystem::path(disc_image_path)
                 );
-                if (!cdvd->m_source->valid())
+                if (!iso_source->valid())
                 {
                     std::fprintf(
                         stderr, "CDVD ISO must be readable and aligned to "
@@ -1033,6 +1034,7 @@ int main(int argc, char** argv)
                     );
                     return 1;
                 }
+                cdvd->m_source = std::move(iso_source);
                 cdvd->m_transport =
                     std::make_unique<iop::c_cdvd_dma_transport>(
                         iop_kernel->cpu(), iop_kernel->hardware(),
@@ -1083,10 +1085,29 @@ int main(int argc, char** argv)
             );
             if (disc_folder_path != nullptr)
             {
+                auto folder_source =
+                    std::make_unique<iop::c_folder_sector_source>(disc_root);
+                if (!folder_source->valid())
+                {
+                    std::fprintf(
+                        stderr, "[disc] invalid extracted media: %s\n",
+                        folder_source->error().c_str()
+                    );
+                    return 1;
+                }
+                cdvd = std::make_unique<s_cdvd_context>();
+                cdvd->m_source = std::move(folder_source);
+                cdvd->m_transport =
+                    std::make_unique<iop::c_cdvd_dma_transport>(
+                        iop_kernel->cpu(), iop_kernel->hardware(),
+                        *cdvd->m_source
+                    );
                 std::printf(
                     "[disc] HLE folder mounted: %s "
-                    "(direct LOADFILE paths; sector virtualization pending)\n",
-                    disc_root.string().c_str()
+                    "(virtual ISO9660 sectors=%llu; direct LOADFILE paths)\n",
+                    disc_root.string().c_str(),
+                    static_cast<unsigned long long>(
+                        cdvd->m_source->sector_count())
                 );
             }
             iop_rpc = std::make_unique<iop::c_sif_rpc_bridge>(

@@ -1630,6 +1630,9 @@ def main():
         assert "[disc] HLE folder mounted:" in folder_result.stdout, (
             folder_result.stdout + folder_result.stderr
         )
+        assert "virtual ISO9660 sectors=" in folder_result.stdout, (
+            folder_result.stdout + folder_result.stderr
+        )
         assert "IOP ROM0 reset:" not in folder_result.stdout, folder_result.stdout
         assert "EE stopped:" in folder_result.stdout, folder_result.stdout
 

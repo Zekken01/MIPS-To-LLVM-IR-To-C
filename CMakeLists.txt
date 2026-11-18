@@ -62,6 +62,7 @@ add_library(iop_cpu STATIC
     src/iop/iop_sifcmd_bridge.cpp
     src/iop/iop_disc_loader.cpp
     src/iop/iop_cdvd.cpp
+    src/iop/iop_folder_sector_source.cpp
     src/iop/iop_sif_rpc_bridge.cpp
 )
 target_include_directories(iop_cpu PUBLIC ${CMAKE_SOURCE_DIR}/src/iop)
@@ -119,6 +120,8 @@ add_executable(iop_disc_loader_test tests/smoke/iop_disc_loader_test.cpp)
 target_link_libraries(iop_disc_loader_test PRIVATE iop_cpu)
 add_executable(iop_cdvd_test tests/smoke/iop_cdvd_test.cpp)
 target_link_libraries(iop_cdvd_test PRIVATE iop_cpu)
+add_executable(iop_folder_sector_source_test tests/smoke/iop_folder_sector_source_test.cpp)
+target_link_libraries(iop_folder_sector_source_test PRIVATE iop_cpu)
 add_executable(iop_sif_rpc_bridge_test tests/smoke/iop_sif_rpc_bridge_test.cpp)
 target_link_libraries(iop_sif_rpc_bridge_test PRIVATE iop_cpu ee_core)
 
@@ -428,6 +431,7 @@ add_test(NAME iop_sif1_bridge COMMAND iop_sif1_bridge_test)
 add_test(NAME iop_sifcmd_bridge COMMAND iop_sifcmd_bridge_test)
 add_test(NAME iop_disc_loader COMMAND iop_disc_loader_test)
 add_test(NAME iop_cdvd COMMAND iop_cdvd_test)
+add_test(NAME iop_folder_sector_source COMMAND iop_folder_sector_source_test)
 add_test(NAME iop_sif_rpc_bridge COMMAND iop_sif_rpc_bridge_test)
 add_test(NAME decoder COMMAND ee_decoder_test)
 add_test(NAME dispatcher COMMAND ee_dispatcher_test)
