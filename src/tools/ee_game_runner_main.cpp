@@ -1759,6 +1759,16 @@ int main(int argc, char** argv)
     uint32_t slowest_native_pc = 0u;
     while (remaining != 0)
     {
+        // This catches HLE handoffs and interpreter observations that
+        // returned via a host continuation rather than native dispatch.
+        if (runtime.m_timing_observer_failed != 0u)
+        {
+            std::fprintf(stderr,
+                "EE timing observer refused an event "
+                "(guest execution halted, no hardware timing inferred)\n");
+            return 1;
+        }
+
         // Kernel HLE services completed device interrupts before handing
         // control back to its main thread. There is no synthetic DMA
         // status: only actual masked D_STAT completion bits can enter here.

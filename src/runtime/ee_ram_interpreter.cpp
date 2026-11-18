@@ -379,6 +379,14 @@ s_ee_ram_execution ee_execute_ram_callback(
                 *runtime, pc, instruction, 2u, 0u,
                 runtime->m_guest_instruction_attempts,
                 runtime->m_reference_instruction_slots);
+            // Stop at the first committed RAM instruction whose live
+            // observer rejects its timing provenance. Do not keep
+            // executing a fallback handler after a rejected cycle.
+            if (runtime->m_timing_observer_failed != 0u)
+            {
+                result.m_result = e_ee_ram_result::TIMING_OBSERVER_REJECTED;
+                return result;
+            }
         }
         if (delay_slot)
         {
@@ -414,6 +422,7 @@ const char* ee_ram_result_name(e_ee_ram_result result)
     case e_ee_ram_result::UNSUPPORTED: return "unsupported R5900 instruction";
     case e_ee_ram_result::BRANCH_IN_DELAY_SLOT: return "branch in delay slot";
     case e_ee_ram_result::INSTRUCTION_BUDGET: return "instruction budget exhausted";
+    case e_ee_ram_result::TIMING_OBSERVER_REJECTED: return "timing observer rejected";
     default: return "unknown";
     }
 }

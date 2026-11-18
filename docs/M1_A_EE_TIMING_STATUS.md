@@ -89,3 +89,7 @@ The offline analyzer now optionally writes `--candidate-events=<path>` after all
 ### Optional live timing-observation sink
 
 The native LLVM emitter now invokes an **internal** function-pointer observer (no extra external JIT helper symbol) for reached instructions and annulled slots. The RAM interpreter invokes the same callback signature after successful committed steps; host HLE entry records also reach it with the normalized service. The sink is unset by default. Rejections latch a host-only failure (not a guest exception, cycle tick or interrupt). The stock runner does not install any timing sink or validated hardware clock; it fails closed if an installed observer later rejects a native instruction. These hooks permit a separately calibrated issue-time producer to consume one unified ordered stream without promoting the current experimental candidate to hardware time.
+
+### Rejection safepoints
+
+An installed observer that refuses a RAM-interpreted committed step now terminates that interpreter immediately with `TIMING_OBSERVER_REJECTED`; the runner checks the same failure latch at the start of each host dispatch iteration so HLE continuations cannot silently proceed. Native translated code checks at the dispatch boundary. The default observer is null, preserving the baseline boot. No issue model or observer installs an EE timing source implicitly.

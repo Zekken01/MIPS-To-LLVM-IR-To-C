@@ -175,6 +175,37 @@ int main()
         return 1;
     }
 
+    // Timing-producer rejection in interpreted RAM must stop at the
+    // first committed instruction; no arbitrary interpreter budget burn.
+    write32(memory, k_ram_address, 0x3c098007u);
+    int rejected_calls = 0;
+    const auto reject_observation = [](
+        void* user, uint32_t, uint32_t, uint32_t, uint32_t,
+        uint64_t, uint64_t) -> bool
+    {
+        ++*static_cast<int*>(user);
+        return false;
+    };
+    runtime.m_timing_observer = reject_observation;
+    runtime.m_timing_observer_user = &rejected_calls;
+    runtime.m_timing_observer_failed = 0u;
+    cpu = {};
+    const ee::s_ee_ram_execution rejected = ee::ee_execute_ram_callback(
+        &cpu, &memory, k_ram_address, k_return_address, 20u, &runtime
+    );
+    if (!check(rejected.m_result ==
+                   ee::e_ee_ram_result::TIMING_OBSERVER_REJECTED &&
+               rejected.m_instructions == 1u &&
+               rejected.m_pc == k_ram_address &&
+               rejected_calls == 1 &&
+               runtime.m_timing_observer_failed == 1u &&
+               runtime.m_ee_cycle_scheduler.source() ==
+                   ee::e_ee_cycle_source::UNAVAILABLE,
+               "interpreter rejects unknown timing at first committed step"))
+    {
+        return 1;
+    }
+
     std::puts("ee_ram_interpreter_test: PASS");
     return 0;
 }

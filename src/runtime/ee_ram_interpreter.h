@@ -17,7 +17,8 @@ enum class e_ee_ram_result : uint32_t
     UNMAPPED,
     UNSUPPORTED,
     BRANCH_IN_DELAY_SLOT,
-    INSTRUCTION_BUDGET
+    INSTRUCTION_BUDGET,
+    TIMING_OBSERVER_REJECTED
 };
 
 struct s_ee_ram_execution
