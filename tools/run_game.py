@@ -680,7 +680,11 @@ def main(argv=None):
     )
     parser.add_argument(
         "--disc-image", type=Path,
-        help="Raw 2048-byte-sector ISO attached to CDVD (requires ROM0)",
+        help="Raw 2048-byte-sector ISO attached to CDVD (legacy ROM0 mode)",
+    )
+    parser.add_argument(
+        "--disc-folder", type=Path,
+        help="Extracted disc directory for HLE IOP module loading (no ISO or ROM0)",
     )
     parser.add_argument(
         "--timeout-seconds", type=int, default=10,
@@ -914,6 +918,13 @@ def main(argv=None):
             command.append(f"--iop-quantum={args.iop_quantum}")
             if args.iop_start_all:
                 command.append("--iop-start-all")
+        if args.disc_folder is not None:
+            folder = args.disc_folder.resolve(strict=True)
+            if not folder.is_dir():
+                parser.error(f"--disc-folder is not a directory: {folder}")
+            if args.disc_image is not None:
+                parser.error("--disc-folder and --disc-image are mutually exclusive")
+            command.append(f"--disc-folder={folder}")
         if args.disc_image is not None:
             command.append(
                 f"--disc-image={args.disc_image.resolve(strict=True)}"
