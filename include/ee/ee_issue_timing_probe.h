@@ -60,9 +60,10 @@ struct s_ee_probe_instruction
     uint32_t m_hilo_write_mask = 0u;
     uint32_t m_fpr_read_mask = 0u;
     uint32_t m_fpr_write_mask = 0u;
-    // COP0 registers, VU0 VF and VU0 VI are separate architectural
-    // resources. All 32 bits are valid, including register index zero;
-    // special architectural constant/read-only aliases remain conservative.
+    // COP0 registers are independent of VU0 transfers. In macro mode,
+    // VF[n] and VI[n] have distinct VALUES but a shared dependency
+    // identity for equal n. VF00 and VI00 do not produce register hazards
+    // (VU User's Manual v6.0, section 5.4.2).
     uint32_t m_cop0_read_mask = 0u;
     uint32_t m_cop0_write_mask = 0u;
     uint32_t m_vu0_vf_read_mask = 0u;
@@ -132,11 +133,7 @@ public:
         {
             ready = 0u;
         }
-        for (uint64_t& ready : m_vu0_vf_ready)
-        {
-            ready = 0u;
-        }
-        for (uint64_t& ready : m_vu0_vi_ready)
+        for (uint64_t& ready : m_vu0_ready)
         {
             ready = 0u;
         }
@@ -208,10 +205,15 @@ public:
         const uint32_t fwrites = instruction.m_fpr_write_mask;
         const uint32_t creads = instruction.m_cop0_read_mask;
         const uint32_t cwrites = instruction.m_cop0_write_mask;
-        const uint32_t vfreads = instruction.m_vu0_vf_read_mask;
-        const uint32_t vfwrites = instruction.m_vu0_vf_write_mask;
-        const uint32_t vireads = instruction.m_vu0_vi_read_mask;
-        const uint32_t viwrites = instruction.m_vu0_vi_write_mask;
+        // Macro-mode dependency detection aliases VF[n] and VI[n] by
+        // index; the actual vector and integer values remain independent.
+        // Register zero is exempt from these dependencies.
+        const uint32_t vfreads = instruction.m_vu0_vf_read_mask & ~1u;
+        const uint32_t vfwrites = instruction.m_vu0_vf_write_mask & ~1u;
+        const uint32_t vireads = instruction.m_vu0_vi_read_mask & ~1u;
+        const uint32_t viwrites = instruction.m_vu0_vi_write_mask & ~1u;
+        const uint32_t vu_reads = vfreads | vireads;
+        const uint32_t vu_writes = vfwrites | viwrites;
         const bool independent =
             (reads & m_pair_writes) == 0u &&
             (writes & (m_pair_reads | m_pair_writes)) == 0u &&
@@ -221,10 +223,8 @@ public:
             (fwrites & (m_pair_fpr_reads | m_pair_fpr_writes)) == 0u &&
             (creads & m_pair_cop0_writes) == 0u &&
             (cwrites & (m_pair_cop0_reads | m_pair_cop0_writes)) == 0u &&
-            (vfreads & m_pair_vu0_vf_writes) == 0u &&
-            (vfwrites & (m_pair_vu0_vf_reads | m_pair_vu0_vf_writes)) == 0u &&
-            (vireads & m_pair_vu0_vi_writes) == 0u &&
-            (viwrites & (m_pair_vu0_vi_reads | m_pair_vu0_vi_writes)) == 0u &&
+            (vu_reads & m_pair_vu0_writes) == 0u &&
+            (vu_writes & (m_pair_vu0_reads | m_pair_vu0_writes)) == 0u &&
             (!instruction.m_acc_read || !m_pair_acc_write) &&
             (!instruction.m_acc_write ||
                 (!m_pair_acc_read && !m_pair_acc_write)) &&
@@ -283,15 +283,10 @@ public:
             {
                 candidate = m_cop0_ready[reg];
             }
-            if (((vfreads | (wait_for_waw ? vfwrites : 0u)) & bit) != 0u &&
-                candidate < m_vu0_vf_ready[reg])
+            if (((vu_reads | (wait_for_waw ? vu_writes : 0u)) & bit) != 0u &&
+                candidate < m_vu0_ready[reg])
             {
-                candidate = m_vu0_vf_ready[reg];
-            }
-            if (((vireads | (wait_for_waw ? viwrites : 0u)) & bit) != 0u &&
-                candidate < m_vu0_vi_ready[reg])
-            {
-                candidate = m_vu0_vi_ready[reg];
+                candidate = m_vu0_ready[reg];
             }
         }
         if ((instruction.m_acc_read ||
@@ -396,9 +391,9 @@ public:
                 if (((cwrites & bit) != 0u &&
                      candidate + cop0_latency <= m_cop0_ready[reg]) ||
                     ((vfwrites & bit) != 0u &&
-                     candidate + vu0_vf_latency <= m_vu0_vf_ready[reg]) ||
+                     candidate + vu0_vf_latency <= m_vu0_ready[reg]) ||
                     ((viwrites & bit) != 0u &&
-                     candidate + vu0_vi_latency <= m_vu0_vi_ready[reg]))
+                     candidate + vu0_vi_latency <= m_vu0_ready[reg]))
                 {
                     return false;
                 }
@@ -460,10 +455,8 @@ public:
         m_pair_fpr_writes |= fwrites;
         m_pair_cop0_reads |= creads;
         m_pair_cop0_writes |= cwrites;
-        m_pair_vu0_vf_reads |= vfreads;
-        m_pair_vu0_vf_writes |= vfwrites;
-        m_pair_vu0_vi_reads |= vireads;
-        m_pair_vu0_vi_writes |= viwrites;
+        m_pair_vu0_reads |= vu_reads;
+        m_pair_vu0_writes |= vu_writes;
         m_pair_acc_read |= instruction.m_acc_read;
         m_pair_acc_write |= instruction.m_acc_write;
         m_pair_fcsr_read |= instruction.m_fcsr_read;
@@ -499,13 +492,21 @@ public:
             {
                 m_cop0_ready[reg] = candidate + cop0_latency;
             }
-            if ((vfwrites & bit) != 0u)
+            if ((vu_writes & bit) != 0u)
             {
-                m_vu0_vf_ready[reg] = candidate + vu0_vf_latency;
-            }
-            if ((viwrites & bit) != 0u)
-            {
-                m_vu0_vi_ready[reg] = candidate + vu0_vi_latency;
+                // If one instruction describes both kinds of write, the
+                // numbered hazard clears only when both results are ready.
+                uint64_t ready = 0u;
+                if ((vfwrites & bit) != 0u)
+                {
+                    ready = candidate + vu0_vf_latency;
+                }
+                if ((viwrites & bit) != 0u &&
+                    candidate + vu0_vi_latency > ready)
+                {
+                    ready = candidate + vu0_vi_latency;
+                }
+                m_vu0_ready[reg] = ready;
             }
         }
         if (instruction.m_acc_write)
@@ -672,10 +673,8 @@ private:
         m_pair_fpr_writes = 0u;
         m_pair_cop0_reads = 0u;
         m_pair_cop0_writes = 0u;
-        m_pair_vu0_vf_reads = 0u;
-        m_pair_vu0_vf_writes = 0u;
-        m_pair_vu0_vi_reads = 0u;
-        m_pair_vu0_vi_writes = 0u;
+        m_pair_vu0_reads = 0u;
+        m_pair_vu0_writes = 0u;
         m_pair_acc_read = false;
         m_pair_acc_write = false;
         m_pair_fcsr_read = false;
@@ -695,8 +694,7 @@ private:
     uint64_t m_hilo_ready[4]{};
     uint64_t m_fpr_ready[32]{};
     uint64_t m_cop0_ready[32]{};
-    uint64_t m_vu0_vf_ready[32]{};
-    uint64_t m_vu0_vi_ready[32]{};
+    uint64_t m_vu0_ready[32]{};
     uint64_t m_acc_ready = 0u;
     uint64_t m_fcsr_ready = 0u;
     uint64_t m_unit_next_issue[4]{};
@@ -710,10 +708,8 @@ private:
     uint32_t m_pair_fpr_writes = 0u;
     uint32_t m_pair_cop0_reads = 0u;
     uint32_t m_pair_cop0_writes = 0u;
-    uint32_t m_pair_vu0_vf_reads = 0u;
-    uint32_t m_pair_vu0_vf_writes = 0u;
-    uint32_t m_pair_vu0_vi_reads = 0u;
-    uint32_t m_pair_vu0_vi_writes = 0u;
+    uint32_t m_pair_vu0_reads = 0u;
+    uint32_t m_pair_vu0_writes = 0u;
     bool m_pair_acc_read = false;
     bool m_pair_acc_write = false;
     bool m_pair_fcsr_read = false;
