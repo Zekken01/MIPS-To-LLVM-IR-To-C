@@ -1,0 +1,375 @@
+#include "iop_kernel_hle_bridge.h"
+
+#include <array>
+#include <cstdint>
+#include <cstdio>
+#include <string>
+#include <vector>
+
+namespace
+{
+int fail(const char* reason)
+{
+    std::fprintf(stderr, "IOP kernel HLE imports: %s\n", reason);
+    return 1;
+}
+
+void write16(std::vector<uint8_t>& data, size_t at, uint16_t value)
+{
+    data[at] = static_cast<uint8_t>(value);
+    data[at + 1u] = static_cast<uint8_t>(value >> 8u);
+}
+
+void write32(std::vector<uint8_t>& data, size_t at, uint32_t value)
+{
+    for (uint32_t i = 0u; i < 4u; ++i)
+    {
+        data[at + i] = static_cast<uint8_t>(value >> (i * 8u));
+    }
+}
+
+struct s_imports
+{
+    const char* m_name;
+    std::vector<uint16_t> m_ordinals;
+};
+
+const std::vector<s_imports>& retail_dependencies()
+{
+    static const std::vector<s_imports> imports = {
+        {"loadcore", {6u}},
+        {"intrman", {4u, 5u, 6u, 7u, 17u, 18u}},
+        {"stdio", {4u}},
+        {"dmacman", {28u, 32u, 33u, 34u, 35u}},
+        {"thbase", {4u, 6u, 20u}},
+        {"thevent", {4u, 6u, 7u, 8u, 10u}},
+        {"thsemap", {4u, 6u, 8u, 11u}},
+        {"sysclib", {8u, 29u, 36u}}
+    };
+    return imports;
+}
+
+std::vector<uint8_t> synthetic_sio2man_dependencies()
+{
+    // Structurally equivalent to the original module's eight import
+    // libraries and all 28 ordinals. The code and data are synthetic;
+    // no game assets or copyrighted IOP instructions are embedded.
+    std::vector<uint8_t> image(0x660u, 0u);
+    image[0] = 0x7fu;
+    image[1] = 'E';
+    image[2] = 'L';
+    image[3] = 'F';
+    image[4] = 1u;
+    image[5] = 1u;
+    image[6] = 1u;
+    write16(image, 16u, 0xff80u);
+    write16(image, 18u, 8u);
+    write32(image, 28u, 0x34u);
+    write16(image, 40u, 52u);
+    write16(image, 42u, 32u);
+    write16(image, 44u, 2u);
+
+    write32(image, 0x34u, 1u); // PT_LOAD
+    write32(image, 0x38u, 0x100u);
+    write32(image, 0x44u, 0x360u);
+    write32(image, 0x48u, 0x380u);
+    write32(image, 0x54u, 0x70000080u); // PT_SCE_IOPMOD
+    write32(image, 0x58u, 0x600u);
+    write32(image, 0x604u, 0u);        // entry
+    write32(image, 0x608u, 0x8fb0u);   // out-of-image real SIO2MAN GP
+    write32(image, 0x60cu, 0x360u);
+    write32(image, 0x610u, 0x10u);
+    write32(image, 0x614u, 0x10u);
+    write32(image, 0x100u, 0x0000000du); // guest break
+
+    uint32_t at = 0x40u;
+    for (const s_imports& group : retail_dependencies())
+    {
+        write32(image, 0x100u + at, 0x41e00000u);
+        for (uint32_t i = 0u; group.m_name[i] != 0; ++i)
+        {
+            image[0x100u + at + 12u + i] =
+                static_cast<uint8_t>(group.m_name[i]);
+        }
+        at += 20u;
+        for (uint16_t ordinal : group.m_ordinals)
+        {
+            write32(image, 0x100u + at, 0x03e00008u);
+            write32(image, 0x100u + at + 4u,
+                    0x24000000u | ordinal);
+            at += 8u;
+        }
+    }
+    return image;
+}
+
+bool call_guest(
+    iop::c_kernel& kernel, const std::string& library,
+    uint16_t ordinal, const std::array<uint32_t, 4>& arguments,
+    uint32_t* result
+)
+{
+    static uint32_t next_program = 0x4000u;
+    uint32_t entry = 0u;
+    if (!kernel.lookup_library(library, ordinal, &entry) ||
+        result == nullptr)
+    {
+        return false;
+    }
+    const uint32_t program = next_program;
+    next_program += 0x80u;
+    // Guest MIPS I: four 32-bit arguments, direct JAL to the HLE
+    // import target, and a breakpoint after returning from the stub.
+    for (uint32_t i = 0u; i < 4u; ++i)
+    {
+        if (!kernel.cpu().write32(
+                program + i * 8u,
+                0x3c040000u | (i << 16u) |
+                    (arguments[i] >> 16u)) ||
+            !kernel.cpu().write32(
+                program + i * 8u + 4u,
+                0x34840000u | (i << 21u) | (i << 16u) |
+                    (arguments[i] & 0xffffu)))
+        {
+            return false;
+        }
+    }
+    if (!kernel.cpu().write32(
+            program + 32u,
+            0x0c000000u | ((entry >> 2u) & 0x03ffffffu)) ||
+        !kernel.cpu().write32(program + 36u, 0u) ||
+        !kernel.cpu().write32(program + 40u, 0x0000000du))
+    {
+        return false;
+    }
+    const uint32_t thread_id =
+        kernel.create_thread(program, 0u, 1u, 0x400u);
+    if (thread_id == 0u || !kernel.start_thread(thread_id))
+    {
+        return false;
+    }
+    const iop::s_kernel_run_result ran = kernel.run(128u);
+    const iop::s_kernel_thread* thread =
+        kernel.thread(thread_id);
+    if (ran.m_stop != iop::e_kernel_stop::breakpoint ||
+        ran.m_guest_pc != program + 40u || thread == nullptr)
+    {
+        return false;
+    }
+    *result = thread->m_cpu.m_gpr[2];
+    return true;
+}
+} // namespace
+
+int main()
+{
+    iop::c_kernel kernel;
+    const auto synthetic = synthetic_sio2man_dependencies();
+
+    // Before installation the real eight-library import set must fail
+    // on the genuine first unresolved provider and remain atomic.
+    const iop::s_module_load_result missing =
+        kernel.load_module(synthetic);
+    if (missing.m_status != iop::e_irx_load_result::unresolved_import ||
+        missing.m_link_diagnostic.m_unresolved_library != "loadcore" ||
+        missing.m_link_diagnostic.m_unresolved_ordinal != 6u ||
+        missing.m_id != 0u)
+    {
+        return fail("original SIO2MAN imports did not fail closed");
+    }
+
+    iop::c_kernel_hle_bridge hle(kernel);
+    if (!hle.install())
+    {
+        return fail("could not install kernel service-family stubs");
+    }
+    if (kernel.has_guest_work() ||
+        hle.handle_syscall(kernel, 0xffffffffu))
+    {
+        return fail("merely installing HLE manufactured guest execution");
+    }
+    for (const s_imports& group : retail_dependencies())
+    {
+        for (uint16_t ordinal : group.m_ordinals)
+        {
+            uint32_t entry = 0u;
+            uint32_t instruction = 0u;
+            if (!kernel.lookup_library(
+                    group.m_name, ordinal, &entry) ||
+                entry < iop::c_kernel_hle_bridge::k_stub_base ||
+                !kernel.cpu().read32(entry + 8u, &instruction) ||
+                instruction != 0x0000000cu)
+            {
+                return fail("original SIO2MAN import missing guest stub");
+            }
+        }
+    }
+    uint32_t missing_export = 0u;
+    if (kernel.lookup_library("dmacman", 16u, &missing_export))
+    {
+        return fail("unimplemented HLE import was falsely registered");
+    }
+
+    const iop::s_module_load_result linked =
+        kernel.load_module(synthetic);
+    if (linked.m_status != iop::e_irx_load_result::success ||
+        linked.m_id != 1u ||
+        kernel.module(1u) == nullptr ||
+        kernel.module(1u)->m_irx.m_gp !=
+            kernel.module(1u)->m_irx.m_base + 0x8fb0u)
+    {
+        return fail("complete original SIO2MAN dependency set did not link");
+    }
+
+    kernel.bind_syscall(
+        [&](iop::c_kernel& active, uint32_t service)
+        {
+            return hle.handle_syscall(active, service);
+        }
+    );
+
+    uint32_t result = 0u;
+    if (!call_guest(
+            kernel, "thbase", 20u, {0u, 0u, 0u, 0u}, &result) ||
+        result == 0u)
+    {
+        return fail("real guest R3000 GetThreadId import did not run");
+    }
+
+    // Bounded guest-memory strncmp, lookup_ctype and strtol operate
+    // through actual R3000 import stubs, not direct host-only calls.
+    const std::string lhs = "ABC";
+    const std::string rhs = "ABD";
+    for (size_t i = 0u; i <= lhs.size(); ++i)
+    {
+        if (!kernel.cpu().write8(
+                0x2200u + static_cast<uint32_t>(i),
+                i == lhs.size() ? 0u :
+                    static_cast<uint8_t>(lhs[i])) ||
+            !kernel.cpu().write8(
+                0x2300u + static_cast<uint32_t>(i),
+                i == rhs.size() ? 0u :
+                    static_cast<uint8_t>(rhs[i])))
+        {
+            return fail("cannot prepare guest strings");
+        }
+    }
+    if (!call_guest(
+            kernel, "sysclib", 29u,
+            {0x2200u, 0x2300u, 3u, 0u}, &result) ||
+        static_cast<int32_t>(result) != -1 ||
+        !call_guest(
+            kernel, "sysclib", 8u,
+            {static_cast<uint32_t>('A'), 0u, 0u, 0u}, &result) ||
+        (result & 1u) == 0u)
+    {
+        return fail("guest strncmp or character classification failed");
+    }
+
+    const std::string number = " -42foo";
+    for (size_t i = 0u; i <= number.size(); ++i)
+    {
+        kernel.cpu().write8(
+            0x2400u + static_cast<uint32_t>(i),
+            i == number.size() ? 0u :
+                static_cast<uint8_t>(number[i]));
+    }
+    uint32_t consumed = 0u;
+    if (!call_guest(
+            kernel, "sysclib", 36u,
+            {0x2400u, 0x2500u, 10u, 0u}, &result) ||
+        static_cast<int32_t>(result) != -42 ||
+        !kernel.cpu().read32(0x2500u, &consumed) ||
+        consumed != 0x2404u)
+    {
+        return fail("guest strtol or end pointer was incorrect");
+    }
+
+    // EventFlag and semaphore are distinct IOP-owned objects; they
+    // cannot be conjured merely by the EE reading SIF flags.
+    kernel.cpu().write32(0x2600u, 0u);
+    kernel.cpu().write32(0x2604u, 0u);
+    kernel.cpu().write32(0x2608u, 0u);
+    if (!call_guest(
+            kernel, "thevent", 4u,
+            {0x2600u, 0u, 0u, 0u}, &result) ||
+        result != 1u ||
+        !call_guest(
+            kernel, "thevent", 6u,
+            {1u, 0x20u, 0u, 0u}, &result) ||
+        result != 0u ||
+        !call_guest(
+            kernel, "thevent", 10u,
+            {1u, 0x20u, 0u, 0x2620u}, &result) ||
+        result != 0u)
+    {
+        return fail("guest event creation, signal or wait failed");
+    }
+    uint32_t event_bits = 0u;
+    if (!kernel.cpu().read32(0x2620u, &event_bits) ||
+        event_bits != 0x20u)
+    {
+        return fail("event flag did not report actual guest bits");
+    }
+
+    kernel.cpu().write32(0x2700u, 0u);
+    kernel.cpu().write32(0x2704u, 0u);
+    kernel.cpu().write32(0x2708u, 1u);
+    kernel.cpu().write32(0x270cu, 2u);
+    if (!call_guest(
+            kernel, "thsemap", 4u,
+            {0x2700u, 0u, 0u, 0u}, &result) ||
+        result != 2u ||
+        !call_guest(
+            kernel, "thsemap", 8u,
+            {2u, 0u, 0u, 0u}, &result) ||
+        result != 0u ||
+        !call_guest(
+            kernel, "thsemap", 6u,
+            {2u, 0u, 0u, 0u}, &result) ||
+        result != 0u ||
+        !call_guest(
+            kernel, "thsemap", 11u,
+            {2u, 0x2740u, 0u, 0u}, &result) ||
+        result != 0u)
+    {
+        return fail("real guest semaphore calls did not complete");
+    }
+    uint32_t remaining = 0u;
+    if (!kernel.cpu().read32(0x2750u, &remaining) ||
+        remaining != 1u)
+    {
+        return fail("refer semaphore status reported false count");
+    }
+
+    // SIO2 DMA MMIO request retains STR, but never invents a DMA
+    // completion or sets IOP interrupt readiness.
+    uint32_t request = 0u;
+    if (!call_guest(
+            kernel, "dmacman", 32u,
+            {11u, 0u, 0u, 0u}, &result) ||
+        result != 1u ||
+        !kernel.hardware().read(
+            iop::c_hw::k_sio2_dma_rx_base + 8u,
+            4u, &request) ||
+        request != 0x01000200u ||
+        kernel.hardware().pending_interrupts() != 0u)
+    {
+        return fail("SIO2 DMA request was not hardware-backed");
+    }
+
+    // Unknown IOP service must remain unhandled; reset invalidates
+    // all installed imports and hosted semaphore/event state.
+    kernel.reset();
+    hle.reset_for_reboot();
+    uint32_t stale = 0u;
+    if (kernel.lookup_library("loadcore", 6u, &stale) ||
+        !hle.install() ||
+        !kernel.lookup_library("loadcore", 6u, &stale))
+    {
+        return fail("reboot did not reinstall legitimate HLE libraries");
+    }
+
+    std::printf("IOP kernel HLE service families: PASS\n");
+    return 0;
+}
