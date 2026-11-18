@@ -91,7 +91,12 @@ bool c_sif_rpc_bridge::prepare_command(
         packet.size() < size / 4u ||
         (size != 36u && size != 56u && size != 64u) ||
         (packet[0] & 0xffu) != size ||
-        packet[1] != 0u || packet[3] != 0u ||
+        // sifrpc uses DEADBEF0 as its IOP-side data destination.
+        // Earlier synthetic packets also used zero. Neither header
+        // form licenses an arbitrary IOP destination.
+        (packet[1] != 0u &&
+         packet[1] != k_rpc_data_destination) ||
+        packet[3] != 0u ||
         packet[4] == 0u || packet[5] == 0u ||
         packet[6] == 0u || packet[7] == 0u)
     {
@@ -166,11 +171,12 @@ bool c_sif_rpc_bridge::prepare_command(
     }
     else if (server_id == k_cdvd_init_server)
     {
-        // The retail SDBZ bootstrap calls CDVDFSV CdInit method 5.
-        // The reference HLE accepts any bounded receive size. Only a
-        // buffer with at least sixteen bytes receives result[3] = 0xff.
-        // Do not generalize this to other CDVD RPC operations.
-        if (method != 5u ||
+        // Retail SDBZ calls CdInit method 0. The observed word[4] = 5
+        // is the RPC record ID, not the method (which is word[8]).
+        // The reference HLE accepts a bounded receive size. Only a
+        // buffer of at least sixteen bytes receives result[3] = 0xff.
+        // Other methods remain unsupported until independently verified.
+        if (method != 0u ||
             !m_ee_ram.contains(result, packet[11]) ||
             (packet[9] != 0u &&
              !m_ee_ram.contains(payload_source, packet[9])))
