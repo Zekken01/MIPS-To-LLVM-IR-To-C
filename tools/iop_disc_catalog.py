@@ -130,8 +130,8 @@ def reconcile_runtime_loadfile(catalog, final_output):
             raise ValueError("unparseable committed SIFRPC diagnostic")
         fields = match.groupdict()
         current = int(fields["seq"])
-        if current <= sequence or current > 0xFFFFFFFFFFFFFFFF:
-            raise ValueError("non-monotonic committed SIFRPC sequence")
+        if current != sequence + 1 or current > 0xFFFFFFFFFFFFFFFF:
+            raise ValueError("non-monotonic or gapped committed SIFRPC sequence")
         sequence = current
         rpc_commits += 1
         if (int(fields["cid"], 16) != 0x8000000A or
