@@ -167,10 +167,10 @@ bool c_sif_rpc_bridge::prepare_command(
     else if (server_id == k_cdvd_init_server)
     {
         // The retail SDBZ bootstrap calls CDVDFSV CdInit method 5.
-        // The reference HLE server writes 0xff at result + 12
-        // when the receive buffer contains at least sixteen bytes.
+        // The reference HLE accepts any bounded receive size. Only a
+        // buffer with at least sixteen bytes receives result[3] = 0xff.
         // Do not generalize this to other CDVD RPC operations.
-        if (method != 5u || packet[11] < 16u ||
+        if (method != 5u ||
             !m_ee_ram.contains(result, packet[11]) ||
             (packet[9] != 0u &&
              !m_ee_ram.contains(payload_source, packet[9])))
@@ -467,9 +467,13 @@ void c_sif_rpc_bridge::commit_command(const s_request& request)
     else if (request.m_words[2] == k_call_cid &&
              request.m_server_id == k_cdvd_init_server)
     {
-        // CDVDFSV CdInit's observed method 5 result layout.
+        // CdInit always completes, but only updates result[3] if
+        // the caller provided at least sixteen receive bytes.
         // This does not mark disc hardware ready or start IRX code.
-        m_ee_ram.write32(request.m_result_destination + 12u, 0xffu);
+        if (request.m_words[11] >= 16u)
+        {
+            m_ee_ram.write32(request.m_result_destination + 12u, 0xffu);
+        }
     }
     else if (request.m_words[2] == k_call_cid &&
              request.m_server_id == k_cdvd_s_server)
