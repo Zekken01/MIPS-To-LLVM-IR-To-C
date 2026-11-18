@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <ctime>
+#include <iterator>
+#include <sstream>
 #include <limits>
 #include <utility>
 
@@ -75,6 +77,71 @@ c_sif_rpc_bridge::c_sif_rpc_bridge(
     : m_loader(loader), m_kernel(kernel), m_sifcmd(sifcmd),
       m_ee_ram(ee_ram), m_dmac(dmac), m_sectors(sectors)
 {
+}
+
+bool c_sif_rpc_bridge::configure_reboot_image_version(
+    const std::string& reboot_command
+)
+{
+    m_loadfile_version_known = false;
+    std::fill(std::begin(m_loadfile_version),
+              std::end(m_loadfile_version), uint8_t{0});
+
+    const auto* folder = dynamic_cast<c_folder_sector_source*>(m_sectors);
+    if (folder == nullptr)
+    {
+        return false;
+    }
+    std::istringstream arguments(reboot_command);
+    std::string loader;
+    std::string path;
+    if (!(arguments >> loader))
+    {
+        return false;
+    }
+    while (arguments >> path)
+    {
+        if (path != "-v")
+        {
+            break;
+        }
+    }
+    s_folder_file_info image{};
+    constexpr uint32_t k_max_image = 16u * 1024u * 1024u;
+    if (path.empty() || !folder->find_file(path, &image) ||
+        image.m_size < 16u || image.m_size > k_max_image)
+    {
+        return false;
+    }
+    const uint32_t count =
+        (image.m_size + c_iso_sector_source::k_sector_size - 1u) /
+        c_iso_sector_source::k_sector_size;
+    std::vector<uint8_t> bytes;
+    if (!m_sectors->read_sectors(image.m_lba, count, bytes) ||
+        bytes.size() < image.m_size)
+    {
+        return false;
+    }
+    static constexpr char k_marker[] = "PsIIloadfile";
+    const auto end = bytes.begin() + image.m_size;
+    const auto marker = std::search(
+        bytes.begin(), end, std::begin(k_marker), std::end(k_marker) - 1);
+    if (marker == end ||
+        static_cast<size_t>(end - marker) < sizeof(k_marker) - 1u + 4u)
+    {
+        return false;
+    }
+    for (uint32_t index = 0u; index < 4u; ++index)
+    {
+        const uint8_t digit = marker[sizeof(k_marker) - 1u + index];
+        if (digit < '0' || digit > '9')
+        {
+            return false;
+        }
+        m_loadfile_version[index] = digit;
+    }
+    m_loadfile_version_known = true;
+    return true;
 }
 
 bool c_sif_rpc_bridge::prepare_command(
@@ -158,13 +225,24 @@ bool c_sif_rpc_bridge::prepare_command(
     candidate.m_result_destination = result;
     if (server_id == k_loadfile_server)
     {
-        if (method != 0u || packet[9] < 260u ||
-            packet[11] < 8u ||
-            !m_ee_ram.contains(result, 8u) ||
-            !m_ee_ram.contains(payload_source, packet[9]) ||
-            !read_guest_path(
-                m_ee_ram, payload_source, packet[9],
-                &candidate.m_guest_path))
+        if (method == 0xffu)
+        {
+            // The retail post-reboot request carries no payload.
+            // Only verified IOPRP metadata is returned.
+            if (!m_loadfile_version_known || packet[9] != 0u ||
+                packet[11] < 4u ||
+                !m_ee_ram.contains(result, packet[11]))
+            {
+                return false;
+            }
+        }
+        else if (method != 0u || packet[9] < 260u ||
+                 packet[11] < 8u ||
+                 !m_ee_ram.contains(result, 8u) ||
+                 !m_ee_ram.contains(payload_source, packet[9]) ||
+                 !read_guest_path(
+                     m_ee_ram, payload_source, packet[9],
+                     &candidate.m_guest_path))
         {
             return false;
         }
@@ -452,23 +530,31 @@ void c_sif_rpc_bridge::commit_command(const s_request& request)
     else if (request.m_words[2] == k_call_cid &&
              request.m_server_id == k_loadfile_server)
     {
-        ++m_load_requests;
-        const s_disc_load_result loaded = m_loader.load_requested(
-            request.m_guest_path, true
-        );
-        // A completed HLE LOADFILE call returns its actual module
-        // identifier or an error, never success for a missing module.
-        // The complete IOP module's guest thread is then scheduled.
-        const uint32_t result =
-            loaded.m_result == e_disc_load_result::success
-                ? loaded.m_module_id
-                : static_cast<uint32_t>(-1);
-        m_ee_ram.write32(request.m_result_destination, result);
-        m_ee_ram.write32(
-            request.m_result_destination + 4u,
-            loaded.m_result == e_disc_load_result::success
-                ? 0u : static_cast<uint32_t>(-1)
-        );
+        if (request.m_words[8] == 0xffu)
+        {
+            for (uint32_t index = 0u; index < 4u; ++index)
+            {
+                m_ee_ram.write8(request.m_result_destination + index,
+                                m_loadfile_version[index]);
+            }
+        }
+        else
+        {
+            ++m_load_requests;
+            const s_disc_load_result loaded = m_loader.load_requested(
+                request.m_guest_path, true
+            );
+            const uint32_t result =
+                loaded.m_result == e_disc_load_result::success
+                    ? loaded.m_module_id
+                    : static_cast<uint32_t>(-1);
+            m_ee_ram.write32(request.m_result_destination, result);
+            m_ee_ram.write32(
+                request.m_result_destination + 4u,
+                loaded.m_result == e_disc_load_result::success
+                    ? 0u : static_cast<uint32_t>(-1)
+            );
+        }
     }
     else if (request.m_words[2] == k_call_cid &&
              request.m_server_id == k_cdvd_init_server)
@@ -661,6 +747,9 @@ void c_sif_rpc_bridge::commit_command(const s_request& request)
 
 void c_sif_rpc_bridge::reset_for_reboot()
 {
+    m_loadfile_version_known = false;
+    std::fill(std::begin(m_loadfile_version),
+              std::end(m_loadfile_version), uint8_t{0});
     m_cdvd_streaming = false;
     m_cdvd_stream_position = 0u;
     m_replies.clear();

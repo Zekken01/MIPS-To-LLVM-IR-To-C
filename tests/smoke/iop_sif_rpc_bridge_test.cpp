@@ -3,6 +3,7 @@
 #include "iop_sif_rpc_bridge.h"
 #include "iop_folder_sector_source.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -150,6 +151,18 @@ int main()
     if (!create_irx(folder.m_path / "PADMAN.IRX"))
     {
         return fail("cannot write synthetic disc module");
+    }
+    {
+        std::vector<uint8_t> image(0x100u, 0u);
+        const std::string marker = "PsIIloadfile3040";
+        std::copy(marker.begin(), marker.end(), image.begin() + 0x40u);
+        std::ofstream out(folder.m_path / "IOPRP300.IMG", std::ios::binary);
+        out.write(reinterpret_cast<const char*>(image.data()),
+                  static_cast<std::streamsize>(image.size()));
+        if (!out.good())
+        {
+            return fail("cannot create reboot image metadata fixture");
+        }
     }
 
     ee::ee_memory memory(32u * 1024u * 1024u);
@@ -493,6 +506,60 @@ int main()
         return fail("CDVD Init payload length violation committed DMA");
     }
     memory.write32(call_source + 36u, 4u);
+
+    // Captured 13:05 retail LOADFILE version query: one 64-byte
+    // terminal SIF1 descriptor; no payload, four-byte receive result.
+    const std::vector<uint32_t> version_call = {
+        64u, 0u, iop::c_sif_rpc_bridge::k_call_cid, 0u,
+        5u, 0x20561900u, 8u, 0x00564d40u,
+        0xffu, 0u, rpc_result, 4u, 1u,
+        iop::c_sif_rpc_bridge::k_loadfile_server ^
+            iop::c_sif_rpc_bridge::k_server_xor,
+        0u, 0u
+    };
+    packet(memory, call_source, version_call);
+    descriptor(memory, list, call_source,
+               iop::c_sifcmd_bridge::k_command_buffer, 64u);
+    memory.write32(list + 12u, 0x44u);
+    memory.write32(rpc_result, 0xa5a5a5a5u);
+    dmac.acknowledge(5u);
+    dmac.acknowledge(6u);
+    if (sif1.set_dma(list, 1u, &dma_id) ||
+        memory.read32(rpc_result) != 0xa5a5a5a5u ||
+        rpc.pending_replies() != 0u ||
+        (dmac.status() & ((1u << 5u) | (1u << 6u))) != 0u)
+    {
+        return fail("version RPC fabricated metadata before reboot");
+    }
+    if (!rpc.configure_reboot_image_version(
+            "rom0:UDNL cdrom0:\\IOPRP300.IMG;1"))
+    {
+        return fail("cannot read actual IOPRP LOADFILE version");
+    }
+    dmac.acknowledge(5u);
+    dmac.acknowledge(6u);
+    if (!sif1.set_dma(list, 1u, &dma_id) ||
+        memory.read32(rpc_result) != 0x30343033u ||
+        memory.read32(ee_receive + 16u) != 5u ||
+        memory.read32(ee_receive + 28u) != 0x00564d40u ||
+        memory.read32(ee_receive + 32u) !=
+            iop::c_sif_rpc_bridge::k_call_cid ||
+        rpc.pending_replies() != 0u ||
+        rpc.load_requests() != 0u ||
+        (dmac.status() & (1u << 5u)) == 0u)
+    {
+        return fail("LOADFILE version query did not complete via SIF0");
+    }
+    dmac.acknowledge(5u);
+    dmac.acknowledge(6u);
+    memory.write32(call_source + 36u, 4u);
+    if (sif1.set_dma(list, 1u, &dma_id) ||
+        rpc.pending_replies() != 0u ||
+        (dmac.status() & ((1u << 5u) | (1u << 6u))) != 0u)
+    {
+        return fail("version RPC accepted unexpected send payload");
+    }
+    memory.write32(call_source + 36u, 0u);
 
     // Restore the single-command descriptor used by the next BIND.
     // The CdInit CALL above used a two-descriptor payload+command DMA.
@@ -913,6 +980,19 @@ int main()
         return fail("unknown CDVDFSV RPC invented a completion");
     }
 
+    // Reset may not retain the previous IOPRP's LOADFILE version.
+    rpc.reset_for_reboot();
+    packet(memory, call_source, version_call);
+    descriptor(memory, list, call_source,
+               iop::c_sifcmd_bridge::k_command_buffer, 64u);
+    memory.write32(list + 12u, 0x44u);
+    dmac.acknowledge(5u);
+    dmac.acknowledge(6u);
+    if (sif1.set_dma(list, 1u, &dma_id) ||
+        rpc.pending_replies() != 0u)
+    {
+        return fail("reset retained stale LOADFILE version");
+    }
     std::printf("IOP LOADFILE RPC: PASS\n");
     return 0;
 }

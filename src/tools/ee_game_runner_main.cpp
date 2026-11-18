@@ -3625,6 +3625,16 @@ int main(int argc, char** argv)
                             }
                             iop_sifcmd->reset_for_reboot();
                             iop_rpc->reset_for_reboot();
+                            // Metadata is read from the real mounted IOPRP,
+                            // never inferred from its name or the ELF catalog.
+                            if (!iop_rpc->configure_reboot_image_version(
+                                    reboot_argument))
+                            {
+                                std::fprintf(
+                                    stderr,
+                                    "[iop] IOPRP lacks a verified LOADFILE "
+                                    "version; version RPC unsupported\n");
+                            }
                             hardware.sif().begin_iop_reboot();
 
                             if (!iop_sifcmd->install() ||

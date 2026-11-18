@@ -82,6 +82,8 @@ public:
     // Invalidate outstanding RPC replies and CDVD streaming state
     // whenever the IOP kernel is actually reset.
     void reset_for_reboot();
+    // Read LOADFILE's version from the actual on-disc reboot image.
+    bool configure_reboot_image_version(const std::string& reboot_command);
 
     // The 16-byte EE INIT_CMD/opt=1 packet requests the original
     // IOP SET_SREG[0]=1 command. Reserve queue capacity during SIF1
@@ -109,6 +111,8 @@ private:
     ee::c_ee_dmac& m_dmac;
     c_sector_source* m_sectors = nullptr;
     bool m_cdvd_streaming = false;
+    bool m_loadfile_version_known = false;
+    uint8_t m_loadfile_version[4]{};
     uint32_t m_cdvd_stream_position = 0u;
     std::deque<s_reply> m_replies;
     uint32_t m_load_requests = 0u;
