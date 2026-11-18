@@ -82,3 +82,31 @@ The HLE bridge now retains a side-effect-free diagnostic snapshot of **committed
 A real R3000 module may require more than one bounded IOP quantum. The native HLE runner now gives the IOP scheduler a bounded turn after each accepted SIFRPC transport, not only on the initial LOADFILE success; ordinary guest threads resume across calls. Invalid/unhandled guest instructions and syscalls still stop with their actual PC/opcode. A regression fixture executes a NOP in the first limited scheduler slice and reaches its breakpoint only on the later turn. No invented successful module load is implied.
 
 The guest transport scheduler only receives bounded turns when `c_kernel::has_guest_work()` finds a ready R3000 thread or a time-blocked guest thread. No modules, dormant threads, hard-faulted threads, and untimed waits cannot advance IOP cycles from a spurious HLE SIFRPC poll. Regression checks the transition empty → ready → ready after first quantum → faulted after breakpoint.
+
+## 2026-11-18 13:40 — SIO2MAN real IRX bootstrap and coherent IOP kernel HLE
+
+### Strict local evidence
+
+The matched set `boot(20261118-134052).log`, `expansion(20261118-134052).log`, `first-boot(20261118-134051).json`, `iop-disc-catalog(20261118-134052).json`, and `translation-cache(20261118-134051).json` has the same ELF SHA-256 `1b213a85a2c305dc0f893c007a502c93e0851d1bb7db6164f9e0b72adb074a16`. The final expansion replay and JSON report agree: 100,000 EE dispatches, 3,871,691 guest instruction attempts, final EE PC `0x0018E0A0`, and 304 translated functions. The modeled HLE IOP reboot and actual LOADFILE version RPC (method `0xFF`, reply bytes `3000`) complete.
+
+Next the EE repeatedly attempts `cdrom0:\SIO2MAN.IRX;1` through LOADFILE method 0, 512-byte send and 8-byte reply. Every captured attempt returned `0xFFFFFFFF`, load status `link_failed` (7) and linker status `invalid_module` (3), with module=0 and thread=0. This is neither an uncompiled EE PC nor an `unresolved_import` (5) response.
+
+### Real original disc metadata and linker fixes
+
+The *original* USA SIO2MAN.IRX from the user-provided disc has an IOPMOD entry offset `0x634`, GP offset `0x8FB0`, PT_LOAD memory `0x0FF0`; similar original modules place GP beyond the copied module image. The prior importer wrongly checked `gp_offset < PT_LOAD/IOPMOD total`. GP is a MIPS signed-small-data base anchor and can legitimately lie outside the loaded segment; the loader now validates that `base + gp_offset` is in physical IOP RAM. The entrypoint still must lie in the module and be aligned. Synthetic tests prove both accepted out-of-image GP and rejection of unaddressable GP, without redistributing original IRX bytes.
+
+The original SIO2MAN export library `sio2man` is sparse: ordinal 4 and 27 are holes, while later ordinals are valid. Import resolution must retain later entries; the export collector and loadcore's real registered-export table checks now recognize a zero hole only if the immediately following entry is a valid, matching executable export, otherwise terminate. A separate synthetic sparse-export regression preserves ordinal identity and prevents invented gap exports.
+
+Import failures preserve library and ordinal from the decoded guest import table throughout the linker, disc loader, SIFRPC observation, and normal boot log as `unresolved=LIB#ORD`. This disambiguates absent kernel providers from malformed IRX headers. A rejected import cannot commit IOP RAM, a module ID, a thread, an EE RPC success, or artificial SIF readiness.
+
+### Coherent service-family HLE, not an IRX success bypass
+
+The original SIO2MAN import set spans eight libraries: `loadcore` (6), `intrman` (4/5/6/7/17/18), `stdio` (4), `dmacman` (28/32/33/34/35), `thbase` (4/6/20), `thevent` (4/6/7/8/10), `thsemap` (4/6/8/11), `sysclib` (8/29/36). The new `c_kernel_hle_bridge` provides explicitly registered R3000 guest-callable stubs for this whole verified family and shares the actual IOP kernel state, memory and thread scheduler. It reinstalls after HLE reset but never in the ROM0 firmware mode. Unknown imports remain unresolved.
+
+Handlers use real guest memory, thread creation/start/ID, event bits and blocking/wakeup, semaphore queues/count/status, registered kernel interrupt mask/state, bounded IOP string/classification/number functions and bounded stdio debug output. SIO2 DMA11/12 requests are represented in actual guest-readable IOP MMIO banks (with persistent STR and PCR control), **without fabricating a DMA data transfer, device reply, completion IRQ or controller readiness**. Unknown/unsupported hardware behavior remains fail-closed. The unrelated SIF DMA regression's old expectation that `0x1F801540` was unsupported is corrected to test the actual unassigned gap at `0x1F80154C`.
+
+An independent **synthetic** complete SIO2MAN-import fixture verifies all 28 imported ordinals, successful guest-linkage, real R3000 syscall execution, string and object operations, DMA register requests without completion, reset reinstall and absence of unimplemented exports. It contains no original game code or assets. The test suite now has **99** CTest cases. Running the updated retail game is necessary before claiming that the real SIO2MAN, PADMAN or any later IRX executes successfully.
+
+### Limitations and next evidence
+
+This batch does not implement actual SIO2 packet/device transfer, interrupt callback invocation, real firmware ROM0/UDNL execution, full LOADFILE async lifecycle, or all PS2 kernel library ordinals. `SetSyscall(0x12C)` also remains a separate EE HLE omission. Unknown kernel imports and unsupported DMA behavior are explicit blockers. After a `git pull` and `run_ps2_game.bat`, use the next *matched five-file* diagnostic batch to verify actual runtime module ID/thread ID, exact unresolved `LIB#ORD` or guest syscall stop PC/opcode, and whether the 100,000-dispatch loop is broken.
