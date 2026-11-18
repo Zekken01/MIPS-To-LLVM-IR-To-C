@@ -485,7 +485,7 @@ int main()
             iop::e_sif1_dma_failure::unsupported_rpc_packet ||
         cdvd_call_rejection.m_rpc_packet_words[9] != 20u ||
         cdvd_call_rejection.m_rpc_packet_words[11] != 16u ||
-        cdvd_call_rejection.m_rpc_payload_length != 16u ||
+        cdvd_call_rejection.m_rpc_payload_length != 4u ||
         memory.read32(rpc_result + 12u) != 0xa55a5aa5u ||
         rpc.pending_replies() != 0u ||
         (dmac.status() & ((1u << 5u) | (1u << 6u))) != 0u)
