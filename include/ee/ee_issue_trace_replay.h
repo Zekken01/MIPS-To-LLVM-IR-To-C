@@ -34,6 +34,18 @@ struct s_ee_issue_replay_profile
     // EE manual Table 2-12 distinguishes SQRT.S and RSQRT.S from DIV.S.
     uint32_t m_fpu_sqrt_latency = 0u;
     uint32_t m_fpu_rsqrt_latency = 0u;
+
+    // Optional *initiation intervals* (not result latencies); no implicit
+    // defaults are permitted. The strict experimental mode rejects every
+    // timed functional-unit operation lacking a configured interval.
+    uint32_t m_mac_multiply_interval = 0u;
+    uint32_t m_mac_divide_interval = 0u;
+    uint32_t m_mac_accumulate_interval = 0u;
+    uint32_t m_cop1_arithmetic_interval = 0u;
+    uint32_t m_cop1_divide_interval = 0u;
+    uint32_t m_cop1_sqrt_interval = 0u;
+    uint32_t m_cop1_rsqrt_interval = 0u;
+    bool m_require_throughput = false;
 };
 
 enum class e_ee_issue_replay_status : uint8_t
@@ -163,6 +175,18 @@ private:
         return 1u << register_index;
     }
 
+    bool set_unit(s_ee_probe_instruction* instruction,
+                  e_ee_probe_unit unit, uint32_t interval) const
+    {
+        if (interval == 0u)
+        {
+            return !m_profile.m_require_throughput;
+        }
+        instruction->m_unit = unit;
+        instruction->m_initiation_interval = interval;
+        return true;
+    }
+
     bool classify(const s_ee_instruction& decoded,
                   s_ee_probe_instruction* instruction) const
     {
@@ -239,7 +263,9 @@ private:
                 }
                 instruction->m_hilo_write_mask = 0x3u;
                 instruction->m_hilo_result_latency = special_latency;
-                return true;
+                return set_unit(instruction, e_ee_probe_unit::MAC0,
+                    multiply ? m_profile.m_mac_multiply_interval
+                             : m_profile.m_mac_divide_interval);
             }
             case 0x08u: case 0x09u:
                 instruction->m_pipe = e_ee_probe_pipe::BRANCH;
@@ -307,7 +333,9 @@ private:
                 }
                 instruction->m_hilo_write_mask = 0xcu;
                 instruction->m_hilo_result_latency = special_latency;
-                return true;
+                return set_unit(instruction, e_ee_probe_unit::MAC1,
+                    multiply ? m_profile.m_mac_multiply_interval
+                             : m_profile.m_mac_divide_interval);
             }
             case 0x00u: case 0x01u: // MADD / MADDU
             case 0x20u: case 0x21u: // MADD1 / MADDU1
@@ -327,7 +355,10 @@ private:
                 // Its availability is not generic one-cycle ALU timing.
                 instruction->m_result_latency =
                     m_profile.m_hilo_accumulate_latency;
-                return true;
+                return set_unit(instruction,
+                    operation < 0x20u ? e_ee_probe_unit::MAC0
+                                      : e_ee_probe_unit::MAC1,
+                    m_profile.m_mac_accumulate_interval);
             default:
                 // Packed MMI still requires vector-lane scoreboard modeling.
                 return false;
@@ -413,7 +444,8 @@ private:
                 instruction->m_fcsr_write = true;
                 instruction->m_fcsr_result_latency =
                     m_profile.m_fpu_arithmetic_latency;
-                return true;
+                return set_unit(instruction, e_ee_probe_unit::COP1_SCALAR,
+                    m_profile.m_cop1_arithmetic_interval);
             }
 
             const uint32_t function = decoded.funct;
@@ -429,7 +461,8 @@ private:
                 instruction->m_fpr_read_mask = function == 0x30u ? 0u : fs | ft;
                 instruction->m_fcsr_write = true;
                 instruction->m_fcsr_result_latency = m_profile.m_fpu_compare_latency;
-                return true;
+                return set_unit(instruction, e_ee_probe_unit::COP1_SCALAR,
+                    m_profile.m_cop1_arithmetic_interval);
             }
             const bool fpu_divide = function == 0x03u;
             const bool fpu_sqrt = function == 0x04u;
@@ -477,7 +510,11 @@ private:
             // CFC1/CTC1 may subsequently observe or overwrite.
             instruction->m_fcsr_write = true;
             instruction->m_fcsr_result_latency = latency;
-            return true;
+            return set_unit(instruction, e_ee_probe_unit::COP1_SCALAR,
+                fpu_divide ? m_profile.m_cop1_divide_interval
+                : fpu_sqrt ? m_profile.m_cop1_sqrt_interval
+                : fpu_rsqrt ? m_profile.m_cop1_rsqrt_interval
+                            : m_profile.m_cop1_arithmetic_interval);
         }
 
         switch (op)
