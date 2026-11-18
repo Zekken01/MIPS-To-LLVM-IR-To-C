@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -32,6 +33,7 @@
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -60,7 +62,66 @@ constexpr uint32_t k_instruction_trace_limit = 65536u;
 constexpr uint32_t k_kernel_syscall_table_base = 0x00001800u;
 constexpr uint32_t k_kernel_syscall_table_entries = 0x100u;
 
+// HLE IOP reboot may select an IOPRP ROMDIR image from the extracted
+// disc. Only actual mounted files are eligible; unknown ROM0 programs
+// or inaccessible images are not reported as successfully booted.
+bool validate_hle_iop_reboot(
+    const std::string& command_line,
+    const iop::c_folder_sector_source& sectors,
+    std::string* reason
+)
+{
+    if (reason == nullptr)
+    {
+        return false;
+    }
+    if (command_line.empty())
+    {
+        return true; // SifIopReset("", 0): default HLE kernel bootstrap.
+    }
+
+    std::istringstream arguments(command_line);
+    std::string loader;
+    arguments >> loader;
+    std::transform(
+        loader.begin(), loader.end(), loader.begin(),
+        [](unsigned char ch)
+        {
+            return static_cast<char>(std::tolower(ch));
+        }
+    );
+    if (loader != "rom0:udnl")
+    {
+        *reason = "unsupported IOP reset loader (expected rom0:UDNL)";
+        return false;
+    }
+
+    std::string path;
+    while (arguments >> path)
+    {
+        if (path == "-v")
+        {
+            continue;
+        }
+        const auto device_end = path.find(':');
+        if (device_end == std::string::npos ||
+            path.substr(0u, device_end) != "cdrom0")
+        {
+            *reason = "unsupported IOP reboot image device: " + path;
+            return false;
+        }
+        iop::s_folder_file_info image{};
+        if (!sectors.find_file(path, &image) || image.m_size == 0u)
+        {
+            *reason = "missing or invalid IOP reboot image: " + path;
+            return false;
+        }
+    }
+    return true;
+}
+
 using t_game_run = uint32_t (*)(
+
     ee::s_ee_cpu_state*,
     ee::s_ee_runtime*,
     uint32_t,
@@ -972,6 +1033,8 @@ int main(int argc, char** argv)
     std::unique_ptr<iop::c_sif_rpc_bridge> iop_rpc;
     std::unique_ptr<s_cdvd_context> cdvd;
     std::unique_ptr<iop::c_cdvdman_bridge> iop_cdvdman;
+    const iop::c_folder_sector_source* folder_disc_source = nullptr;
+    bool hle_iop_reboot_bootstrap_pending = false;
     if (!iop_irx_paths.empty() || iop_rom0_path != nullptr ||
         disc_folder_path != nullptr)
     {
@@ -1109,6 +1172,7 @@ int main(int argc, char** argv)
                     );
                     return 1;
                 }
+                folder_disc_source = folder_source.get();
                 cdvd = std::make_unique<s_cdvd_context>();
                 cdvd->m_source = std::move(folder_source);
                 cdvd->m_transport =
@@ -3516,6 +3580,67 @@ int main(int argc, char** argv)
                         }
                         break;
                     }
+                    if (disc_folder_path != nullptr &&
+                        iop_sifcmd != nullptr)
+                    {
+                        std::string reboot_argument;
+                        if (iop_sifcmd->take_reboot_request(&reboot_argument))
+                        {
+                            std::string reboot_error;
+                            if (folder_disc_source == nullptr ||
+                                !validate_hle_iop_reboot(
+                                    reboot_argument, *folder_disc_source,
+                                    &reboot_error))
+                            {
+                                std::fprintf(
+                                    stderr, "IOP HLE reboot cannot start: %s "
+                                    "(request=%s)\n",
+                                    reboot_error.c_str(),
+                                    reboot_argument.c_str()
+                                );
+                                break;
+                            }
+
+                            // Only the already-validated SIFCMD packet
+                            // requests this reset. It destroys previous IOP
+                            // IRX/module/thread/RPC state, then installs
+                            // actual host-backed HLE services anew.
+                            iop_kernel->reset();
+                            iop_sifcmd->reset_for_reboot();
+                            iop_rpc->reset_for_reboot();
+                            hardware.sif().begin_iop_reboot();
+
+                            if (!iop_sifcmd->install() ||
+                                !iop_sifman->install() ||
+                                (iop_cdvdman != nullptr &&
+                                 !iop_cdvdman->install()))
+                            {
+                                std::fprintf(
+                                    stderr,
+                                    "IOP HLE reboot failed service reinstall\n"
+                                );
+                                break;
+                            }
+                            iop_kernel->bind_syscall(
+                                [&](iop::c_kernel& active, uint32_t service)
+                                {
+                                    return iop_sifman->handle_syscall(active, service) ||
+                                           iop_sifcmd->handle_syscall(active, service) ||
+                                           (iop_cdvdman != nullptr &&
+                                            iop_cdvdman->handle_syscall(active, service));
+                                }
+                            );
+                            // Defer publication to the EE's subsequent
+                            // boot-status poll, not the SIF1 DMA itself.
+                            // ROM0 boot remains a separate guest-code path.
+                            hle_iop_reboot_bootstrap_pending = true;
+                            std::printf(
+                                "[iop] HLE reboot requested: %s "
+                                "(services reinstalled; boot flags pending)\n",
+                                reboot_argument.c_str()
+                            );
+                        }
+                    }
                     cpu.m_gpr[2].m_lo = dma_id;
                     cpu.m_gpr[2].m_hi = 0u;
                     if (trace)
@@ -3652,6 +3777,31 @@ int main(int argc, char** argv)
                     }
                     else
                     {
+                        // The HLE reboot has rebuilt and installed its
+                        // real host-backed IOP services. Publish modeled
+                        // readiness only when the EE subsequently polls
+                        // the boot flag, never from receipt of DMA itself.
+                        if (id == 4u &&
+                            hle_iop_reboot_bootstrap_pending)
+                        {
+                            if (iop_sifcmd == nullptr ||
+                                !iop_sifcmd->initialize_hle_bootstrap())
+                            {
+                                std::fprintf(
+                                    stderr,
+                                    "IOP HLE reboot could not initialize "
+                                    "its SIFCMD services\n"
+                                );
+                                break;
+                            }
+                            hle_iop_reboot_bootstrap_pending = false;
+                            std::printf(
+                                "[iop] HLE reboot bootstrap complete: "
+                                "subaddr=0x%08x smflag=0x00060000 "
+                                "(modeled services, not ROM0 or IRX execution)\n",
+                                iop::c_sifcmd_bridge::k_command_buffer
+                            );
+                        }
                         uint32_t value = 0u;
                         if (!hardware.sif().get_reg(id, &value))
                         {
