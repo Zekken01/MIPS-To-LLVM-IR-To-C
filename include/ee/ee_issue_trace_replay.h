@@ -34,6 +34,12 @@ struct s_ee_issue_replay_profile
     // EE manual Table 2-12 distinguishes SQRT.S and RSQRT.S from DIV.S.
     uint32_t m_fpu_sqrt_latency = 0u;
     uint32_t m_fpu_rsqrt_latency = 0u;
+    // COP0 architectural register and VU0 VF/VI transfer candidates.
+    // These classes are unavailable unless individually supplied and
+    // remain nonpairable until hardware resource rules are established.
+    uint32_t m_cop0_transfer_latency = 0u;
+    uint32_t m_vu0_vf_transfer_latency = 0u;
+    uint32_t m_vu0_vi_transfer_latency = 0u;
 
     // Optional *initiation intervals* (not result latencies); no implicit
     // defaults are permitted. The strict experimental mode rejects every
@@ -384,6 +390,81 @@ private:
             }
         }
 
+        if (op == 0x10u) // COP0 MFC0/MTC0, no system transitions
+        {
+            if (m_profile.m_cop0_transfer_latency == 0u)
+            {
+                return false;
+            }
+            instruction->m_pipe = e_ee_probe_pipe::SYSTEM_CONTROL;
+            instruction->m_result_latency = m_profile.m_cop0_transfer_latency;
+            const uint32_t control = fpr_mask(decoded.rd);
+            if (decoded.rs == 0u) // MFC0
+            {
+                instruction->m_cop0_read_mask = control;
+                instruction->m_gpr_write_mask = rt;
+                return true;
+            }
+            if (decoded.rs == 4u) // MTC0
+            {
+                instruction->m_gpr_read_mask = rt;
+                instruction->m_cop0_write_mask = control;
+                instruction->m_cop0_result_latency =
+                    m_profile.m_cop0_transfer_latency;
+                return true;
+            }
+            // ERET, EI, DI, TLB changes and other COP0 forms require
+            // distinct timing and externally observable kernel state.
+            return false;
+        }
+
+        if (op == 0x12u) // COP2 VU0 VF/VI register transfers only
+        {
+            const bool vf = decoded.rs == 1u || decoded.rs == 5u;
+            const bool vi = decoded.rs == 2u || decoded.rs == 6u;
+            const bool read = decoded.rs == 1u || decoded.rs == 2u;
+            if ((!vf && !vi) ||
+                (vf && m_profile.m_vu0_vf_transfer_latency == 0u) ||
+                (vi && m_profile.m_vu0_vi_transfer_latency == 0u))
+            {
+                // BC2 and VU0 macro FMAC need a validated flag/ACC model.
+                return false;
+            }
+            const uint32_t latency = vf
+                ? m_profile.m_vu0_vf_transfer_latency
+                : m_profile.m_vu0_vi_transfer_latency;
+            const uint32_t vu_register = fpr_mask(decoded.rd);
+            instruction->m_pipe = e_ee_probe_pipe::VU0_TRANSFER;
+            instruction->m_result_latency = latency;
+            if (read) // QMFC2 / CFC2
+            {
+                instruction->m_gpr_write_mask = rt;
+                if (vf)
+                {
+                    instruction->m_vu0_vf_read_mask = vu_register;
+                }
+                else
+                {
+                    instruction->m_vu0_vi_read_mask = vu_register;
+                }
+            }
+            else // QMTC2 / CTC2
+            {
+                instruction->m_gpr_read_mask = rt;
+                if (vf)
+                {
+                    instruction->m_vu0_vf_write_mask = vu_register;
+                    instruction->m_vu0_vf_result_latency = latency;
+                }
+                else
+                {
+                    instruction->m_vu0_vi_write_mask = vu_register;
+                    instruction->m_vu0_vi_result_latency = latency;
+                }
+            }
+            return true;
+        }
+
         if (op == 0x11u) // COP1 / EE scalar floating point
         {
             const uint32_t fmt = decoded.rs;
@@ -445,7 +526,7 @@ private:
             case 0x14u: // W format: CVT.S.W only
                 break;
             default:
-                // Other FCR registers, COP0 and COP2 remain unmodeled.
+                // Other FCR registers and unmodeled COP1 forms fail closed.
                 return false;
             }
 
