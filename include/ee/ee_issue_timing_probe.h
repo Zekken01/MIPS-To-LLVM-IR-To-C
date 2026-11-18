@@ -15,8 +15,11 @@ enum class e_ee_probe_pipe : uint8_t
     LOAD,
     STORE,
     BRANCH,
-    MULT_DIV,
-    COPROCESSOR
+    MULT_DIV,     // MAC0: logical Pipe 0
+    MULT_DIV_1,   // MAC1: logical Pipe 1
+    COPROCESSOR_MOVE, // COP1 move: logical Pipe 1
+    COPROCESSOR_OP,   // COP1 operation: logical Pipe 0
+    COPROCESSOR = COPROCESSOR_OP // compatibility with existing probes
 };
 
 struct s_ee_probe_instruction
@@ -52,8 +55,10 @@ struct s_ee_probe_instruction
 };
 
 // A conservative, deterministic two-wide issue *candidate* for evaluating
-// instruction streams. Non-integer operations consume a cycle alone.
-// Pairing also rejects RAW/WAR/WAW register overlap. The caller supplies
+// instruction streams. Pairing checks documented logical pipe routing
+// (EE Core User's Manual v6.0, Tables 1-2/1-3) and rejects RAW/WAR/WAW
+// register overlap. The manual's Y resource-hazard pairs are not accepted
+// until their one-cycle A-stage stall is represented explicitly. The caller supplies
 // result latency explicitly; there are no invented hardware latency tables.
 // It deliberately cannot change CPU or device state.
 class c_ee_issue_timing_probe
@@ -88,6 +93,7 @@ public:
                uint64_t* issue_cycle = nullptr)
     {
         if (instruction.m_result_latency == 0u ||
+            logical_pipes(instruction.m_pipe) == 0u ||
             ((instruction.m_hilo_read_mask | instruction.m_hilo_write_mask) &
                 ~0x0fu) != 0u ||
             m_issued == std::numeric_limits<uint64_t>::max())
@@ -117,8 +123,8 @@ public:
             (!instruction.m_fcsr_write ||
                 (!m_pair_fcsr_read && !m_pair_fcsr_write));
         const bool may_pair =
-            m_pair_count == 1u && m_pair_integer &&
-            instruction.m_pipe == e_ee_probe_pipe::INTEGER && independent;
+            m_pair_count == 1u && independent &&
+            compatible_pipes(m_pair_pipe, instruction.m_pipe);
 
         if (m_pair_count != 0u && !may_pair)
         {
@@ -212,7 +218,7 @@ public:
         m_pair_acc_write |= instruction.m_acc_write;
         m_pair_fcsr_read |= instruction.m_fcsr_read;
         m_pair_fcsr_write |= instruction.m_fcsr_write;
-        m_pair_integer = instruction.m_pipe == e_ee_probe_pipe::INTEGER;
+        m_pair_pipe = instruction.m_pipe;
         ++m_pair_count;
         for (uint32_t reg = 1u; reg < 32u; ++reg)
         {
@@ -318,6 +324,50 @@ public:
     }
 
 private:
+    // An O pairing in the manual requires one instruction to route to
+    // logical Pipe 0 and the other to Pipe 1. This does not account for
+    // fetch alignment, cache stalls or unmodeled pipeline occupancy.
+    static uint32_t logical_pipes(e_ee_probe_pipe pipe)
+    {
+        switch (pipe)
+        {
+        case e_ee_probe_pipe::INTEGER:
+        case e_ee_probe_pipe::BRANCH:
+            return 0x3u;
+        case e_ee_probe_pipe::LOAD:
+        case e_ee_probe_pipe::STORE:
+        case e_ee_probe_pipe::MULT_DIV_1:
+        case e_ee_probe_pipe::COPROCESSOR_MOVE:
+            return 0x2u;
+        case e_ee_probe_pipe::MULT_DIV:
+        case e_ee_probe_pipe::COPROCESSOR_OP:
+            return 0x1u;
+        default:
+            return 0u;
+        }
+    }
+
+    static bool compatible_pipes(e_ee_probe_pipe first,
+                                 e_ee_probe_pipe second)
+    {
+        if ((first == e_ee_probe_pipe::BRANCH &&
+             second == e_ee_probe_pipe::BRANCH) ||
+            (first == e_ee_probe_pipe::COPROCESSOR_OP &&
+             second == e_ee_probe_pipe::COPROCESSOR_MOVE) ||
+            (first == e_ee_probe_pipe::COPROCESSOR_MOVE &&
+             second == e_ee_probe_pipe::COPROCESSOR_OP))
+        {
+            // Branch+branch is X; COP1 operation+move is Y (one A-stage
+            // resource stall), not an unqualified same-cycle issue.
+            return false;
+        }
+
+        const uint32_t a = logical_pipes(first);
+        const uint32_t b = logical_pipes(second);
+        return ((a & 0x1u) != 0u && (b & 0x2u) != 0u) ||
+               ((a & 0x2u) != 0u && (b & 0x1u) != 0u);
+    }
+
     void clear_pair()
     {
         m_pair_count = 0u;
@@ -331,7 +381,7 @@ private:
         m_pair_acc_write = false;
         m_pair_fcsr_read = false;
         m_pair_fcsr_write = false;
-        m_pair_integer = false;
+        m_pair_pipe = e_ee_probe_pipe::INTEGER;
     }
 
     uint64_t m_cycle = 0u;
@@ -354,7 +404,7 @@ private:
     bool m_pair_acc_write = false;
     bool m_pair_fcsr_read = false;
     bool m_pair_fcsr_write = false;
-    bool m_pair_integer = false;
+    e_ee_probe_pipe m_pair_pipe = e_ee_probe_pipe::INTEGER;
 };
 
 } // namespace ee
