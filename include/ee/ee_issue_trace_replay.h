@@ -201,6 +201,8 @@ private:
                 instruction->m_hilo_read_mask =
                     decoded.funct == 0x10u ? 0x1u : 0x2u;
                 instruction->m_gpr_write_mask = rd;
+                instruction->m_result_latency =
+                    m_profile.m_hilo_transfer_latency;
                 return true;
             case 0x11u: case 0x13u: // MTHI/MTLO (pipeline 0)
                 if (m_profile.m_hilo_transfer_latency == 0u)
@@ -270,6 +272,8 @@ private:
                 instruction->m_hilo_read_mask =
                     operation == 0x10u ? 0x4u : 0x8u;
                 instruction->m_gpr_write_mask = rd;
+                instruction->m_result_latency =
+                    m_profile.m_hilo_transfer_latency;
                 return true;
             case 0x11u: case 0x13u: // MTHI1 / MTLO1
                 if (m_profile.m_hilo_transfer_latency == 0u)
@@ -318,6 +322,10 @@ private:
                 instruction->m_hilo_write_mask =
                     instruction->m_hilo_read_mask;
                 instruction->m_hilo_result_latency =
+                    m_profile.m_hilo_accumulate_latency;
+                // MADD rd receives the new LO product/accumulator result.
+                // Its availability is not generic one-cycle ALU timing.
+                instruction->m_result_latency =
                     m_profile.m_hilo_accumulate_latency;
                 return true;
             default:
