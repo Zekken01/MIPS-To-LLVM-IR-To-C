@@ -720,7 +720,7 @@ int main()
         }
     }
 
-    const auto cdvd_call = [&](uint32_t server, uint32_t method,
+    const auto cdvd_rpc_call = [&](uint32_t server, uint32_t method,
                                uint32_t send_size, uint32_t recv_size) -> bool
     {
         packet(memory, call_source, {
@@ -742,26 +742,26 @@ int main()
 
     packet(memory, args_source, {0u, 0u, 0u, 0u});
     packet(memory, rpc_result, {0x11111111u, 0x22222222u, 0u, 0u});
-    if (!cdvd_call(iop::c_sif_rpc_bridge::k_cdvd_s_server,
+    if (!cdvd_rpc_call(iop::c_sif_rpc_bridge::k_cdvd_s_server,
                    0x03u, 16u, 4u) ||
         memory.read32(rpc_result) != 0x14u ||
-        !cdvd_call(iop::c_sif_rpc_bridge::k_cdvd_s_server,
+        !cdvd_rpc_call(iop::c_sif_rpc_bridge::k_cdvd_s_server,
                    0x05u, 16u, 8u) ||
         memory.read32(rpc_result) != 1u ||
         memory.read32(rpc_result + 4u) != 0u ||
-        !cdvd_call(iop::c_sif_rpc_bridge::k_cdvd_s_server,
+        !cdvd_rpc_call(iop::c_sif_rpc_bridge::k_cdvd_s_server,
                    0x27u, 16u, 12u) ||
         memory.read32(rpc_result + 8u) != 0u)
     {
         return fail("CDVDFSV S command results were incorrect");
     }
-    if (!cdvd_call(iop::c_sif_rpc_bridge::k_cdvd_ready_server,
+    if (!cdvd_rpc_call(iop::c_sif_rpc_bridge::k_cdvd_ready_server,
                    0u, 16u, 4u) ||
         memory.read32(rpc_result) != 2u ||
-        !cdvd_call(iop::c_sif_rpc_bridge::k_cdvd_ready_alt_server,
+        !cdvd_rpc_call(iop::c_sif_rpc_bridge::k_cdvd_ready_alt_server,
                    0u, 16u, 4u) ||
         memory.read32(rpc_result) != 2u ||
-        !cdvd_call(iop::c_sif_rpc_bridge::k_cdvd_n_server,
+        !cdvd_rpc_call(iop::c_sif_rpc_bridge::k_cdvd_n_server,
                    0x04u, 16u, 4u) ||
         memory.read32(rpc_result) != 1u)
     {
@@ -775,7 +775,7 @@ int main()
         return fail("CDVDFSV test disc file lookup failed");
     }
     packet(memory, args_source, {padman.m_lba, 1u, 0x001a0000u, 0u});
-    if (!cdvd_call(iop::c_sif_rpc_bridge::k_cdvd_n_server,
+    if (!cdvd_rpc_call(iop::c_sif_rpc_bridge::k_cdvd_n_server,
                    0x01u, 16u, 4u) ||
         memory.read32(rpc_result) != 0u ||
         memory.read32(0x001a0000u) != 0x464c457fu)
@@ -784,7 +784,7 @@ int main()
     }
     packet(memory, args_source, {padman.m_lba, 1u, 0x00040000u, 0u});
     uint32_t iop_readback = 0u;
-    if (!cdvd_call(iop::c_sif_rpc_bridge::k_cdvd_n_server,
+    if (!cdvd_rpc_call(iop::c_sif_rpc_bridge::k_cdvd_n_server,
                    0x0du, 16u, 4u) ||
         !kernel.cpu().read32(0x00040000u, &iop_readback) ||
         iop_readback != 0x464c457fu)
@@ -802,7 +802,7 @@ int main()
                 static_cast<uint8_t>(cdvd_path[index])
         );
     }
-    if (!cdvd_call(iop::c_sif_rpc_bridge::k_cdvd_search_server,
+    if (!cdvd_rpc_call(iop::c_sif_rpc_bridge::k_cdvd_search_server,
                    0u, 0x80u, 4u) ||
         memory.read32(rpc_result) != 1u ||
         memory.read32(args_source) != padman.m_lba ||
@@ -812,25 +812,25 @@ int main()
     }
 
     packet(memory, args_source, {padman.m_lba, 1u, 0x001a0800u, 1u});
-    if (!cdvd_call(iop::c_sif_rpc_bridge::k_cdvd_n_server,
+    if (!cdvd_rpc_call(iop::c_sif_rpc_bridge::k_cdvd_n_server,
                    0x09u, 16u, 4u) ||
-        !cdvd_call(iop::c_sif_rpc_bridge::k_cdvd_s_server,
+        !cdvd_rpc_call(iop::c_sif_rpc_bridge::k_cdvd_s_server,
                    0x0cu, 16u, 4u) ||
         memory.read32(rpc_result) != 0x12u)
     {
         return fail("CDVDFSV stream-start state did not become visible");
     }
     packet(memory, args_source, {0u, 1u, 0x001a0800u, 2u});
-    if (!cdvd_call(iop::c_sif_rpc_bridge::k_cdvd_n_server,
+    if (!cdvd_rpc_call(iop::c_sif_rpc_bridge::k_cdvd_n_server,
                    0x09u, 16u, 4u) ||
         memory.read32(0x001a0800u) != 0x464c457fu)
     {
         return fail("CDVDFSV stream read did not use mounted sectors");
     }
     packet(memory, args_source, {0u, 0u, 0u, 3u});
-    if (!cdvd_call(iop::c_sif_rpc_bridge::k_cdvd_n_server,
+    if (!cdvd_rpc_call(iop::c_sif_rpc_bridge::k_cdvd_n_server,
                    0x09u, 16u, 4u) ||
-        !cdvd_call(iop::c_sif_rpc_bridge::k_cdvd_s_server,
+        !cdvd_rpc_call(iop::c_sif_rpc_bridge::k_cdvd_s_server,
                    0x0cu, 16u, 4u) ||
         memory.read32(rpc_result) != 0x0au)
     {
@@ -842,7 +842,7 @@ int main()
     dmac.acknowledge(6u);
     packet(memory, args_source, {0u, 0u, 0u, 0u});
     const uint32_t preceding = memory.read32(rpc_result);
-    if (cdvd_call(iop::c_sif_rpc_bridge::k_cdvd_n_server,
+    if (cdvd_rpc_call(iop::c_sif_rpc_bridge::k_cdvd_n_server,
                   0xffffu, 16u, 4u) ||
         memory.read32(rpc_result) != preceding ||
         rpc.pending_replies() != 0u ||
