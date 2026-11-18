@@ -289,7 +289,9 @@ bool c_sif1_bridge::set_dma(
                     !m_rpc->prepare_command(
                         transfer.m_words, size,
                         rpc_payload_source, rpc_payload_length,
-                        &transfer.m_rpc_effect))
+                        &transfer.m_rpc_effect,
+                        diagnostic == nullptr ? nullptr :
+                            &diagnostic->m_rpc_rejection))
                 {
                     return refuse(e_sif1_dma_failure::unsupported_rpc_packet);
                 }
