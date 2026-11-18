@@ -576,9 +576,10 @@ int main()
     const uint32_t paddw = (0x1cu << 26u) | (4u << 21u) |
                            (5u << 16u) | (6u << 11u) | 0x08u;
     const uint32_t cache_op = (0x2fu << 26u) | (8u << 21u);
-    for (const uint32_t opcode : {
-             eret, ei, bc2t, vmaddw, paddw, cache_op
-         })
+    const uint32_t unmodeled_opcodes[] = {
+        eret, ei, bc2t, vmaddw, paddw, cache_op
+    };
+    for (const uint32_t opcode : unmodeled_opcodes)
     {
         replay.configure(transfer_profile);
         check(replay.observe(record(1u, 0x7000u, opcode, 0u, 1u)) ==
