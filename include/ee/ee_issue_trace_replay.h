@@ -31,6 +31,9 @@ struct s_ee_issue_replay_profile
     // Still uncalibrated; zero means the operation is not replayable.
     uint32_t m_fpu_control_latency = 0u;
     uint32_t m_fpu_compare_latency = 0u;
+    // EE manual Table 2-12 distinguishes SQRT.S and RSQRT.S from DIV.S.
+    uint32_t m_fpu_sqrt_latency = 0u;
+    uint32_t m_fpu_rsqrt_latency = 0u;
 };
 
 enum class e_ee_issue_replay_status : uint8_t
@@ -420,8 +423,9 @@ private:
                 instruction->m_fcsr_result_latency = m_profile.m_fpu_compare_latency;
                 return true;
             }
-            const bool fpu_divide =
-                function == 0x03u || function == 0x04u || function == 0x16u;
+            const bool fpu_divide = function == 0x03u;
+            const bool fpu_sqrt = function == 0x04u;
+            const bool fpu_rsqrt = function == 0x16u;
             const bool acc_arithmetic =
                 function == 0x18u || function == 0x19u || function == 0x1au ||
                 function == 0x1cu || function == 0x1du ||
@@ -434,10 +438,13 @@ private:
 
             const uint32_t latency = fpu_divide
                 ? m_profile.m_fpu_divide_latency
+                : fpu_sqrt ? m_profile.m_fpu_sqrt_latency
+                : fpu_rsqrt ? m_profile.m_fpu_rsqrt_latency
                 : acc_arithmetic ? m_profile.m_fpu_accumulate_latency
                 : m_profile.m_fpu_arithmetic_latency;
             if (latency == 0u ||
-                (!fpu_divide && !acc_arithmetic && !ordinary_arithmetic))
+                (!fpu_divide && !fpu_sqrt && !fpu_rsqrt &&
+                 !acc_arithmetic && !ordinary_arithmetic))
             {
                 return false;
             }
