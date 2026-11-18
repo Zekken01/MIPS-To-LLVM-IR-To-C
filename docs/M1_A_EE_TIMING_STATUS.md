@@ -61,3 +61,7 @@ An explicit-latency candidate consumes complete, ordered native/interpreted/annu
 ### Explicit candidate replay CLI
 
 Run `ee_issue_trace_candidate <trace.csv> <integer-result-latency> <load-result-latency>` on an unfiltered, non-truncated trace. The analyzer fails at the first unsupported opcode, malformed/gapped reference slot or truncated stream and reports no absolute hardware time. Its output labels candidate cycles as experimental and cannot generate VBlank. A synthetic fixture and CTest cover its CSV/parser/issue path.
+
+## Issue scoreboard resource extension
+
+The experimental issue probe now tracks independent GPR, HI0/LO0/HI1/LO1, COP1 FPR and FPU accumulator read/write reservations. A producer may declare separate special-register/FPR/ACC latencies from its GPR latency. Validation is atomic, so invalid masks and overflow cannot partially mutate a timing state. Dedicated tests exercise scalar HI/LO multiply-to-MFLO, FPR producer/consumer, accumulator and same-cycle pairing dependencies. No new hardware-clock source is installed; these latencies remain caller supplied and uncalibrated.

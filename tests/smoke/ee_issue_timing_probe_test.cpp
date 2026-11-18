@@ -112,6 +112,66 @@ int main()
           clock.configured_hle_overhead() == 0u,
           "reset clears all probe state");
 
+    // MULT can write a GPR result immediately while reserving HI/LO for
+    // a separately configured latency. MFLO must observe the long latency.
+    clock.reset();
+    s_ee_probe_instruction multiply{
+        (1u << 4u) | (1u << 5u), 1u << 6u,
+        e_ee_probe_pipe::MULT_DIV, 1u
+    };
+    multiply.m_hilo_write_mask = 0x3u;
+    multiply.m_hilo_result_latency = 7u;
+    s_ee_probe_instruction mflo{
+        0u, 1u << 7u, e_ee_probe_pipe::INTEGER, 1u
+    };
+    mflo.m_hilo_read_mask = 0x2u;
+    check(clock.issue(multiply, &at) && at == 0u &&
+          clock.issue(mflo, &at) && at == 7u &&
+          clock.estimated_cycles() == 8u,
+          "HI/LO dependency waits for caller-supplied result latency");
+
+    clock.reset();
+    s_ee_probe_instruction fadd{};
+    fadd.m_pipe = e_ee_probe_pipe::COPROCESSOR;
+    fadd.m_fpr_read_mask = (1u << 1u) | (1u << 2u);
+    fadd.m_fpr_write_mask = 1u << 3u;
+    fadd.m_fpr_result_latency = 4u;
+    s_ee_probe_instruction fconsumer{};
+    fconsumer.m_pipe = e_ee_probe_pipe::COPROCESSOR;
+    fconsumer.m_fpr_read_mask = 1u << 3u;
+    check(clock.issue(fadd, &at) && at == 0u &&
+          clock.issue(fconsumer, &at) && at == 4u,
+          "FPR scoreboard tracks explicit producer-to-consumer latency");
+
+    clock.reset();
+    s_ee_probe_instruction acc_writer{};
+    acc_writer.m_pipe = e_ee_probe_pipe::COPROCESSOR;
+    acc_writer.m_acc_write = true;
+    acc_writer.m_acc_result_latency = 6u;
+    s_ee_probe_instruction acc_reader{};
+    acc_reader.m_pipe = e_ee_probe_pipe::COPROCESSOR;
+    acc_reader.m_acc_read = true;
+    check(clock.issue(acc_writer, &at) && at == 0u &&
+          clock.issue(acc_reader, &at) && at == 6u,
+          "FPU accumulator hazards use their own readiness clock");
+
+    clock.reset();
+    s_ee_probe_instruction invalid_hilo{};
+    invalid_hilo.m_hilo_read_mask = 0x10u;
+    check(!clock.issue(invalid_hilo) &&
+          clock.instructions_issued() == 0u &&
+          clock.estimated_cycles() == 0u,
+          "invalid special-register masks are rejected atomically");
+
+    clock.reset();
+    s_ee_probe_instruction indep_hilo{};
+    indep_hilo.m_hilo_write_mask = 0x1u;
+    s_ee_probe_instruction dependent_hilo{};
+    dependent_hilo.m_hilo_read_mask = 0x1u;
+    check(clock.issue(indep_hilo, &at) && at == 0u &&
+          clock.issue(dependent_hilo, &at) && at == 1u,
+          "HI/LO same-cycle pairing observes RAW hazards");
+
     std::printf("ee_issue_timing_probe_test: %d failure(s)\n", g_failures);
     return g_failures != 0 ? 1 : 0;
 }
