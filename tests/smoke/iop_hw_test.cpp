@@ -262,7 +262,8 @@ int main()
         !hardware.read(iop::c_hw::k_sio2_ctrl, 4u, &actual) ||
         actual != 0x3bcu || hardware.pending_interrupts() != 0u ||
         hardware.write(iop::c_hw::k_sio2_ctrl, 2u, 0u) ||
-        hardware.read(iop::c_hw::k_sio2_ctrl + 4u, 4u, &actual))
+        !hardware.read(iop::c_hw::k_sio2_stat, 4u, &actual) ||
+        actual != 0u)
     {
         return fail("SIO2 control register storage and width validation");
     }
