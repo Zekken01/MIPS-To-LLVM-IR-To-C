@@ -134,6 +134,25 @@ identity and a single source epoch. Test vectors are **synthetic**.
 These timestamps are **not** EE retirement, cache, HLE or scanout cycles.
 No device timing source was installed and M1-B remains blocked.
 
+### COP0 and VU0 transfer architectural-resource coverage
+
+Decoder-recognized MFC0/MTC0, QMFC2/QMTC2 and CFC2/CTC2 now
+use separate COP0/VU0 VF/VU0 VI register masks in the offline
+timing scoreboard. Every transfer class requires an individual
+positive latency supplied explicitly by the caller; the analyzer's
+optional last profile group is
+`<cop0-transfer> <vu0-vf-transfer> <vu0-vi-transfer>`.
+These conservative classes do not pair with other instructions
+until independently verified issue rules become available.
+They preserve dependencies across native/interpreted observation
+boundaries without introducing any runtime EE clock source.
+
+The coverage **does not** model COP0 implicit updates or
+EI/DI/ERET, VU0 macro operations, BC2, VU0 memory traffic,
+packed MMI or cache pipeline behavior. All continue to fail
+closed. Synthetic COP0/VU0 transfer regressions are not physical
+R5900 reference timing evidence. No M1-B game-boot validation.
+
 ### EE Core manual audit (18 November 2026)
 
 See [M1_A_R5900_REFERENCE_AUDIT.md](M1_A_R5900_REFERENCE_AUDIT.md) for
