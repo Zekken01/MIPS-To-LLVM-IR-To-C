@@ -38,11 +38,12 @@ latencies is not a validated whole-program cycle producer.
 | RSQRT.S | 14 | 13 |
 
 These are a reference to audit candidate latencies, **not** auto-loaded
-values. The existing explicit profile remains opt-in and synthetic. In
-particular, the manual's throughput column is **not yet represented** by
-the issue probe's functional-unit occupancy scoreboard. Therefore repeated
-MULT/DIV/COP1 division timing may still be wrong even if every result
-latency is correct.
+values. The existing explicit profile remains opt-in and synthetic. The experimental probe can now accept separately supplied **initiation
+intervals** for MAC0, MAC1 and a conservatively shared scalar COP1 unit.
+These values are **not defaulted from the table**; the CLI's explicit
+throughput mode requires all seven positive intervals. The table is still
+insufficient to infer stalls, cache behavior, WAW semantics, or validated
+total EE cycles.
 
 ## Implemented in this branch
 
@@ -71,16 +72,36 @@ latency is correct.
    and HI/LO. Do not assume the generic integer ALU result latency applies.
 7. Give DIV.S, SQRT.S and RSQRT.S separate optional timing fields rather
    than reusing a single latency despite the manual's differing results.
-8. Keep missing profile entries, unsupported instructions and HLE timing
-   boundaries non-replayable. No scheduling producer is installed.
+8. The probe now reserves unit next-issue deadlines independently of
+   each instruction's register-result availability. MAC0 and MAC1 are
+   separate reservation domains; scalar COP1 divide/square-root and ordinary
+   arithmetic currently share one **conservative, unvalidated** domain.
+   Caller-selected intervals never become GS or INTC cycles.
+9. `ee_issue_trace_candidate` accepts an optional final throughput group
+   (before `--candidate-events`):
+   `--throughput=2,37,2,1,7,7,13`. This *example* merely exposes the
+   manual's listed initiation intervals for offline experimentation.
+   The group is optional to preserve earlier latency-only candidate traces;
+   when supplied, strict replay rejects any modeled MAC/COP1 operation
+   whose unit interval is absent. Mode is reported as `explicit` or
+   `unconfigured` in diagnostics.
+10. Keep missing profile entries, unsupported instructions and HLE timing
+    boundaries non-replayable in strict mode. No scheduler source is installed.
 
 ## Outstanding correctness gates
 
 - The Table 1-3 Y combinations (e.g. COP1 operate plus COP1 move)
   require modeling the A-stage resource stall, not a guess.
-- Functional-unit initiation intervals/throughput, pipeline occupancy,
-  short-loop hazards, execution/retirement distinctions, cached/uncached
-  access and cache-miss stalls must be modeled and validated.
+- The isolated initiation-interval reservation is implemented and tested
+  using caller-supplied values; it is **not** a complete hardware occupancy
+  model. Prior conservative cross-cycle WAW waiting can still dominate MAC
+  HI/LO or COP1 FCR31 throughput, especially when latency exceeds interval.
+  To establish real back-to-back MAC/FPU timings, independent evidence must
+  resolve overlapping destination writes and retirement order.
+- The current shared scalar COP1 occupancy and independent MAC0/MAC1
+  resource identities are candidate assumptions, not independent timing
+  validation. Short-loop hazards, execution/retirement distinctions,
+  cached/uncached access and cache-miss stalls remain unmodeled.
 - Complete COP0, VU0/COP2, MMI, FCR0, TLB/cache ops and memory-side hazard
   coverage remains absent. Treat each as a deterministic rejection until
   independently verified timing semantics exist.
