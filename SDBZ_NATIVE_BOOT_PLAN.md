@@ -462,3 +462,18 @@ against actual nonzero swizzled VRAM pixels.
 The known boot blocker remains the absence of a validated EE cycle
 source for scanout fields and interrupt delivery. Do not claim the
 resulting display PPM is a presented game frame.
+
+
+### 2026-11-18 17:34 — raise bounded native ELF auto-expansion cap
+
+Default `run_ps2_game.bat` maximum expansion passes is now **8** (previously
+2), with up to **128 new guest functions per pass**, for a conditional
+maximum of 1,024 new compiled functions. Environment variable
+`EXPANSION_PASSES` can override the launcher count, within the existing
+`run_boot_session.py` validated range 1–8. The existing per-pass
+translation cap and early stop behavior remain unchanged. This is a
+*maximum*, not eight unconditional executions: the uploaded 17:31 log
+shows pass 1 added 128 new functions, pass 2 only 5, then the same
+`0x00175210` VBlank loop. Without new runtime progress the wrapper
+still stops after pass 2, preserving the translation cache. All GS PPM
+diagnostics remain final-traced-replay only.

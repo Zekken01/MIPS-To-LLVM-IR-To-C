@@ -11,6 +11,9 @@ set "DISC_ROOT=%CD%\PS2_GAME"
 set "WORK_DIR=build\ps2-game-hle"
 if not defined EMIT_JOBS set "EMIT_JOBS=8"
 if not defined SIF_POLL_LIMIT set "SIF_POLL_LIMIT=2048"
+rem Up to eight capped auto-expansion passes (128 new functions per pass).
+rem Set EXPANSION_PASSES=1..8 to override; stop early at real guest blockers.
+if not defined EXPANSION_PASSES set "EXPANSION_PASSES=8"
 
 where python >nul 2>nul
 if errorlevel 1 (
@@ -98,7 +101,7 @@ python tools\run_boot_session.py "%GAME_ELF%" ^
     --report "%WORK_DIR%\first-boot.json" ^
     --gs-snapshot "%WORK_DIR%\gs-display.ppm" ^
     --gs-upload-snapshot "%WORK_DIR%\gs-upload.ppm" ^
-    --expansion-passes=2 ^
+    --expansion-passes=%EXPANSION_PASSES% ^
     --expansion-per-pass=128 ^
     --hle-startup ^
     --kseg-ram ^
