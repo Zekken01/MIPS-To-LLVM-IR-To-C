@@ -20,6 +20,13 @@ struct s_ee_issue_replay_profile
     uint32_t m_hilo_divide_latency = 0u;
     uint32_t m_hilo_transfer_latency = 0u;
     uint32_t m_hilo_accumulate_latency = 0u;
+
+    // All COP1 latencies must also be supplied individually. Zero keeps
+    // that class unavailable, even when scalar GPR timing is configured.
+    uint32_t m_fpu_transfer_latency = 0u;
+    uint32_t m_fpu_arithmetic_latency = 0u;
+    uint32_t m_fpu_divide_latency = 0u;
+    uint32_t m_fpu_accumulate_latency = 0u;
 };
 
 enum class e_ee_issue_replay_status : uint8_t
@@ -123,6 +130,12 @@ private:
     static uint32_t mask(uint32_t register_index)
     {
         return register_index == 0u ? 0u : 1u << register_index;
+    }
+
+    static uint32_t fpr_mask(uint32_t register_index)
+    {
+        // Unlike GPR zero, FPR zero is a real writable scoreboard resource.
+        return 1u << register_index;
     }
 
     bool classify(const s_ee_instruction& decoded,
@@ -270,6 +283,98 @@ private:
                 // Packed MMI still requires vector-lane scoreboard modeling.
                 return false;
             }
+        }
+
+        if (op == 0x11u) // COP1 / EE scalar floating point
+        {
+            const uint32_t fmt = decoded.rs;
+            const uint32_t ft = fpr_mask(decoded.rt);
+            const uint32_t fs = fpr_mask(decoded.rd);
+            const uint32_t fd = fpr_mask(decoded.sa);
+            instruction->m_pipe = e_ee_probe_pipe::COPROCESSOR;
+            switch (fmt)
+            {
+            case 0x00u: // MFC1: FPR fs -> GPR rt
+                if (m_profile.m_fpu_transfer_latency == 0u)
+                {
+                    return false;
+                }
+                instruction->m_fpr_read_mask = fs;
+                instruction->m_gpr_write_mask = rt;
+                instruction->m_result_latency = m_profile.m_fpu_transfer_latency;
+                return true;
+            case 0x04u: // MTC1: GPR rt -> FPR fs
+                if (m_profile.m_fpu_transfer_latency == 0u)
+                {
+                    return false;
+                }
+                instruction->m_gpr_read_mask = rt;
+                instruction->m_fpr_write_mask = fs;
+                instruction->m_fpr_result_latency = m_profile.m_fpu_transfer_latency;
+                return true;
+            case 0x10u: // S format
+            case 0x14u: // W format: CVT.S.W only
+                break;
+            default:
+                // FCSR/FCC0 dependency tracking is not implemented:
+                // CFC1/CTC1/BC1 and COP0/COP2 fail closed.
+                return false;
+            }
+
+            if (fmt == 0x14u)
+            {
+                if (decoded.funct != 0x20u ||
+                    m_profile.m_fpu_arithmetic_latency == 0u)
+                {
+                    return false;
+                }
+                instruction->m_fpr_read_mask = fs;
+                instruction->m_fpr_write_mask = fd;
+                instruction->m_fpr_result_latency =
+                    m_profile.m_fpu_arithmetic_latency;
+                return true;
+            }
+
+            const uint32_t function = decoded.funct;
+            const bool fpu_divide =
+                function == 0x03u || function == 0x04u || function == 0x16u;
+            const bool acc_arithmetic =
+                function == 0x18u || function == 0x19u || function == 0x1au ||
+                function == 0x1cu || function == 0x1du ||
+                function == 0x1eu || function == 0x1fu;
+            const bool ordinary_arithmetic =
+                function <= 0x02u ||
+                (function >= 0x05u && function <= 0x07u) ||
+                function == 0x24u || function == 0x28u ||
+                function == 0x29u;
+
+            const uint32_t latency = fpu_divide
+                ? m_profile.m_fpu_divide_latency
+                : acc_arithmetic ? m_profile.m_fpu_accumulate_latency
+                : m_profile.m_fpu_arithmetic_latency;
+            if (latency == 0u ||
+                (!fpu_divide && !acc_arithmetic && !ordinary_arithmetic))
+            {
+                return false;
+            }
+
+            const bool only_fs =
+                function == 0x04u || function == 0x05u ||
+                function == 0x06u || function == 0x07u ||
+                function == 0x24u;
+            instruction->m_fpr_read_mask = only_fs ? fs : fs | ft;
+            const bool writes_acc =
+                function == 0x18u || function == 0x19u ||
+                function == 0x1au || function == 0x1eu || function == 0x1fu;
+            const bool reads_acc =
+                function == 0x1cu || function == 0x1du ||
+                function == 0x1eu || function == 0x1fu;
+            instruction->m_acc_read = reads_acc;
+            instruction->m_acc_write = writes_acc;
+            instruction->m_fpr_write_mask = writes_acc ? 0u : fd;
+            instruction->m_fpr_result_latency = latency;
+            instruction->m_acc_result_latency = latency;
+            return true;
         }
 
         switch (op)

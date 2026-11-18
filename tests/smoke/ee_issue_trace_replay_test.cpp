@@ -132,6 +132,46 @@ int main()
           replay.candidate_cycles() == 9u,
           "accumulation reads/writes HI1/LO1 with explicit latency");
 
+    // COP1 FPR0 is not a hardwired zero register. Preserve hazards across
+    // GPR-to-FPR moves, arithmetic and FPR-to-GPR moves.
+    replay.configure({1u, 3u});
+    const uint32_t mtc1 = (0x11u << 26u) | (4u << 21u) |
+                          (8u << 16u) | (2u << 11u);
+    check(replay.observe(record(1u, 0x1000u, mtc1, 0u, 1u)) ==
+          e_ee_issue_replay_status::UNMODELED_INSTRUCTION,
+          "unconfigured COP1 transfer refuses guessed latency");
+
+    replay.configure({1u, 3u, 7u, 11u, 4u, 8u, 2u, 5u, 14u, 9u});
+    const uint32_t adds = (0x11u << 26u) | (0x10u << 21u) |
+                          (3u << 16u) | (2u << 11u) | (4u << 6u);
+    const uint32_t mfc1 = (0x11u << 26u) | (9u << 16u) | (4u << 11u);
+    check(replay.observe(record(1u, 0x1000u, mtc1, 0u, 1u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(2u, 0x1004u, adds, 0u, 2u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(3u, 0x1008u, mfc1, 0u, 3u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.candidate_cycles() == 8u,
+          "MTC1 to ADD.S to MFC1 preserves FPR register dependencies");
+
+    replay.configure({1u, 3u, 7u, 11u, 4u, 8u, 2u, 5u, 14u, 9u});
+    const uint32_t adda = (0x11u << 26u) | (0x10u << 21u) |
+                          (3u << 16u) | (2u << 11u) | 0x18u;
+    const uint32_t madds = (0x11u << 26u) | (0x10u << 21u) |
+                           (3u << 16u) | (2u << 11u) |
+                           (4u << 6u) | 0x1cu;
+    check(replay.observe(record(1u, 0x1000u, adda, 0u, 1u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(2u, 0x1004u, madds, 0u, 2u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.candidate_cycles() == 10u,
+          "ADDA.S to MADD.S waits on independent FPU ACC scoreboard");
+
+    replay.configure({1u, 3u, 7u, 11u, 4u, 8u, 2u, 5u, 14u, 9u});
+    check(replay.observe(record(1u, 0x1000u, 0x45000001u, 0u, 1u)) ==
+          e_ee_issue_replay_status::UNMODELED_INSTRUCTION,
+          "FCSR-dependent BC1 remains unavailable");
+
     std::printf("ee_issue_trace_replay_test: %d failure(s)\n", s_failures);
     return s_failures == 0 ? 0 : 1;
 }

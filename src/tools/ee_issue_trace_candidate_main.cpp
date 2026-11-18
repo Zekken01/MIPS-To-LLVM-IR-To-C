@@ -56,13 +56,15 @@ bool parse_entry(const std::string& line,
 
 int main(int argc, char** argv)
 {
-    if (argc != 4 && argc != 8)
+    if (argc != 4 && argc != 8 && argc != 12)
     {
         std::fprintf(stderr,
             "usage: ee_issue_trace_candidate <trace.csv> "
             "<integer-result-latency> <load-result-latency> "
             "[<multiply-latency> <divide-latency> <hilo-transfer-latency> "
-            "<hilo-accumulate-latency>]\n"
+            "<hilo-accumulate-latency>] "
+            "[<fpu-transfer-latency> <fpu-arithmetic-latency> "
+            "<fpu-divide-latency> <fpu-accumulate-latency>]\n"
             "Diagnostic only. Supplied latencies are NOT verified R5900 cycles.\n");
         return 2;
     }
@@ -75,13 +77,23 @@ int main(int argc, char** argv)
         return 2;
     }
 
-    if (argc == 8 &&
+    if (argc >= 8 &&
         (!parse_latency(argv[4], &profile.m_hilo_multiply_latency) ||
          !parse_latency(argv[5], &profile.m_hilo_divide_latency) ||
          !parse_latency(argv[6], &profile.m_hilo_transfer_latency) ||
          !parse_latency(argv[7], &profile.m_hilo_accumulate_latency)))
     {
         std::fprintf(stderr, "HI/LO timing requires explicit positive latencies\n");
+        return 2;
+    }
+
+    if (argc == 12 &&
+        (!parse_latency(argv[8], &profile.m_fpu_transfer_latency) ||
+         !parse_latency(argv[9], &profile.m_fpu_arithmetic_latency) ||
+         !parse_latency(argv[10], &profile.m_fpu_divide_latency) ||
+         !parse_latency(argv[11], &profile.m_fpu_accumulate_latency)))
+    {
+        std::fprintf(stderr, "COP1 timing requires explicit positive latencies\n");
         return 2;
     }
 

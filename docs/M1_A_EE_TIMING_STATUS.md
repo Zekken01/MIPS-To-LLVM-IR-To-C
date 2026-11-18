@@ -69,3 +69,7 @@ The experimental issue probe now tracks independent GPR, HI0/LO0/HI1/LO1, COP1 F
 ### Explicit HI/LO timing categories
 
 The offline issue candidate now classifies scalar `MULT/MULTU/DIV/DIVU`, `MFHI/MFLO/MTHI/MTLO` and their second-pipeline `*1` equivalents, plus `MADD/MADDU/MADD1/MADDU1`, using separate HI/LO read/write dependency masks. Their four latency categories default to **unconfigured**: multiply, divide, HI/LO transfer and accumulate. Existing candidate traces remain backward compatible. The CLI accepts the four optional latency values as one group; these values are diagnostic inputs, not hardware validation. Other MMI operations remain unmodeled and fail closed.
+
+### Scalar COP1 issue classes
+
+The offline candidate can now replay supported MFC1/MTC1, COP1.S scalar arithmetic, DIV/SQRT/RSQRT, ACC operations and CVT.S.W when **four separate caller-provided COP1 latencies** are available: transfer, arithmetic, divide/sqrt and accumulate. FPR0 is modeled as writable, independently from GPR0. Unmodeled FCSR/FCC0, COP0, VU0 and packed-MMI hazards still fail closed, so these cases cannot be used to authorize GS timing. CTests exercise FPR and ACC cross-instruction dependency sequencing.
