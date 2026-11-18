@@ -99,8 +99,9 @@ no playable boot is implied.
    Remaining CDVD library imports, IOP module lifecycle and service state
    are not yet complete. No INFO/GAME synthesis or unrelated native
    asset/resource-pack features are ported.
-4. The non-ROM0 SIFCMD/SIFMAN compatibility path lacks a complete HLE kernel
-   reset, service library registry, scheduler and game-driven IRX lifecycle.
+4. The non-ROM0 SIFCMD/SIFMAN compatibility path now has a bounded
+   extracted-folder IOP reset packet/rebootstrap boundary, but not ROM0/UDNL
+   execution or complete guest IOP kernel scheduling and IRX lifecycle.
 5. Guest modules such as `ARKD_DVD.IRX` may use `sceCdSearchFile` to locate
    INFO/GAME archives; implement and test lookup using the synthetic index.
 6. The legacy `SDBZ_IOP_ROM0` variable remains implicit for normal ISO
@@ -243,3 +244,43 @@ completion, interrupt, reply, or readiness are invented.
 The next local run should identify the unsupported packet semantics,
 allowing the correct HLE command implementation to be prioritized.
 `SetSyscall(0x12c)` is still unsupported and is not the observed stop.
+
+### HLE IOP reboot request — 18 November 2026, 12:27 local trace
+
+The standard user workflow is `git pull` followed by
+`run_ps2_game.bat`. That wrapper rebuilds the native host runner and
+reuses verified translated EE objects. The previous CDVDFSV CdInit RPC
+blocker cleared: 293 LLVM-verified EE functions, 6,543 dispatches and
+944,530 guest instruction attempts were reached, with 0 runtime IRX
+loads. The new stop was a single terminal SIF1 descriptor (0x44)
+carrying **104-byte system CID 0x80000003**, source 0x00564D80,
+IOP SIFCMD destination 0x0001E000, at EE EPC 0x00175064.
+
+PS2SDK's `SIF_CMD_RESET_CMD` / `SifIopReset` transmits a 104-byte
+command with the argument length at +16, mode at +20 and up to 80
+argument bytes starting at +24; those argument bytes need not be
+NUL-terminated. The observed +16 word is 0x20 (32 bytes). This is
+**IOP reboot control**, not an arbitrary missing SIFCMD callback.
+The game's EE explicitly stops SIF0 and removes DMA interrupt handlers
+before issuing this request.
+
+The HLE-only reset boundary now validates and stages this complete
+packet transactionally, rejecting malformed lengths, unrecognized modes
+and nonprintable embedded argument bytes. In extracted-disc HLE mode,
+`rom0:UDNL` arguments selecting disc images are resolved via the
+**real** folder ISO9660 sector index; missing images and unsupported
+loaders are refused. Once validated, the IOP kernel's prior modules,
+threads, imports and allocations are invalidated; SIFCMD/SIFMAN/CDVDMAN
+and CDVD DMA transport are rebuilt, and outstanding RPC/stream state
+is cleared. Old IOP-owned SMFLAG/SUBADDR readiness is removed. Modeled
+HLE readiness is published only after service reinstallation and the
+EE's reset software-register handshake. This **does not execute ROM0,
+UDNL or arbitrary image modules**, and never reports an IRX as loaded
+merely because a file was found.
+
+The captured reset argument string, actual image presence and complete
+post-reset EE/IOP handshake still require **a new local SDBZ boot**.
+A successful unit-test reset packet and HLE service reinitialization are
+not proof of completed game boot. The asynchronous CDVD and RPC
+schedulers, IOPHEAP method 3, remaining LOADFILE methods and actual
+game IRX runtime loading also remain incomplete.
