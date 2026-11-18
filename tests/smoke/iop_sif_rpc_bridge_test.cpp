@@ -1195,6 +1195,31 @@ int main()
         return fail("accepted RPC preview changed guest state or reason");
     }
 
+    // A bind request for an unknown server is distinct from malformed
+    // packets, and neither may overwrite the output staging request.
+    std::vector<uint32_t> invalid_bind = valid_bind;
+    invalid_bind[8] = 0x8000beefu;
+    staged.m_server_id = 0xcafebabeu;
+    if (rpc.prepare_command(
+            invalid_bind, 36u, 0u, 0u, &staged, &status) ||
+        status != iop::e_rpc_rejection::unknown_server ||
+        staged.m_server_id != 0xcafebabeu ||
+        rpc.pending_replies() != 0u)
+    {
+        return fail("unsupported bind mutated output or lost server identity");
+    }
+
+    invalid_bind = valid_bind;
+    invalid_bind[1] = 0x01234560u;
+    if (rpc.prepare_command(
+            invalid_bind, 36u, 0u, 0u, &staged, &status) ||
+        status != iop::e_rpc_rejection::invalid_envelope ||
+        staged.m_server_id != 0xcafebabeu ||
+        rpc.pending_replies() != 0u)
+    {
+        return fail("malformed RPC envelope was not distinguished");
+    }
+
     // Reset may not retain the previous IOPRP's LOADFILE version.
     rpc.reset_for_reboot();
     packet(memory, call_source, version_call);
