@@ -72,7 +72,7 @@ The offline issue candidate now classifies scalar `MULT/MULTU/DIV/DIVU`, `MFHI/M
 
 ### Scalar COP1 issue classes
 
-The offline candidate can now replay supported MFC1/MTC1, COP1.S scalar arithmetic, DIV/SQRT/RSQRT, ACC operations and CVT.S.W when **four separate caller-provided COP1 latencies** are available: transfer, arithmetic, divide/sqrt and accumulate. FPR0 is modeled as writable, independently from GPR0. Unmodeled FCSR/FCC0, COP0, VU0 and packed-MMI hazards still fail closed, so these cases cannot be used to authorize GS timing. CTests exercise FPR and ACC cross-instruction dependency sequencing.
+The offline candidate can now replay supported MFC1/MTC1, COP1.S scalar arithmetic, DIV/SQRT/RSQRT, ACC operations and CVT.S.W when **four separate caller-provided COP1 latencies** are available: transfer, arithmetic, divide/sqrt and accumulate. FPR0 is modeled as writable, independently from GPR0. Other FCR, COP0, VU0 and packed-MMI hazards still fail closed (FCR31 control/condition tracking has since been added), so these cases cannot be used to authorize GS timing. CTests exercise FPR and ACC cross-instruction dependency sequencing.
 
 ### Explicit host HLE entry boundaries
 
@@ -93,6 +93,25 @@ The native LLVM emitter now invokes an **internal** function-pointer observer (n
 ### Rejection safepoints
 
 An installed observer that refuses a RAM-interpreted committed step now terminates that interpreter immediately with `TIMING_OBSERVER_REJECTED`; the runner checks the same failure latch at the start of each host dispatch iteration so HLE continuations cannot silently proceed. Native translated code checks at the dispatch boundary. The default observer is null, preserving the baseline boot. No issue model or observer installs an EE timing source implicitly.
+
+
+### EE Core manual audit (18 November 2026)
+
+See [M1_A_R5900_REFERENCE_AUDIT.md](M1_A_R5900_REFERENCE_AUDIT.md) for
+primary-manual provenance, Table 1-2/1-3 logical-pipe combinations,
+Table 2-12 latency/throughput values, the FCR31 scoreboard extension,
+separate DIV.S/SQRT.S/RSQRT.S profile fields and explicit outstanding
+pipeline/cache/throughput/HLE timing gaps. The offline probe now supports
+documented ALU/branch, load/store, COP1 move/operate and MAC0/MAC1
+logical-pipe combinations with strict dependency gating. A manual Y
+resource-hazard pair still does **not** qualify as a modeled same-cycle
+pair. Annulled delay slots cannot accept the next issued instruction.
+
+All new tests continue to use synthetic candidate profiles. No observed
+R5900 hardware issue-cycle trace has been validated, and no GS/INTC
+timing source is installed. Do not treat the manual's latency list as a
+complete guest-cycle or boot-validation timeline.
+
 
 ### Native JIT observer regression
 
