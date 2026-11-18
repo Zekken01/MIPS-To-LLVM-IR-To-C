@@ -14,7 +14,7 @@ import subprocess
 import sys
 import time
 
-from iop_disc_catalog import build_catalog
+from iop_disc_catalog import build_catalog, reconcile_runtime_loadfile
 
 
 LINKED_COUNT_PATTERN = re.compile(
@@ -275,7 +275,25 @@ def main(argv=None):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.unlink(missing_ok=True)
             final_command.append(f"{option}={target}")
-    code, _, elapsed = run_session(final_command, boot_log)
+    code, final_output, elapsed = run_session(final_command, boot_log)
+    if catalog is not None:
+        try:
+            reconcile_runtime_loadfile(catalog, final_output)
+            catalog_path.write_text(
+                json.dumps(catalog, indent=2) + "\n", encoding="utf-8"
+            )
+            print(
+                f"IOP committed LOADFILE requests: "
+                f"{catalog['runtime_load_attempt_count']} attempts, "
+                f"{catalog['runtime_load_count']} successful module starts "
+                f"({catalog_path})",
+                flush=True,
+            )
+        except (ValueError, OSError) as exc:
+            # The original static catalog remains explicitly unobserved.
+            # Diagnostic parsing must not invent loads or abort EE boot.
+            print(f"IOP committed LOADFILE evidence unavailable: {exc}",
+                  file=sys.stderr, flush=True)
     state = read_report(report)
     final_pc = state.get("final_pc")
     pc_text = f"0x{final_pc:08x}" if isinstance(final_pc, int) else "unknown"
