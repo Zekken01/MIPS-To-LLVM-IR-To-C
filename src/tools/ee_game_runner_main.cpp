@@ -3466,6 +3466,29 @@ int main(int argc, char** argv)
                                     iop_sifcmd->initialized() ? 1u : 0u
                             );
                         }
+                        if (iop_rom0_path == nullptr &&
+                            dma_diagnostic.m_rpc_packet_word_count != 0u)
+                        {
+                            std::fprintf(
+                                stderr,
+                                "IOP HLE rejected RPC payload: "
+                                "source=0x%08x bytes=%u header_words=%u\\n",
+                                dma_diagnostic.m_rpc_payload_source,
+                                dma_diagnostic.m_rpc_payload_length,
+                                dma_diagnostic.m_rpc_packet_word_count
+                            );
+                            std::fprintf(stderr, "IOP HLE rejected RPC words:");
+                            for (uint32_t word = 0u;
+                                 word < dma_diagnostic.m_rpc_packet_word_count;
+                                 ++word)
+                            {
+                                std::fprintf(
+                                    stderr, " %08x",
+                                    dma_diagnostic.m_rpc_packet_words[word]
+                                );
+                            }
+                            std::fprintf(stderr, "\\n");
+                        }
                         if (iop_rom0_path != nullptr && count != 0u &&
                             memory->contains(descriptors, 16u))
                         {
