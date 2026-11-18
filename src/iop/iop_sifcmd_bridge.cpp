@@ -71,6 +71,32 @@ bool c_sifcmd_bridge::initialize_hle_bootstrap()
     return true;
 }
 
+bool c_sifcmd_bridge::take_reboot_request(std::string* argument)
+{
+    if (!m_reboot_pending || argument == nullptr)
+    {
+        return false;
+    }
+    *argument = m_reboot_argument;
+    m_reboot_argument.clear();
+    m_reboot_pending = false;
+    return true;
+}
+
+void c_sifcmd_bridge::reset_for_reboot()
+{
+    for (uint32_t& value : m_sregs)
+    {
+        value = 0u;
+    }
+    m_ee_receive_address = 0u;
+    m_initialized = false;
+    m_installed = false;
+    m_hle_bootstrapped = false;
+    m_reboot_pending = false;
+    m_reboot_argument.clear();
+}
+
 bool c_sifcmd_bridge::handle_syscall(
     c_kernel& kernel, uint32_t service
 )
@@ -130,7 +156,8 @@ bool c_sifcmd_bridge::prepare_command(
     // DMA transfers round to 16 bytes, but the header records the
     // original 20/24-byte packet size.
     if (!m_initialized || command == nullptr ||
-        (size != 16u && size != 20u && size != 24u) ||
+        (size != 16u && size != 20u && size != 24u &&
+         size != 104u) ||
         words.size() < size / 4u ||
         (words[0] & 0xffu) != size ||
         words[1] != 0u)
@@ -138,12 +165,45 @@ bool c_sifcmd_bridge::prepare_command(
         return false;
     }
 
+    const uint32_t cid = words[2];
+
+    // SIF_CMD_RESET_CMD is a distinct system command. It is NOT a
+    // normal RPC or an acknowledgement that ROM0/UDNL has booted.
+    // PS2SDK's 104-byte reset packet contains arglen at +16, mode
+    // at +20, and 80 argument bytes at +24, which need not have a
+    // terminating NUL. Only the supported mode is accepted.
+    if (cid == 0x80000003u && size == 104u)
+    {
+        if (words[3] != 0u || words[4] > 80u ||
+            words[5] != 0u || m_reboot_pending)
+        {
+            return false;
+        }
+        s_command reboot{};
+        reboot.m_cid = cid;
+        reboot.m_reboot_request = true;
+        for (uint32_t byte = 0u; byte < words[4]; ++byte)
+        {
+            const uint8_t character = static_cast<uint8_t>(
+                words[6u + byte / 4u] >> (8u * (byte % 4u))
+            );
+            if (character < 0x20u || character > 0x7eu)
+            {
+                return false;
+            }
+            reboot.m_reboot_argument.push_back(
+                static_cast<char>(character)
+            );
+        }
+        *command = std::move(reboot);
+        return true;
+    }
+
     // EE's 16-byte INIT_CMD with opt=1 requests an IOP->EE
     // SET_SREG command (SREG[0] = 1). ps2-web-recomp/SDBZ
     // sends that packet to the EE through the SIF0 command receiver.
     // This is not the 20-byte receive-address publication, and it
     // must never update an EE SREG without an actual reply packet.
-    const uint32_t cid = words[2];
     if (cid == 0x80000002u && size == 16u &&
         words[3] == 1u)
     {
@@ -191,7 +251,13 @@ bool c_sifcmd_bridge::prepare_command(
 
 void c_sifcmd_bridge::commit_command(const s_command& command)
 {
-    if (command.m_cid == 0x80000001u)
+    if (command.m_reboot_request &&
+        command.m_cid == 0x80000003u)
+    {
+        m_reboot_argument = command.m_reboot_argument;
+        m_reboot_pending = true;
+    }
+    else if (command.m_cid == 0x80000001u)
     {
         m_sregs[command.m_index] = command.m_value;
     }
