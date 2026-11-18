@@ -135,6 +135,14 @@ int main()
     // The first compatibility VBlank must enter a genuine EE IRQ and
     // remain pending until INTC_STAT is acknowledged. Restore EPC exactly,
     // since the interrupted load has not yet executed.
+    // INTC_STAT alone does not assert COP0.IP2; the guest kernel must
+    // enable the corresponding INTC_MASK bit before IRQ delivery.
+    const ee::s_ee_u128 intc_mask{4u, 0u};
+    check(ee::c_ee_intc::mmio_write(
+              &compatibility_hardware.intc(),
+              ee::c_ee_intc::k_mask_address, 4u, &intc_mask) &&
+          compatibility_hardware.intc().pending() == 4u,
+          "enable genuine masked INTC VBlank before EE exception");
     compatibility_cpu.m_cop0[12] = 0x70010c01u;
     compatibility_cpu.m_pc = 0x00175210u;
     check(ee::ee_check_interrupts(
