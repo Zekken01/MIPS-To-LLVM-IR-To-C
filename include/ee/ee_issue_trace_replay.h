@@ -40,6 +40,10 @@ struct s_ee_issue_replay_profile
     uint32_t m_cop0_transfer_latency = 0u;
     uint32_t m_vu0_vf_transfer_latency = 0u;
     uint32_t m_vu0_vi_transfer_latency = 0u;
+    // Packed MMI uses all 128 bits of each participating GPR. A separate
+    // caller-provided result latency is mandatory; scalar integer latency
+    // is not evidence of MMI pipeline timing. Pairing remains disabled.
+    uint32_t m_packed_mmi_latency = 0u;
 
     // Optional *initiation intervals* (not result latencies); no implicit
     // defaults are permitted. The strict experimental mode rejects every
@@ -385,8 +389,75 @@ private:
                                       : e_ee_probe_unit::MAC1,
                     m_profile.m_mac_accumulate_interval);
             default:
-                // Packed MMI still requires vector-lane scoreboard modeling.
-                return false;
+                // The decoder has already rejected unsupported encodings.
+                // Only the exact-lowered, 128-bit GPR subset listed below
+                // can be replayed with an independently supplied candidate
+                // result latency. QFSRV (MMI1 sa=27) also reads the special
+                // SA shift register: keep it unavailable until SA producer
+                // (MTSAB/MTSAH) and consumer hazards are modeled.
+                if (m_profile.m_packed_mmi_latency == 0u)
+                {
+                    return false;
+                }
+                {
+                    bool unary_rt = false;
+                    bool packed_supported = false;
+                    switch (operation)
+                    {
+                    case 0x08u: // MMI0: PADD*/PSUB*/PMAX*
+                        packed_supported =
+                            decoded.sa == 0u || decoded.sa == 1u ||
+                            decoded.sa == 3u || decoded.sa == 4u ||
+                            decoded.sa == 5u || decoded.sa == 7u ||
+                            decoded.sa == 8u || decoded.sa == 9u;
+                        break;
+                    case 0x28u: // MMI1: parallel arithmetic and extensions
+                        unary_rt = decoded.sa == 1u || decoded.sa == 5u;
+                        switch (decoded.sa)
+                        {
+                        case 1u: case 2u: case 3u: case 4u:
+                        case 5u: case 6u: case 7u: case 10u:
+                        case 16u: case 17u: case 18u:
+                        case 20u: case 21u: case 22u:
+                        case 24u: case 25u: case 26u:
+                            packed_supported = true;
+                            break;
+                        default:
+                            break;
+                        }
+                        break;
+                    case 0x09u: // MMI2: PCPYLD/PAND/PXOR
+                        packed_supported = decoded.sa == 14u ||
+                                           decoded.sa == 18u ||
+                                           decoded.sa == 19u;
+                        break;
+                    case 0x29u: // MMI3: PCPYUD/POR/PNOR/PCPYH
+                        unary_rt = decoded.sa == 27u;
+                        packed_supported = decoded.sa == 14u ||
+                                           decoded.sa == 18u ||
+                                           decoded.sa == 19u ||
+                                           decoded.sa == 27u;
+                        break;
+                    default:
+                        break;
+                    }
+                    if (!packed_supported)
+                    {
+                        return false;
+                    }
+                    instruction->m_pipe = e_ee_probe_pipe::PACKED_MMI;
+                    instruction->m_result_latency =
+                        m_profile.m_packed_mmi_latency;
+                    instruction->m_gpr_read_mask = rt | (unary_rt ? 0u : rs);
+                    instruction->m_gpr_write_mask = rd;
+                    // A packed SIMD instruction reads/writes complete
+                    // 128-bit GPRs, not just its low 64-bit subregisters.
+                    instruction->m_gpr_128_read_mask =
+                        instruction->m_gpr_read_mask;
+                    instruction->m_gpr_128_write_mask =
+                        instruction->m_gpr_write_mask;
+                    return true;
+                }
             }
         }
 
