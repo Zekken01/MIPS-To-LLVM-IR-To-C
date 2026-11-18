@@ -407,7 +407,7 @@ private:
 
             const uint32_t function = decoded.funct;
             if (function == 0x30u || function == 0x32u ||
-                function == 0x3cu || function == 0x3eu)
+                function == 0x34u || function == 0x36u)
             {
                 if (m_profile.m_fpu_compare_latency == 0u)
                 {
@@ -492,9 +492,8 @@ private:
             instruction->m_pipe = e_ee_probe_pipe::BRANCH;
             instruction->m_gpr_read_mask = rs;
             return true;
-        case 0x08u: case 0x09u: case 0x0au: case 0x0bu:
-        case 0x0cu: case 0x0du: case 0x0eu:
-        case 0x18u: case 0x19u:
+        case 0x09u: case 0x0au: case 0x0bu: case 0x0cu:
+        case 0x0du: case 0x0eu: case 0x19u:
             instruction->m_gpr_read_mask = rs;
             instruction->m_gpr_write_mask = rt;
             return true;
