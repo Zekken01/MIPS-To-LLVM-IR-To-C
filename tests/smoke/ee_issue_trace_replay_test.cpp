@@ -271,6 +271,16 @@ int main()
 
     replay.configure({1u, 3u, 7u, 11u, 4u, 8u,
                       2u, 5u, 14u, 9u, 6u, 7u});
+    const uint32_t clt_s = (ceq_s & ~0x3fu) | 0x34u;
+    check(replay.observe(record(1u, 0x3000u, clt_s, 0u, 1u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(2u, 0x3004u, bc1t, 0u, 2u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.last_event_candidate_cycle() == 7u,
+          "EE C.LT.S comparison must use funct 0x34, not MIPS 0x3c");
+
+    replay.configure({1u, 3u, 7u, 11u, 4u, 8u,
+                      2u, 5u, 14u, 9u, 6u, 7u});
     check(replay.observe(record(1u, 0x3000u, ctc1_fcr31, 0u, 1u)) ==
           e_ee_issue_replay_status::ISSUED &&
           replay.observe(record(2u, 0x3004u, bc1t, 0u, 2u)) ==
@@ -292,10 +302,20 @@ int main()
     const uint32_t addi = (0x08u << 26u) | (8u << 16u) | 1u;
     const uint32_t daddi = (0x18u << 26u) | (9u << 16u) | 1u;
     check(replay.observe(record(1u, 0x3000u, addi, 0u, 1u)) ==
+          e_ee_issue_replay_status::UNMODELED_INSTRUCTION,
+          "overflow-trapping ADDI remains unsupported by the guest decoder");
+    replay.configure({1u, 3u});
+    check(replay.observe(record(1u, 0x3000u, daddi, 0u, 1u)) ==
+          e_ee_issue_replay_status::UNMODELED_INSTRUCTION,
+          "overflow-trapping DADDI remains unsupported by the guest decoder");
+    replay.configure({1u, 3u});
+    const uint32_t addiu = (0x09u << 26u) | (8u << 16u) | 1u;
+    const uint32_t daddiu = (0x19u << 26u) | (9u << 16u) | 1u;
+    check(replay.observe(record(1u, 0x3000u, addiu, 0u, 1u)) ==
           e_ee_issue_replay_status::ISSUED &&
-          replay.observe(record(2u, 0x3004u, daddi, 0u, 2u)) ==
+          replay.observe(record(2u, 0x3004u, daddiu, 0u, 2u)) ==
           e_ee_issue_replay_status::ISSUED,
-          "signed ADDI and DADDI use explicit scalar-ALU candidate timing");
+          "nontrapping ADDIU and DADDIU use explicit scalar-ALU timing");
 
     replay.configure({1u, 3u, 7u, 11u, 4u, 8u});
     const uint32_t dependent_add = (6u << 21u) | (7u << 16u) |
