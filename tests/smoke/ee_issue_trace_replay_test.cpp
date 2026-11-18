@@ -363,6 +363,30 @@ int main()
           replay.last_event_candidate_cycle() == 7u,
           "MULT rd result cannot inherit unverified fast ALU latency");
 
+    // Dedicated result clocks apply to HI/LO-to-GPR and MAC-to-GPR paths.
+    // Otherwise a later GPR consumer would incorrectly see one-cycle ALU
+    // availability despite explicit long-latency special-register work.
+    replay.configure({1u, 3u, 7u, 11u, 4u, 8u});
+    const uint32_t mfhi_rd6 = (6u << 11u) | 0x10u;
+    check(replay.observe(record(1u, 0x4000u, mult, 0u, 1u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(2u, 0x4004u, mfhi_rd6, 0u, 2u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(3u, 0x4008u, dependent_add, 0u, 3u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.last_event_candidate_cycle() == 11u,
+          "MFHI GPR result uses explicit HI/LO transfer availability");
+
+    replay.configure({1u, 3u, 7u, 11u, 4u, 8u});
+    const uint32_t madd_rd6 = (0x1cu << 26u) | (4u << 21u) |
+                              (5u << 16u) | (6u << 11u);
+    check(replay.observe(record(1u, 0x4000u, madd_rd6, 0u, 1u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(2u, 0x4004u, dependent_add, 0u, 2u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.last_event_candidate_cycle() == 8u,
+          "MADD rd does not inherit fast generic scalar ALU timing");
+
     std::printf("ee_issue_trace_replay_test: %d failure(s)\n", s_failures);
     return s_failures == 0 ? 0 : 1;
 }
