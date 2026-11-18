@@ -139,14 +139,16 @@ the R5900.
 
 The shared decoder (`src/ee/decoder.cpp`) already admits exact
 `MFC0/MTC0`, `QMFC2/QMTC2` (VU0 VF), and `CFC2/CTC2`
-(VU0 VI) encodings. The offline probe now tracks **three independent
-architectural register banks**: COP0[0..31], VU0 VF[0..31],
-and VU0 VI[0..31]. Their read/write dependencies are independent
-of GPR, COP1 FPR, FCR31, HI/LO and one another. The issue model
-handles RAW, conservative WAW, same-cycle pairing exclusions and
-atomic ordered-overlap rejection for these banks. Index zero is kept
-as a conservative tracked resource rather than assuming the same
-constant-register semantics as EE GPR0.
+(VU0 VI) encodings. The offline probe keeps distinct **functional**
+VU0 VF and VI instruction masks and an independent COP0 register bank,
+but now uses **one shared VU0 macro-mode dependency identity** for
+VF[n]/VI[n] of matching index n=1..31. This follows the VU User's
+Manual v6.0 section 5.4.2, which also exempts VF00 and VI00 from
+ordinary macro-register hazards. The issue model covers RAW,
+conservative WAW, same-cycle exclusions and opt-in atomic
+ordered-overlap checks in this shared hazard bank. It does **not**
+merge actual VF and VI register values, establish transfer forwarding
+latency, or authorize whole-system timing.
 
 **No new hardware timing constants were introduced.** The three
 transfer classes require individually supplied candidate result
@@ -170,7 +172,7 @@ drive the EE cycle scheduler, GS scanout or INTC events.
 
 The new regression fixture covers decoder-supported transfers,
 unconfigured-latency rejection, isolated COP0/VU0 hazards,
-VF-versus-VI separation, conservative index-zero tracking,
+VF/VI same-number alias dependencies, VF00/VI00 exemptions,
 overlap ordering and deliberately unmodeled system/vector/MMI
 operations. Synthetic test vectors prove software behavior
 only, not R5900 cycle calibration.
@@ -189,8 +191,9 @@ only, not R5900 cycle calibration.
   resource identities are candidate assumptions, not independent timing
   validation. Short-loop hazards, execution/retirement distinctions,
   cached/uncached access and cache-miss stalls remain unmodeled.
-- COP0 register transfers and VU0 VF/VI transfers now have explicit,
-  isolated offline hazard resources. COP0 system state (ERET/EI/DI,
+- COP0 transfers and VU0 VF/VI transfers now have explicit, isolated
+  offline COP0 versus shared-numbered VU0 macro hazard resources.
+  COP0 system state (ERET/EI/DI,
   interrupts, TLB, implicit register changes), VU0 macros, vector
   flags/ACC, packed MMI, cache and memory-side hazards remain unavailable.
   Reject these rather than assigning default costs.
