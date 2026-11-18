@@ -439,6 +439,58 @@ int main()
           replay.candidate_cycles() == 1u,
           "strict throughput still accepts classes without a special unit");
 
+    // Strict replay keeps conservative WAW waiting by default.
+    // An explicit counterfactual overlap policy can be used to compare
+    // issue intervals and result deadlines without claiming EE hardware
+    // retirement semantics.
+    throughput_profile.m_mac_multiply_interval = 2u;
+    throughput_profile.m_cop1_arithmetic_interval = 2u;
+    throughput_profile.m_require_throughput = true;
+    throughput_profile.m_allow_ordered_waw_overlap = false;
+    replay.configure(throughput_profile);
+    check(replay.observe(record(1u, 0x6000u, mult, 0u, 1u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(2u, 0x6004u, mult, 0u, 2u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.last_event_candidate_cycle() == 7u,
+          "default strict replay conservatively waits for duplicate MULT rd/HI/LO");
+
+    throughput_profile.m_allow_ordered_waw_overlap = true;
+    replay.configure(throughput_profile);
+    check(replay.observe(record(1u, 0x6000u, mult, 0u, 1u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(2u, 0x6004u, mult, 0u, 2u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.last_event_candidate_cycle() == 2u &&
+          replay.last_candidate_completion_cycle() == 9u &&
+          replay.max_candidate_completion_cycle() == 9u &&
+          replay.observe(record(3u, 0x6008u, mflo, 0u, 3u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.last_event_candidate_cycle() == 9u,
+          "opt-in MAC overlap preserves latest HI/LO completion for MFLO");
+
+    replay.configure(throughput_profile);
+    check(replay.observe(record(1u, 0x6000u, ceq_s, 0u, 1u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(2u, 0x6004u, ceq_s, 0u, 2u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.last_event_candidate_cycle() == 2u &&
+          replay.last_candidate_completion_cycle() == 9u &&
+          replay.observe(record(3u, 0x6008u, bc1t, 0u, 3u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.last_event_candidate_cycle() == 9u,
+          "overlapping comparisons retain FCC0 dependency before BC1T");
+
+    throughput_profile.m_fpu_control_latency = 2u;
+    replay.configure(throughput_profile);
+    check(replay.observe(record(1u, 0x6000u, ceq_s, 0u, 1u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(2u, 0x6004u, ctc1_fcr31, 0u, 2u)) ==
+          e_ee_issue_replay_status::INVALID_SLOT &&
+          !replay.usable_prefix() &&
+          replay.failure_pc() == 0x6004u,
+          "shorter FCR31 producer cannot overtake older result in ordered mode");
+
     std::printf("ee_issue_trace_replay_test: %d failure(s)\n", s_failures);
     return s_failures == 0 ? 0 : 1;
 }
