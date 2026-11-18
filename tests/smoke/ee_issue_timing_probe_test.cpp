@@ -387,9 +387,10 @@ int main()
               ee::e_ee_probe_waw_policy::ORDERED_OVERLAP),
           "invalid or midstream overlap-mode changes fail closed");
 
-    // COP0 and VU0 VF/VI are independent architectural scoreboards.
-    // These candidate categories intentionally occupy a cycle alone,
-    // without asserting a verified hardware pairing or bypass rule.
+    // COP0 has its own architectural scoreboard. VU0 VF and VI retain
+    // different VALUES, but macro hazards alias their register numbers
+    // except VF00/VI00 (VU manual 5.4.2). These transfer candidates
+    // remain conservatively single-issue with caller-supplied latencies.
     clock.reset();
     s_ee_probe_instruction write_cp0{};
     write_cp0.m_pipe = e_ee_probe_pipe::SYSTEM_CONTROL;
@@ -430,15 +431,43 @@ int main()
     read_vi.m_vu0_vi_read_mask = 1u << 4u;
     read_vi.m_gpr_write_mask = 1u << 10u;
     check(clock.issue(write_vf, &at) && at == 0u &&
+          clock.issue(read_vi, &at) && at == 5u,
+          "VU0 macro VF4 write blocks VI4 read by shared index");
+
+    clock.reset();
+    s_ee_probe_instruction write_vi{};
+    write_vi.m_pipe = e_ee_probe_pipe::VU0_TRANSFER;
+    write_vi.m_vu0_vi_write_mask = 1u << 4u;
+    write_vi.m_vu0_vi_result_latency = 7u;
+    check(clock.issue(write_vi, &at) && at == 0u &&
+          clock.issue(read_vf, &at) && at == 7u,
+          "VU0 macro VI4 write blocks VF4 read by shared index");
+
+    clock.reset();
+    check(clock.issue(write_vf, &at) && at == 0u &&
+          clock.issue(write_vi, &at) && at == 5u,
+          "VU0 macro VF4 and VI4 writes share WAW hazard identity");
+
+    clock.reset();
+    read_vi.m_vu0_vi_read_mask = 1u << 5u;
+    check(clock.issue(write_vf, &at) && at == 0u &&
           clock.issue(read_vi, &at) && at == 1u,
-          "VU0 VF and VI register banks are tracked separately");
+          "different VU0 macro register indices have no false alias");
 
     clock.reset();
     write_vf.m_vu0_vf_write_mask = 1u;
     read_vf.m_vu0_vf_read_mask = 1u;
+    read_vi.m_vu0_vi_read_mask = 1u;
     check(clock.issue(write_vf, &at) && at == 0u &&
-          clock.issue(read_vf, &at) && at == 5u,
-          "VU0 register zero is conservatively tracked as a resource");
+          clock.issue(read_vf, &at) && at == 1u &&
+          clock.issue(read_vi, &at) && at == 2u,
+          "VF00 and VI00 do not create macro register dependencies");
+
+    clock.reset();
+    write_vi.m_vu0_vi_write_mask = 1u;
+    check(clock.issue(write_vi, &at) && at == 0u &&
+          clock.issue(read_vf, &at) && at == 1u,
+          "VI00 write does not create a false VF00 hazard");
 
     clock.reset();
     write_cp0.m_cop0_result_latency = 8u;
@@ -453,6 +482,7 @@ int main()
           "COP0 overlapping writers cannot overtake earlier completion");
 
     clock.reset();
+    write_vf.m_vu0_vf_write_mask = 1u << 4u;
     write_vf.m_vu0_vf_result_latency = 8u;
     s_ee_probe_instruction earlier_vf = write_vf;
     earlier_vf.m_vu0_vf_result_latency = 1u;
@@ -462,6 +492,17 @@ int main()
           !clock.issue(earlier_vf, &at) &&
           clock.instructions_issued() == 1u,
           "VU0 overlapping VF writers cannot overtake earlier completion");
+
+    clock.reset();
+    write_vi.m_vu0_vi_write_mask = 1u << 4u;
+    write_vi.m_vu0_vi_result_latency = 1u;
+    check(clock.configure_waw_policy(
+              ee::e_ee_probe_waw_policy::ORDERED_OVERLAP) &&
+          clock.issue(write_vf, &at) && at == 0u &&
+          !clock.issue(write_vi, &at) &&
+          clock.instructions_issued() == 1u &&
+          clock.estimated_cycles() == 1u,
+          "cross-bank VU0 WAW result overtaking rejects atomically");
 
     clock.reset();
     read_cp0.m_cop0_read_mask = 1u << 12u;
