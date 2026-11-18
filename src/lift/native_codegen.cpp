@@ -599,6 +599,13 @@ std::string native_codegen::emit_function_body(
             body.replace(pos, 6, "cpu->");
             pos += 4;
         }
+        // Replace address-of global CPU state when the emitted operation
+        // calls a runtime helper; the callable ABI passes CPU by pointer.
+        pos = 0;
+        while ((pos = body.find("&g_cpu", pos)) != std::string::npos) {
+            body.replace(pos, 6, "cpu");
+            pos += 3;
+        }
         // Replace all "&g_rt" with "rt"
         pos = 0;
         while ((pos = body.find("&g_rt", pos)) != std::string::npos) {
