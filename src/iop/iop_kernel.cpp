@@ -100,6 +100,17 @@ bool c_kernel::start_rom0_boot(const std::vector<uint8_t>& image)
     return true;
 }
 
+bool c_kernel::attach_hle_hardware()
+{
+    if (m_rom0_boot_active)
+    {
+        return false;
+    }
+    // Reset detaches MMIO; the HLE bootstrap reattaches explicitly.
+    m_cpu.bind_hardware(&m_hardware);
+    return true;
+}
+
 bool c_kernel::rom0_boot_active() const
 {
     return m_rom0_boot_active;

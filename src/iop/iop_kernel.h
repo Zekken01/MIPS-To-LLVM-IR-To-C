@@ -88,6 +88,8 @@ public:
     // ROM0 image at BFC00000, not as a fabricated kernel thread.
     // This must occur before any IRX imports or modules are installed.
     bool start_rom0_boot(const std::vector<uint8_t>& image);
+    // Attach the real physical IOP bus for HLE-first IRX execution.
+    bool attach_hle_hardware();
     bool rom0_boot_active() const;
     c_hw& hardware();
     const c_hw& hardware() const;

@@ -110,3 +110,23 @@ An independent **synthetic** complete SIO2MAN-import fixture verifies all 28 imp
 ### Limitations and next evidence
 
 This batch does not implement actual SIO2 packet/device transfer, interrupt callback invocation, real firmware ROM0/UDNL execution, full LOADFILE async lifecycle, or all PS2 kernel library ordinals. `SetSyscall(0x12C)` also remains a separate EE HLE omission. Unknown kernel imports and unsupported DMA behavior are explicit blockers. After a `git pull` and `run_ps2_game.bat`, use the next *matched five-file* diagnostic batch to verify actual runtime module ID/thread ID, exact unresolved `LIB#ORD` or guest syscall stop PC/opcode, and whether the 100,000-dispatch loop is broken.
+
+## 2026-11-18 14:10 — first genuine SIO2MAN R3000 stop
+
+The matched five-file batch (boot, expansion, first-boot, catalog and cache
+at 14:10:39–14:10:41) uses original US ELF SHA-256
+`1b213a85a2c305dc0f893c007a502c93e0851d1bb7db6164f9e0b72adb074a16`.
+LOADFILE #13 successfully loads and links SIO2MAN.IRX (module 1, thread
+1, no unresolved import); 49 guest R3000 instructions execute before
+stop=4 (memory_fault), PC 0x00020008, opcode 0xAC440000 (sw a0,0(v0)).
+EE stops at 7,006 dispatches / 951,429 guest instruction attempts,
+EPC 0x00175064. Ignored SetSyscall(0x12C) is a separate observation,
+not a demonstrated cause of the IOP memory fault.
+
+The actual HLE-first R3000 guest CPU had not attached its physical MMIO
+bus; only ROM0 startup did so. This patch binds the real existing IOP
+MMIO bus at HLE bootstrap and after IOP reboot, with synthetic R3000
+SW/LW register-access, clean reset and ROM0 isolation tests. Fault
+diagnostics now identify the actual guest memory address and register
+state. No SIO2 reply, DMA completion, IRQ or later successful game
+boot is invented. The next local five-file run remains authoritative.

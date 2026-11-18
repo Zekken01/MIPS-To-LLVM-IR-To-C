@@ -1139,6 +1139,11 @@ int main(int argc, char** argv)
         // overwrite firmware-owned memory and create competing services.
         if (iop_rom0_path == nullptr)
         {
+            if (!iop_kernel->attach_hle_hardware())
+            {
+                std::fprintf(stderr, "IOP HLE MMIO attachment failed\n");
+                return 1;
+            }
             iop_hle = std::make_unique<iop::c_kernel_hle_bridge>(
                 *iop_kernel);
             if (!iop_hle->install())
@@ -3631,6 +3636,12 @@ int main(int argc, char** argv)
                                 cdvd->m_transport.reset();
                             }
                             iop_kernel->reset();
+                            if (!iop_kernel->attach_hle_hardware())
+                            {
+                                std::fprintf(stderr,
+                                    "[iop] HLE MMIO reattachment failed\n");
+                                break;
+                            }
                             if (cdvd != nullptr && cdvd->m_source != nullptr)
                             {
                                 cdvd->m_transport =
@@ -3777,6 +3788,25 @@ int main(int argc, char** argv)
                                         progressed.m_opcode,
                                         static_cast<unsigned long long>(
                                             progressed.m_executed));
+                                     if (progressed.m_stop ==
+                                         iop::e_kernel_stop::memory_fault)
+                                     {
+                                         const iop::s_memory_fault& fault =
+                                             iop_kernel->cpu().last_memory_fault();
+                                         const iop::s_cpu_state& state =
+                                             iop_kernel->cpu().state();
+                                         std::fprintf(stderr,
+                                             "IOP HLE guest memory fault: "
+                                             "address=0x%08x width=%u write=%u "
+                                             "valid=%u v0=0x%08x a0=0x%08x "
+                                             "gp=0x%08x sp=0x%08x ra=0x%08x\n",
+                                             fault.m_address, fault.m_width,
+                                             fault.m_write ? 1u : 0u,
+                                             fault.m_valid ? 1u : 0u,
+                                             state.m_gpr[2], state.m_gpr[4],
+                                             state.m_gpr[28], state.m_gpr[29],
+                                             state.m_gpr[31]);
+                                     }
                                     break;
                                 }
                                 if (trace && progressed.m_executed != 0u)
