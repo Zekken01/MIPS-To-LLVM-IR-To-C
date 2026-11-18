@@ -252,7 +252,11 @@ private:
         if (op == 0x1cu)
         {
             const uint32_t operation = decoded.funct;
-            instruction->m_pipe = e_ee_probe_pipe::MULT_DIV;
+            instruction->m_pipe = e_ee_probe_pipe::MULT_DIV_1;
+            if (operation == 0x00u || operation == 0x01u)
+            {
+                instruction->m_pipe = e_ee_probe_pipe::MULT_DIV;
+            }
             switch (operation)
             {
             case 0x10u: case 0x12u: // MFHI1 / MFLO1
@@ -325,10 +329,11 @@ private:
             const uint32_t ft = fpr_mask(decoded.rt);
             const uint32_t fs = fpr_mask(decoded.rd);
             const uint32_t fd = fpr_mask(decoded.sa);
-            instruction->m_pipe = e_ee_probe_pipe::COPROCESSOR;
+            instruction->m_pipe = e_ee_probe_pipe::COPROCESSOR_OP;
             switch (fmt)
             {
             case 0x00u: // MFC1: FPR fs -> GPR rt
+                instruction->m_pipe = e_ee_probe_pipe::COPROCESSOR_MOVE;
                 if (m_profile.m_fpu_transfer_latency == 0u)
                 {
                     return false;
@@ -338,6 +343,7 @@ private:
                 instruction->m_result_latency = m_profile.m_fpu_transfer_latency;
                 return true;
             case 0x04u: // MTC1: GPR rt -> FPR fs
+                instruction->m_pipe = e_ee_probe_pipe::COPROCESSOR_MOVE;
                 if (m_profile.m_fpu_transfer_latency == 0u)
                 {
                     return false;
@@ -347,6 +353,7 @@ private:
                 instruction->m_fpr_result_latency = m_profile.m_fpu_transfer_latency;
                 return true;
             case 0x02u: // CFC1: FCR31 -> GPR rt
+                instruction->m_pipe = e_ee_probe_pipe::COPROCESSOR_MOVE;
                 if (decoded.rd != 31u || m_profile.m_fpu_control_latency == 0u)
                 {
                     return false;
@@ -356,6 +363,7 @@ private:
                 instruction->m_result_latency = m_profile.m_fpu_control_latency;
                 return true;
             case 0x06u: // CTC1: GPR rt -> FCR31
+                instruction->m_pipe = e_ee_probe_pipe::COPROCESSOR_MOVE;
                 if (decoded.rd != 31u || m_profile.m_fpu_control_latency == 0u)
                 {
                     return false;
