@@ -1,9 +1,11 @@
 # Super Dragon Ball Z (US) — Native Boot Development Plan
 
 **Repository:** [twist84/MIPS-To-LLVM-IR-To-C](https://github.com/twist84/MIPS-To-LLVM-IR-To-C)  
-**Status date:** 2026-11-17  
-**Baseline:** `main` at `c7ca053af2e022bd5709ee6583c7c5427ef75016` (squash-merged [PR #135](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/pull/135)); opt-in bounded runner resumes in the next feature branch.  
-**Goal:** Boot and eventually play **Super Dragon Ball Z (USA, `SLUS_214.42`)** using recompiled EE code, genuine guest IOP execution, and a native runtime, without PCSX2.
+**Status date:** 2026-11-18  
+**Current merged baseline:** `main` at `b3584825e115a6a1072c2fc7a0a960344f26c044` (squash-merged [PR #141](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/pull/141), 95/95 CTests).  
+**Goal:** Boot and eventually play **Super Dragon Ball Z (USA, `SLUS_214.42`)** using native recompiled EE code, HLE EE/IOP kernel services, original game-supplied IRX code and a native hardware runtime. **OpenPS2BIOS is an opt-in reference, not the target boot dependency.**
+
+**HLE-first migration decision:** [docs/HLE_FIRST_RUNTIME_PLAN.md](docs/HLE_FIRST_RUNTIME_PLAN.md) supersedes the earlier firmware-first target architecture. Historical ROM0 replays and evidence below remain valid *for that old path*; they are not evidence that a no-BIOS HLE boot already works.
 
 > This is a milestone and acceptance plan, **not** a statement that the game currently boots or renders a usable frame. Update the checkpoint and evidence as new PRs merge. Re-check `main` and any newer work before acting on these instructions.
 
@@ -12,7 +14,7 @@
 The architecture should remain closer to [ps2-web-recomp](https://github.com/snuri00/ps2-web-recomp) than PCSX2:
 
 - **EE/R5900:** statically recompiled via MIPS → LLVM IR → host-native objects; native dispatcher owns each reachable guest entry.
-- **IOP/R3000:** execute genuine guest code with the lightweight interpreter and [OpenPS2BIOS](https://github.com/TamaribaEmu/OpenPS2BIOS) where supported.
+- **IOP/R3000:** emulate IOP BIOS/kernel services with explicit, tested HLE; execute **game-supplied IRX modules** with the existing R3000A interpreter. Keep [OpenPS2BIOS](https://github.com/TamaribaEmu/OpenPS2BIOS) optional for reference and regression, not normal boot.
 - **CDVD/SIF/DMA:** use the original disc sectors and actual guest-visible registers, data, callbacks, and interrupts.
 - **GIF/GS:** consume original guest GIF packets and maintain real GS state/VRAM; native primitive rendering can follow once demanded by guest execution.
 - **PCSX2:** hardware behavior reference and differential oracle, **not** the runtime architecture.
