@@ -123,7 +123,7 @@ public:
             (!instruction.m_fcsr_write ||
                 (!m_pair_fcsr_read && !m_pair_fcsr_write));
         const bool may_pair =
-            m_pair_count == 1u && independent &&
+            m_pair_count == 1u && !m_pair_annulled && independent &&
             compatible_pipes(m_pair_pipe, instruction.m_pipe);
 
         if (m_pair_count != 0u && !may_pair)
@@ -275,6 +275,7 @@ public:
         }
         clear_pair();
         m_pair_count = 1u;
+        m_pair_annulled = true;
         ++m_annulled;
         return true;
     }
@@ -371,6 +372,7 @@ private:
     void clear_pair()
     {
         m_pair_count = 0u;
+        m_pair_annulled = false;
         m_pair_reads = 0u;
         m_pair_writes = 0u;
         m_pair_hilo_reads = 0u;
@@ -394,6 +396,7 @@ private:
     uint64_t m_acc_ready = 0u;
     uint64_t m_fcsr_ready = 0u;
     uint32_t m_pair_count = 0u;
+    bool m_pair_annulled = false;
     uint32_t m_pair_reads = 0u;
     uint32_t m_pair_writes = 0u;
     uint32_t m_pair_hilo_reads = 0u;
