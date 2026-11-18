@@ -208,7 +208,8 @@ void usage(const char* program)
         "  --iop-irx=FILE       Repeat in dependency order; last IRX starts by default\n"
         "  --iop-rom0=FILE      Boot caller-supplied 4 MiB PS2 BIOS ROM at BFC00000\n"
         "                        Also accepts SDBZ_IOP_ROM0 environment variable\n"
-        "  --disc-image=FILE    Attach a raw 2048-byte-sector ISO to CDVD\n"
+        "  --disc-image=FILE    Attach a raw 2048-byte-sector ISO to ROM0 CDVD\n"
+        "  --disc-folder=DIR    Mount extracted files for HLE IOP LOADFILE (no ISO)\n"
         "  --iop-start-all      Start all loaded IOP modules (default: last only)\n"
         "  --iop-quantum=N      Max R3000 instructions per SIF poll (default 256)\n"
         "  --trace              Print guest PC, reason and dispatch count per step\n"
@@ -545,6 +546,7 @@ int main(int argc, char** argv)
     std::vector<std::string> iop_irx_paths;
     const char* iop_rom0_path = nullptr;
     const char* disc_image_path = nullptr;
+    const char* disc_folder_path = nullptr;
     bool iop_start_all = false;
     uint32_t budget = k_default_dispatch_budget;
     uint32_t loop_budget = 0u;
@@ -667,6 +669,16 @@ int main(int argc, char** argv)
                 return 2;
             }
             disc_image_path = argv[i] + 13;
+            continue;
+        }
+        if (argument.compare(0, 14, "--disc-folder=") == 0)
+        {
+            if (argument.size() == 14u || disc_folder_path != nullptr)
+            {
+                std::fprintf(stderr, "invalid or duplicate disc folder path\n");
+                return 2;
+            }
+            disc_folder_path = argv[i] + 14;
             continue;
         }
         if (argument == "--iop-start-all")
@@ -800,8 +812,10 @@ int main(int argc, char** argv)
         return 2;
     }
 
-    if (iop_rom0_path == nullptr)
+    if (iop_rom0_path == nullptr && disc_folder_path == nullptr)
     {
+        // The explicit folder HLE mode takes precedence over the legacy
+        // SDBZ_IOP_ROM0 environment. No BIOS file is required for the folder.
         // Host-only boot configuration: run_game.py can pass this
         // through unchanged without invalidating the existing EE
         // translation provenance / --no-recompile cache.
@@ -835,6 +849,8 @@ int main(int argc, char** argv)
         (iop_start_all && iop_irx_paths.empty()) ||
         (iop_rom0_path != nullptr && !iop_irx_paths.empty()) ||
         (disc_image_path != nullptr && iop_rom0_path == nullptr) ||
+        (disc_folder_path != nullptr &&
+         (disc_image_path != nullptr || iop_rom0_path != nullptr)) ||
         stack >= k_ee_ram_size ||
         (has_trace_entry && (trace_entry & 3u) != 0u) ||
         (has_watch_word && (watch_word & 3u) != 0u) ||
@@ -842,6 +858,23 @@ int main(int argc, char** argv)
     {
         usage(argv[0]);
         return 2;
+    }
+
+    if (disc_folder_path != nullptr)
+    {
+        std::error_code folder_error;
+        const std::filesystem::path folder(disc_folder_path);
+        if (!std::filesystem::is_directory(folder, folder_error) ||
+            folder_error ||
+            std::filesystem::is_symlink(
+                std::filesystem::symlink_status(folder, folder_error)) ||
+            folder_error)
+        {
+            std::fprintf(stderr,
+                "disc folder must be an existing, non-symlink directory: %s\n",
+                disc_folder_path);
+            return 2;
+        }
     }
 
     if (trace)
@@ -936,7 +969,8 @@ int main(int argc, char** argv)
     std::unique_ptr<iop::c_disc_loader> iop_disc;
     std::unique_ptr<iop::c_sif_rpc_bridge> iop_rpc;
     std::unique_ptr<s_cdvd_context> cdvd;
-    if (!iop_irx_paths.empty() || iop_rom0_path != nullptr)
+    if (!iop_irx_paths.empty() || iop_rom0_path != nullptr ||
+        disc_folder_path != nullptr)
     {
         iop_kernel = std::make_unique<iop::c_kernel>();
         if (iop_rom0_path != nullptr)
@@ -1040,9 +1074,21 @@ int main(int argc, char** argv)
             // LOADFILE is backed by actual game disc files, but nothing
             // is loaded until a guest-initialized IOP endpoint receives
             // a valid EE RPC packet through SIF1.
+            const std::filesystem::path disc_root =
+                disc_folder_path != nullptr
+                    ? std::filesystem::path(disc_folder_path)
+                    : std::filesystem::path(elf_path).parent_path();
             iop_disc = std::make_unique<iop::c_disc_loader>(
-                *iop_kernel, std::filesystem::path(elf_path).parent_path()
+                *iop_kernel, disc_root
             );
+            if (disc_folder_path != nullptr)
+            {
+                std::printf(
+                    "[disc] HLE folder mounted: %s "
+                    "(direct LOADFILE paths; sector virtualization pending)\n",
+                    disc_root.string().c_str()
+                );
+            }
             iop_rpc = std::make_unique<iop::c_sif_rpc_bridge>(
                 *iop_disc, *iop_sifcmd, *memory, hardware.dmac()
             );
