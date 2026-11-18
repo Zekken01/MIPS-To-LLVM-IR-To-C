@@ -209,7 +209,24 @@ bool c_kernel_hle_bridge::register_loaded_guest_library(uint32_t table)
         }
         if (entry == 0u)
         {
-            return any;
+            uint32_t next = 0u;
+            if (!m_kernel.cpu().read32(
+                    table + 24u + ordinal * 4u, &next))
+            {
+                return any;
+            }
+            const uint32_t physical = next & 0x1fffffffu;
+            uint32_t existing = 0u;
+            if (next == 0u || (next & 3u) != 0u ||
+                physical >= c_cpu::k_ram_size ||
+                !m_kernel.lookup_library(
+                    name, static_cast<uint16_t>(ordinal + 1u),
+                    &existing) ||
+                existing != next)
+            {
+                return any;
+            }
+            continue;
         }
         uint32_t registered = 0u;
         if (!m_kernel.lookup_library(

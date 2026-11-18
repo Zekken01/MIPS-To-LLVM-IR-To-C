@@ -336,8 +336,26 @@ e_irx_load_result collect_exports(
             const uint32_t entry = read32(staged, at);
             if (entry == 0u)
             {
-                terminated = true;
-                break;
+                // Retail SDBZ exports have holes in the ordinal table:
+                // sio2man has unused #4/#27 but valid #5..#63.
+                // A zero is a hole only when the next word is another
+                // in-image callable pointer. Otherwise the table ends.
+                const size_t following = at + 4u;
+                uint32_t next = 0u;
+                if (valid_word(staged, following))
+                {
+                    next = read32(staged, following);
+                }
+                const uint32_t physical_next = next & 0x1fffffffu;
+                if (next == 0u || (next & 3u) != 0u ||
+                    physical_next < base ||
+                    static_cast<uint64_t>(physical_next) >=
+                        static_cast<uint64_t>(base) + staged.size())
+                {
+                    terminated = true;
+                    break;
+                }
+                continue;
             }
             const uint32_t physical = entry & 0x1fffffffu;
             if ((entry & 3u) != 0u ||
