@@ -55,6 +55,7 @@ add_library(iop_cpu STATIC
     src/iop/iop_hw.cpp
     src/iop/irx_loader.cpp
     src/iop/iop_kernel.cpp
+    src/iop/iop_kernel_hle_bridge.cpp
     src/iop/iop_sifman_bridge.cpp
     src/iop/iop_sif1_bridge.cpp
     src/iop/iop_sif1_dma_transport.cpp

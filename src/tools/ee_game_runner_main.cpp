@@ -16,6 +16,7 @@
 #include "iop_sif1_dma_transport.h"
 #include "iop_sif0_dma_transport.h"
 #include "iop_sifcmd_bridge.h"
+#include "iop_kernel_hle_bridge.h"
 #include "iop_disc_loader.h"
 #include "iop_sif_rpc_bridge.h"
 #include "iop_sif_mmio_link.h"
@@ -1031,6 +1032,7 @@ int main(int argc, char** argv)
     std::unique_ptr<iop::c_sifcmd_bridge> iop_sifcmd;
     std::unique_ptr<iop::c_disc_loader> iop_disc;
     std::unique_ptr<iop::c_sif_rpc_bridge> iop_rpc;
+    std::unique_ptr<iop::c_kernel_hle_bridge> iop_hle;
     uint64_t last_iop_rpc_sequence = 0u;
     uint64_t observed_iop_rpc_calls = 0u;
     uint32_t last_iop_rpc_server = 0u;
@@ -1137,6 +1139,14 @@ int main(int argc, char** argv)
         // overwrite firmware-owned memory and create competing services.
         if (iop_rom0_path == nullptr)
         {
+            iop_hle = std::make_unique<iop::c_kernel_hle_bridge>(
+                *iop_kernel);
+            if (!iop_hle->install())
+            {
+                std::fprintf(stderr,
+                             "IOP HLE kernel imports installation failed\n");
+                return 1;
+            }
             iop_sifcmd = std::make_unique<iop::c_sifcmd_bridge>(
                 *iop_kernel, hardware.sif()
             );
@@ -1235,7 +1245,8 @@ int main(int argc, char** argv)
             }
             iop_kernel->bind_syscall([&](iop::c_kernel& active, uint32_t service)
             {
-                return iop_sifman->handle_syscall(active, service) ||
+                return iop_hle->handle_syscall(active, service) ||
+                       iop_sifman->handle_syscall(active, service) ||
                        iop_sifcmd->handle_syscall(active, service) ||
                        (iop_cdvdman != nullptr &&
                         iop_cdvdman->handle_syscall(active, service));
@@ -3630,6 +3641,7 @@ int main(int argc, char** argv)
                                     );
                             }
                             iop_sifcmd->reset_for_reboot();
+                            iop_hle->reset_for_reboot();
                             iop_rpc->reset_for_reboot();
                             // Metadata is read from the real mounted IOPRP,
                             // never inferred from its name or the ELF catalog.
@@ -3643,7 +3655,8 @@ int main(int argc, char** argv)
                             }
                             hardware.sif().begin_iop_reboot();
 
-                            if (!iop_sifcmd->install() ||
+                            if (!iop_hle->install() ||
+                                !iop_sifcmd->install() ||
                                 !iop_sifman->install() ||
                                 (iop_cdvdman != nullptr &&
                                  !iop_cdvdman->install()))
@@ -3657,7 +3670,8 @@ int main(int argc, char** argv)
                             iop_kernel->bind_syscall(
                                 [&](iop::c_kernel& active, uint32_t service)
                                 {
-                                    return iop_sifman->handle_syscall(active, service) ||
+                                    return iop_hle->handle_syscall(active, service) ||
+                                           iop_sifman->handle_syscall(active, service) ||
                                            iop_sifcmd->handle_syscall(active, service) ||
                                            (iop_cdvdman != nullptr &&
                                             iop_cdvdman->handle_syscall(active, service));
