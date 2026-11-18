@@ -57,3 +57,7 @@ Do not mark M1-A or M1-B complete until their separate acceptance gates are sati
 ## Trace-driven, uncalibrated issue replay
 
 An explicit-latency candidate consumes complete, ordered native/interpreted/annulled trace prefixes, and uses the existing two-wide issue probe to track scalar integer and load RAW dependencies across execution boundaries. Non-covered instructions, gaps, malformed delay slots and unknown latencies fail closed. This replay cannot publish hardware EE cycles or activate GS scanout. It is a calibration aid, **not** a validated R5900 timing source.
+
+### Explicit candidate replay CLI
+
+Run `ee_issue_trace_candidate <trace.csv> <integer-result-latency> <load-result-latency>` on an unfiltered, non-truncated trace. The analyzer fails at the first unsupported opcode, malformed/gapped reference slot or truncated stream and reports no absolute hardware time. Its output labels candidate cycles as experimental and cannot generate VBlank. A synthetic fixture and CTest cover its CSV/parser/issue path.
