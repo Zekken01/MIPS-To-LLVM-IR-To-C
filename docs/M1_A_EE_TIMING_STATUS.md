@@ -33,3 +33,23 @@ M1-A is **partial**, not complete. In particular:
 The first scheduler commit (\`9ec3bd3\`) passed all three GitHub workflows. Subsequent diagnostics and CRT-epoch changes require the new head's CI and real-game validation. No new local SDBZ log batch has been used to claim boot progress.
 
 Do not mark M1-A or M1-B complete until their separate acceptance gates are satisfied; do not request repeated local logs while the implementation prerequisite remains outstanding.
+
+
+## Ordered issue-observation stream (next M1-A batch)
+
+- The existing bounded `--trace-instructions=PATH` capture now represents
+  native-reached instructions, RAM-interpreted commits and annulled native
+  branch-likely slots in one ordered sequence, preserving per-event
+  `reference_slot` and `kind`. This is suitable for comparison with
+  reference execution traces when calibrating the R5900 timing model.
+- Source kinds: 0 = reached in native translation; 1 = annulled delay slot;
+  2 = committed by the RAM fallback. Every event includes its original
+  guest PC and opcode. Annulled slots increment the slot ordinal but not
+  executed instruction attempts. Unsupported RAM instructions are not
+  counted or traced.
+- These are **execution observations**, not calibrated issue timestamps.
+  Native observations occur before execution of the lifted instruction,
+  while RAM fallback records after a successful interpreter step.
+  Effects must not be inferred from a native observation alone.
+- This batch intentionally does **not** authorize or publish EE hardware
+  cycles and cannot unblock VBlank without separately validated timing.

@@ -351,6 +351,29 @@ s_ee_ram_execution ee_execute_ram_callback(
         {
             ++runtime->m_guest_instruction_attempts;
             ++runtime->m_reference_instruction_slots;
+            // Same bounded, optional observation domain as translated
+            // execution. Unsupported/unmapped steps never emit an event.
+            if (runtime->m_instruction_trace != nullptr &&
+                pc >= runtime->m_instruction_trace_first_pc &&
+                pc <= runtime->m_instruction_trace_last_pc)
+            {
+                if (runtime->m_instruction_trace_count <
+                    runtime->m_instruction_trace_capacity)
+                {
+                    s_ee_instruction_trace_entry& entry =
+                        runtime->m_instruction_trace[
+                            runtime->m_instruction_trace_count++];
+                    entry.m_attempt = runtime->m_guest_instruction_attempts;
+                    entry.m_pc = pc;
+                    entry.m_opcode_word = instruction;
+                    entry.m_kind = 2u;
+                    entry.m_reference_slot = runtime->m_reference_instruction_slots;
+                }
+                else
+                {
+                    runtime->m_instruction_trace_overflow = 1u;
+                }
+            }
         }
         if (delay_slot)
         {

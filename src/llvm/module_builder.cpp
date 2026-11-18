@@ -92,29 +92,12 @@ void module_builder::declare_memory_helpers()
     m_out += "declare i32 @ee_vu0_get_branch_condition(ptr)\n";
     m_out += "\n";
 
-    // Private helper avoids unresolved external symbols in MCJIT fixtures.
-    // Count executed VALID guest instructions, not host dispatches/loops.
-    // This is NOT an EE cycle counter and must not drive GS scanout.
-    m_out += "define internal void @ee_count_guest_instruction(ptr %rt, i32 %pc, i32 %opcode) {\n";
+    // The trace is a bounded, host-only stream for reference timing
+    // calibration. Sequence numbers are reference instruction *slots*,
+    // not validated R5900 cycles. Native reached instructions, annulled
+    // branch-likely slots and RAM-interpreted commits use one schema.
+    m_out += "define internal void @ee_trace_instruction_observation(ptr %rt, i32 %pc, i32 %opcode, i32 %kind, i64 %attempt, i64 %reference_slot) {\n";
     m_out += "entry:\n";
-    m_out += "  %valid_rt = icmp ne ptr %rt, null\n";
-    m_out += "  br i1 %valid_rt, label %count, label %done\n";
-    m_out += "count:\n";
-    m_out += "  %counter_ptr = getelementptr i8, ptr %rt, i64 " +
-             std::to_string(offsetof(ee::s_ee_runtime, m_guest_instruction_attempts)) +
-             "\n";
-    m_out += "  %old_count = load i64, ptr %counter_ptr\n";
-    m_out += "  %new_count = add i64 %old_count, 1\n";
-    m_out += "  store i64 %new_count, ptr %counter_ptr\n";
-    // Reference interpreter slot accounting is distinct from reached
-    // instructions: a not-taken branch-likely reserves its annulled slot.
-    // It is explicitly NOT an R5900 cycle clock or a scanout source.
-    m_out += "  %ref_counter_ptr = getelementptr i8, ptr %rt, i64 " +
-             std::to_string(offsetof(ee::s_ee_runtime,
-                                     m_reference_instruction_slots)) + "\n";
-    m_out += "  %ref_old = load i64, ptr %ref_counter_ptr\n";
-    m_out += "  %ref_new = add i64 %ref_old, 1\n";
-    m_out += "  store i64 %ref_new, ptr %ref_counter_ptr\n";
     m_out += "  %trace_ptr_field = getelementptr i8, ptr %rt, i64 " +
              std::to_string(offsetof(ee::s_ee_runtime, m_instruction_trace)) + "\n";
     m_out += "  %trace_ptr = load ptr, ptr %trace_ptr_field\n";
@@ -145,13 +128,19 @@ void module_builder::declare_memory_helpers()
     m_out += "  %offset = mul i64 %index, " +
              std::to_string(sizeof(ee::s_ee_instruction_trace_entry)) + "\n";
     m_out += "  %slot = getelementptr i8, ptr %trace_ptr, i64 %offset\n";
-    m_out += "  store i64 %new_count, ptr %slot\n";
+    m_out += "  store i64 %attempt, ptr %slot\n";
     m_out += "  %slot_pc = getelementptr i8, ptr %slot, i64 " +
              std::to_string(offsetof(ee::s_ee_instruction_trace_entry, m_pc)) + "\n";
     m_out += "  %slot_op = getelementptr i8, ptr %slot, i64 " +
              std::to_string(offsetof(ee::s_ee_instruction_trace_entry, m_opcode_word)) + "\n";
     m_out += "  store i32 %pc, ptr %slot_pc\n";
     m_out += "  store i32 %opcode, ptr %slot_op\n";
+    m_out += "  %slot_kind = getelementptr i8, ptr %slot, i64 " +
+             std::to_string(offsetof(ee::s_ee_instruction_trace_entry, m_kind)) + "\n";
+    m_out += "  store i32 %kind, ptr %slot_kind\n";
+    m_out += "  %slot_reference = getelementptr i8, ptr %slot, i64 " +
+             std::to_string(offsetof(ee::s_ee_instruction_trace_entry, m_reference_slot)) + "\n";
+    m_out += "  store i64 %reference_slot, ptr %slot_reference\n";
     m_out += "  %next_used = add i32 %used, 1\n";
     m_out += "  store i32 %next_used, ptr %count_field\n";
     m_out += "  br label %done\n";
@@ -164,11 +153,40 @@ void module_builder::declare_memory_helpers()
     m_out += "  ret void\n";
     m_out += "}\n\n";
 
+    // Private helper avoids unresolved external symbols in MCJIT fixtures.
+    // Count executed VALID guest instructions, not host dispatches/loops.
+    // This is NOT an EE cycle counter and must not drive GS scanout.
+    m_out += "define internal void @ee_count_guest_instruction(ptr %rt, i32 %pc, i32 %opcode) {\n";
+    m_out += "entry:\n";
+    m_out += "  %valid_rt = icmp ne ptr %rt, null\n";
+    m_out += "  br i1 %valid_rt, label %count, label %done\n";
+    m_out += "count:\n";
+    m_out += "  %counter_ptr = getelementptr i8, ptr %rt, i64 " +
+             std::to_string(offsetof(ee::s_ee_runtime, m_guest_instruction_attempts)) +
+             "\n";
+    m_out += "  %old_count = load i64, ptr %counter_ptr\n";
+    m_out += "  %new_count = add i64 %old_count, 1\n";
+    m_out += "  store i64 %new_count, ptr %counter_ptr\n";
+    // Reference interpreter slot accounting is distinct from reached
+    // instructions: a not-taken branch-likely reserves its annulled slot.
+    // It is explicitly NOT an R5900 cycle clock or a scanout source.
+    m_out += "  %ref_counter_ptr = getelementptr i8, ptr %rt, i64 " +
+             std::to_string(offsetof(ee::s_ee_runtime,
+                                     m_reference_instruction_slots)) + "\n";
+    m_out += "  %ref_old = load i64, ptr %ref_counter_ptr\n";
+    m_out += "  %ref_new = add i64 %ref_old, 1\n";
+    m_out += "  store i64 %ref_new, ptr %ref_counter_ptr\n";
+    m_out += "  call void @ee_trace_instruction_observation(ptr %rt, i32 %pc, i32 %opcode, i32 0, i64 %new_count, i64 %ref_new)\n";
+    m_out += "  br label %done\n";
+    m_out += "done:\n";
+    m_out += "  ret void\n";
+    m_out += "}\n\n";
+
     // The ps2-web-recomp reference interpreter charges two instruction
     // slots for a branch, including when branch-likely annuls its delay
     // instruction. This helper never increments the actual executed
     // instruction counter or touches the guest's architectural state.
-    m_out += "define internal void @ee_count_reference_annulled_slot(ptr %rt) {\n";
+    m_out += "define internal void @ee_count_reference_annulled_slot(ptr %rt, i32 %pc, i32 %opcode) {\n";
     m_out += "entry:\n";
     m_out += "  %is_null = icmp eq ptr %rt, null\n";
     m_out += "  br i1 %is_null, label %done, label %count\n";
@@ -179,6 +197,10 @@ void module_builder::declare_memory_helpers()
     m_out += "  %old = load i64, ptr %ref_ptr\n";
     m_out += "  %new = add i64 %old, 1\n";
     m_out += "  store i64 %new, ptr %ref_ptr\n";
+    m_out += "  %attempt_ptr = getelementptr i8, ptr %rt, i64 " +
+             std::to_string(offsetof(ee::s_ee_runtime, m_guest_instruction_attempts)) + "\n";
+    m_out += "  %attempt = load i64, ptr %attempt_ptr\n";
+    m_out += "  call void @ee_trace_instruction_observation(ptr %rt, i32 %pc, i32 %opcode, i32 1, i64 %attempt, i64 %new)\n";
     m_out += "  br label %done\n";
     m_out += "done:\n";
     m_out += "  ret void\n";
@@ -2692,7 +2714,9 @@ void module_builder::emit_block(const std::vector<ee::s_ee_instruction>& block,
             // --- not-taken path: delay slot annulled, state already flushed ---
             m_out += nottaken_buf;
             m_out += ":\n";
-            m_out += "  call void @ee_count_reference_annulled_slot(ptr %rt)\n";
+            m_out += "  call void @ee_count_reference_annulled_slot(ptr %rt, i32 " +
+                         std::to_string(block[delay_idx].pc) + ", i32 " +
+                         std::to_string(block[delay_idx].opcode_word) + ")\n";
             m_out += "  br label %" + block_label(ft) + "\n";
         } else if (delay_idx >= 0) {
             // Ordinary conditional branches sample their condition before the

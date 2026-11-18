@@ -215,6 +215,10 @@ struct s_ee_instruction_trace_entry
     uint64_t m_attempt = 0u;
     uint32_t m_pc = 0u;
     uint32_t m_opcode_word = 0u;
+    // 0=native reached, 1=annulled branch-likely slot,
+    // 2=RAM interpreter committed. None is a cycle timestamp.
+    uint32_t m_kind = 0u;
+    uint64_t m_reference_slot = 0u;
 };
 
 struct s_ee_runtime

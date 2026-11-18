@@ -48,6 +48,9 @@ int main()
 
     ee::s_ee_cpu_state cpu{};
     ee::s_ee_runtime runtime{};
+    ee::s_ee_instruction_trace_entry issue_stream[64]{};
+    runtime.m_instruction_trace = issue_stream;
+    runtime.m_instruction_trace_capacity = 64u;
     cpu.m_gpr[4].m_lo = 0xfcu;
     cpu.m_gpr[31].m_lo = static_cast<uint64_t>(-16ll);
     const ee::s_ee_ram_execution found = ee::ee_execute_ram_callback(
@@ -63,6 +66,13 @@ int main()
         !check(runtime.m_guest_instruction_attempts == 7u &&
                runtime.m_reference_instruction_slots == 7u,
                "interpreter retirement is included in diagnostics") ||
+        !check(runtime.m_instruction_trace_count == 7u &&
+               issue_stream[0].m_pc == k_ram_address &&
+               issue_stream[0].m_opcode_word == 0x3c098007u &&
+               issue_stream[0].m_kind == 2u &&
+               issue_stream[0].m_reference_slot == 1u &&
+               issue_stream[6].m_reference_slot == 7u,
+               "interpreter observes ordered committed opcodes, not clocks") ||
         !check(cpu.m_pc == k_return_address, "return sentinel PC"))
     {
         return 1;
@@ -96,7 +106,10 @@ int main()
         !check(unknown.m_opcode == 0x70000000u, "unsupported opcode retained") ||
         !check(runtime.m_guest_instruction_attempts ==
                    found.m_instructions + not_found.m_instructions,
-               "unsupported instructions never retire"))
+               "unsupported instructions never retire") ||
+        !check(runtime.m_instruction_trace_count ==
+                   found.m_instructions + not_found.m_instructions,
+               "unsupported instructions never enter issue stream"))
     {
         return 1;
     }
@@ -115,7 +128,12 @@ int main()
         !check(runtime.m_guest_instruction_attempts ==
                    found.m_instructions + not_found.m_instructions +
                    bounded.m_instructions,
-               "bounded loop instructions retire exactly once"))
+               "bounded loop instructions retire exactly once") ||
+        !check(runtime.m_instruction_trace_count ==
+                   runtime.m_guest_instruction_attempts &&
+               issue_stream[runtime.m_instruction_trace_count - 1u].m_reference_slot ==
+                   runtime.m_reference_instruction_slots,
+               "interpreter preserves global trace ordinals across calls"))
     {
         return 1;
     }
@@ -131,6 +149,32 @@ int main()
     {
         return 1;
     }
+    if (!check(runtime.m_instruction_trace_count ==
+                   runtime.m_guest_instruction_attempts,
+               "rejected branch-in-delay-slot does not enter issue stream"))
+    {
+        return 1;
+    }
+
+    // Trace window and full-buffer indicators are diagnostic only.
+    runtime.m_instruction_trace_count = 0u;
+    runtime.m_instruction_trace_capacity = 1u;
+    runtime.m_instruction_trace_first_pc = k_ram_address;
+    runtime.m_instruction_trace_last_pc = k_ram_address + 4u;
+    write32(memory, k_ram_address + 4u, 0x25080001u);
+    cpu = {};
+    const ee::s_ee_ram_execution filtered = ee::ee_execute_ram_callback(
+        &cpu, &memory, k_ram_address, k_return_address, 3u, &runtime);
+    if (!check(filtered.m_instructions == 3u &&
+               runtime.m_instruction_trace_count == 1u &&
+               runtime.m_instruction_trace_overflow == 1u &&
+               issue_stream[0].m_pc == k_ram_address &&
+               issue_stream[0].m_kind == 2u,
+               "windowed RAM trace handles capacity without changing execution"))
+    {
+        return 1;
+    }
+
     std::puts("ee_ram_interpreter_test: PASS");
     return 0;
 }

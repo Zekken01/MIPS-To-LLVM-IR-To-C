@@ -4776,13 +4776,14 @@ int main(int argc, char** argv)
                          instruction_trace_path);
             return 1;
         }
-        std::fprintf(output, "attempt,pc,opcode_word\n");
+        std::fprintf(output, "attempt,pc,opcode_word,kind,reference_slot\n");
         for (uint32_t index = 0u; index < runtime.m_instruction_trace_count; ++index)
         {
             const auto& item = instruction_trace[index];
-            std::fprintf(output, "%llu,0x%08x,0x%08x\n",
+            std::fprintf(output, "%llu,0x%08x,0x%08x,%u,%llu\n",
                          static_cast<unsigned long long>(item.m_attempt),
-                         item.m_pc, item.m_opcode_word);
+                         item.m_pc, item.m_opcode_word, item.m_kind,
+                         static_cast<unsigned long long>(item.m_reference_slot));
         }
         std::fprintf(output, "# truncated=%s range=0x%08x:0x%08x\n",
                      runtime.m_instruction_trace_overflow ? "true" : "false",
