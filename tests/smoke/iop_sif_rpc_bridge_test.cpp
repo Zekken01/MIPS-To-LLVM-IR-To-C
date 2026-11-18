@@ -362,24 +362,27 @@ int main()
     }
     memory.write32(bind_source + 28u, 0x15000u);
 
-    // Retail SDBZ's first CdInit request is method 5, carried by
-    // a two-descriptor SIF1 RPC call with a full 64-byte SDK packet.
+    // These fields reproduce the 2026-11-18 12:14 retail SDBZ
+    // SIF1 RPC header. Word[4] is record ID 5; word[8] is method 0.
+    // The nonzero DEADBEF0 header destination is a valid IOP RPC
+    // data address, not evidence of an unsupported packet.
     // Only result[3] changes, as in ps2-web-recomp's CDVDFSV HLE.
     const std::vector<uint32_t> cdvd_call = {
-        0x440u, 0u, iop::c_sif_rpc_bridge::k_call_cid, 0u,
-        7u, 0x11080u, 0x1234u, 0x005688a8u,
-        5u, 16u, rpc_result, 16u, 1u,
+        0x440u, iop::c_sif_rpc_bridge::k_rpc_data_destination,
+        iop::c_sif_rpc_bridge::k_call_cid, 0u,
+        5u, 0x20561900u, 4u, 0x005688a8u,
+        0u, 4u, rpc_result, 16u, 1u,
         iop::c_sif_rpc_bridge::k_cdvd_init_server ^
             iop::c_sif_rpc_bridge::k_server_xor,
         0u, 0u
     };
     packet(memory, call_source, cdvd_call);
-    packet(memory, args_source, {5u, 0u, 0u, 0u});
+    packet(memory, args_source, {0u, 0u, 0u, 0u});
     packet(memory, rpc_result, {
         0x11111111u, 0x22222222u, 0x33333333u, 0x44444444u
     });
     descriptor(memory, list, args_source,
-               iop::c_sif_rpc_bridge::k_rpc_data_destination, 16u);
+               iop::c_sif_rpc_bridge::k_rpc_data_destination, 4u);
     descriptor(memory, list + 16u, call_source,
                iop::c_sifcmd_bridge::k_command_buffer, 64u);
     memory.write32(list + 28u, 0x44u);
@@ -390,6 +393,9 @@ int main()
         memory.read32(rpc_result + 4u) != 0x22222222u ||
         memory.read32(rpc_result + 8u) != 0x33333333u ||
         memory.read32(rpc_result + 12u) != 0xffu ||
+        memory.read32(ee_receive + 16u) != 5u ||
+        memory.read32(ee_receive + 20u) != 0x20561900u ||
+        memory.read32(ee_receive + 24u) != 4u ||
         memory.read32(ee_receive + 28u) != 0x005688a8u ||
         memory.read32(ee_receive + 32u) !=
             iop::c_sif_rpc_bridge::k_call_cid ||
@@ -398,8 +404,31 @@ int main()
         kernel.module(1u) != nullptr ||
         (dmac.status() & (1u << 5u)) == 0u)
     {
-        return fail("CDVD Init method 5 did not return through SIF0");
+        return fail("retail CDVD Init method 0 did not return through SIF0");
     }
+
+    // A nonzero arbitrary header destination is not an accepted RPC
+    // data destination, even though DEADBEF0 is valid.
+    dmac.acknowledge(5u);
+    dmac.acknowledge(6u);
+    memory.write32(call_source + 4u, 0xdeadbe00u);
+    iop::s_sif1_dma_diagnostic invalid_rpc_destination{};
+    if (sif1.set_dma(
+            list, 2u, &dma_id, &invalid_rpc_destination) ||
+        invalid_rpc_destination.m_failure !=
+            iop::e_sif1_dma_failure::unsupported_rpc_packet ||
+        invalid_rpc_destination.m_rpc_server !=
+            iop::c_sif_rpc_bridge::k_cdvd_init_server ||
+        rpc.pending_replies() != 0u ||
+        memory.read32(rpc_result + 12u) != 0xffu ||
+        (dmac.status() & ((1u << 5u) | (1u << 6u))) != 0u)
+    {
+        return fail("invalid RPC header destination committed DMA");
+    }
+    memory.write32(
+        call_source + 4u,
+        iop::c_sif_rpc_bridge::k_rpc_data_destination
+    );
 
     // An unmodeled CdInit method must not write a success result,
     // emit a reply, or acknowledge a DMA that did not complete.
@@ -420,7 +449,7 @@ int main()
             (iop::c_sif_rpc_bridge::k_cdvd_init_server ^
              iop::c_sif_rpc_bridge::k_server_xor) ||
         cdvd_call_rejection.m_rpc_payload_source != args_source ||
-        cdvd_call_rejection.m_rpc_payload_length != 16u ||
+        cdvd_call_rejection.m_rpc_payload_length != 4u ||
         memory.read32(rpc_result + 12u) != 0xffu ||
         rpc.pending_replies() != 0u ||
         (dmac.status() & ((1u << 5u) | (1u << 6u))) != 0u)
@@ -430,7 +459,7 @@ int main()
     // CDVDFSV CdInit must complete with a short receive buffer,
     // matching the reference HLE, without writing beyond its length.
     // The result[3] field is only written for a sixteen-byte reply.
-    memory.write32(call_source + 32u, 5u);
+    memory.write32(call_source + 32u, 0u);
     memory.write32(call_source + 44u, 12u);
     memory.write32(rpc_result + 12u, 0xa55a5aa5u);
     if (!sif1.set_dma(list, 2u, &dma_id, &cdvd_call_rejection) ||
@@ -463,7 +492,7 @@ int main()
     {
         return fail("CDVD Init payload length violation committed DMA");
     }
-    memory.write32(call_source + 36u, 16u);
+    memory.write32(call_source + 36u, 4u);
 
     // Restore the single-command descriptor used by the next BIND.
     // The CdInit CALL above used a two-descriptor payload+command DMA.
