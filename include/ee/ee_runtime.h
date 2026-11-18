@@ -517,6 +517,12 @@ uint32_t ee_vu0_macro_fmac(s_ee_cpu_state* cpu, s_ee_runtime* rt,
 // Returns 0/1 for false/true, or 2 when VU0 state is unavailable.
 uint32_t ee_vu0_get_branch_condition(const s_ee_runtime* rt);
 
+// COP0 guest writes: centralize documented side effects. Writing Compare
+// acknowledges Cause.IP7; this does not advance Count or produce EE cycles.
+// Other registers retain the existing raw write behavior until their writable
+// masks and side effects are independently audited.
+void ee_cop0_write(s_ee_cpu_state* cpu, uint32_t reg, uint32_t value);
+
 // Exception entry / return and interrupt helpers (ee_exceptions.cpp).
 uint32_t ee_raise_exception(s_ee_cpu_state* cpu, s_ee_runtime* rt,
                             uint32_t excode, uint32_t pc,
