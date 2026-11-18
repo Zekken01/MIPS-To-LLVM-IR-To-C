@@ -1998,6 +1998,17 @@ int main(int argc, char** argv)
 
         dispatched += count;
         remaining -= count;
+        // A source must be independently validated and installed before
+        // this can ever produce a GS field. Dispatches and loop visits are
+        // intentionally not converted to cycles.
+        const auto scanout_result = runtime.m_ee_cycle_scheduler.service_scanout(
+            hardware, vsync_flags, *memory);
+        if (scanout_result == ee::e_ee_scheduled_event_result::INVALID_TIMESTAMP_OR_DELIVERY)
+        {
+            std::fprintf(stderr, "EE validated-cycle scheduler rejected scanout delivery at cycle=%llu\\n",
+                static_cast<unsigned long long>(runtime.m_ee_cycle_scheduler.current_cycle()));
+            return 1;
+        }
         if (has_watch_word && count != 0u)
         {
             const uint32_t watched_after = memory->read32(watch_word);
@@ -2084,6 +2095,7 @@ int main(int argc, char** argv)
                 break;
             }
             ++completed_loop_yields;
+            runtime.m_ee_cycle_scheduler.record_scheduler_yield();
             if (trace)
             {
                 std::printf("EE host loop resume: count=%u/%u pc=0x%08x "
@@ -4655,6 +4667,14 @@ int main(int argc, char** argv)
         }
     }
 
+    std::printf(
+        "EE timing: source=%s current_cycles=%llu scheduler_yields=%llu next_gs_field=%llu fields=%llu\\n",
+        runtime.m_ee_cycle_scheduler.source() == ee::e_ee_cycle_source::VALIDATED_R5900
+            ? "validated_r5900" : "unavailable",
+        static_cast<unsigned long long>(runtime.m_ee_cycle_scheduler.current_cycle()),
+        static_cast<unsigned long long>(runtime.m_ee_cycle_scheduler.scheduler_yields()),
+        static_cast<unsigned long long>(hardware.scanout().next_field_cycle()),
+        static_cast<unsigned long long>(hardware.scanout().fields_started()));
     std::printf(
         "EE reference-interpreter instruction slots: %llu "
         "(not R5900 cycles; no GS events)\n",

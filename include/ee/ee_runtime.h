@@ -1,5 +1,6 @@
 #pragma once
 #include "ee_state.h"
+#include "ee_cycle_scheduler.h"
 #include <cstdint>
 #include <cstddef>
 
@@ -285,6 +286,11 @@ struct s_ee_runtime
     // pipeline stalls. NOT authoritative R5900 cycles, NOT a GS clock.
     // Append only: the compiled runtime ABI prefix must remain stable.
     uint64_t m_reference_instruction_slots = 0u;
+
+    // Hardware-time timeline: unavailable until a separately validated
+    // R5900 instruction/issue timing producer publishes actual EE cycles.
+    // Appended to preserve all existing translated runtime field offsets.
+    c_ee_cycle_scheduler m_ee_cycle_scheduler{};
 };
 
 // Outside a branch delay slot, all four transfer forms only catch VU0 up to
