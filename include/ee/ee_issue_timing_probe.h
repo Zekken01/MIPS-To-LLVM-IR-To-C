@@ -37,6 +37,10 @@ struct s_ee_probe_instruction
     uint32_t m_fpr_write_mask = 0u;
     bool m_acc_read = false;
     bool m_acc_write = false;
+    // FCR31 status/condition bits share an architectural control register.
+    // This is a single conservative resource, not independently timed FCC bits.
+    bool m_fcsr_read = false;
+    bool m_fcsr_write = false;
 
     // Zero falls back to m_result_latency. Multiplication, division and
     // FPU operations may produce GPR and special-register results at
@@ -44,6 +48,7 @@ struct s_ee_probe_instruction
     uint32_t m_hilo_result_latency = 0u;
     uint32_t m_fpr_result_latency = 0u;
     uint32_t m_acc_result_latency = 0u;
+    uint32_t m_fcsr_result_latency = 0u;
 };
 
 // A conservative, deterministic two-wide issue *candidate* for evaluating
@@ -75,6 +80,7 @@ public:
             ready = 0u;
         }
         m_acc_ready = 0u;
+        m_fcsr_ready = 0u;
     }
 
     // Returns false without mutation on overflow or invalid input.
@@ -106,7 +112,10 @@ public:
             (fwrites & (m_pair_fpr_reads | m_pair_fpr_writes)) == 0u &&
             (!instruction.m_acc_read || !m_pair_acc_write) &&
             (!instruction.m_acc_write ||
-                (!m_pair_acc_read && !m_pair_acc_write));
+                (!m_pair_acc_read && !m_pair_acc_write)) &&
+            (!instruction.m_fcsr_read || !m_pair_fcsr_write) &&
+            (!instruction.m_fcsr_write ||
+                (!m_pair_fcsr_read && !m_pair_fcsr_write));
         const bool may_pair =
             m_pair_count == 1u && m_pair_integer &&
             instruction.m_pipe == e_ee_probe_pipe::INTEGER && independent;
@@ -149,6 +158,10 @@ public:
         {
             candidate = m_acc_ready;
         }
+        if (instruction.m_fcsr_read && candidate < m_fcsr_ready)
+        {
+            candidate = m_fcsr_ready;
+        }
 
         const uint32_t hilo_latency = instruction.m_hilo_result_latency == 0u
             ? instruction.m_result_latency
@@ -159,6 +172,9 @@ public:
         const uint32_t acc_latency = instruction.m_acc_result_latency == 0u
             ? instruction.m_result_latency
             : instruction.m_acc_result_latency;
+        const uint32_t fcsr_latency = instruction.m_fcsr_result_latency == 0u
+            ? instruction.m_result_latency
+            : instruction.m_fcsr_result_latency;
 
         // A failed issue cannot change the scoreboard. Validate ALL result
         // domains before mutating any state or accepting a new issue.
@@ -168,7 +184,9 @@ public:
             (hwrites != 0u && hilo_latency > max_cycle - candidate) ||
             (fwrites != 0u && fpr_latency > max_cycle - candidate) ||
             (instruction.m_acc_write &&
-                acc_latency > max_cycle - candidate))
+                acc_latency > max_cycle - candidate) ||
+            (instruction.m_fcsr_write &&
+                fcsr_latency > max_cycle - candidate))
         {
             return false;
         }
@@ -187,6 +205,8 @@ public:
         m_pair_fpr_writes |= fwrites;
         m_pair_acc_read |= instruction.m_acc_read;
         m_pair_acc_write |= instruction.m_acc_write;
+        m_pair_fcsr_read |= instruction.m_fcsr_read;
+        m_pair_fcsr_write |= instruction.m_fcsr_write;
         m_pair_integer = instruction.m_pipe == e_ee_probe_pipe::INTEGER;
         ++m_pair_count;
         for (uint32_t reg = 1u; reg < 32u; ++reg)
@@ -214,6 +234,10 @@ public:
         if (instruction.m_acc_write)
         {
             m_acc_ready = candidate + acc_latency;
+        }
+        if (instruction.m_fcsr_write)
+        {
+            m_fcsr_ready = candidate + fcsr_latency;
         }
         ++m_issued;
         if (issue_cycle != nullptr)
@@ -300,6 +324,8 @@ private:
         m_pair_fpr_writes = 0u;
         m_pair_acc_read = false;
         m_pair_acc_write = false;
+        m_pair_fcsr_read = false;
+        m_pair_fcsr_write = false;
         m_pair_integer = false;
     }
 
@@ -311,6 +337,7 @@ private:
     uint64_t m_hilo_ready[4]{};
     uint64_t m_fpr_ready[32]{};
     uint64_t m_acc_ready = 0u;
+    uint64_t m_fcsr_ready = 0u;
     uint32_t m_pair_count = 0u;
     uint32_t m_pair_reads = 0u;
     uint32_t m_pair_writes = 0u;
@@ -320,6 +347,8 @@ private:
     uint32_t m_pair_fpr_writes = 0u;
     bool m_pair_acc_read = false;
     bool m_pair_acc_write = false;
+    bool m_pair_fcsr_read = false;
+    bool m_pair_fcsr_write = false;
     bool m_pair_integer = false;
 };
 
