@@ -361,18 +361,21 @@ int main()
     overlapping_mac.m_hilo_result_latency = 9u;
     s_ee_probe_instruction overtaking_mac = overlapping_mac;
     overtaking_mac.m_hilo_result_latency = 1u;
+    s_ee_probe_instruction simultaneous_mac = overlapping_mac;
+    simultaneous_mac.m_hilo_result_latency = 7u;
     check(clock.configure_waw_policy(
               ee::e_ee_probe_waw_policy::ORDERED_OVERLAP) &&
           clock.issue(overlapping_mac, &at, &completion) && at == 0u &&
           completion == 9u &&
           !clock.issue(overtaking_mac, &at, &completion) &&
+          !clock.issue(simultaneous_mac, &at, &completion) &&
           completion == 9u &&
           clock.instructions_issued() == 1u &&
           clock.estimated_cycles() == 1u &&
           clock.last_completion_cycle() == 9u &&
           clock.issue(overlapping_mac, &at, &completion) && at == 2u &&
           completion == 11u,
-          "out-of-order HI/LO completion is rejected without state mutation");
+          "overtaking/equal-deadline HI/LO completion rejects atomically");
 
     clock.reset();
     check(clock.waw_policy() ==
