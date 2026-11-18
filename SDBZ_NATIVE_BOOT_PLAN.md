@@ -284,3 +284,38 @@ Create feature branches from up-to-date `main`, commit incremental source/tests,
 - **Timing acceptance remains open:** obtain independent, cycle-stamped R5900 reference records for the **same exact PC filter and start alignment**, with emulator/hardware build/configuration provenance; compare opcode ordering first, then study issue/stall latency and dual issue. No reference cycles were present in these uploaded artifacts. Do not yet feed any count into `c_ee_scanout_clock`, synthesize VBlank/INTC, or claim rendered output.
 
 **Next developer instruction:** The authentic run now reaches the real VBlank polling loop at `0x00175210`. Implement cycle-driven GS VBlank scheduling only after verifying guest CRT timing, EE cycle accounting and INTC masks/callback delivery. The verified SetVSyncFlag registration alone does not create a VSync. Preserve all prior genuine CDVD/SIF/GIF and VMAC state; continue through a new trace-proven blocker.
+### 2026-11-18 14:37 — original US HLE-first SIO2 advancement and VBlank dependency
+
+The matched group `boot(20261118-143750).log`,
+`expansion(20261118-143750).log`,
+`first-boot(20261118-143750).json`,
+`iop-disc-catalog(20261118-143752).json` and
+`translation-cache(20261118-143749).json` share ELF SHA-256
+`1b213a85a2c305dc0f893c007a502c93e0851d1bb7db6164f9e0b72adb074a16`.
+The final expansion replay and trace agree: **10,491 EE dispatches**,
+**9,001,372 actual guest instruction attempts**, GS PATH3 accepts 33
+tags and 16,384 image QWC / 65,536 written pixels, and the final EE
+reason is **LOOP_BUDGET(5)** at `0x00175210`. Authentic
+`SIO2MAN.IRX` loads as module 1, thread 1; its initial IOP quantum
+completes 256 real guest instructions without the former memory fault.
+The static disc catalog's `runtime_load_count=0` is still not connected
+to runtime loading.
+
+The guest's `SetVSyncFlag(0x01ffeeb0,0x01ffeeb8)` succeeds with
+no immediate VSync, then the original guest waits for VBlank start
+(`INTC_STAT & 4`), matching the earlier verified `0x00175210`
+dependency. No later IOP module or actual presented video frame is proven.
+The `SetSyscall(0x12c)` diagnostic remains independently unsupported,
+but it did not cause this stop.
+
+The next GS/EE integration batch exposes privileged GS_CSR and GS_IMR
+through the EE physical bus; accepts W1C acknowledgement without making
+up a VBlank, routes SetGsCrt timing configuration into the existing
+rational scanout schedule and includes field delivery, interrupt mask,
+one-shot flag, register width, and reset tests. The native runner
+adds a VBlank-wait snapshot showing actual INTC status, registered
+flag and CSR state **without ever advancing the clock**. Guest
+instruction attempts, native dispatch count, safepoint visits and host
+wall time are *not* treated as EE cycles. This prepares a real
+cycle-budget scheduler but **does not fix the VBlank wait** until
+architecturally credible EE cycle accounting is implemented.

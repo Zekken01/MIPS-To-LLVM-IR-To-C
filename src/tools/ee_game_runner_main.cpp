@@ -4607,6 +4607,29 @@ int main(int argc, char** argv)
     }
     if (reason == static_cast<uint32_t>(ee::e_ee_exit_reason::EE_EXIT_LOOP_BUDGET))
     {
+        if (vsync_flags.flag_address() != 0u)
+        {
+            const uint32_t flag_address = vsync_flags.flag_address();
+            const uint32_t csr_address = vsync_flags.csr_address();
+            const uint32_t flag_value = memory->contains(flag_address, 4u)
+                ? memory->read32(flag_address) : 0u;
+            const uint64_t csr_value =
+                csr_address != 0u && memory->contains(csr_address, 8u)
+                    ? memory->read64(csr_address) : 0u;
+            std::fprintf(stderr,
+                "EE VBlank wait: INTC_STAT=0x%08x INTC_MASK=0x%08x "
+                "flag=0x%08x value=0x%08x csr_dst=0x%08x "
+                "csr_dst_value=0x%016llx GS_CSR=0x%016llx "
+                "CRT_configured=%u fields=%llu "
+                "cycle_source=unavailable (no VBlank synthesized)\n",
+                hardware.intc().status(), hardware.intc().mask(),
+                flag_address, flag_value, csr_address,
+                static_cast<unsigned long long>(csr_value),
+                static_cast<unsigned long long>(hardware.scanout().csr()),
+                hardware.scanout().enabled() ? 1u : 0u,
+                static_cast<unsigned long long>(
+                    hardware.scanout().fields_started()));
+        }
         std::fprintf(
             stderr,
             "guest loop budget exhausted: next_pc=0x%08x budget=%u; "
