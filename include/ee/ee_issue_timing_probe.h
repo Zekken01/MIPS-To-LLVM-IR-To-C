@@ -129,9 +129,12 @@ public:
             ++candidate;
         }
 
+        // Preserve write ordering even when an older long-latency result
+        // remains outstanding. This is conservative candidate behavior,
+        // not evidence that hardware stalls on every WAW dependency.
         for (uint32_t reg = 1u; reg < 32u; ++reg)
         {
-            if ((reads & (uint32_t{1} << reg)) != 0u &&
+            if (((reads | writes) & (uint32_t{1} << reg)) != 0u &&
                 candidate < m_gpr_ready[reg])
             {
                 candidate = m_gpr_ready[reg];
@@ -140,7 +143,7 @@ public:
 
         for (uint32_t reg = 0u; reg < 4u; ++reg)
         {
-            if ((hreads & (1u << reg)) != 0u &&
+            if (((hreads | hwrites) & (1u << reg)) != 0u &&
                 candidate < m_hilo_ready[reg])
             {
                 candidate = m_hilo_ready[reg];
@@ -148,17 +151,19 @@ public:
         }
         for (uint32_t reg = 0u; reg < 32u; ++reg)
         {
-            if ((freads & (1u << reg)) != 0u &&
+            if (((freads | fwrites) & (1u << reg)) != 0u &&
                 candidate < m_fpr_ready[reg])
             {
                 candidate = m_fpr_ready[reg];
             }
         }
-        if (instruction.m_acc_read && candidate < m_acc_ready)
+        if ((instruction.m_acc_read || instruction.m_acc_write) &&
+            candidate < m_acc_ready)
         {
             candidate = m_acc_ready;
         }
-        if (instruction.m_fcsr_read && candidate < m_fcsr_ready)
+        if ((instruction.m_fcsr_read || instruction.m_fcsr_write) &&
+            candidate < m_fcsr_ready)
         {
             candidate = m_fcsr_ready;
         }
