@@ -244,6 +244,69 @@ int main()
           callback_runtime.m_hle_timing_boundaries == 2u,
           "timing observation rejection is latched; execution diagnostics continue");
 
+    // FCR31/FCC0 is a shared control/condition destination. None of
+    // these test-only latencies establish actual R5900 cycle timing.
+    const uint32_t ctc1_fcr31 = (0x11u << 26u) | (0x06u << 21u) |
+                                (8u << 16u) | (31u << 11u);
+    const uint32_t cfc1_fcr31 = (0x11u << 26u) | (0x02u << 21u) |
+                                (9u << 16u) | (31u << 11u);
+    const uint32_t bc1t = (0x11u << 26u) | (0x08u << 21u) |
+                          (1u << 16u) | 1u;
+    const uint32_t ceq_s = (0x11u << 26u) | (0x10u << 21u) |
+                           (3u << 16u) | (2u << 11u) | 0x32u;
+
+    replay.configure({1u, 3u});
+    check(replay.observe(record(1u, 0x3000u, ceq_s, 0u, 1u)) ==
+          e_ee_issue_replay_status::UNMODELED_INSTRUCTION,
+          "COP1 comparisons require explicit condition latency");
+
+    replay.configure({1u, 3u, 7u, 11u, 4u, 8u,
+                      2u, 5u, 14u, 9u, 6u, 7u});
+    check(replay.observe(record(1u, 0x3000u, ceq_s, 0u, 1u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(2u, 0x3004u, bc1t, 0u, 2u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.last_event_candidate_cycle() == 7u,
+          "C.EQ.S to BC1T observes caller-supplied FCR31 latency");
+
+    replay.configure({1u, 3u, 7u, 11u, 4u, 8u,
+                      2u, 5u, 14u, 9u, 6u, 7u});
+    check(replay.observe(record(1u, 0x3000u, ctc1_fcr31, 0u, 1u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(2u, 0x3004u, bc1t, 0u, 2u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(3u, 0x3008u, cfc1_fcr31, 0u, 3u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.candidate_cycles() == 8u,
+          "CTC1 to BC1T to CFC1 preserves FCR31 control ordering");
+
+    replay.configure({1u, 3u, 7u, 11u, 4u, 8u,
+                      2u, 5u, 14u, 9u, 6u, 7u});
+    const uint32_t cfc1_fcr0 = (0x11u << 26u) | (0x02u << 21u) |
+                               (9u << 16u);
+    check(replay.observe(record(1u, 0x3000u, cfc1_fcr0, 0u, 1u)) ==
+          e_ee_issue_replay_status::UNMODELED_INSTRUCTION,
+          "unmodeled FCR0 control-transfer timing still fails closed");
+
+    replay.configure({1u, 3u});
+    const uint32_t addi = (0x08u << 26u) | (8u << 16u) | 1u;
+    const uint32_t daddi = (0x18u << 26u) | (9u << 16u) | 1u;
+    check(replay.observe(record(1u, 0x3000u, addi, 0u, 1u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(2u, 0x3004u, daddi, 0u, 2u)) ==
+          e_ee_issue_replay_status::ISSUED,
+          "signed ADDI and DADDI use explicit scalar-ALU candidate timing");
+
+    replay.configure({1u, 3u, 7u, 11u, 4u, 8u});
+    const uint32_t dependent_add = (6u << 21u) | (7u << 16u) |
+                                   (8u << 11u) | 0x21u;
+    check(replay.observe(record(1u, 0x3000u, mult, 0u, 1u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(2u, 0x3004u, dependent_add, 0u, 2u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.last_event_candidate_cycle() == 7u,
+          "MULT rd result cannot inherit unverified fast ALU latency");
+
     std::printf("ee_issue_trace_replay_test: %d failure(s)\n", s_failures);
     return s_failures == 0 ? 0 : 1;
 }
