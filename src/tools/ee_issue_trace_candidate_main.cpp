@@ -94,7 +94,8 @@ int main(int argc, char** argv)
         : std::string{};
 
     if ((profile_argc != 4 && profile_argc != 8 && profile_argc != 12 &&
-         profile_argc != 14 && profile_argc != 16) ||
+         profile_argc != 14 && profile_argc != 16 &&
+         profile_argc != 19) ||
         (ordered_waw_overlap && !explicit_throughput) ||
         (export_any && (output_path.empty() || output_path == argv[1])))
     {
@@ -107,6 +108,8 @@ int main(int argc, char** argv)
             "<fpu-divide-latency> <fpu-accumulate-latency>] "
             "[<fpu-control-latency> <fpu-compare-latency>] "
             "[<fpu-sqrt-latency> <fpu-rsqrt-latency>] "
+            "[<cop0-transfer-latency> <vu0-vf-transfer-latency> "
+            "<vu0-vi-transfer-latency>] "
             "[--throughput=<mac-mult>,<mac-div>,<mac-acc>,"
             "<cop1-arith>,<cop1-div>,<cop1-sqrt>,<cop1-rsqrt>] "
             "[--ordered-waw-overlap] "
@@ -152,12 +155,23 @@ int main(int argc, char** argv)
         return 2;
     }
 
-    if (profile_argc == 16 &&
+    if (profile_argc >= 16 &&
         (!parse_latency(argv[14], &profile.m_fpu_sqrt_latency) ||
          !parse_latency(argv[15], &profile.m_fpu_rsqrt_latency)))
     {
         std::fprintf(stderr,
             "SQRT.S/RSQRT.S require separate positive latencies\n");
+        return 2;
+    }
+
+    if (profile_argc == 19 &&
+        (!parse_latency(argv[16], &profile.m_cop0_transfer_latency) ||
+         !parse_latency(argv[17], &profile.m_vu0_vf_transfer_latency) ||
+         !parse_latency(argv[18], &profile.m_vu0_vi_transfer_latency)))
+    {
+        std::fprintf(stderr,
+            "COP0/VU0 register-transfer timing requires three explicit "
+            "positive latency values\n");
         return 2;
     }
 
