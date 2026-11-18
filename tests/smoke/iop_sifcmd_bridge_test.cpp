@@ -251,7 +251,10 @@ int main()
         command_rejection.m_failure !=
             iop::e_sif1_dma_failure::unsupported_sifcmd_packet ||
         command_rejection.m_packet_size != 0u ||
+        command_rejection.m_packet_dest != 0u ||
         command_rejection.m_packet_cid != 0x80000002u ||
+        command_rejection.m_packet_opt != 0u ||
+        command_rejection.m_packet_arg != 0x00182000u ||
         commands.ee_receive_address() != 0x00182000u ||
         dmac.status() != 0u)
     {

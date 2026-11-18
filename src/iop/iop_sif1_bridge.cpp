@@ -181,10 +181,24 @@ bool c_sif1_bridge::set_dma(
             return refuse(e_sif1_dma_failure::invalid_source);
         }
         // Record the staged packet header without changing guest RAM.
-        if (diagnostic != nullptr && rounded >= 12u)
+        if (diagnostic != nullptr)
         {
-            diagnostic->m_packet_size = m_ee_ram.read32(ee_source);
-            diagnostic->m_packet_cid = m_ee_ram.read32(ee_source + 8u);
+            // Preserve the five command-header words, when present,
+            // even if command validation later rejects the packet.
+            if (rounded >= 12u)
+            {
+                diagnostic->m_packet_size = m_ee_ram.read32(ee_source);
+                diagnostic->m_packet_dest = m_ee_ram.read32(ee_source + 4u);
+                diagnostic->m_packet_cid = m_ee_ram.read32(ee_source + 8u);
+            }
+            if (rounded >= 16u)
+            {
+                diagnostic->m_packet_opt = m_ee_ram.read32(ee_source + 12u);
+            }
+            if (rounded >= 20u)
+            {
+                diagnostic->m_packet_arg = m_ee_ram.read32(ee_source + 16u);
+            }
         }
         if (destination == 0u)
         {

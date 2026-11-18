@@ -3442,7 +3442,8 @@ int main(int argc, char** argv)
                                 "index=%u src=0x%08x dst=0x%08x "
                                 "bytes=%u attrs=0x%08x "
                                 "packet_size=0x%08x packet_cid=0x%08x "
-                                "sifcmd_initialized=%u\n",
+                                "packet_dest=0x%08x packet_opt=0x%08x "
+                                "packet_arg=0x%08x sifcmd_initialized=%u\n",
                                 iop::c_sif1_bridge::failure_name(
                                     dma_diagnostic.m_failure
                                 ),
@@ -3453,6 +3454,9 @@ int main(int argc, char** argv)
                                 dma_diagnostic.m_attributes,
                                 dma_diagnostic.m_packet_size,
                                 dma_diagnostic.m_packet_cid,
+                                dma_diagnostic.m_packet_dest,
+                                dma_diagnostic.m_packet_opt,
+                                dma_diagnostic.m_packet_arg,
                                 iop_sifcmd != nullptr &&
                                     iop_sifcmd->initialized() ? 1u : 0u
                             );
