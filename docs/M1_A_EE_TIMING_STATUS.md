@@ -113,6 +113,27 @@ pipeline occupancy are conservative **candidate** choices, not evidence
 that these values reproduce R5900 hardware. No automatic enablement of
 GS/INTC, no new local game boot and no calibrated scheduler source.
 
+### Optional WAW-overlap comparison and candidate result deadlines
+
+An explicitly selected counterfactual WAW policy can issue consecutive
+MAC/COP1 writers at caller-configured initiation intervals without
+automatically stalling until the previous register result is ready.
+RAW dependencies continue to wait. Any newer result that would finish
+before **or in the same cycle as** an older write is rejected without
+mutating probe state; this does not silently manufacture a serialization
+delay. Default behavior remains conservative. The host runner does not
+select this policy.
+
+The offline CLI accepts `--ordered-waw-overlap` only with an explicit
+seven-value `--throughput` profile. The optional
+`--candidate-completions=PATH` export records issue and result deadlines
+separately, with no completion event for annulled slots.
+`tools/ee_timing_differential.py --compare-completions` compares both
+cycle fields against an independent reference, preserving instruction
+identity and a single source epoch. Test vectors are **synthetic**.
+These timestamps are **not** EE retirement, cache, HLE or scanout cycles.
+No device timing source was installed and M1-B remains blocked.
+
 ### EE Core manual audit (18 November 2026)
 
 See [M1_A_R5900_REFERENCE_AUDIT.md](M1_A_R5900_REFERENCE_AUDIT.md) for
