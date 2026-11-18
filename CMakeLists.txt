@@ -379,6 +379,14 @@ endif()
 
 enable_testing()
 if(Python3_Interpreter_FOUND)
+    add_test(NAME ee_timing_differential
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/tools/test_ee_timing_differential.py)
+    add_test(NAME ee_issue_trace_export
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/tools/test_ee_issue_trace_export.py
+                $<TARGET_FILE:ee_issue_trace_candidate>
+                ${CMAKE_SOURCE_DIR}/tests/fixtures/ee_issue_trace_candidate.csv)
     add_test(NAME iop_module_path_discovery
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_iop_module_paths.py)

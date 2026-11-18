@@ -81,3 +81,7 @@ Native and RAM instructions, annulled slots and recognized EE startup/registered
 ### Per-instruction candidate issue-cycle output
 
 The offline analyzer now optionally writes `--candidate-events=<path>` after all profile arguments, producing `reference_slot,pc,opcode_word,kind,candidate_issue_cycle`. Each event is stamped from the candidate probe's own issue/reservation state, not from a host dispatch or guest instruction count. The CSV is created only for a complete, supported, non-truncated trace; replay failures produce no candidate timeline. These are experimental relative cycles and cannot drive VBlank.
+
+### Independent reference differential (fail-closed)
+
+`tools/ee_timing_differential.py` compares a **complete** exported candidate stream with an independently captured `reference_slot,pc,opcode_word,kind,reference_issue_cycle` CSV. It verifies every event identity, contiguous slots, nondecreasing issue times and exact relative issue deltas after removing the reference's arbitrary epoch. It rejects differences, missing rows, malformed/out-of-order records and host HLE events. Exact matching of one fixture **does not** prove all game opcodes or R5900 pipelines are calibrated, and it never installs the validated scheduler source. The companion exporter and comparator CTests are synthetic acceptance fixtures only.
