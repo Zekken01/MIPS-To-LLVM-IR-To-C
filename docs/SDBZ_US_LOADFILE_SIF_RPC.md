@@ -130,3 +130,16 @@ SW/LW register-access, clean reset and ROM0 isolation tests. Fault
 diagnostics now identify the actual guest memory address and register
 state. No SIO2 reply, DMA completion, IRQ or later successful game
 boot is invented. The next local five-file run remains authoritative.
+
+## SIO2 configuration-register family
+
+`ps2-web-recomp` implements SIO2 SEND3 (0x1F808200–23F),
+per-port CTRL1/CTRL2 (0x1F808240–25F), FIFO and control/status
+(0x1F808260–274). The native HLE model now accepts bounded guest
+writes/reads of configuration registers and queued TX bytes through
+the real IOP bus; CTRL reset clears queued work, CTRL start records a
+pending transfer. The RX FIFO still rejects reads without a genuine
+controller or memory-card producer, and STAT does not claim a completed
+transaction. Tests cover register bounds, pending TX data, reset, lack
+of IRQ and unproduced replies. This remains an unverified next-boot
+implementation batch.

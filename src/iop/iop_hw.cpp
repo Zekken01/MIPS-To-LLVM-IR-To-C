@@ -31,6 +31,10 @@ void c_hw::reset()
     m_i_ctrl = 1u;
     m_cache_control = 0u;
     m_sio2_ctrl = 0u;
+    std::fill(m_sio2_send3, m_sio2_send3 + 16u, 0u);
+    std::fill(m_sio2_port, m_sio2_port + 8u, 0u);
+    m_sio2_pending_tx.clear();
+    m_sio2_transfer_requested = false;
     m_timer5_count = 0u;
     m_timer5_mode = 0u;
     m_timer5_target = 0u;
@@ -200,9 +204,27 @@ bool c_hw::read(
         *value = k_cdvd_no_disc;
         return true;
     }
+    // No guest controller or memory-card producer is installed.
+    // An empty receive FIFO cannot supply fictitious reply bytes.
+    if (address == k_sio2_rx_fifo)
+    {
+        return false;
+    }
     if (width != 4u || (address & 3u) != 0u)
     {
         return false;
+    }
+    if (address >= k_sio2_send3_base &&
+        address < k_sio2_send3_base + 0x40u)
+    {
+        *value = m_sio2_send3[(address - k_sio2_send3_base) / 4u];
+        return true;
+    }
+    if (address >= k_sio2_port_base &&
+        address < k_sio2_port_base + 0x20u)
+    {
+        *value = m_sio2_port[(address - k_sio2_port_base) / 4u];
+        return true;
     }
 
     if (address >= k_cdrom_dma_base &&
@@ -297,6 +319,16 @@ bool c_hw::read(
     case k_sio2_ctrl:
         *value = m_sio2_ctrl;
         return true;
+    case k_sio2_stat:
+        // No SIO2 transaction has completed.
+        *value = 0u;
+        return true;
+    case k_sio2_port_status:
+        *value = 0x0fu; // Port register mask, not pad readiness.
+        return true;
+    case k_sio2_aux_status:
+        *value = 0u;
+        return true;
     default:
         return false;
     }
@@ -378,9 +410,33 @@ bool c_hw::write(
         }
         return true;
     }
+    // Guest FIFO transmit requests are queued, never executed without
+    // a real SIO2 producer; no DMA completion or IRQ follows.
+    if (address == k_sio2_tx_fifo &&
+        (width == 1u || width == 4u))
+    {
+        if (m_sio2_pending_tx.size() >= k_sio2_tx_limit)
+        {
+            return false;
+        }
+        m_sio2_pending_tx.push_back(static_cast<uint8_t>(value));
+        return true;
+    }
     if (width != 4u || (address & 3u) != 0u)
     {
         return false;
+    }
+    if (address >= k_sio2_send3_base &&
+        address < k_sio2_send3_base + 0x40u)
+    {
+        m_sio2_send3[(address - k_sio2_send3_base) / 4u] = value;
+        return true;
+    }
+    if (address >= k_sio2_port_base &&
+        address < k_sio2_port_base + 0x20u)
+    {
+        m_sio2_port[(address - k_sio2_port_base) / 4u] = value;
+        return true;
     }
 
     if (address >= k_cdrom_dma_base &&
@@ -518,9 +574,17 @@ bool c_hw::write(
         m_cache_control = value;
         return true;
     case k_sio2_ctrl:
-        // Keep real guest initialization/reset writes observable. A
-        // transfer start or SIO2 IRQ is deliberately not fabricated.
         m_sio2_ctrl = value;
+        if ((value & 0x0cu) == 0x0cu)
+        {
+            m_sio2_pending_tx.clear();
+            m_sio2_transfer_requested = false;
+        }
+        if ((value & 1u) != 0u)
+        {
+            m_sio2_transfer_requested = true;
+        }
+        // No device bytes, completion, or interrupt are manufactured.
         return true;
     default:
         return false;
@@ -725,6 +789,26 @@ bool c_hw::cdrom_dma_register(uint32_t index, uint32_t* value) const
     }
     *value = m_cdrom_dma[index];
     return true;
+}
+
+size_t c_hw::sio2_pending_tx_bytes() const
+{
+    return m_sio2_pending_tx.size();
+}
+
+bool c_hw::sio2_tx_byte(size_t index, uint8_t* value) const
+{
+    if (value == nullptr || index >= m_sio2_pending_tx.size())
+    {
+        return false;
+    }
+    *value = m_sio2_pending_tx[index];
+    return true;
+}
+
+bool c_hw::sio2_transfer_requested() const
+{
+    return m_sio2_transfer_requested;
 }
 
 bool c_hw::complete_cdvd_read(uint8_t interrupt_reason)

@@ -267,6 +267,57 @@ int main()
         return fail("SIO2 control register storage and width validation");
     }
 
+    // SIO2 register family backed by guest-written state only.
+    const uint32_t send3 = iop::c_hw::k_sio2_send3_base;
+    const uint32_t port = iop::c_hw::k_sio2_port_base;
+    uint8_t transmit = 0u;
+    if (!hardware.write(send3, 4u, 0xaabbccddu) ||
+        !hardware.read(send3, 4u, &actual) ||
+        actual != 0xaabbccddu ||
+        !hardware.write(send3 + 0x3cu, 4u, 0x12345678u) ||
+        !hardware.read(send3 + 0x3cu, 4u, &actual) ||
+        actual != 0x12345678u ||
+        !hardware.write(port, 4u, 0x123u) ||
+        !hardware.write(port + 0x1cu, 4u, 0x456u) ||
+        !hardware.read(port + 0x1cu, 4u, &actual) ||
+        actual != 0x456u ||
+        hardware.read(port + 0x20u, 4u, &actual) ||
+        hardware.write(send3, 2u, 1u) ||
+        !hardware.write(iop::c_hw::k_sio2_tx_fifo, 1u, 0xabu) ||
+        !hardware.write(iop::c_hw::k_sio2_tx_fifo, 4u, 0xcdu) ||
+        hardware.read(iop::c_hw::k_sio2_rx_fifo, 4u, &actual) ||
+        hardware.read(iop::c_hw::k_sio2_rx_fifo, 1u, &actual) ||
+        hardware.sio2_pending_tx_bytes() != 2u ||
+        !hardware.sio2_tx_byte(1u, &transmit) ||
+        transmit != 0xcdu ||
+        hardware.sio2_tx_byte(2u, &transmit) ||
+        !hardware.write(iop::c_hw::k_sio2_ctrl, 4u, 1u) ||
+        !hardware.sio2_transfer_requested() ||
+        !hardware.read(iop::c_hw::k_sio2_stat, 4u, &actual) ||
+        actual != 0u ||
+        !hardware.read(iop::c_hw::k_sio2_port_status, 4u, &actual) ||
+        actual != 0x0fu ||
+        hardware.pending_interrupts() != 0u)
+    {
+        return fail("SIO2 configuration/FIFO invented device behavior");
+    }
+    if (!hardware.write(iop::c_hw::k_sio2_ctrl, 4u, 0x0cu) ||
+        hardware.sio2_pending_tx_bytes() != 0u ||
+        hardware.sio2_transfer_requested() ||
+        !hardware.read(iop::c_hw::k_sio2_aux_status, 4u, &actual) ||
+        actual != 0u)
+    {
+        return fail("SIO2 request reset did not clear queued FIFO");
+    }
+    hardware.reset();
+    if (!hardware.read(send3, 4u, &actual) || actual != 0u ||
+        !hardware.read(port, 4u, &actual) || actual != 0u ||
+        hardware.sio2_pending_tx_bytes() != 0u ||
+        hardware.sio2_transfer_requested())
+    {
+        return fail("SIO2 state leaked across IOP reset");
+    }
+
     // The ROM0 entrypoint performs actual R3000 load/store operations
     // against scratchpad, cache control and IOP interrupt mask.
     // These are original synthetic instructions, not copied BIOS data.
