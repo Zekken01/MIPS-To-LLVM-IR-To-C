@@ -201,6 +201,12 @@ int main()
         }
     );
 
+    // An installed HLE bridge and a static on-disc IRX are not
+    // scheduled guest work and must not advance the IOP clock.
+    if (kernel.has_guest_work())
+    {
+        return fail("IOP scheduler reported work with no runnable module");
+    }
     // The EE cannot dispatch any LOADFILE command merely because
     // a module exists on the host disc.
     const std::vector<uint32_t> bind = {
@@ -800,6 +806,7 @@ int main()
         rpc.last_observation().m_load_status !=
             iop::e_disc_load_result::success ||
         !rpc.last_observation().m_module_started ||
+        !kernel.has_guest_work() ||
         rpc.last_observation().m_module_id != 1u ||
         rpc.last_observation().m_thread_id == 0u ||
         rpc.load_requests() != 1u ||
@@ -817,12 +824,14 @@ int main()
     const iop::s_kernel_run_result first_slice = kernel.run(1u);
     if (first_slice.m_stop != iop::e_kernel_stop::budget_exhausted ||
         first_slice.m_executed != 1u ||
+        !kernel.has_guest_work() ||
         kernel.module(1u) == nullptr)
     {
         return fail("LOADFILE guest thread did not consume its first slice");
     }
     const iop::s_kernel_run_result executed = kernel.run(64u);
     if (executed.m_stop != iop::e_kernel_stop::breakpoint ||
+        kernel.has_guest_work() ||
         executed.m_guest_pc != kernel.module(1u)->m_irx.m_entry + 4u)
     {
         return fail("LOADFILE module entrypoint never ran");

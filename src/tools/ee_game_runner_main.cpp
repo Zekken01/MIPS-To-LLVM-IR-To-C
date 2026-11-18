@@ -3729,9 +3729,11 @@ int main(int argc, char** argv)
                             // and EE WaitSema may never block at all.
                             // This is a bounded guest R3000 slice, not
                             // a synthetic IRX completion or IOP clock.
-                            const iop::s_kernel_run_result progressed =
-                                iop_kernel->run(iop_quantum, 128u);
-                            if (progressed.m_stop !=
+                            if (iop_kernel->has_guest_work())
+                            {
+                                const iop::s_kernel_run_result progressed =
+                                    iop_kernel->run(iop_quantum, 128u);
+                                if (progressed.m_stop !=
                                     iop::e_kernel_stop::budget_exhausted &&
                                 progressed.m_stop !=
                                     iop::e_kernel_stop::idle)
@@ -3767,6 +3769,7 @@ int main(int argc, char** argv)
                                         progressed.m_executed),
                                     static_cast<uint32_t>(
                                         progressed.m_stop));
+                                }
                             }
                         }
                     }

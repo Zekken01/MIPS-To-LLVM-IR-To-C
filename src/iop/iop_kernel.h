@@ -131,6 +131,9 @@ public:
     bool stop_thread(uint32_t id);
     bool sleep_current(uint64_t delay_cycles);
     const s_kernel_thread* thread(uint32_t id) const;
+    // Only scheduled guest work permits an HLE transport-triggered
+    // IOP execution turn; absent modules cannot advance IOP time.
+    bool has_guest_work() const;
 
     void bind_syscall(t_kernel_syscall handler);
     // Explicit IOP cycle budget. The EE must eventually provide this from

@@ -486,6 +486,25 @@ const s_kernel_thread* c_kernel::thread(uint32_t id) const
     return found == m_threads.end() ? nullptr : &found->second;
 }
 
+bool c_kernel::has_guest_work() const
+{
+    if (m_rom0_boot_active)
+    {
+        return false;
+    }
+    for (const auto& item : m_threads)
+    {
+        const s_kernel_thread& thread = item.second;
+        if (thread.m_status == e_thread_status::ready ||
+            (thread.m_status == e_thread_status::blocked &&
+             thread.m_wake_cycle != 0u))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool c_kernel::start_thread(uint32_t id)
 {
     const auto found = m_threads.find(id);

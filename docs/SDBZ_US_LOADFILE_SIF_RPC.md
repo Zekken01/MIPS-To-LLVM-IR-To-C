@@ -80,3 +80,5 @@ The HLE bridge now retains a side-effect-free diagnostic snapshot of **committed
 
 
 A real R3000 module may require more than one bounded IOP quantum. The native HLE runner now gives the IOP scheduler a bounded turn after each accepted SIFRPC transport, not only on the initial LOADFILE success; ordinary guest threads resume across calls. Invalid/unhandled guest instructions and syscalls still stop with their actual PC/opcode. A regression fixture executes a NOP in the first limited scheduler slice and reaches its breakpoint only on the later turn. No invented successful module load is implied.
+
+The guest transport scheduler only receives bounded turns when `c_kernel::has_guest_work()` finds a ready R3000 thread or a time-blocked guest thread. No modules, dormant threads, hard-faulted threads, and untimed waits cannot advance IOP cycles from a spurious HLE SIFRPC poll. Regression checks the transition empty → ready → ready after first quantum → faulted after breakpoint.
