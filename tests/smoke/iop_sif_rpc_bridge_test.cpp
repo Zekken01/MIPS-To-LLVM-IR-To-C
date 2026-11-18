@@ -66,7 +66,8 @@ bool create_irx(const std::filesystem::path& location)
     {
         bytes[0x19au + i] = static_cast<uint8_t>(name[i]);
     }
-    write32(bytes, 0x100u, 0x0000000du); // guest breakpoint
+    write32(bytes, 0x100u, 0x00000000u); // initial guest nop
+    write32(bytes, 0x104u, 0x0000000du); // guest breakpoint
     std::ofstream out(location, std::ios::binary);
     out.write(
         reinterpret_cast<const char*>(bytes.data()),
@@ -813,10 +814,16 @@ int main()
     }
 
     // The linked guest entrypoint must actually run on the R3000.
+    const iop::s_kernel_run_result first_slice = kernel.run(1u);
+    if (first_slice.m_stop != iop::e_kernel_stop::budget_exhausted ||
+        first_slice.m_executed != 1u ||
+        kernel.module(1u) == nullptr)
+    {
+        return fail("LOADFILE guest thread did not consume its first slice");
+    }
     const iop::s_kernel_run_result executed = kernel.run(64u);
     if (executed.m_stop != iop::e_kernel_stop::breakpoint ||
-        kernel.module(1u) == nullptr ||
-        executed.m_guest_pc != kernel.module(1u)->m_irx.m_entry)
+        executed.m_guest_pc != kernel.module(1u)->m_irx.m_entry + 4u)
     {
         return fail("LOADFILE module entrypoint never ran");
     }

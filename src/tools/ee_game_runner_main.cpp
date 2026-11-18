@@ -3722,48 +3722,51 @@ int main(int argc, char** argv)
                             last_iop_rpc_result = event.m_return_word;
                             last_iop_rpc_path = event.m_guest_path;
 
-                            if (event.m_module_started)
+                            // Once a real LOADFILE module is ready, it
+                            // must continue to run on later EE/IOP
+                            // transport turns too. A single load-time
+                            // quantum is insufficient for genuine IRX code
+                            // and EE WaitSema may never block at all.
+                            // This is a bounded guest R3000 slice, not
+                            // a synthetic IRX completion or IOP clock.
+                            const iop::s_kernel_run_result progressed =
+                                iop_kernel->run(iop_quantum, 128u);
+                            if (progressed.m_stop !=
+                                    iop::e_kernel_stop::budget_exhausted &&
+                                progressed.m_stop !=
+                                    iop::e_kernel_stop::idle)
                             {
-                                // A real LOADFILE module entrypoint must
-                                // receive a bounded R3000 execution slice.
-                                // An EE semaphore that never blocks cannot
-                                // otherwise schedule this guest thread.
-                                const iop::s_kernel_run_result progressed =
-                                    iop_kernel->run(iop_quantum, 128u);
-                                if (progressed.m_stop !=
-                                        iop::e_kernel_stop::budget_exhausted &&
-                                    progressed.m_stop !=
-                                        iop::e_kernel_stop::idle)
-                                {
-                                    std::fprintf(
-                                        stderr,
-                                        "IOP HLE loaded module stopped: "
-                                        "module=%u thread=%u reason=%u "
-                                        "pc=0x%08x opcode=0x%08x "
-                                        "executed=%llu\n",
-                                        event.m_module_id,
-                                        progressed.m_thread_id,
-                                        static_cast<uint32_t>(
-                                            progressed.m_stop),
-                                        progressed.m_guest_pc,
-                                        progressed.m_opcode,
-                                        static_cast<unsigned long long>(
-                                            progressed.m_executed));
-                                    break;
-                                }
-                                if (trace)
-                                {
-                                    std::printf(
-                                        "IOP HLE LOADFILE ran guest: "
-                                        "module=%u thread=%u "
-                                        "instructions=%llu stop=%u\n",
-                                        event.m_module_id,
-                                        event.m_thread_id,
-                                        static_cast<unsigned long long>(
-                                            progressed.m_executed),
-                                        static_cast<uint32_t>(
-                                            progressed.m_stop));
-                                }
+                                std::fprintf(
+                                    stderr,
+                                    "IOP HLE guest service stopped: "
+                                    "rpc_server=0x%08x rpc_method=0x%08x "
+                                    "module=%u thread=%u reason=%u "
+                                    "pc=0x%08x opcode=0x%08x "
+                                    "executed=%llu\n",
+                                    event.m_server_id, event.m_method,
+                                    event.m_module_id,
+                                    progressed.m_thread_id,
+                                    static_cast<uint32_t>(
+                                        progressed.m_stop),
+                                    progressed.m_guest_pc,
+                                    progressed.m_opcode,
+                                    static_cast<unsigned long long>(
+                                        progressed.m_executed));
+                                break;
+                            }
+                            if (trace && progressed.m_executed != 0u)
+                            {
+                                std::printf(
+                                    "IOP HLE guest service turn: "
+                                    "rpc_server=0x%08x method=0x%08x "
+                                    "thread=%u instructions=%llu "
+                                    "stop=%u\n",
+                                    event.m_server_id, event.m_method,
+                                    progressed.m_thread_id,
+                                    static_cast<unsigned long long>(
+                                        progressed.m_executed),
+                                    static_cast<uint32_t>(
+                                        progressed.m_stop));
                             }
                         }
                     }
