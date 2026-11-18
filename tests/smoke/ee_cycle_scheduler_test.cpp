@@ -101,6 +101,36 @@ int main()
               result::NO_VALIDATED_CLOCK,
           "reset disables events until a new validated source is installed");
 
+    // Reference-compatible budgets use the real event delivery path,
+    // but never claim independent hardware-cycle validation.
+    ee::c_ee_hw_bus compatibility_hardware{};
+    ee::s_ee_cpu_state compatibility_cpu{};
+    ee::c_ee_vsync_flags compatibility_flags{};
+    ee::ee_memory compatibility_memory(0x1000u);
+    compatibility_hardware.bind_cpu(&compatibility_cpu);
+    check(compatibility_hardware.set_gs_crt(1u, 2u, 0u) &&
+          compatibility_flags.register_guest_pointers(
+              &compatibility_memory, 0x100u, 0x108u) &&
+          timeline.install_reference_compatibility_source() &&
+          timeline.source() == ee::e_ee_cycle_source::REFERENCE_COMPATIBILITY &&
+          !timeline.install_validated_source(),
+          "reference compatibility source is distinct from validated R5900");
+    check(timeline.publish_cycle(4920114ull) &&
+          timeline.service_scanout(
+              compatibility_hardware, compatibility_flags, compatibility_memory) ==
+              result::NO_DUE_FIELD &&
+          compatibility_hardware.scanout().fields_started() == 0u,
+          "compatibility source cannot deliver before field deadline");
+    check(timeline.publish_cycle(4920115ull) &&
+          timeline.service_scanout(
+              compatibility_hardware, compatibility_flags, compatibility_memory) ==
+              result::FIELDS_DELIVERED &&
+          compatibility_hardware.scanout().fields_started() == 1u &&
+          compatibility_hardware.intc().status() == 4u &&
+          compatibility_memory.read32(0x100u) == 1u &&
+          !timeline.publish_cycle(4920114ull),
+          "compatibility deadline delivers CSR/INTC/VSync and rejects regressions");
+
     std::printf("ee_cycle_scheduler_test: %d failure(s)\n", g_failures);
     return g_failures == 0 ? 0 : 1;
 }

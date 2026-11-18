@@ -28,9 +28,21 @@ bool c_ee_cycle_scheduler::install_validated_source()
     return true;
 }
 
+bool c_ee_cycle_scheduler::install_reference_compatibility_source()
+{
+    if (m_source != e_ee_cycle_source::UNAVAILABLE ||
+        m_current_cycle != 0u)
+    {
+        return false;
+    }
+
+    m_source = e_ee_cycle_source::REFERENCE_COMPATIBILITY;
+    return true;
+}
+
 bool c_ee_cycle_scheduler::publish_cycle(uint64_t absolute_cycle)
 {
-    if (m_source != e_ee_cycle_source::VALIDATED_R5900 ||
+    if (m_source == e_ee_cycle_source::UNAVAILABLE ||
         absolute_cycle < m_current_cycle)
     {
         return false;
@@ -54,7 +66,7 @@ e_ee_scheduled_event_result c_ee_cycle_scheduler::service_scanout(
     ee_memory& memory
 )
 {
-    if (m_source != e_ee_cycle_source::VALIDATED_R5900)
+    if (m_source == e_ee_cycle_source::UNAVAILABLE)
     {
         return e_ee_scheduled_event_result::NO_VALIDATED_CLOCK;
     }

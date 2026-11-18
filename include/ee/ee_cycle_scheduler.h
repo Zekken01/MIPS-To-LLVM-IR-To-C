@@ -8,13 +8,13 @@ class c_ee_hw_bus;
 class c_ee_vsync_flags;
 class ee_memory;
 
-// A native timing source must be validated independently against R5900
-// reference traces before this scheduler can drive hardware. The native
-// runner intentionally does not install a source until that work is done.
+// Reference-style event budgets are a boot compatibility mode, not
+// independently validated R5900 instruction issue/retirement timing.
 enum class e_ee_cycle_source : uint8_t
 {
     UNAVAILABLE = 0,
-    VALIDATED_R5900 = 1
+    VALIDATED_R5900 = 1,
+    REFERENCE_COMPATIBILITY = 2
 };
 
 enum class e_ee_scheduled_event_result : uint8_t
@@ -26,19 +26,17 @@ enum class e_ee_scheduled_event_result : uint8_t
     INVALID_TIMESTAMP_OR_DELIVERY
 };
 
-// Owns one monotonic EE time domain, distinct from host dispatches, guest
-// instruction attempts and reference-interpreter slots. This class never
-// computes instruction latencies or enables a clock by itself.
-//
-// Integration contract: only an independently validated R5900 timing
-// producer may install the clock and publish retirement/issue timestamps.
-// Publishers must do so in guest execution order. Service at architectural
-// safepoints after committing the corresponding CPU/memory effects.
+// Owns one monotonic EE time domain. It never computes instruction timing.
+// A validated R5900 producer and an explicitly labelled approximate
+// compatibility budget are distinct source types.
+// Publishers must act in guest execution order, and service hardware only
+// at safepoints after committing corresponding CPU/memory effects.
 class c_ee_cycle_scheduler
 {
 public:
     void reset();
     bool install_validated_source();
+    bool install_reference_compatibility_source();
     bool publish_cycle(uint64_t absolute_cycle);
     void record_scheduler_yield();
 
