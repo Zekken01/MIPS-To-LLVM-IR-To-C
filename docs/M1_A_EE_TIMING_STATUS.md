@@ -65,3 +65,7 @@ Run `ee_issue_trace_candidate <trace.csv> <integer-result-latency> <load-result-
 ## Issue scoreboard resource extension
 
 The experimental issue probe now tracks independent GPR, HI0/LO0/HI1/LO1, COP1 FPR and FPU accumulator read/write reservations. A producer may declare separate special-register/FPR/ACC latencies from its GPR latency. Validation is atomic, so invalid masks and overflow cannot partially mutate a timing state. Dedicated tests exercise scalar HI/LO multiply-to-MFLO, FPR producer/consumer, accumulator and same-cycle pairing dependencies. No new hardware-clock source is installed; these latencies remain caller supplied and uncalibrated.
+
+### Explicit HI/LO timing categories
+
+The offline issue candidate now classifies scalar `MULT/MULTU/DIV/DIVU`, `MFHI/MFLO/MTHI/MTLO` and their second-pipeline `*1` equivalents, plus `MADD/MADDU/MADD1/MADDU1`, using separate HI/LO read/write dependency masks. Their four latency categories default to **unconfigured**: multiply, divide, HI/LO transfer and accumulate. Existing candidate traces remain backward compatible. The CLI accepts the four optional latency values as one group; these values are diagnostic inputs, not hardware validation. Other MMI operations remain unmodeled and fail closed.

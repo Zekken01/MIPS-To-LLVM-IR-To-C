@@ -94,6 +94,44 @@ int main()
           e_ee_issue_replay_status::UNMODELED_INSTRUCTION,
           "no fabricated COP1 pipeline cost");
 
+    // Per-pipeline availability is never inferred from the generic scalar
+    // profile. Demand an explicit MUL, DIV, move or accumulate latency.
+    replay.configure({1u, 3u});
+    const uint32_t mult = (4u << 21u) | (5u << 16u) | (6u << 11u) | 0x18u;
+    const uint32_t mflo = (7u << 11u) | 0x12u;
+    check(replay.observe(record(1u, 0x1000u, mult, 0u, 1u)) ==
+          e_ee_issue_replay_status::UNMODELED_INSTRUCTION,
+          "HI/LO multiply is unavailable without calibrated latency");
+
+    replay.configure({1u, 3u, 7u, 11u, 4u, 8u});
+    check(replay.observe(record(1u, 0x1000u, mult, 0u, 1u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(2u, 0x1004u, mflo, 0u, 2u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.candidate_cycles() == 8u,
+          "separate MULT HI0/LO0 latency delays MFLO without GPR aliasing");
+
+    replay.configure({1u, 3u, 7u, 11u, 4u, 8u});
+    const uint32_t div1 = (4u << 21u) | (5u << 16u) |
+                          (0x1cu << 26u) | 0x1au;
+    const uint32_t mflo1 = (0x1cu << 26u) | (7u << 11u) | 0x12u;
+    check(replay.observe(record(1u, 0x1000u, div1, 0u, 1u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(2u, 0x1004u, mflo1, 0u, 2u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.candidate_cycles() == 12u,
+          "second HI1/LO1 divide pipeline gets an independent delay");
+
+    replay.configure({1u, 3u, 7u, 11u, 4u, 8u});
+    const uint32_t madd1 = (0x1cu << 26u) | (4u << 21u) |
+                           (5u << 16u) | 0x20u;
+    check(replay.observe(record(1u, 0x1000u, madd1, 0u, 1u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.observe(record(2u, 0x1004u, mflo1, 0u, 2u)) ==
+          e_ee_issue_replay_status::ISSUED &&
+          replay.candidate_cycles() == 9u,
+          "accumulation reads/writes HI1/LO1 with explicit latency");
+
     std::printf("ee_issue_trace_replay_test: %d failure(s)\n", s_failures);
     return s_failures == 0 ? 0 : 1;
 }

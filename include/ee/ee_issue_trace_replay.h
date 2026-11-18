@@ -14,6 +14,12 @@ struct s_ee_issue_replay_profile
 {
     uint32_t m_integer_latency = 0u;
     uint32_t m_load_latency = 0u;
+    // All four fields default to unavailable. A caller must supply timing
+    // evidence for each distinct HI/LO operation before it can be replayed.
+    uint32_t m_hilo_multiply_latency = 0u;
+    uint32_t m_hilo_divide_latency = 0u;
+    uint32_t m_hilo_transfer_latency = 0u;
+    uint32_t m_hilo_accumulate_latency = 0u;
 };
 
 enum class e_ee_issue_replay_status : uint8_t
@@ -148,6 +154,47 @@ private:
                 instruction->m_gpr_read_mask = rs | rt;
                 instruction->m_gpr_write_mask = rd;
                 return true;
+            case 0x10u: case 0x12u: // MFHI/MFLO (pipeline 0)
+                if (m_profile.m_hilo_transfer_latency == 0u)
+                {
+                    return false;
+                }
+                instruction->m_pipe = e_ee_probe_pipe::MULT_DIV;
+                instruction->m_hilo_read_mask =
+                    decoded.funct == 0x10u ? 0x1u : 0x2u;
+                instruction->m_gpr_write_mask = rd;
+                return true;
+            case 0x11u: case 0x13u: // MTHI/MTLO (pipeline 0)
+                if (m_profile.m_hilo_transfer_latency == 0u)
+                {
+                    return false;
+                }
+                instruction->m_pipe = e_ee_probe_pipe::MULT_DIV;
+                instruction->m_gpr_read_mask = rs;
+                instruction->m_hilo_write_mask =
+                    decoded.funct == 0x11u ? 0x1u : 0x2u;
+                instruction->m_hilo_result_latency =
+                    m_profile.m_hilo_transfer_latency;
+                return true;
+            case 0x18u: case 0x19u: // MULT/MULTU
+            case 0x1au: case 0x1bu: // DIV/DIVU
+            {
+                const bool multiply = decoded.funct < 0x1au;
+                const uint32_t special_latency = multiply
+                    ? m_profile.m_hilo_multiply_latency
+                    : m_profile.m_hilo_divide_latency;
+                if (special_latency == 0u)
+                {
+                    return false;
+                }
+                instruction->m_pipe = e_ee_probe_pipe::MULT_DIV;
+                instruction->m_gpr_read_mask = rs | rt;
+                // EE MULT can also put the low product directly in rd.
+                instruction->m_gpr_write_mask = multiply ? rd : 0u;
+                instruction->m_hilo_write_mask = 0x3u;
+                instruction->m_hilo_result_latency = special_latency;
+                return true;
+            }
             case 0x08u: case 0x09u:
                 instruction->m_pipe = e_ee_probe_pipe::BRANCH;
                 instruction->m_gpr_read_mask = rs;
@@ -156,6 +203,72 @@ private:
                 return true;
             default:
                 return false; // HI/LO, trap, syscall and synchronization
+            }
+        }
+
+        // MMI HI1/LO1 and multiply/accumulate have independent
+        // architectural hazards from the scalar HI0/LO0 pipeline.
+        if (op == 0x1cu)
+        {
+            const uint32_t operation = decoded.funct;
+            instruction->m_pipe = e_ee_probe_pipe::MULT_DIV;
+            switch (operation)
+            {
+            case 0x10u: case 0x12u: // MFHI1 / MFLO1
+                if (m_profile.m_hilo_transfer_latency == 0u)
+                {
+                    return false;
+                }
+                instruction->m_hilo_read_mask =
+                    operation == 0x10u ? 0x4u : 0x8u;
+                instruction->m_gpr_write_mask = rd;
+                return true;
+            case 0x11u: case 0x13u: // MTHI1 / MTLO1
+                if (m_profile.m_hilo_transfer_latency == 0u)
+                {
+                    return false;
+                }
+                instruction->m_gpr_read_mask = rs;
+                instruction->m_hilo_write_mask =
+                    operation == 0x11u ? 0x4u : 0x8u;
+                instruction->m_hilo_result_latency =
+                    m_profile.m_hilo_transfer_latency;
+                return true;
+            case 0x18u: case 0x19u: // MULT1 / MULTU1
+            case 0x1au: case 0x1bu: // DIV1 / DIVU1
+            {
+                const bool multiply = operation < 0x1au;
+                const uint32_t special_latency = multiply
+                    ? m_profile.m_hilo_multiply_latency
+                    : m_profile.m_hilo_divide_latency;
+                if (special_latency == 0u)
+                {
+                    return false;
+                }
+                instruction->m_gpr_read_mask = rs | rt;
+                instruction->m_gpr_write_mask = multiply ? rd : 0u;
+                instruction->m_hilo_write_mask = 0xcu;
+                instruction->m_hilo_result_latency = special_latency;
+                return true;
+            }
+            case 0x00u: case 0x01u: // MADD / MADDU
+            case 0x20u: case 0x21u: // MADD1 / MADDU1
+                if (m_profile.m_hilo_accumulate_latency == 0u)
+                {
+                    return false;
+                }
+                instruction->m_gpr_read_mask = rs | rt;
+                instruction->m_gpr_write_mask = rd;
+                instruction->m_hilo_read_mask =
+                    operation < 0x20u ? 0x3u : 0xcu;
+                instruction->m_hilo_write_mask =
+                    instruction->m_hilo_read_mask;
+                instruction->m_hilo_result_latency =
+                    m_profile.m_hilo_accumulate_latency;
+                return true;
+            default:
+                // Packed MMI still requires vector-lane scoreboard modeling.
+                return false;
             }
         }
 
