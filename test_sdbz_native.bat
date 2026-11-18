@@ -4,6 +4,8 @@ setlocal EnableExtensions
 rem One-command Windows regression for the native EE instruction-trace branch.
 rem Builds ONLY the required host tools, not all 8,046 SDBZ guest modules.
 rem Does not run the game, patch guest RAM, or synthesize EE/GS events.
+rem Run "test_sdbz_native.bat quick" to skip the already-passed long
+rem game_runner_end_to_end test and recheck only the two fast tests.
 cd /d "%~dp0"
 if errorlevel 1 exit /b 1
 
@@ -60,9 +62,15 @@ if errorlevel 1 (
 )
 
 echo.
-echo === Test Windows linker selection, guest PC trace and runner ===
+set "TEST_FILTER=^(ee_chunked_dispatcher|ee_instruction_trace_comparator|game_runner_end_to_end)$"
 set "TEST_LOG=%CD%\build\sdbz-native-regression-ctest.log"
-ctest --test-dir build -C Release --output-on-failure --output-log "%TEST_LOG%" -R "^(ee_chunked_dispatcher|ee_instruction_trace_comparator|game_runner_end_to_end)$"
+if /I "%~1"=="quick" (
+    set "TEST_FILTER=^(ee_chunked_dispatcher|ee_instruction_trace_comparator)$"
+    set "TEST_LOG=%CD%\build\sdbz-native-regression-quick-ctest.log"
+)
+echo === Test Windows linker selection and EE guest trace ===
+echo Test filter: %TEST_FILTER%
+ctest --test-dir build -C Release --output-on-failure --output-log "%TEST_LOG%" -R "%TEST_FILTER%"
 set "TEST_EXIT=%ERRORLEVEL%"
 
 echo.
