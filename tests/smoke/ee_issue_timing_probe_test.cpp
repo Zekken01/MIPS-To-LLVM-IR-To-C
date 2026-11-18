@@ -65,9 +65,10 @@ int main()
 
     clock.reset();
     check(clock.issue(branch) &&
-          clock.issue(a, &at) && at == 1u &&
+          clock.issue(a, &at) && at == 0u &&
+          clock.estimated_cycles() == 1u &&
           clock.annulled_slots_reserved() == 0u,
-          "executed delay instruction remains an ordinary issued instruction");
+          "branch and independent executed delay ALU may dual issue");
 
     clock.reset();
     check(clock.issue(branch) &&
@@ -171,6 +172,43 @@ int main()
     check(clock.issue(indep_hilo, &at) && at == 0u &&
           clock.issue(dependent_hilo, &at) && at == 1u,
           "HI/LO same-cycle pairing observes RAW hazards");
+
+    // Source: EE Core User's Manual v6.0, Tables 1-2 and 1-3.
+    // All timings below remain synthetic candidates.
+    clock.reset();
+    check(clock.issue(load, &at) && at == 0u &&
+          clock.issue(b, &at) && at == 0u &&
+          clock.estimated_cycles() == 1u,
+          "Pipe1 load and independent Pipe0 ALU can dual issue");
+
+    clock.reset();
+    s_ee_probe_instruction mac0{};
+    mac0.m_pipe = e_ee_probe_pipe::MULT_DIV;
+    s_ee_probe_instruction mac1{};
+    mac1.m_pipe = e_ee_probe_pipe::MULT_DIV_1;
+    check(clock.issue(mac0, &at) && at == 0u &&
+          clock.issue(mac1, &at) && at == 0u,
+          "independent MAC0 and MAC1 can use both logical pipes");
+
+    clock.reset();
+    check(clock.issue(branch, &at) && at == 0u &&
+          clock.issue(branch, &at) && at == 1u,
+          "Table 1-3 excludes branch plus branch pairing");
+
+    clock.reset();
+    s_ee_probe_instruction fpu_op{};
+    fpu_op.m_pipe = e_ee_probe_pipe::COPROCESSOR_OP;
+    s_ee_probe_instruction fpu_move{};
+    fpu_move.m_pipe = e_ee_probe_pipe::COPROCESSOR_MOVE;
+    check(clock.issue(fpu_op, &at) && at == 0u &&
+          clock.issue(fpu_move, &at) && at == 1u,
+          "COP1 operate/move Y resource-stall pairing stays unmodeled");
+
+    clock.reset();
+    s_ee_probe_instruction invalid_pipe{};
+    invalid_pipe.m_pipe = static_cast<e_ee_probe_pipe>(255u);
+    check(!clock.issue(invalid_pipe) && clock.instructions_issued() == 0u,
+          "unrecognized issue class fails atomically");
 
     // An outstanding write also reserves its architectural destination.
     // Conservative WAW ordering applies across issue cycles and to FCR31.
