@@ -3605,7 +3605,23 @@ int main(int argc, char** argv)
                             // requests this reset. It destroys previous IOP
                             // IRX/module/thread/RPC state, then installs
                             // actual host-backed HLE services anew.
+                            // Detach CDVD transport before resetting
+                            // its IOP MMIO registers. Rebind to the same
+                            // mounted sector source after the kernel reset.
+                            if (cdvd != nullptr)
+                            {
+                                cdvd->m_transport.reset();
+                            }
                             iop_kernel->reset();
+                            if (cdvd != nullptr && cdvd->m_source != nullptr)
+                            {
+                                cdvd->m_transport =
+                                    std::make_unique<iop::c_cdvd_dma_transport>(
+                                        iop_kernel->cpu(),
+                                        iop_kernel->hardware(),
+                                        *cdvd->m_source
+                                    );
+                            }
                             iop_sifcmd->reset_for_reboot();
                             iop_rpc->reset_for_reboot();
                             hardware.sif().begin_iop_reboot();
