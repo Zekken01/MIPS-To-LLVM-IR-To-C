@@ -50,7 +50,9 @@ int main()
         value != 0x12340u ||
         hw.read(sif1 + 8u, 2u, &value) ||
         hw.write(sif0 + 8u, 1u, 1u) ||
-        hw.read(sif1 + 16u, 4u, &value))
+        // SIO2 DMA11 now legitimately occupies 0x1F801540.
+        // The unassigned gap at 0x1F80154C still fails closed.
+        hw.read(sif1 + 28u, 4u, &value))
     {
         return fail("DMA register writes, STR persistence or unsupported MMIO");
     }
