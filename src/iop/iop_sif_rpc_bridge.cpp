@@ -154,6 +154,20 @@ bool c_sif_rpc_bridge::prepare_command(
             return false;
         }
     }
+    else if (server_id == k_cdvd_init_server)
+    {
+        // The retail SDBZ bootstrap calls CDVDFSV CdInit method 5.
+        // The reference HLE server writes 0xff at result + 12
+        // when the receive buffer contains at least sixteen bytes.
+        // Do not generalize this to other CDVD RPC operations.
+        if (method != 5u || packet[11] < 16u ||
+            !m_ee_ram.contains(result, packet[11]) ||
+            (packet[9] != 0u &&
+             !m_ee_ram.contains(payload_source, packet[9])))
+        {
+            return false;
+        }
+    }
     else if (server_id == k_iop_heap_server)
     {
         // IOPHEAP methods match ps2-web-recomp/SDBZ:
@@ -228,6 +242,13 @@ void c_sif_rpc_bridge::commit_command(const s_request& request)
             loaded.m_result == e_disc_load_result::success
                 ? 0u : static_cast<uint32_t>(-1)
         );
+    }
+    else if (request.m_words[2] == k_call_cid &&
+             request.m_server_id == k_cdvd_init_server)
+    {
+        // CDVDFSV CdInit's observed method 5 result layout.
+        // This does not mark disc hardware ready or start IRX code.
+        m_ee_ram.write32(request.m_result_destination + 12u, 0xffu);
     }
     else if (request.m_words[2] == k_call_cid &&
              request.m_server_id == k_iop_heap_server)
