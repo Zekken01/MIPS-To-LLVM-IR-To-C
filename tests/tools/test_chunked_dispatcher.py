@@ -89,11 +89,19 @@ class ChunkDispatcherTests(unittest.TestCase):
                                 environment={"CXX": wrong_driver},
                             )
 
-                with self.assertRaisesRegex(ValueError, "clang\\+\\+\\.exe not found"):
-                    linker.select_native_link_compiler(
-                        platform="win32",
-                        environment={"ProgramFiles": str(Path(tmp) / "missing")},
-                    )
+                # Isolate the negative case from a real LLVM installation.
+                # The search always considers C:/Program Files/LLVM even
+                # when a synthetic ProgramFiles environment is supplied.
+                with mock.patch.object(Path, "is_file", return_value=False):
+                    with self.assertRaisesRegex(
+                        ValueError, "clang\\+\\+\\.exe not found"
+                    ):
+                        linker.select_native_link_compiler(
+                            platform="win32",
+                            environment={
+                                "ProgramFiles": str(Path(tmp) / "missing")
+                            },
+                        )
 
     def test_non_windows_link_driver_keeps_override(self):
         self.assertEqual(
