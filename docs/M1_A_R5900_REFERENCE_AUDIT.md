@@ -88,6 +88,53 @@ total EE cycles.
 10. Keep missing profile entries, unsupported instructions and HLE timing
     boundaries non-replayable in strict mode. No scheduler source is installed.
 
+## Explicit WAW overlap counterfactual and result-deadline differential
+
+The default candidate scoreboard **still waits** for outstanding writes to
+HI0/LO0, HI1/LO1, FCR31, GPR, FPR and the FPU accumulator before reusing
+the architectural destination. That conservative policy may mask the
+manual's separate functional-unit initiation intervals.
+
+The new `e_ee_probe_waw_policy::ORDERED_OVERLAP` experiment, available
+only through explicit opt-in, allows a later same-resource writer to issue
+after the configured **initiation interval**, rather than waiting until
+the prior result is ready. It **rejects** the candidate atomically if
+the later result would become ready **before or in the same cycle** as
+the earlier result. Equal deadlines are ambiguous without independently
+verified writeback ordering. RAW remains enforced; pending unit
+occupancy and result readiness survive explicit HLE overhead boundaries.
+`reset()` restores the default conservative WAW policy.
+
+This is a **counterfactual comparison**, not a reconstruction of EE
+register forwarding, bypass networks, completion ports or retirement.
+The simple scoreboard stores the latest per-resource result deadline,
+but cannot prove the behavior of actual overlapped R5900 instructions.
+
+Offline CLI syntax (after explicit profile numbers):
+
+- `--throughput=<seven-positive-intervals> --ordered-waw-overlap`
+  enables the optional WAW comparison; overlap without a throughput
+  profile is rejected.
+- `--candidate-events=PATH` retains the original five-column *issue*
+  export for existing differential tests.
+- `--candidate-completions=PATH`, alternatively, exports both
+  `candidate_issue_cycle` and `candidate_completion_cycle`. An
+  annulled delay slot has an **empty completion field**, never a
+  fabricated result timestamp. Issue and completion remain distinct.
+
+`tools/ee_timing_differential.py --compare-completions --candidate PATH
+--reference REFERENCE_PATH` strictly checks an independently supplied
+six-column `reference_issue_cycle,reference_completion_cycle`
+stream. It checks event identity, issue ordering, nonnegative result
+latency and both issue/completion *relative deltas* after one reference
+epoch offset. It permits independent functional units to have
+non-monotonic completion order; it does not infer a global retirement
+ordering. Synthetic fixtures exercise mismatched deadlines, malformed
+rows, nonexistent completion for annulment, ambiguous ordering and
+missing events. **No independent physical-console completion trace has
+been supplied**, so passing these synthetic tests does not calibrate
+the R5900.
+
 ## Outstanding correctness gates
 
 - The Table 1-3 Y combinations (e.g. COP1 operate plus COP1 move)
