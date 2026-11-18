@@ -252,6 +252,19 @@ bool c_sif1_bridge::set_dma(
             // explicit SIFCMD and LOADFILE RPC packet types.
             const uint32_t cid = transfer.m_words.size() >= 3u
                 ? transfer.m_words[2] : 0u;
+            if (diagnostic != nullptr && transfer.m_words.size() >= 9u &&
+                cid == c_sif_rpc_bridge::k_bind_cid)
+            {
+                diagnostic->m_rpc_server = transfer.m_words[8];
+                diagnostic->m_rpc_client = transfer.m_words[7];
+            }
+            if (diagnostic != nullptr && transfer.m_words.size() >= 14u &&
+                cid == c_sif_rpc_bridge::k_call_cid)
+            {
+                diagnostic->m_rpc_server =
+                    transfer.m_words[13] ^ c_sif_rpc_bridge::k_server_xor;
+                diagnostic->m_rpc_client = transfer.m_words[7];
+            }
             if (cid == c_sif_rpc_bridge::k_bind_cid ||
                 cid == c_sif_rpc_bridge::k_call_cid)
             {

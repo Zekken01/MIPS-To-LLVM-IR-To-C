@@ -28,7 +28,7 @@ public:
 
     struct s_request
     {
-        uint32_t m_words[14]{};
+        uint32_t m_words[16]{};
         uint32_t m_word_count = 0u;
         uint32_t m_result_destination = 0u;
         std::string m_guest_path;

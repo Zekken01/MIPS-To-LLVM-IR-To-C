@@ -251,6 +251,60 @@ int main()
         return fail("LOADFILE bind reply did not traverse armed SIF0");
     }
 
+    // EE SDK sifrpc also uses a full 64-byte bind command, with
+    // identity fields at identical offsets and a terminal 0x44 DMA.
+    // Only a registered LOADFILE HLE service may answer this bind.
+    const std::vector<uint32_t> bind64 = {
+        64u, 0u, iop::c_sif_rpc_bridge::k_bind_cid, 0u,
+        5u, 0x11040u, 0x1234u, 0x15000u,
+        iop::c_sif_rpc_bridge::k_loadfile_server,
+        0u, 0u, 0u, 0u, 0u, 0u, 0u
+    };
+    dmac.acknowledge(5u);
+    dmac.acknowledge(6u);
+    packet(memory, bind_source, bind64);
+    descriptor(
+        memory, list, bind_source,
+        iop::c_sifcmd_bridge::k_command_buffer, 64u
+    );
+    memory.write32(list + 12u, 0x44u);
+    if (!sif1.set_dma(list, 1u, &dma_id) ||
+        rpc.pending_replies() != 0u ||
+        rpc.load_requests() != 0u ||
+        memory.read32(ee_receive + 0u) != 48u ||
+        memory.read32(ee_receive + 8u) !=
+            iop::c_sif_rpc_bridge::k_reply_cid ||
+        memory.read32(ee_receive + 16u) != 5u ||
+        memory.read32(ee_receive + 20u) != 0x11040u ||
+        memory.read32(ee_receive + 32u) !=
+            iop::c_sif_rpc_bridge::k_bind_cid ||
+        memory.read32(ee_receive + 36u) !=
+            (iop::c_sif_rpc_bridge::k_loadfile_server ^
+             iop::c_sif_rpc_bridge::k_server_xor) ||
+        (dmac.status() & (1u << 5u)) == 0u)
+    {
+        return fail("64-byte LOADFILE bind did not reply through SIF0");
+    }
+
+    // A syntactically valid 64-byte bind is not proof that an
+    // arbitrary RPC server exists. Verify transactional rejection
+    // and preserve the last completed EE receive packet.
+    dmac.acknowledge(5u);
+    dmac.acknowledge(6u);
+    memory.write32(bind_source + 32u, 0x80000003u);
+    iop::s_sif1_dma_diagnostic bind_rejection{};
+    if (sif1.set_dma(list, 1u, &dma_id, &bind_rejection) ||
+        bind_rejection.m_failure !=
+            iop::e_sif1_dma_failure::unsupported_rpc_packet ||
+        bind_rejection.m_rpc_server != 0x80000003u ||
+        bind_rejection.m_rpc_client != 0x15000u ||
+        memory.read32(ee_receive + 16u) != 5u ||
+        rpc.pending_replies() != 0u ||
+        (dmac.status() & ((1u << 5u) | (1u << 6u))) != 0u)
+    {
+        return fail("unknown 64-byte RPC bind mutated guest state");
+    }
+
     const std::string guest_path = "cdrom0:\\PADMAN.IRX;1";
     memory.write32(args_source, 0u);
     memory.write32(args_source + 4u, 0u);

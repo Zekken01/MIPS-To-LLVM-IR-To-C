@@ -39,6 +39,8 @@ struct s_sif1_dma_diagnostic
     uint32_t m_packet_cid = 0u;
     uint32_t m_packet_opt = 0u;
     uint32_t m_packet_arg = 0u;
+    uint32_t m_rpc_server = 0u;
+    uint32_t m_rpc_client = 0u;
 };
 
 // Guest EE sceSifSetDma (syscall 0x77) to IOP RAM transport.

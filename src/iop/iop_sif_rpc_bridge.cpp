@@ -85,7 +85,7 @@ bool c_sif_rpc_bridge::prepare_command(
         request == nullptr ||
         m_replies.size() >= 64u ||
         packet.size() < size / 4u ||
-        (size != 36u && size != 56u) ||
+        (size != 36u && size != 56u && size != 64u) ||
         (packet[0] & 0xffu) != size ||
         packet[1] != 0u || packet[3] != 0u ||
         packet[4] == 0u || packet[5] == 0u ||
@@ -101,7 +101,11 @@ bool c_sif_rpc_bridge::prepare_command(
         candidate.m_words[index] = packet[index];
     }
     const uint32_t cid = packet[2];
-    if (cid == k_bind_cid && size == 36u)
+    // Standard EE sifrpc also emits a 64-byte bind packet. The
+    // first 36 bytes carry the same header and server identity as
+    // the shorter form (as decoded by ps2-web-recomp's bind()).
+    // The remaining bytes are reserved/padding, not a second RPC.
+    if (cid == k_bind_cid && (size == 36u || size == 64u))
     {
         if (packet[8] != k_loadfile_server)
         {
