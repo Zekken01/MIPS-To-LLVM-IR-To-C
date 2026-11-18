@@ -1035,6 +1035,7 @@ int main(int argc, char** argv)
     std::unique_ptr<iop::c_cdvdman_bridge> iop_cdvdman;
     const iop::c_folder_sector_source* folder_disc_source = nullptr;
     bool hle_iop_reboot_bootstrap_pending = false;
+    bool hle_iop_reboot_ee_reset_seen = false;
     if (!iop_irx_paths.empty() || iop_rom0_path != nullptr ||
         disc_folder_path != nullptr)
     {
@@ -3650,6 +3651,7 @@ int main(int argc, char** argv)
                             // boot-status poll, not the SIF1 DMA itself.
                             // ROM0 boot remains a separate guest-code path.
                             hle_iop_reboot_bootstrap_pending = true;
+                            hle_iop_reboot_ee_reset_seen = false;
                             std::printf(
                                 "[iop] HLE reboot requested: %s "
                                 "(services reinstalled; boot flags pending)\n",
@@ -3780,6 +3782,15 @@ int main(int argc, char** argv)
                             break;
                         }
 
+                        // The EE explicitly tears down its previous
+                        // SIF SYSREG after a reset request. Only after
+                        // this handshake can the new IOP HLE bootstrap
+                        // publish its replacement readiness flags.
+                        if (hle_iop_reboot_bootstrap_pending &&
+                            id == 0x80000002u && value == 0u)
+                        {
+                            hle_iop_reboot_ee_reset_seen = true;
+                        }
                         cpu.m_gpr[2].m_lo = 0u;
                         cpu.m_gpr[2].m_hi = 0u;
                         if (trace)
@@ -3798,7 +3809,8 @@ int main(int argc, char** argv)
                         // readiness only when the EE subsequently polls
                         // the boot flag, never from receipt of DMA itself.
                         if (id == 4u &&
-                            hle_iop_reboot_bootstrap_pending)
+                            hle_iop_reboot_bootstrap_pending &&
+                            hle_iop_reboot_ee_reset_seen)
                         {
                             if (iop_sifcmd == nullptr ||
                                 !iop_sifcmd->initialize_hle_bootstrap())
