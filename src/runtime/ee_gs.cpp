@@ -283,6 +283,31 @@ bool c_ee_gs_state::read_vram32(uint32_t offset, uint32_t& value) const
     return true;
 }
 
+bool c_ee_gs_state::read_color_pixel(
+    uint32_t psm, uint32_t base, uint32_t fbw,
+    uint32_t x, uint32_t y, uint32_t& rgba
+) const
+{
+    // The GS display circuit uses color formats only. Refuse indexed and
+    // depth VRAM so a texture upload is never mislabelled a framebuffer.
+    if (fbw == 0u || fbw > 63u || base > 0x3fffu ||
+        x >= 2048u || y >= 2048u ||
+        (psm != 0u && psm != 1u && psm != 2u && psm != 0x0au))
+    {
+        return false;
+    }
+    const uint32_t raw = read_pixel(m_vram, psm, base, fbw, x, y);
+    uint32_t rgb = raw & 0x00ffffffu;
+    if (psm == 2u || psm == 0x0au)
+    {
+        rgb = ((raw & 0x001fu) << 3u) |
+              ((raw & 0x03e0u) << 6u) |
+              ((raw & 0x7c00u) << 9u);
+    }
+    rgba = rgb | 0xff000000u;
+    return true;
+}
+
 bool c_ee_gs_state::read_clut_entry(
     uint32_t slot, uint32_t& value) const
 {

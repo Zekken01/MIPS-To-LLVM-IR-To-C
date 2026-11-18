@@ -63,6 +63,11 @@ public:
     bool read_vram16(uint32_t offset, uint16_t& value) const;
     bool read_vram32(uint32_t offset, uint32_t& value) const;
 
+    // Read-only swizzled GS display color access. RGB bytes are stored as
+    // 0xAABBGGRR, with alpha forced opaque. No drawing or scanout occurs.
+    bool read_color_pixel(uint32_t psm, uint32_t base, uint32_t fbw,
+                          uint32_t x, uint32_t y, uint32_t& rgba) const;
+
     // Produce 16*qwc bytes from TRXDIR=1 into caller-owned memory.
     // Source pixels are swizzled as on GS, serialized little-endian
     // (4-bit low nibble first) and final qword padding is zero.

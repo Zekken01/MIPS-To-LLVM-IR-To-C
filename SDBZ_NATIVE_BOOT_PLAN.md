@@ -381,3 +381,25 @@ GS/INTC scheduler, and therefore deliberately **does not unblock VBlank**.
 Next: obtain and validate instruction-class pairing/latency evidence, connect
 reached guest instructions to a separately controlled timing pipeline, verify
 boundary preemption against a reference before granting scanout cycle authority.
+
+### 2026-11-18 16:18 — matched unchanged VBlank and start of GS readback
+
+The matched five-file 16:18 batch has byte-identical boot-report JSON
+and disc catalog against the prior 15:44 run. It again reaches 10,491
+EE dispatches, 9,001,372 attempts, 9,001,546 reference slots and
+`LOOP_BUDGET(5)` at `0x00175210`. No new native translations were
+discovered. The library cache hash changed after source updates; guest
+execution and ELF provenance remain unchanged. GS accepts 33 tags and
+65,536 uploaded pixels but **zero vertices**, so there is no observed
+rasterized geometry or completed frame.
+
+A separate, side-effect-free `c_ee_gs_display::readback` now decodes
+an explicitly supplied guest GS PMODE/SMODE2/DISPFB/DISPLAY register
+snapshot using the reference display width, magnification, visible line
+limits and swizzled PSMCT32/24/16/16S color pixels. A new regression
+uploads pixel data via the actual GS GIF IMAGE consumer and verifies
+readback/circuit selection and fail-closed unsupported formats. No
+privileged GS display MMIO capture, renderer/presenter, real VBlank
+producer or live frame output is claimed by this foundational step.
+Next wire actual guest privileged GS display writes to the snapshot,
+then add opt-in VRAM image export; primitive rendering remains separate.

@@ -42,6 +42,7 @@ add_library(ee_core STATIC
     src/runtime/ee_dmac.cpp
     src/runtime/ee_gif.cpp
     src/runtime/ee_gs.cpp
+    src/runtime/ee_gs_display.cpp
     src/runtime/ee_exceptions.cpp
     src/runtime/ee_vu0.cpp
     src/runtime/ee_vsync_flags.cpp
@@ -266,6 +267,9 @@ target_link_libraries(ee_gif_path3_test PRIVATE ee_core)
 add_executable(ee_gs_state_test tests/smoke/ee_gs_state_test.cpp)
 target_link_libraries(ee_gs_state_test PRIVATE ee_core)
 
+add_executable(ee_gs_display_test tests/smoke/ee_gs_display_test.cpp)
+target_link_libraries(ee_gs_display_test PRIVATE ee_core)
+
 add_executable(ee_gs_vram_test tests/smoke/ee_gs_vram_test.cpp)
 target_link_libraries(ee_gs_vram_test PRIVATE ee_core)
 
@@ -462,6 +466,7 @@ add_test(NAME ee_tospr_chain COMMAND ee_tospr_chain_test)
 add_test(NAME ee_device_dma COMMAND ee_device_dma_test)
 add_test(NAME ee_gif_path3 COMMAND ee_gif_path3_test)
 add_test(NAME ee_gs_state COMMAND ee_gs_state_test)
+add_test(NAME ee_gs_display COMMAND ee_gs_display_test)
 add_test(NAME ee_gs_vram COMMAND ee_gs_vram_test)
 add_test(NAME ee_gs_psmct24 COMMAND ee_gs_psmct24_test)
 add_test(NAME ee_gs_psmct16 COMMAND ee_gs_psmct16_test)
