@@ -16,6 +16,36 @@ struct s_ee_gs_display_registers
     uint64_t m_smode2 = 0u;
     uint64_t m_dispfb[2]{};
     uint64_t m_display[2]{};
+
+    // MMIO decoder ordinal: PMODE, SMODE2, DISPFB1, DISPLAY1,
+    // DISPFB2, DISPLAY2. No timing/device side effects.
+    uint64_t register_value(uint32_t index) const
+    {
+        switch (index)
+        {
+        case 0u: return m_pmode;
+        case 1u: return m_smode2;
+        case 2u: return m_dispfb[0];
+        case 3u: return m_display[0];
+        case 4u: return m_dispfb[1];
+        case 5u: return m_display[1];
+        default: return 0u;
+        }
+    }
+
+    void set_register(uint32_t index, uint64_t value)
+    {
+        switch (index)
+        {
+        case 0u: m_pmode = value; break;
+        case 1u: m_smode2 = value; break;
+        case 2u: m_dispfb[0] = value; break;
+        case 3u: m_display[0] = value; break;
+        case 4u: m_dispfb[1] = value; break;
+        case 5u: m_display[1] = value; break;
+        default: break;
+        }
+    }
 };
 
 class c_ee_gs_display
