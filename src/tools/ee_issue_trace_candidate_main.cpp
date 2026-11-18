@@ -76,7 +76,8 @@ int main(int argc, char** argv)
         ? last_arg.substr(std::char_traits<char>::length(k_output_option))
         : std::string{};
 
-    if ((profile_argc != 4 && profile_argc != 8 && profile_argc != 12) ||
+    if ((profile_argc != 4 && profile_argc != 8 && profile_argc != 12 &&
+         profile_argc != 14 && profile_argc != 16) ||
         (export_events && (output_path.empty() || output_path == argv[1])))
     {
         std::fprintf(stderr,
@@ -86,6 +87,8 @@ int main(int argc, char** argv)
             "<hilo-accumulate-latency>] "
             "[<fpu-transfer-latency> <fpu-arithmetic-latency> "
             "<fpu-divide-latency> <fpu-accumulate-latency>] "
+            "[<fpu-control-latency> <fpu-compare-latency>] "
+            "[<fpu-sqrt-latency> <fpu-rsqrt-latency>] "
             "[--candidate-events=<path>]\n"
             "Diagnostic only. Supplied latencies are NOT verified R5900 cycles.\n");
         return 2;
@@ -109,13 +112,31 @@ int main(int argc, char** argv)
         return 2;
     }
 
-    if (profile_argc == 12 &&
+    if (profile_argc >= 12 &&
         (!parse_latency(argv[8], &profile.m_fpu_transfer_latency) ||
          !parse_latency(argv[9], &profile.m_fpu_arithmetic_latency) ||
          !parse_latency(argv[10], &profile.m_fpu_divide_latency) ||
          !parse_latency(argv[11], &profile.m_fpu_accumulate_latency)))
     {
         std::fprintf(stderr, "COP1 timing requires explicit positive latencies\n");
+        return 2;
+    }
+
+    if (profile_argc >= 14 &&
+        (!parse_latency(argv[12], &profile.m_fpu_control_latency) ||
+         !parse_latency(argv[13], &profile.m_fpu_compare_latency)))
+    {
+        std::fprintf(stderr,
+            "FCR31 timing requires explicit positive control/compare latencies\n");
+        return 2;
+    }
+
+    if (profile_argc == 16 &&
+        (!parse_latency(argv[14], &profile.m_fpu_sqrt_latency) ||
+         !parse_latency(argv[15], &profile.m_fpu_rsqrt_latency)))
+    {
+        std::fprintf(stderr,
+            "SQRT.S/RSQRT.S require separate positive latencies\n");
         return 2;
     }
 
