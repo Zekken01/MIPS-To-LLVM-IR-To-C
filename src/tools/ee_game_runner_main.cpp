@@ -3734,41 +3734,41 @@ int main(int argc, char** argv)
                                 const iop::s_kernel_run_result progressed =
                                     iop_kernel->run(iop_quantum, 128u);
                                 if (progressed.m_stop !=
-                                    iop::e_kernel_stop::budget_exhausted &&
-                                progressed.m_stop !=
-                                    iop::e_kernel_stop::idle)
-                            {
-                                std::fprintf(
-                                    stderr,
-                                    "IOP HLE guest service stopped: "
-                                    "rpc_server=0x%08x rpc_method=0x%08x "
-                                    "module=%u thread=%u reason=%u "
-                                    "pc=0x%08x opcode=0x%08x "
-                                    "executed=%llu\n",
-                                    event.m_server_id, event.m_method,
-                                    event.m_module_id,
-                                    progressed.m_thread_id,
-                                    static_cast<uint32_t>(
-                                        progressed.m_stop),
-                                    progressed.m_guest_pc,
-                                    progressed.m_opcode,
-                                    static_cast<unsigned long long>(
-                                        progressed.m_executed));
-                                break;
-                            }
-                            if (trace && progressed.m_executed != 0u)
-                            {
-                                std::printf(
-                                    "IOP HLE guest service turn: "
-                                    "rpc_server=0x%08x method=0x%08x "
-                                    "thread=%u instructions=%llu "
-                                    "stop=%u\n",
-                                    event.m_server_id, event.m_method,
-                                    progressed.m_thread_id,
-                                    static_cast<unsigned long long>(
-                                        progressed.m_executed),
-                                    static_cast<uint32_t>(
-                                        progressed.m_stop));
+                                        iop::e_kernel_stop::budget_exhausted &&
+                                    progressed.m_stop !=
+                                        iop::e_kernel_stop::idle)
+                                {
+                                    std::fprintf(
+                                        stderr,
+                                        "IOP HLE guest service stopped: "
+                                        "rpc_server=0x%08x rpc_method=0x%08x "
+                                        "module=%u thread=%u reason=%u "
+                                        "pc=0x%08x opcode=0x%08x "
+                                        "executed=%llu\n",
+                                        event.m_server_id, event.m_method,
+                                        event.m_module_id,
+                                        progressed.m_thread_id,
+                                        static_cast<uint32_t>(
+                                            progressed.m_stop),
+                                        progressed.m_guest_pc,
+                                        progressed.m_opcode,
+                                        static_cast<unsigned long long>(
+                                            progressed.m_executed));
+                                    break;
+                                }
+                                if (trace && progressed.m_executed != 0u)
+                                {
+                                    std::printf(
+                                        "IOP HLE guest service turn: "
+                                        "rpc_server=0x%08x method=0x%08x "
+                                        "thread=%u instructions=%llu "
+                                        "stop=%u\n",
+                                        event.m_server_id, event.m_method,
+                                        progressed.m_thread_id,
+                                        static_cast<unsigned long long>(
+                                            progressed.m_executed),
+                                        static_cast<uint32_t>(
+                                            progressed.m_stop));
                                 }
                             }
                         }
