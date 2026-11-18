@@ -27,6 +27,10 @@ struct s_ee_issue_replay_profile
     uint32_t m_fpu_arithmetic_latency = 0u;
     uint32_t m_fpu_divide_latency = 0u;
     uint32_t m_fpu_accumulate_latency = 0u;
+    // Explicit FCR31 transfer/branch and comparison-result availability.
+    // Still uncalibrated; zero means the operation is not replayable.
+    uint32_t m_fpu_control_latency = 0u;
+    uint32_t m_fpu_compare_latency = 0u;
 };
 
 enum class e_ee_issue_replay_status : uint8_t
@@ -330,12 +334,37 @@ private:
                 instruction->m_fpr_write_mask = fs;
                 instruction->m_fpr_result_latency = m_profile.m_fpu_transfer_latency;
                 return true;
+            case 0x02u: // CFC1: FCR31 -> GPR rt
+                if (decoded.rd != 31u || m_profile.m_fpu_control_latency == 0u)
+                {
+                    return false;
+                }
+                instruction->m_fcsr_read = true;
+                instruction->m_gpr_write_mask = rt;
+                instruction->m_result_latency = m_profile.m_fpu_control_latency;
+                return true;
+            case 0x06u: // CTC1: GPR rt -> FCR31
+                if (decoded.rd != 31u || m_profile.m_fpu_control_latency == 0u)
+                {
+                    return false;
+                }
+                instruction->m_gpr_read_mask = rt;
+                instruction->m_fcsr_write = true;
+                instruction->m_fcsr_result_latency = m_profile.m_fpu_control_latency;
+                return true;
+            case 0x08u: // BC1F/BC1T/BC1FL/BC1TL
+                if (decoded.rt > 3u || m_profile.m_fpu_control_latency == 0u)
+                {
+                    return false;
+                }
+                instruction->m_pipe = e_ee_probe_pipe::BRANCH;
+                instruction->m_fcsr_read = true;
+                return true;
             case 0x10u: // S format
             case 0x14u: // W format: CVT.S.W only
                 break;
             default:
-                // FCSR/FCC0 dependency tracking is not implemented:
-                // CFC1/CTC1/BC1 and COP0/COP2 fail closed.
+                // Other FCR registers, COP0 and COP2 remain unmodeled.
                 return false;
             }
 
@@ -350,10 +379,27 @@ private:
                 instruction->m_fpr_write_mask = fd;
                 instruction->m_fpr_result_latency =
                     m_profile.m_fpu_arithmetic_latency;
+                instruction->m_fcsr_write = true;
+                instruction->m_fcsr_result_latency =
+                    m_profile.m_fpu_arithmetic_latency;
                 return true;
             }
 
             const uint32_t function = decoded.funct;
+            if (function == 0x30u || function == 0x32u ||
+                function == 0x3cu || function == 0x3eu)
+            {
+                if (m_profile.m_fpu_compare_latency == 0u)
+                {
+                    return false;
+                }
+                // C.F.S has no register operands; the other comparisons
+                // consume fs and ft and write the condition in FCR31.
+                instruction->m_fpr_read_mask = function == 0x30u ? 0u : fs | ft;
+                instruction->m_fcsr_write = true;
+                instruction->m_fcsr_result_latency = m_profile.m_fpu_compare_latency;
+                return true;
+            }
             const bool fpu_divide =
                 function == 0x03u || function == 0x04u || function == 0x16u;
             const bool acc_arithmetic =
@@ -392,6 +438,10 @@ private:
             instruction->m_fpr_write_mask = writes_acc ? 0u : fd;
             instruction->m_fpr_result_latency = latency;
             instruction->m_acc_result_latency = latency;
+            // Arithmetic can update FCR31 exception/status state, which
+            // CFC1/CTC1 may subsequently observe or overwrite.
+            instruction->m_fcsr_write = true;
+            instruction->m_fcsr_result_latency = latency;
             return true;
         }
 
@@ -422,8 +472,9 @@ private:
             instruction->m_pipe = e_ee_probe_pipe::BRANCH;
             instruction->m_gpr_read_mask = rs;
             return true;
-        case 0x09u: case 0x0au: case 0x0bu: case 0x0cu:
-        case 0x0du: case 0x0eu: case 0x19u:
+        case 0x08u: case 0x09u: case 0x0au: case 0x0bu:
+        case 0x0cu: case 0x0du: case 0x0eu:
+        case 0x18u: case 0x19u:
             instruction->m_gpr_read_mask = rs;
             instruction->m_gpr_write_mask = rt;
             return true;
