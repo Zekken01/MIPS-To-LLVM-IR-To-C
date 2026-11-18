@@ -120,22 +120,33 @@ public:
     // SetGsCrt configures the GS display circuit.  Presentation and vblank
     // are not modelled here, but retaining this hardware configuration lets
     // GS setup code observe a coherent boot-time display state.
-    bool set_gs_crt(uint32_t interlace, uint32_t mode, uint32_t ffmd)
+    bool set_gs_crt(uint32_t interlace, uint32_t mode, uint32_t ffmd,
+                    uint64_t current_ee_cycle = 0u)
     {
         if (interlace > 1u || ffmd > 1u || mode > 0xffu)
         {
             return false;
         }
+        // Establish the field epoch at the supplied EE cycle. An
+        // unvalidated runner supplies zero and cannot advance the clock.
+        // Do not partially commit CRT mode fields on timing overflow.
+        if (mode == 2u || mode == 3u)
+        {
+            if (!m_scanout.configure(
+                    interlace, mode, ffmd, current_ee_cycle))
+            {
+                return false;
+            }
+        }
+        else
+        {
+            // No calibrated field rate exists for other CRT modes.
+            // A previous NTSC/PAL configuration must not keep firing.
+            m_scanout = {};
+        }
         m_gs_crt_interlace = interlace;
         m_gs_crt_mode = mode;
         m_gs_crt_ffmd = ffmd;
-        // This records the CRT's rational field schedule at a local
-        // origin. No VBlank can occur until a separately verified EE
-        // cycle source explicitly advances this clock.
-        if (mode == 2u || mode == 3u)
-        {
-            return m_scanout.configure(interlace, mode, ffmd, 0u);
-        }
         return true;
     }
 

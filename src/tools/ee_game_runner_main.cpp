@@ -2384,7 +2384,9 @@ int main(int argc, char** argv)
                         static_cast<uint32_t>(cpu.m_gpr[5].m_lo);
                     const uint32_t ffmd =
                         static_cast<uint32_t>(cpu.m_gpr[6].m_lo);
-                    if (!hardware.set_gs_crt(interlace, mode, ffmd))
+                    if (!hardware.set_gs_crt(
+                            interlace, mode, ffmd,
+                            runtime.m_ee_cycle_scheduler.current_cycle()))
                     {
                         std::fprintf(stderr,
                             "SetGsCrt HLE refused invalid configuration "

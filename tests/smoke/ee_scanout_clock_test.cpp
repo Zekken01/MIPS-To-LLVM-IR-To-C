@@ -195,6 +195,18 @@ int main()
           bus.gs_imr() == 0u && bus.intc().status() == 0u,
           "hardware reset clears GS timing, CSR and interrupt state");
 
-    std::printf("ee_scanout_clock_test: %d failure(s)\n", g_failed);
+    // CRT configuration occurs at the actual EE cycle, not at an
+    // implicit host-dispatch or boot-zero epoch once timing is available.
+    ee::c_ee_hw_bus delayed_bus{};
+    check(delayed_bus.set_gs_crt(1u, 2u, 0u, 1234567ull) &&
+          delayed_bus.scanout().next_field_cycle() == 1234567ull + 4920115ull &&
+          delayed_bus.scanout().fields_started() == 0u,
+          "late CRT configuration uses the supplied EE time origin");
+    check(delayed_bus.set_gs_crt(0u, 0x1au, 0u) &&
+          !delayed_bus.scanout().enabled() &&
+          delayed_bus.scanout().fields_started() == 0u,
+          "unsupported CRT mode cannot retain the previous scanout schedule");
+
+    std::printf("ee_scanout_clock_test: %d failure(s)\\n", g_failed);
     return g_failed ? 1 : 0;
 }
