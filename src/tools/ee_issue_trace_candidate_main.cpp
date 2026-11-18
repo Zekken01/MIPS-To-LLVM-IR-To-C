@@ -72,18 +72,24 @@ int main(int argc, char** argv)
     const std::string last_arg = argc > 1 ? argv[argc - 1] : "";
     const bool export_events = last_arg.rfind(k_output_option, 0u) == 0u;
     const int argc_without_export = argc - (export_events ? 1 : 0);
+    const bool ordered_waw_overlap =
+        argc_without_export > 1 &&
+        std::string(argv[argc_without_export - 1]) == "--ordered-waw-overlap";
+    const int argc_without_overlap =
+        argc_without_export - (ordered_waw_overlap ? 1 : 0);
     constexpr const char* k_throughput_option = "--throughput=";
-    const std::string throughput_arg = argc_without_export > 1
-        ? argv[argc_without_export - 1] : "";
+    const std::string throughput_arg = argc_without_overlap > 1
+        ? argv[argc_without_overlap - 1] : "";
     const bool explicit_throughput =
         throughput_arg.rfind(k_throughput_option, 0u) == 0u;
-    const int profile_argc = argc_without_export - (explicit_throughput ? 1 : 0);
+    const int profile_argc = argc_without_overlap - (explicit_throughput ? 1 : 0);
     const std::string output_path = export_events
         ? last_arg.substr(std::char_traits<char>::length(k_output_option))
         : std::string{};
 
     if ((profile_argc != 4 && profile_argc != 8 && profile_argc != 12 &&
          profile_argc != 14 && profile_argc != 16) ||
+        (ordered_waw_overlap && !explicit_throughput) ||
         (export_events && (output_path.empty() || output_path == argv[1])))
     {
         std::fprintf(stderr,
@@ -97,7 +103,7 @@ int main(int argc, char** argv)
             "[<fpu-sqrt-latency> <fpu-rsqrt-latency>] "
             "[--throughput=<mac-mult>,<mac-div>,<mac-acc>,"
             "<cop1-arith>,<cop1-div>,<cop1-sqrt>,<cop1-rsqrt>] "
-            "[--candidate-events=<path>]\n"
+            "[--ordered-waw-overlap] [--candidate-events=<path>]\n"
             "Diagnostic only. Supplied latencies are NOT verified R5900 cycles.\n");
         return 2;
     }
@@ -185,6 +191,7 @@ int main(int argc, char** argv)
         profile.m_cop1_rsqrt_interval = intervals[6];
         profile.m_require_throughput = true;
     }
+    profile.m_allow_ordered_waw_overlap = ordered_waw_overlap;
 
     std::ifstream input(argv[1]);
     if (!input)
@@ -305,14 +312,20 @@ int main(int argc, char** argv)
     std::printf(
         "candidate_issue_cycles=%llu reached=%llu annulled=%llu "
         "events=%llu profile_integer=%u profile_load=%u "
-        "throughput_mode=%s "
+        "throughput_mode=%s ordered_waw_overlap=%s "
+        "last_candidate_completion=%llu max_candidate_completion=%llu "
         "(EXPERIMENTAL; NOT validated R5900 cycles; NO GS events)\n",
         static_cast<unsigned long long>(replay.candidate_cycles()),
         static_cast<unsigned long long>(replay.executed_instructions()),
         static_cast<unsigned long long>(replay.annulled_slots()),
         static_cast<unsigned long long>(event_count),
         profile.m_integer_latency, profile.m_load_latency,
-        profile.m_require_throughput ? "explicit" : "unconfigured"
+        profile.m_require_throughput ? "explicit" : "unconfigured",
+        profile.m_allow_ordered_waw_overlap ? "enabled" : "disabled",
+        static_cast<unsigned long long>(
+            replay.last_candidate_completion_cycle()),
+        static_cast<unsigned long long>(
+            replay.max_candidate_completion_cycle())
     );
     return 0;
 }
