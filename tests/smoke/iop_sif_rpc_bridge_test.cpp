@@ -426,6 +426,12 @@ int main()
         return fail("CDVD Init short reply buffer was accepted");
     }
 
+    // Restore the single-command descriptor used by the next BIND.
+    // The CdInit CALL above used a two-descriptor payload+command DMA.
+    descriptor(memory, list, bind_source,
+               iop::c_sifcmd_bridge::k_command_buffer, 64u);
+    memory.write32(list + 12u, 0x44u);
+
     // Bind the IOPHEAP server observed in the retail SDBZ bootstrap.
     // The EE must see the actual server identity in the SIF0 reply.
     dmac.acknowledge(5u);
