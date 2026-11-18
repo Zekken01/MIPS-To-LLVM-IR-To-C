@@ -112,6 +112,50 @@ def main() -> int:
                 argv_values, result.stdout, result.stderr
             )
 
+        # Repeated writes are the distinguishing fixture: conservative WAW
+        # waiting sees 0,7, while explicit ordered overlap sees 0,2.
+        two_mac = root / "two_mac.csv"
+        two_mac.write_text(
+            "attempt,pc,opcode_word,kind,reference_slot,hle_service\n"
+            "1,0x00001000,0x00853018,0,1,0\n"
+            "2,0x00001004,0x00853018,0,2,0\n"
+            "# truncated=false range=0x00001000:0x00001004\n",
+            encoding="utf-8"
+        )
+        for overlap, expected in (
+            ([], [0, 7]),
+            (["--ordered-waw-overlap"], [0, 2]),
+        ):
+            path = root / f"mac-overlap-{len(overlap)}.csv"
+            candidate = subprocess.run(
+                [str(binary), str(two_mac), "1", "3", "7", "11", "4",
+                 "8", strict_option, *overlap, f"--candidate-events={path}"],
+                text=True, capture_output=True, check=False
+            )
+            assert candidate.returncode == 0, (
+                candidate.stdout, candidate.stderr
+            )
+            with path.open("r", encoding="utf-8", newline="") as stream:
+                rows = list(csv.DictReader(stream))
+            assert [int(x["candidate_issue_cycle"]) for x in rows] == (
+                expected
+            ), rows
+            assert "last_candidate_completion=" in candidate.stdout
+            assert "max_candidate_completion=" in candidate.stdout
+            assert (
+                "ordered_waw_overlap=enabled" if overlap
+                else "ordered_waw_overlap=disabled"
+            ) in candidate.stdout, candidate.stdout
+
+        invalid_overlap = subprocess.run(
+            [str(binary), str(two_mac), "1", "3", "7", "11",
+             "4", "8", "--ordered-waw-overlap"],
+            text=True, capture_output=True, check=False
+        )
+        assert invalid_overlap.returncode == 2, (
+            invalid_overlap.stdout, invalid_overlap.stderr
+        )
+
         # The replay must refuse HLE transitions and a partial trace,
         # without producing a deceptively complete candidate CSV.
         original = fixture.read_text(encoding="utf-8")
