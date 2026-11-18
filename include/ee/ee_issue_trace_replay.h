@@ -40,10 +40,6 @@ struct s_ee_issue_replay_profile
     uint32_t m_cop0_transfer_latency = 0u;
     uint32_t m_vu0_vf_transfer_latency = 0u;
     uint32_t m_vu0_vi_transfer_latency = 0u;
-    // Packed MMI uses all 128 bits of each participating GPR. A separate
-    // caller-provided result latency is mandatory; scalar integer latency
-    // is not evidence of MMI pipeline timing. Pairing remains disabled.
-    uint32_t m_packed_mmi_latency = 0u;
 
     // Optional *initiation intervals* (not result latencies); no implicit
     // defaults are permitted. The strict experimental mode rejects every
@@ -59,6 +55,11 @@ struct s_ee_issue_replay_profile
     // Diagnostic comparison only; never enabled implicitly. Strictly
     // preserve same-register completion order without inventing stalls.
     bool m_allow_ordered_waw_overlap = false;
+    // Appended to preserve all existing profile aggregate initializer slots.
+    // Packed MMI uses all 128 bits of each participating GPR. A separate
+    // caller-provided result latency is mandatory; scalar integer latency
+    // is not evidence of MMI pipeline timing. Pairing remains disabled.
+    uint32_t m_packed_mmi_latency = 0u;
 };
 
 enum class e_ee_issue_replay_status : uint8_t
