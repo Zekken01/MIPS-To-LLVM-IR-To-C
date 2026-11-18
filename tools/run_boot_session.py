@@ -194,13 +194,17 @@ def main(argv=None):
             else None
         )
         added_text = str(added) if added is not None else "unknown"
-        print(
+        summary = (
             f"pass {index + 1}: replay={last_replay} "
             f"new_functions={added_text} "
             f"dispatches={state.get('dispatches', '?')} "
-            f"stop={pc_text} exit={code} elapsed={elapsed:.2f}s",
-            flush=True,
+            f"stop={pc_text} exit={code} elapsed={elapsed:.2f}s"
         )
+        print(summary, flush=True)
+        # Preserve the cap decision in the uploaded expansion log too.
+        # stdout alone is not retained by the local launcher.
+        with expansion_log.open("a", encoding="utf-8") as log:
+            log.write("# " + summary + "\n")
 
         if code not in (0, 3, 4):
             shutil.copyfile(expansion_log, boot_log)
