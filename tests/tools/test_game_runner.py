@@ -1633,6 +1633,9 @@ def main():
         assert "virtual ISO9660 sectors=" in folder_result.stdout, (
             folder_result.stdout + folder_result.stderr
         )
+        assert "IOP cdvdman search service install failed" not in (
+            folder_result.stdout + folder_result.stderr
+        )
         assert "IOP ROM0 reset:" not in folder_result.stdout, folder_result.stdout
         assert "EE stopped:" in folder_result.stdout, folder_result.stdout
 

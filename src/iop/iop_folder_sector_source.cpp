@@ -423,6 +423,10 @@ bool c_folder_sector_source::find_file(
             ch = '/';
         }
     }
+    if (path.back() == '/' || path.find("//") != std::string::npos)
+    {
+        return false;
+    }
     std::string key;
     size_t start = 0u;
     while (start < path.size())
@@ -465,6 +469,7 @@ bool c_folder_sector_source::find_file(
     }
     output->m_lba = it->second.m_lba;
     output->m_size = it->second.m_size;
+    output->m_name = it->second.m_name;
     return true;
 }
 

@@ -14,6 +14,7 @@ struct s_folder_file_info
 {
     uint32_t m_lba = 0u;
     uint32_t m_size = 0u;
+    std::string m_name;
 };
 
 // An in-memory ISO9660 directory and sector map over an extracted disc.
@@ -31,8 +32,8 @@ public:
         uint32_t lba, uint32_t count, std::vector<uint8_t>& data
     ) override;
 
-    // Lookup semantics for a future HLE sceCdSearchFile adapter.
-    // Only files are returned; traversal and unknown paths fail closed.
+    // The CDVDMAN HLE bridge calls this lookup through real guest IRX
+    // imports. Only files are returned; traversal fails closed.
     bool find_file(
         const std::string& guest_path, s_folder_file_info* output
     ) const;

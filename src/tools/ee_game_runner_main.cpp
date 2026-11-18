@@ -10,6 +10,7 @@
 #include "iop_kernel.h"
 #include "iop_cdvd.h"
 #include "iop_folder_sector_source.h"
+#include "iop_cdvdman_bridge.h"
 #include "iop_sifman_bridge.h"
 #include "iop_sif1_bridge.h"
 #include "iop_sif1_dma_transport.h"
@@ -970,6 +971,7 @@ int main(int argc, char** argv)
     std::unique_ptr<iop::c_disc_loader> iop_disc;
     std::unique_ptr<iop::c_sif_rpc_bridge> iop_rpc;
     std::unique_ptr<s_cdvd_context> cdvd;
+    std::unique_ptr<iop::c_cdvdman_bridge> iop_cdvdman;
     if (!iop_irx_paths.empty() || iop_rom0_path != nullptr ||
         disc_folder_path != nullptr)
     {
@@ -1095,6 +1097,18 @@ int main(int argc, char** argv)
                     );
                     return 1;
                 }
+                // Only this explicit no-ROM0 folder mode publishes
+                // cdvdman HLE. Raw ISO firmware retains its own library.
+                iop_cdvdman = std::make_unique<iop::c_cdvdman_bridge>(
+                    *iop_kernel, *folder_source
+                );
+                if (!iop_cdvdman->install())
+                {
+                    std::fprintf(
+                        stderr, "IOP cdvdman search service install failed\n"
+                    );
+                    return 1;
+                }
                 cdvd = std::make_unique<s_cdvd_context>();
                 cdvd->m_source = std::move(folder_source);
                 cdvd->m_transport =
@@ -1129,7 +1143,9 @@ int main(int argc, char** argv)
             iop_kernel->bind_syscall([&](iop::c_kernel& active, uint32_t service)
             {
                 return iop_sifman->handle_syscall(active, service) ||
-                       iop_sifcmd->handle_syscall(active, service);
+                       iop_sifcmd->handle_syscall(active, service) ||
+                       (iop_cdvdman != nullptr &&
+                        iop_cdvdman->handle_syscall(active, service));
             });
         }
 
