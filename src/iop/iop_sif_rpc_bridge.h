@@ -1,6 +1,7 @@
 #pragma once
 
 #include "iop_disc_loader.h"
+#include "iop_cdvd.h"
 #include "iop_sifcmd_bridge.h"
 #include "ee_dmac.h"
 #include "ee_memory.h"
@@ -23,6 +24,12 @@ public:
     static constexpr uint32_t k_loadfile_server = 0x80000006u;
     static constexpr uint32_t k_iop_heap_server = 0x80000003u;
     static constexpr uint32_t k_cdvd_init_server = 0x80000592u;
+    static constexpr uint32_t k_cdvd_s_server = 0x80000593u;
+    static constexpr uint32_t k_cdvd_n_server = 0x80000595u;
+    static constexpr uint32_t k_cdvd_stream_server = 0x80000596u;
+    static constexpr uint32_t k_cdvd_search_server = 0x80000597u;
+    static constexpr uint32_t k_cdvd_ready_server = 0x8000059au;
+    static constexpr uint32_t k_cdvd_ready_alt_server = 0x8000059cu;
     static constexpr uint32_t k_bind_cid = 0x80000009u;
     static constexpr uint32_t k_call_cid = 0x8000000au;
     static constexpr uint32_t k_reply_cid = 0x80000008u;
@@ -35,6 +42,17 @@ public:
         uint32_t m_result_destination = 0u;
         uint32_t m_server_id = 0u;
         uint32_t m_heap_argument = 0u;
+        uint32_t m_cdvd_lba = 0u;
+        uint32_t m_cdvd_count = 0u;
+        uint32_t m_cdvd_destination = 0u;
+        uint32_t m_cdvd_stream_command = 0u;
+        uint32_t m_cdvd_stream_position = 0u;
+        uint32_t m_cdvd_lookup_lba = 0u;
+        uint32_t m_cdvd_lookup_size = 0u;
+        uint32_t m_payload_source = 0u;
+        bool m_cdvd_to_iop = false;
+        bool m_cdvd_lookup_found = false;
+        std::vector<uint8_t> m_cdvd_bytes;
         std::string m_guest_path;
     };
 
@@ -43,7 +61,8 @@ public:
         c_kernel& kernel,
         c_sifcmd_bridge& sifcmd,
         ee::ee_memory& ee_ram,
-        ee::c_ee_dmac& dmac
+        ee::c_ee_dmac& dmac,
+        c_sector_source* sectors = nullptr
     );
 
     // No side effects: called during validation of the complete SIF1
@@ -84,6 +103,9 @@ private:
     c_sifcmd_bridge& m_sifcmd;
     ee::ee_memory& m_ee_ram;
     ee::c_ee_dmac& m_dmac;
+    c_sector_source* m_sectors = nullptr;
+    bool m_cdvd_streaming = false;
+    uint32_t m_cdvd_stream_position = 0u;
     std::deque<s_reply> m_replies;
     uint32_t m_load_requests = 0u;
     bool m_reply_in_flight = false;
