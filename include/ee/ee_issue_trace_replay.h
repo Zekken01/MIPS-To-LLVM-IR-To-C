@@ -46,6 +46,9 @@ struct s_ee_issue_replay_profile
     uint32_t m_cop1_sqrt_interval = 0u;
     uint32_t m_cop1_rsqrt_interval = 0u;
     bool m_require_throughput = false;
+    // Diagnostic comparison only; never enabled implicitly. Strictly
+    // preserve same-register completion order without inventing stalls.
+    bool m_allow_ordered_waw_overlap = false;
 };
 
 enum class e_ee_issue_replay_status : uint8_t
@@ -73,6 +76,13 @@ public:
             return false;
         }
         m_probe.reset();
+        if (!m_probe.configure_waw_policy(
+                profile.m_allow_ordered_waw_overlap
+                    ? e_ee_probe_waw_policy::ORDERED_OVERLAP
+                    : e_ee_probe_waw_policy::WAIT_FOR_RESULT))
+        {
+            return false;
+        }
         m_profile = profile;
         m_configured = true;
         m_failed = false;
@@ -157,6 +167,15 @@ public:
 
     bool usable_prefix() const { return m_configured && !m_failed; }
     uint64_t candidate_cycles() const { return m_probe.estimated_cycles(); }
+    // Distinct from issue time and NOT hardware retirement.
+    uint64_t last_candidate_completion_cycle() const
+    {
+        return m_probe.last_completion_cycle();
+    }
+    uint64_t max_candidate_completion_cycle() const
+    {
+        return m_probe.max_completion_cycle();
+    }
     // An experimental per-event issue/reserved-slot time, not an EE clock.
     uint64_t last_event_candidate_cycle() const { return m_last_event_cycle; }
     uint64_t executed_instructions() const { return m_probe.instructions_issued(); }
