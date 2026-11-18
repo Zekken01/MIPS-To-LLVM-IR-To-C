@@ -268,6 +268,23 @@ bool c_sif1_bridge::set_dma(
             if (cid == c_sif_rpc_bridge::k_bind_cid ||
                 cid == c_sif_rpc_bridge::k_call_cid)
             {
+                if (diagnostic != nullptr)
+                {
+                    // Snapshot the complete guest RPC header before validation.
+                    // This has no side effects, including on refusal.
+                    const size_t word_count =
+                        transfer.m_words.size() < 16u
+                            ? transfer.m_words.size() : 16u;
+                    diagnostic->m_rpc_packet_word_count =
+                        static_cast<uint32_t>(word_count);
+                    for (size_t word = 0u; word < word_count; ++word)
+                    {
+                        diagnostic->m_rpc_packet_words[word] =
+                            transfer.m_words[word];
+                    }
+                    diagnostic->m_rpc_payload_source = rpc_payload_source;
+                    diagnostic->m_rpc_payload_length = rpc_payload_length;
+                }
                 if (m_rpc == nullptr ||
                     !m_rpc->prepare_command(
                         transfer.m_words, size,
