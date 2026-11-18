@@ -130,6 +130,38 @@ int main()
         return fail("R3000 sifcmd init did not publish only SUBADDR");
     }
 
+    // The production extracted-disc HLE kernel may explicitly start
+    // already-installed SIFCMD services without guest firmware. It is a
+    // distinct mode: install() and guest-import initialization above
+    // must not silently publish the initial boot flags.
+    {
+        ee::c_ee_sif hle_sif;
+        hle_sif.reset();
+        iop::c_kernel hle_kernel;
+        iop::c_sifcmd_bridge hle_commands(hle_kernel, hle_sif);
+        uint32_t subaddr = 0xffffffffu;
+        uint32_t flags = 0xffffffffu;
+        if (hle_commands.initialize_hle_bootstrap() ||
+            !hle_commands.install() ||
+            !hle_sif.get_reg(4u, &flags) || flags != 0u ||
+            !hle_commands.initialize_hle_bootstrap() ||
+            hle_commands.initialize_hle_bootstrap() ||
+            !hle_commands.initialized() ||
+            !hle_sif.get_reg(2u, &subaddr) ||
+            subaddr != iop::c_sifcmd_bridge::k_command_buffer ||
+            !hle_sif.get_reg(4u, &flags) || flags != 0x60000u)
+        {
+            return fail("explicit HLE-only SIFCMD bootstrap state");
+        }
+        // The IOP-owned SMFLAG still follows real EE acknowledgment
+        // semantics; it is not a stuck/high fake return value.
+        if (!hle_sif.set_reg(4u, 0x20000u) ||
+            !hle_sif.get_reg(4u, &flags) || flags != 0x40000u)
+        {
+            return fail("HLE SMFLAG EE acknowledgment semantics");
+        }
+    }
+
     uint32_t dma_id = 0u;
     if (!transport.set_dma(k_list, 1u, &dma_id) ||
         dma_id != 1u ||

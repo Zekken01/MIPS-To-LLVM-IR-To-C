@@ -1140,6 +1140,26 @@ int main(int argc, char** argv)
                 std::fprintf(stderr, "IOP sifman service installation failed\n");
                 return 1;
             }
+            if (disc_folder_path != nullptr)
+            {
+                // HLE-first firmware replacement: the model starts its
+                // installed IOP kernel/SIFCMD services ready, matching
+                // ps2-web-recomp's SDBZ HLE bootstrap. This is not a
+                // guest-produced SMFLAG, IOP module load, or RPC reply.
+                if (!iop_sifcmd->initialize_hle_bootstrap())
+                {
+                    std::fprintf(
+                        stderr, "IOP HLE SIFCMD bootstrap failed\n"
+                    );
+                    return 1;
+                }
+                std::printf(
+                    "[iop] HLE bootstrap: sifcmd=ready "
+                    "subaddr=0x%08x smflag=0x00060000 "
+                    "(modeled HLE services; no IOP modules started)\n",
+                    iop::c_sifcmd_bridge::k_command_buffer
+                );
+            }
             iop_kernel->bind_syscall([&](iop::c_kernel& active, uint32_t service)
             {
                 return iop_sifman->handle_syscall(active, service) ||

@@ -42,13 +42,33 @@ bool c_sifcmd_bridge::install()
         return false;
     }
 
-    return create_stub(
+    m_installed = create_stub(
         m_kernel.cpu(), k_init_cmd_stub, k_init_cmd_syscall
     ) && create_stub(
         m_kernel.cpu(), k_get_sreg_stub, k_get_sreg_syscall
     ) && create_stub(
         m_kernel.cpu(), k_set_sreg_stub, k_set_sreg_syscall
     );
+    return m_installed;
+}
+
+bool c_sifcmd_bridge::initialize_hle_bootstrap()
+{
+    if (!m_installed || m_initialized || m_hle_bootstrapped)
+    {
+        return false;
+    }
+
+    // SIF_STAT_CMDINIT | SIF_STAT_BOOTEND. The user's ps2-web-recomp
+    // SDBZ HLE IOP kernel publishes precisely 0x60000 at boot, as its
+    // IOP services are host-backed. This is deliberately NOT a guest
+    // R3000 signal, real ROM0 readiness, or an RPC completion. Only the
+    // explicit HLE runtime initializer may establish this service state.
+    m_initialized = true;
+    m_hle_bootstrapped = true;
+    m_sif.publish_iop_subaddr(k_command_buffer);
+    m_sif.publish_iop_smflag(0x00060000u);
+    return true;
 }
 
 bool c_sifcmd_bridge::handle_syscall(

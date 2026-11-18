@@ -8,9 +8,9 @@
 
 namespace iop
 {
-// An explicit, guest-initialized IOP SIFCMD endpoint. The EE may deliver
-// implemented system commands through its SIF1 DMA bridge. This does not
-// create an IOP BIOS, synthesize SMFLAG, invoke RPC or acknowledge unknown CIDs.
+// An IOP SIFCMD endpoint, initialized either by a real R3000 guest call
+// or by an explicit HLE-only kernel bootstrap. Firmware mode must never
+// install or invoke this compatibility service.
 class c_sifcmd_bridge
 {
 public:
@@ -32,6 +32,11 @@ public:
     c_sifcmd_bridge(c_kernel& kernel, ee::c_ee_sif& sif);
 
     bool install();
+    // Explicit no-ROM0, extracted-disc HLE service startup. Equivalent to
+    // the HLE IOP kernel's initial SIFCMD + completed-bootstrap state in
+    // twist84/ps2-web-recomp (SDBZ). Never invoked by mere installation,
+    // guest polling, ROM0 or an ordinary IRX import.
+    bool initialize_hle_bootstrap();
     bool handle_syscall(c_kernel& kernel, uint32_t service);
 
     bool initialized() const;
@@ -57,5 +62,7 @@ private:
     uint32_t m_sregs[32]{};
     uint32_t m_ee_receive_address = 0u;
     bool m_initialized = false;
+    bool m_installed = false;
+    bool m_hle_bootstrapped = false;
 };
 } // namespace iop

@@ -1994,6 +1994,42 @@ def main():
         assert "SIF SMFLAG polling stalled:" in bounded.stderr, bounded.stderr
         assert "guest_epc=0x00100010 register=4 value=0 reads=6" in bounded.stderr, bounded.stderr
 
+    # HLE-only extracted-disc mode models the already-bootstrapped IOP
+    # service baseline, matching ps2-web-recomp's SDBZ HLE model. It must
+    # not require ROM0 or pretend a guest IRX published that SMFLAG.
+    with tempfile.TemporaryDirectory(prefix="ee-native-hle-disc-sif-") as tmp:
+        root = Path(tmp)
+        elf = root / "ee-sif-wait.elf"
+        disc = root / "PS2_GAME"
+        disc.mkdir()
+        (disc / "SYSTEM.CNF").write_text(
+            "BOOT2 = cdrom0:\\\\SLUS_214.42;1\\n", encoding="ascii"
+        )
+        make_sif_handshake_elf(elf)
+        report_path = root / "hle-sif.json"
+        command = [
+            sys.executable, str(source / "tools" / "run_game.py"),
+            str(elf), "--build-dir", str(build),
+            "--work-dir", str(root / "out"),
+            "--max-dispatches=48", "--hle-startup", "--trace",
+            "--sif-poll-limit=6", "--report", str(report_path),
+            "--disc-folder", str(disc),
+        ]
+        run = subprocess.run(command, capture_output=True,
+                             text=True, check=False)
+        state = json.loads(report_path.read_text(encoding="utf-8"))
+        assert "[iop] HLE bootstrap: sifcmd=ready" in run.stdout, (
+            run.stdout + run.stderr
+        )
+        assert "HLE SifGetReg: register=0x00000004 result=0x00060000" in (
+            run.stdout
+        ), run.stdout
+        assert state["gpr_lo"][16] == 0x60000, state
+        assert state["dispatches"] < 48, state
+        assert "SIF SMFLAG polling stalled" not in run.stderr, run.stderr
+        assert "IOP guest loaded:" not in run.stdout, run.stdout
+        assert "IOP guest published SMFLAG:" not in run.stdout, run.stdout
+
     # End-to-end integration: EE polls SMFLAG, *actual* IOP R3000 guest
     # instructions invoke sifman via IRX imports, and the EE then exits
     # its polling loop. Without an IOP module, the identical ELF stalls.

@@ -201,3 +201,25 @@ function count, preserving `run_game.py` and all guest translation-cache
 fingerprints. The trace also contains an ignored HLE `SetSyscall`
 registration for service `0x12C` with handler `0x80076488`; investigate
 its role rather than reporting it as implemented.
+
+### Explicit HLE IOP SIFCMD bootstrap — 18 November 2026
+
+The second local `PS2_GAME` run reached 258 native EE functions and
+12,337 dispatches, stopped at `sceSifGetReg(SMFLAG)` guest
+EPC `0x001750B4` after 2,048 unchanged reads. No IOP IRX module was
+loaded or started. The prior "loaded IOP did not publish SMFLAG" text is
+therefore a producer-absence symptom, not evidence of an executing IOP.
+
+This project is HLE-first, like the user's `ps2-web-recomp` SDBZ fork.
+That fork's IOP HLE SIF model starts with `SMFLAG=0x00060000`
+(CMDINIT | BOOTEND) and a fixed command receive address. In explicit
+`--disc-folder` mode only, after successful HLE SIFCMD/SIFMAN/LOADFILE
+service installation, `c_sifcmd_bridge::initialize_hle_bootstrap()`
+now establishes that **modeled initial HLE kernel state**. This is not
+represented as guest R3000 execution, firmware boot, an IOP IRX load,
+or arbitrary RPC success. Import-only IOP tests and authentic ROM0
+continue to start with uninitialized SIF state and must obtain it via
+their own actual guest execution. The next EE request can now be
+observed without inventing a SIF DMA reply.
+
+The original SetSyscall `0x12c` registration remains unsupported.
