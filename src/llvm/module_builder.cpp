@@ -3973,18 +3973,31 @@ bool is_pure_binop_def(const std::string& line, std::string* def_out,
     size_t p = 0;
     while (p < line.size() && (line[p] == ' ' || line[p] == '\t')) ++p;
     if (p >= line.size() || line[p] != '%') return false;
-    size_t name_end = p + 1;
+    // Only optimizer-generated temporaries (%t followed by digits) are
+    // eligible for textual CSE/DCE. Named SSA values such as %trace_enabled,
+    // %trace_ptr_field and %trace_ptr are part of the instruction-count
+    // helper and must remain defined. The previous prefix-only check
+    // mistakenly classified any %trace_* value as a disposable %tN.
+    if (p + 2 >= line.size() || line[p + 1] != 't' ||
+        !std::isdigit(static_cast<unsigned char>(line[p + 2])))
+    {
+        return false;
+    }
+    size_t name_end = p + 3;
     while (name_end < line.size() &&
-           (std::isdigit(static_cast<unsigned char>(line[name_end])) ||
-            line[name_end] == 't' ||
-            (line[name_end] >= 'a' && line[name_end] <= 'z') ||
-            (line[name_end] >= 'A' && line[name_end] <= 'Z') ||
-            line[name_end] == '_'))
+           std::isdigit(static_cast<unsigned char>(line[name_end])))
+    {
         ++name_end;
+    }
+    if (name_end < line.size() &&
+        (std::isalnum(static_cast<unsigned char>(line[name_end])) ||
+         line[name_end] == '_'))
+    {
+        return false;
+    }
     size_t eq = line.find('=', name_end);
     if (eq == std::string::npos) return false;
     std::string def = line.substr(p, name_end - p);
-    if (def.size() < 3 || def[1] != 't') return false;
 
     size_t rhs = eq + 1;
     while (rhs < line.size() && (line[rhs] == ' ' || line[rhs] == '\t')) ++rhs;
