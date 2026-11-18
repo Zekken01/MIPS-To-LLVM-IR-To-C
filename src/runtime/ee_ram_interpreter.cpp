@@ -1,5 +1,6 @@
 #include "ee_ram_interpreter.h"
 #include "ee_memory.h"
+#include "ee_runtime.h"
 
 #include <cstdint>
 
@@ -294,7 +295,8 @@ s_ee_ram_execution ee_execute_ram_callback(
     ee_memory* memory,
     uint32_t entry_pc,
     uint32_t return_pc,
-    uint32_t max_instructions
+    uint32_t max_instructions,
+    s_ee_runtime* runtime
 )
 {
     s_ee_ram_execution result{};
@@ -343,6 +345,13 @@ s_ee_ram_execution ee_execute_ram_callback(
             return result;
         }
         ++result.m_instructions;
+        // Interpreted RAM contributes committed instructions to the same
+        // diagnostics as translated code; it cannot advance EE cycle time.
+        if (runtime != nullptr)
+        {
+            ++runtime->m_guest_instruction_attempts;
+            ++runtime->m_reference_instruction_slots;
+        }
         if (delay_slot)
         {
             delay_slot = false;

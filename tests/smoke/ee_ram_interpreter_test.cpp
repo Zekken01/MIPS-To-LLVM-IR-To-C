@@ -1,5 +1,6 @@
 #include "ee_ram_interpreter.h"
 #include "ee_memory.h"
+#include "ee_runtime.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -46,10 +47,11 @@ int main()
     write32(memory, k_table_address + 4u, 0x80076440u);
 
     ee::s_ee_cpu_state cpu{};
+    ee::s_ee_runtime runtime{};
     cpu.m_gpr[4].m_lo = 0xfcu;
     cpu.m_gpr[31].m_lo = static_cast<uint64_t>(-16ll);
     const ee::s_ee_ram_execution found = ee::ee_execute_ram_callback(
-        &cpu, &memory, k_ram_address, k_return_address, 50u
+        &cpu, &memory, k_ram_address, k_return_address, 50u, &runtime
     );
     if (!check(found.m_result == ee::e_ee_ram_result::RETURNED,
                "matching key must return") ||
@@ -58,6 +60,9 @@ int main()
         !check(cpu.m_gpr[8].m_lo == 1u,
                "BNE delay slot must execute even when branch not taken") ||
         !check(found.m_instructions == 7u, "match instruction count") ||
+        !check(runtime.m_guest_instruction_attempts == 7u &&
+               runtime.m_reference_instruction_slots == 7u,
+               "interpreter retirement is included in diagnostics") ||
         !check(cpu.m_pc == k_return_address, "return sentinel PC"))
     {
         return 1;
@@ -67,7 +72,7 @@ int main()
     cpu.m_gpr[4].m_lo = 0xfeu;
     cpu.m_gpr[31].m_lo = k_return_address;
     const ee::s_ee_ram_execution not_found = ee::ee_execute_ram_callback(
-        &cpu, &memory, k_ram_address, k_return_address, 50u
+        &cpu, &memory, k_ram_address, k_return_address, 50u, &runtime
     );
     if (!check(not_found.m_result == ee::e_ee_ram_result::RETURNED,
                "missing key must return") ||
@@ -83,12 +88,15 @@ int main()
     write32(memory, k_ram_address, 0x70000000u); // SPECIAL2, unsupported
     cpu = {};
     const ee::s_ee_ram_execution unknown = ee::ee_execute_ram_callback(
-        &cpu, &memory, k_ram_address, k_return_address, 50u
+        &cpu, &memory, k_ram_address, k_return_address, 50u, &runtime
     );
     if (!check(unknown.m_result == ee::e_ee_ram_result::UNSUPPORTED,
                "unknown instruction must fail closed") ||
         !check(unknown.m_pc == k_ram_address, "unsupported PC retained") ||
-        !check(unknown.m_opcode == 0x70000000u, "unsupported opcode retained"))
+        !check(unknown.m_opcode == 0x70000000u, "unsupported opcode retained") ||
+        !check(runtime.m_guest_instruction_attempts ==
+                   found.m_instructions + not_found.m_instructions,
+               "unsupported instructions never retire"))
     {
         return 1;
     }
@@ -98,12 +106,16 @@ int main()
     write32(memory, k_ram_address + 4u, 0x25080001u);
     cpu = {};
     const ee::s_ee_ram_execution bounded = ee::ee_execute_ram_callback(
-        &cpu, &memory, k_ram_address, k_return_address, 20u
+        &cpu, &memory, k_ram_address, k_return_address, 20u, &runtime
     );
     if (!check(bounded.m_result == ee::e_ee_ram_result::INSTRUCTION_BUDGET,
                "infinite branch must consume bounded budget") ||
         !check(bounded.m_instructions == 20u, "bounded instruction count") ||
-        !check(cpu.m_gpr[8].m_lo == 10u, "loop delay slot executes each iteration"))
+        !check(cpu.m_gpr[8].m_lo == 10u, "loop delay slot executes each iteration") ||
+        !check(runtime.m_guest_instruction_attempts ==
+                   found.m_instructions + not_found.m_instructions +
+                   bounded.m_instructions,
+               "bounded loop instructions retire exactly once"))
     {
         return 1;
     }
@@ -112,7 +124,7 @@ int main()
     write32(memory, k_ram_address + 4u, 0x03e00008u);
     cpu = {};
     const ee::s_ee_ram_execution nested = ee::ee_execute_ram_callback(
-        &cpu, &memory, k_ram_address, k_return_address, 20u
+        &cpu, &memory, k_ram_address, k_return_address, 20u, &runtime
     );
     if (!check(nested.m_result == ee::e_ee_ram_result::BRANCH_IN_DELAY_SLOT,
                "branch in delay slot must not be executed as normal flow"))

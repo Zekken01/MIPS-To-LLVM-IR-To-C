@@ -462,6 +462,9 @@ bool write_report(
     uint32_t entry,
     uint64_t dispatched,
     uint64_t instruction_attempts,
+    const ee::s_ee_runtime& runtime,
+    ee::c_ee_hw_bus& hardware,
+    const ee::c_ee_vsync_flags& vsync_flags,
     uint32_t reason,
     uint32_t status,
     const std::vector<s_dispatch_sample>& history,
@@ -502,6 +505,27 @@ bool write_report(
     }
     std::fprintf(output, ",\n  \"guest_instruction_attempts\": %llu",
                  static_cast<unsigned long long>(instruction_attempts));
+    // A zero clock is not proof of calibrated R5900 execution.
+    std::fprintf(output,
+        ",\n  \"ee_cycle_source\": \"%s\""
+        ",\n  \"ee_cycles\": %llu"
+        ",\n  \"reference_instruction_slots\": %llu"
+        ",\n  \"scheduler_yields\": %llu"
+        ",\n  \"next_gs_field_cycle\": %llu"
+        ",\n  \"gs_fields_started\": %llu"
+        ",\n  \"gs_csr\": %llu"
+        ",\n  \"intc_stat\": %u, \"intc_mask\": %u"
+        ",\n  \"vsync_flag_address\": %u, \"vsync_csr_address\": %u",
+        runtime.m_ee_cycle_scheduler.source() == ee::e_ee_cycle_source::VALIDATED_R5900
+            ? "validated_r5900" : "unavailable",
+        static_cast<unsigned long long>(runtime.m_ee_cycle_scheduler.current_cycle()),
+        static_cast<unsigned long long>(runtime.m_reference_instruction_slots),
+        static_cast<unsigned long long>(runtime.m_ee_cycle_scheduler.scheduler_yields()),
+        static_cast<unsigned long long>(hardware.scanout().next_field_cycle()),
+        static_cast<unsigned long long>(hardware.scanout().fields_started()),
+        static_cast<unsigned long long>(hardware.scanout().csr()),
+        hardware.intc().status(), hardware.intc().mask(),
+        vsync_flags.flag_address(), vsync_flags.csr_address());
     std::fputs(",\n  \"gpr_lo\": [", output);
     for (uint32_t i = 0; i < 32; ++i)
     {
@@ -1808,6 +1832,7 @@ int main(int argc, char** argv)
             const bool report_ok = write_report(
                 report_path, image, cpu, entry, dispatched,
                 runtime.m_guest_instruction_attempts,
+                runtime, hardware, vsync_flags,
                 reason, status, history, syscall_history, true
             );
             report_time_ms += std::chrono::duration<double, std::milli>(
@@ -1833,7 +1858,8 @@ int main(int argc, char** argv)
             const ee::s_ee_ram_execution result =
                 ee::ee_execute_ram_callback(
                     &cpu, memory.get(), ram_entry,
-                    k_callback_return_pc, k_ram_instruction_budget
+                    k_callback_return_pc, k_ram_instruction_budget,
+                    &runtime
                 );
             if (result.m_result != ee::e_ee_ram_result::RETURNED)
             {
@@ -2005,7 +2031,7 @@ int main(int argc, char** argv)
             hardware, vsync_flags, *memory);
         if (scanout_result == ee::e_ee_scheduled_event_result::INVALID_TIMESTAMP_OR_DELIVERY)
         {
-            std::fprintf(stderr, "EE validated-cycle scheduler rejected scanout delivery at cycle=%llu\\n",
+            std::fprintf(stderr, "EE validated-cycle scheduler rejected scanout delivery at cycle=%llu\n",
                 static_cast<unsigned long long>(runtime.m_ee_cycle_scheduler.current_cycle()));
             return 1;
         }
@@ -4668,7 +4694,7 @@ int main(int argc, char** argv)
     }
 
     std::printf(
-        "EE timing: source=%s current_cycles=%llu scheduler_yields=%llu next_gs_field=%llu fields=%llu\\n",
+        "EE timing: source=%s current_cycles=%llu scheduler_yields=%llu next_gs_field=%llu fields=%llu\n",
         runtime.m_ee_cycle_scheduler.source() == ee::e_ee_cycle_source::VALIDATED_R5900
             ? "validated_r5900" : "unavailable",
         static_cast<unsigned long long>(runtime.m_ee_cycle_scheduler.current_cycle()),
@@ -4734,6 +4760,7 @@ int main(int argc, char** argv)
     if (report_path != nullptr &&
         !write_report(report_path, image, cpu, entry, dispatched,
                       runtime.m_guest_instruction_attempts,
+                      runtime, hardware, vsync_flags,
                       reason, status, history, syscall_history, false))
     {
         return 1;
