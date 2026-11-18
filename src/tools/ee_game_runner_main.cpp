@@ -3416,12 +3416,16 @@ int main(int argc, char** argv)
                     const uint32_t count =
                         static_cast<uint32_t>(cpu.m_gpr[5].m_lo);
                     uint32_t dma_id = 0u;
+                    iop::s_sif1_dma_diagnostic dma_diagnostic{};
                     const bool transferred = iop_rom0_path != nullptr
                         ? iop_sif1_transport != nullptr &&
                           iop_sif1_transport->set_dma(
                               descriptors, count, &dma_id)
                         : iop_sif1 != nullptr &&
-                          iop_sif1->set_dma(descriptors, count, &dma_id);
+                          iop_sif1->set_dma(
+                              descriptors, count, &dma_id,
+                              &dma_diagnostic
+                          );
                     if (!transferred)
                     {
                         std::fprintf(
@@ -3430,6 +3434,29 @@ int main(int argc, char** argv)
                             "IOP transfer: descriptors=0x%08x count=%u\n",
                             descriptors, count
                         );
+                        if (iop_rom0_path == nullptr)
+                        {
+                            std::fprintf(
+                                stderr,
+                                "IOP HLE SIF1 DMA rejection: reason=%s "
+                                "index=%u src=0x%08x dst=0x%08x "
+                                "bytes=%u attrs=0x%08x "
+                                "packet_size=0x%08x packet_cid=0x%08x "
+                                "sifcmd_initialized=%u\n",
+                                iop::c_sif1_bridge::failure_name(
+                                    dma_diagnostic.m_failure
+                                ),
+                                dma_diagnostic.m_descriptor_index,
+                                dma_diagnostic.m_source,
+                                dma_diagnostic.m_destination,
+                                dma_diagnostic.m_size,
+                                dma_diagnostic.m_attributes,
+                                dma_diagnostic.m_packet_size,
+                                dma_diagnostic.m_packet_cid,
+                                iop_sifcmd != nullptr &&
+                                    iop_sifcmd->initialized() ? 1u : 0u
+                            );
+                        }
                         if (iop_rom0_path != nullptr && count != 0u &&
                             memory->contains(descriptors, 16u))
                         {

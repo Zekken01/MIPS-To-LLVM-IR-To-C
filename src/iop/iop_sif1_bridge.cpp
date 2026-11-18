@@ -82,10 +82,48 @@ c_sif1_bridge::c_sif1_bridge(
 {
 }
 
+const char* c_sif1_bridge::failure_name(e_sif1_dma_failure failure)
+{
+    switch (failure)
+    {
+    case e_sif1_dma_failure::none: return "none";
+    case e_sif1_dma_failure::invalid_list: return "invalid_list";
+    case e_sif1_dma_failure::invalid_size_or_attributes:
+        return "invalid_size_or_attributes";
+    case e_sif1_dma_failure::invalid_source: return "invalid_source";
+    case e_sif1_dma_failure::invalid_destination: return "invalid_destination";
+    case e_sif1_dma_failure::unsupported_iop_reboot:
+        return "unsupported_iop_reboot";
+    case e_sif1_dma_failure::command_buffer_overlap:
+        return "command_buffer_overlap";
+    case e_sif1_dma_failure::duplicate_rpc_payload:
+        return "duplicate_rpc_payload";
+    case e_sif1_dma_failure::unsupported_rpc_packet:
+        return "unsupported_rpc_packet";
+    case e_sif1_dma_failure::unsupported_sifcmd_packet:
+        return "unsupported_sifcmd_packet";
+    }
+    return "unknown";
+}
+
 bool c_sif1_bridge::set_dma(
-    uint32_t list, uint32_t count, uint32_t* dma_id
+    uint32_t list, uint32_t count, uint32_t* dma_id,
+    s_sif1_dma_diagnostic* diagnostic
 )
 {
+    if (diagnostic != nullptr)
+    {
+        *diagnostic = {};
+    }
+    const auto refuse = [diagnostic](e_sif1_dma_failure reason) -> bool
+    {
+        if (diagnostic != nullptr)
+        {
+            diagnostic->m_failure = reason;
+        }
+        return false;
+    };
+
     uint32_t list_physical = 0u;
     if (dma_id == nullptr ||
         m_next_dma_id == 0u ||
@@ -94,7 +132,7 @@ bool c_sif1_bridge::set_dma(
         !normalize_ee_address(list, &list_physical) ||
         !m_ee_ram.contains(list_physical, count * 16u))
     {
-        return false;
+        return refuse(e_sif1_dma_failure::invalid_list);
     }
 
     std::vector<s_transfer> transfers;
@@ -116,30 +154,52 @@ bool c_sif1_bridge::set_dma(
         const uint64_t rounded =
             (static_cast<uint64_t>(size) + 15u) & ~uint64_t(15u);
 
-        // Destination zero requests an IOP reboot, and special RPC
-        // mailboxes require command processing. Until those exist, do
-        // not silently turn either operation into an ordinary RAM copy.
-        if (size == 0u || size > 65536u ||
-            attributes != 0u ||
-            (source & 0x0fu) != 0u ||
-            (destination & 0x0fu) != 0u ||
+        if (diagnostic != nullptr)
+        {
+            diagnostic->m_descriptor_index = index;
+            diagnostic->m_source = source;
+            diagnostic->m_destination = destination;
+            diagnostic->m_size = size;
+            diagnostic->m_attributes = attributes;
+        }
+        if (size == 0u || size > 65536u || attributes != 0u)
+        {
+            return refuse(e_sif1_dma_failure::invalid_size_or_attributes);
+        }
+        if ((source & 0x0fu) != 0u ||
             !normalize_ee_address(source, &ee_source) ||
+            !m_ee_ram.contains(ee_source, static_cast<size_t>(rounded)))
+        {
+            return refuse(e_sif1_dma_failure::invalid_source);
+        }
+        // Record the staged packet header without changing guest RAM.
+        if (diagnostic != nullptr && rounded >= 12u)
+        {
+            diagnostic->m_packet_size = m_ee_ram.read32(ee_source);
+            diagnostic->m_packet_cid = m_ee_ram.read32(ee_source + 8u);
+        }
+        if (destination == 0u)
+        {
+            // A reset request is not an ordinary IOP RAM write.
+            return refuse(e_sif1_dma_failure::unsupported_iop_reboot);
+        }
+        if ((destination & 0x0fu) != 0u ||
             (!rpc_payload &&
              !normalize_iop_address(destination, &iop_destination)) ||
             (!rpc_payload &&
-             (iop_destination == 0u ||
-              static_cast<uint64_t>(iop_destination) + rounded >
-                  c_cpu::k_ram_size ||
-              // The IOP command buffer accepts only whole validated
-              // command packets, never overlapping arbitrary writes.
-              (static_cast<uint64_t>(iop_destination) <
-                   c_sifcmd_bridge::k_command_buffer + 0x400u &&
-               static_cast<uint64_t>(iop_destination) + rounded >
-                   c_sifcmd_bridge::k_command_buffer &&
-               iop_destination != c_sifcmd_bridge::k_command_buffer))) ||
-            !m_ee_ram.contains(ee_source, static_cast<size_t>(rounded)))
+             static_cast<uint64_t>(iop_destination) + rounded >
+                 c_cpu::k_ram_size))
         {
-            return false;
+            return refuse(e_sif1_dma_failure::invalid_destination);
+        }
+        if (!rpc_payload &&
+            static_cast<uint64_t>(iop_destination) <
+                c_sifcmd_bridge::k_command_buffer + 0x400u &&
+            static_cast<uint64_t>(iop_destination) + rounded >
+                c_sifcmd_bridge::k_command_buffer &&
+            iop_destination != c_sifcmd_bridge::k_command_buffer)
+        {
+            return refuse(e_sif1_dma_failure::command_buffer_overlap);
         }
 
         s_transfer transfer{};
@@ -157,7 +217,7 @@ bool c_sif1_bridge::set_dma(
             if (m_rpc == nullptr ||
                 rpc_payload_length != 0u)
             {
-                return false;
+                return refuse(e_sif1_dma_failure::duplicate_rpc_payload);
             }
             transfer.m_rpc_payload = true;
             rpc_payload_source = ee_source;
@@ -178,7 +238,7 @@ bool c_sif1_bridge::set_dma(
                         rpc_payload_source, rpc_payload_length,
                         &transfer.m_rpc_effect))
                 {
-                    return false;
+                    return refuse(e_sif1_dma_failure::unsupported_rpc_packet);
                 }
                 transfer.m_rpc_command = true;
             }
@@ -188,7 +248,7 @@ bool c_sif1_bridge::set_dma(
                     !m_sifcmd->prepare_command(
                         transfer.m_words, size, &transfer.m_command_effect))
                 {
-                    return false;
+                    return refuse(e_sif1_dma_failure::unsupported_sifcmd_packet);
                 }
                 transfer.m_command = true;
             }

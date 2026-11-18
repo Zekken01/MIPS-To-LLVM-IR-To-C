@@ -207,7 +207,18 @@ int main()
     command(
         ee_ram, k_source, 0x80000009u, 0x80000006u, 0u
     );
-    if (transport.set_dma(k_list, 2u, &dma_id) ||
+    iop::s_sif1_dma_diagnostic rejection{};
+    if (transport.set_dma(k_list, 2u, &dma_id, &rejection) ||
+        rejection.m_failure !=
+            iop::e_sif1_dma_failure::unsupported_rpc_packet ||
+        rejection.m_descriptor_index != 1u ||
+        rejection.m_source != k_source ||
+        rejection.m_destination !=
+            iop::c_sifcmd_bridge::k_command_buffer ||
+        rejection.m_size != 24u ||
+        rejection.m_attributes != 0u ||
+        rejection.m_packet_size != 24u ||
+        rejection.m_packet_cid != 0x80000009u ||
         !kernel.cpu().read32(k_destination, &iop_word) ||
         iop_word != 0xdeadc0deu ||
         commands.ee_receive_address() != 0x00180000u ||
@@ -223,13 +234,30 @@ int main()
         return fail("unsupported command overwrote prior packet");
     }
 
+    // An IOP reset packet is a special operation, not a physical
+    // write to RAM zero and never an implicitly completed DMA.
+    descriptor(ee_ram, k_list, k_data_source, 0u, 16u);
+    if (transport.set_dma(k_list, 1u, &dma_id, &rejection) ||
+        rejection.m_failure !=
+            iop::e_sif1_dma_failure::unsupported_iop_reboot ||
+        rejection.m_destination != 0u ||
+        rejection.m_source != k_data_source ||
+        dmac.status() != 0u ||
+        !kernel.cpu().read32(k_destination, &iop_word) ||
+        iop_word != 0xdeadc0deu)
+    {
+        return fail("IOP reboot DMA was silently accepted or mutated RAM");
+    }
+
     // Even an ordinary transfer may not overlap the reserved command
     // buffer without passing the command validation protocol.
     descriptor(
         ee_ram, k_list, k_data_source,
         iop::c_sifcmd_bridge::k_command_buffer - 16u, 32u
     );
-    if (transport.set_dma(k_list, 1u, &dma_id))
+    if (transport.set_dma(k_list, 1u, &dma_id, &rejection) ||
+        rejection.m_failure !=
+            iop::e_sif1_dma_failure::command_buffer_overlap)
     {
         return fail("unaligned command-region crossing accepted");
     }

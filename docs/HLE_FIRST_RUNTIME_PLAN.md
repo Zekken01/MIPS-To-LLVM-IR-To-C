@@ -223,3 +223,23 @@ their own actual guest execution. The next EE request can now be
 observed without inventing a SIF DMA reply.
 
 The original SetSyscall `0x12c` registration remains unsupported.
+
+### First rejected HLE SIF1 DMA — 18 November 2026
+
+The third local PS2_GAME boot passed HLE SMFLAG/CMDINIT (0x60000),
+discovered five additional guest functions, and reached a real
+`sceSifSetDma` invocation at EE EPC `0x00175064`, with descriptor
+pointer `0x01FFEE10`, count 1, at 6,212 dispatches. The request was
+refused before any IOP guest module had started.
+
+That initial refusal reported only the list pointer. The HLE SIF1 bridge
+now emits a **validation-only** rejection record with a reason code,
+descriptor src/dst/size/attributes, and guest packet size/CID. It
+distinguishes an IOP reset destination, out-of-range RAM, overlapping
+SIFCMD buffers, unsupported SIFCMD CIDs and LOADFILE RPCs. Failed
+descriptor lists remain transactional: no IOP RAM writes, EE DMA
+completion, interrupt, reply, or readiness are invented.
+
+The next local run should identify the unsupported packet semantics,
+allowing the correct HLE command implementation to be prioritized.
+`SetSyscall(0x12c)` is still unsupported and is not the observed stop.
