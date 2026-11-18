@@ -32,6 +32,16 @@ enum class e_ee_probe_unit : uint8_t
     COP1_SCALAR
 };
 
+// Counterfactual WAW handling for offline comparisons. ORDERED_OVERLAP
+// only permits a second write to issue before the previous write is ready
+// when the second result will not overtake it. This is NOT a claim about
+// actual EE register forwarding or retirement.
+enum class e_ee_probe_waw_policy : uint8_t
+{
+    WAIT_FOR_RESULT,
+    ORDERED_OVERLAP
+};
+
 struct s_ee_probe_instruction
 {
     uint32_t m_gpr_read_mask = 0u;
@@ -87,6 +97,9 @@ public:
         m_issued = 0u;
         m_annulled = 0u;
         m_hle_overhead = 0u;
+        m_waw_policy = e_ee_probe_waw_policy::WAIT_FOR_RESULT;
+        m_last_completion_cycle = 0u;
+        m_max_completion_cycle = 0u;
         m_pair_count = 0u;
         clear_pair();
         for (uint64_t& ready : m_gpr_ready)
@@ -109,9 +122,42 @@ public:
         }
     }
 
+    // The overlap policy can only be selected before observing events.
+    // Reset restores conservative WAIT_FOR_RESULT behavior.
+    bool configure_waw_policy(e_ee_probe_waw_policy policy)
+    {
+        if ((policy != e_ee_probe_waw_policy::WAIT_FOR_RESULT &&
+             policy != e_ee_probe_waw_policy::ORDERED_OVERLAP) ||
+            m_issued != 0u || m_annulled != 0u ||
+            m_hle_overhead != 0u)
+        {
+            return false;
+        }
+        m_waw_policy = policy;
+        return true;
+    }
+
+    e_ee_probe_waw_policy waw_policy() const
+    {
+        return m_waw_policy;
+    }
+
+    // Latest candidate result deadline; this is NOT a hardware retirement
+    // timestamp. Earlier operations may have later deadlines.
+    uint64_t last_completion_cycle() const
+    {
+        return m_last_completion_cycle;
+    }
+
+    uint64_t max_completion_cycle() const
+    {
+        return m_max_completion_cycle;
+    }
+
     // Returns false without mutation on overflow or invalid input.
     bool issue(const s_ee_probe_instruction& instruction,
-               uint64_t* issue_cycle = nullptr)
+               uint64_t* issue_cycle = nullptr,
+               uint64_t* completion_cycle = nullptr)
     {
         if (instruction.m_result_latency == 0u ||
             logical_pipes(instruction.m_pipe) == 0u ||
@@ -160,12 +206,15 @@ public:
             ++candidate;
         }
 
-        // Preserve write ordering even when an older long-latency result
-        // remains outstanding. This is conservative candidate behavior,
-        // not evidence that hardware stalls on every WAW dependency.
+        // RAW always waits for a producer. In conservative mode WAW waits
+        // too. ORDERED_OVERLAP checks write-completion order separately
+        // below and rejects overtaking rather than inventing a stall.
+        const bool wait_for_waw =
+            m_waw_policy == e_ee_probe_waw_policy::WAIT_FOR_RESULT;
         for (uint32_t reg = 1u; reg < 32u; ++reg)
         {
-            if (((reads | writes) & (uint32_t{1} << reg)) != 0u &&
+            if (((reads | (wait_for_waw ? writes : 0u)) &
+                 (uint32_t{1} << reg)) != 0u &&
                 candidate < m_gpr_ready[reg])
             {
                 candidate = m_gpr_ready[reg];
@@ -174,7 +223,7 @@ public:
 
         for (uint32_t reg = 0u; reg < 4u; ++reg)
         {
-            if (((hreads | hwrites) & (1u << reg)) != 0u &&
+            if (((hreads | (wait_for_waw ? hwrites : 0u)) & (1u << reg)) != 0u &&
                 candidate < m_hilo_ready[reg])
             {
                 candidate = m_hilo_ready[reg];
@@ -182,18 +231,20 @@ public:
         }
         for (uint32_t reg = 0u; reg < 32u; ++reg)
         {
-            if (((freads | fwrites) & (1u << reg)) != 0u &&
+            if (((freads | (wait_for_waw ? fwrites : 0u)) & (1u << reg)) != 0u &&
                 candidate < m_fpr_ready[reg])
             {
                 candidate = m_fpr_ready[reg];
             }
         }
-        if ((instruction.m_acc_read || instruction.m_acc_write) &&
+        if ((instruction.m_acc_read ||
+             (wait_for_waw && instruction.m_acc_write)) &&
             candidate < m_acc_ready)
         {
             candidate = m_acc_ready;
         }
-        if ((instruction.m_fcsr_read || instruction.m_fcsr_write) &&
+        if ((instruction.m_fcsr_read ||
+             (wait_for_waw && instruction.m_fcsr_write)) &&
             candidate < m_fcsr_ready)
         {
             candidate = m_fcsr_ready;
@@ -234,6 +285,68 @@ public:
                 instruction.m_initiation_interval > max_cycle - candidate))
         {
             return false;
+        }
+
+        // With explicitly selected ordered overlap, a later result must
+        // never become visible before an older write to the same resource.
+        // No artificial retirement delay is introduced: a reversed finish
+        // order is rejected atomically as unmodeled timing.
+        if (m_waw_policy == e_ee_probe_waw_policy::ORDERED_OVERLAP)
+        {
+            for (uint32_t reg = 1u; reg < 32u; ++reg)
+            {
+                if ((writes & (uint32_t{1} << reg)) != 0u &&
+                    candidate + instruction.m_result_latency <
+                        m_gpr_ready[reg])
+                {
+                    return false;
+                }
+            }
+            for (uint32_t reg = 0u; reg < 4u; ++reg)
+            {
+                if ((hwrites & (1u << reg)) != 0u &&
+                    candidate + hilo_latency < m_hilo_ready[reg])
+                {
+                    return false;
+                }
+            }
+            for (uint32_t reg = 0u; reg < 32u; ++reg)
+            {
+                if ((fwrites & (1u << reg)) != 0u &&
+                    candidate + fpr_latency < m_fpr_ready[reg])
+                {
+                    return false;
+                }
+            }
+            if (instruction.m_acc_write &&
+                candidate + acc_latency < m_acc_ready)
+            {
+                return false;
+            }
+            if (instruction.m_fcsr_write &&
+                candidate + fcsr_latency < m_fcsr_ready)
+            {
+                return false;
+            }
+        }
+
+        uint64_t completes_at = candidate + instruction.m_result_latency;
+        if (hwrites != 0u && candidate + hilo_latency > completes_at)
+        {
+            completes_at = candidate + hilo_latency;
+        }
+        if (fwrites != 0u && candidate + fpr_latency > completes_at)
+        {
+            completes_at = candidate + fpr_latency;
+        }
+        if (instruction.m_acc_write && candidate + acc_latency > completes_at)
+        {
+            completes_at = candidate + acc_latency;
+        }
+        if (instruction.m_fcsr_write &&
+            candidate + fcsr_latency > completes_at)
+        {
+            completes_at = candidate + fcsr_latency;
         }
 
         if (candidate != m_cycle)
@@ -290,6 +403,15 @@ public:
                 candidate + instruction.m_initiation_interval;
         }
         ++m_issued;
+        m_last_completion_cycle = completes_at;
+        if (completes_at > m_max_completion_cycle)
+        {
+            m_max_completion_cycle = completes_at;
+        }
+        if (completion_cycle != nullptr)
+        {
+            *completion_cycle = completes_at;
+        }
         if (issue_cycle != nullptr)
         {
             *issue_cycle = candidate;
@@ -429,6 +551,10 @@ private:
     uint64_t m_issued = 0u;
     uint64_t m_annulled = 0u;
     uint64_t m_hle_overhead = 0u;
+    e_ee_probe_waw_policy m_waw_policy =
+        e_ee_probe_waw_policy::WAIT_FOR_RESULT;
+    uint64_t m_last_completion_cycle = 0u;
+    uint64_t m_max_completion_cycle = 0u;
     uint64_t m_gpr_ready[32]{};
     uint64_t m_hilo_ready[4]{};
     uint64_t m_fpr_ready[32]{};
