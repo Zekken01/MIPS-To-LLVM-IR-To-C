@@ -427,21 +427,25 @@ int main()
     {
         return fail("unsupported CDVD Init call fabricated completion");
     }
-    // Method 5 with no room for its sixteen-byte reply is also refused.
+    // CDVDFSV CdInit must complete with a short receive buffer,
+    // matching the reference HLE, without writing beyond its length.
+    // The result[3] field is only written for a sixteen-byte reply.
     memory.write32(call_source + 32u, 5u);
     memory.write32(call_source + 44u, 12u);
-    if (sif1.set_dma(list, 2u, &dma_id, &cdvd_call_rejection) ||
+    memory.write32(rpc_result + 12u, 0xa55a5aa5u);
+    if (!sif1.set_dma(list, 2u, &dma_id, &cdvd_call_rejection) ||
         cdvd_call_rejection.m_failure !=
-            iop::e_sif1_dma_failure::unsupported_rpc_packet ||
-        cdvd_call_rejection.m_rpc_packet_words[8] != 5u ||
-        cdvd_call_rejection.m_rpc_packet_words[11] != 12u ||
-        cdvd_call_rejection.m_rpc_payload_length != 16u ||
-        memory.read32(rpc_result + 12u) != 0xffu ||
+            iop::e_sif1_dma_failure::none ||
+        memory.read32(rpc_result + 12u) != 0xa55a5aa5u ||
+        memory.read32(ee_receive + 32u) !=
+            iop::c_sif_rpc_bridge::k_call_cid ||
         rpc.pending_replies() != 0u ||
-        (dmac.status() & ((1u << 5u) | (1u << 6u))) != 0u)
+        (dmac.status() & (1u << 5u)) == 0u)
     {
-        return fail("CDVD Init short reply buffer was accepted");
+        return fail("CDVD Init short reply did not complete safely");
     }
+    dmac.acknowledge(5u);
+    dmac.acknowledge(6u);
 
     // The real SIF packet's advertised send size cannot exceed the
     // staged DMA payload. Preserve its complete header on failure.
@@ -453,7 +457,7 @@ int main()
         cdvd_call_rejection.m_rpc_packet_words[9] != 20u ||
         cdvd_call_rejection.m_rpc_packet_words[11] != 16u ||
         cdvd_call_rejection.m_rpc_payload_length != 16u ||
-        memory.read32(rpc_result + 12u) != 0xffu ||
+        memory.read32(rpc_result + 12u) != 0xa55a5aa5u ||
         rpc.pending_replies() != 0u ||
         (dmac.status() & ((1u << 5u) | (1u << 6u))) != 0u)
     {
