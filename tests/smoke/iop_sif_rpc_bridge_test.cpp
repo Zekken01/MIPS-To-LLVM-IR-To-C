@@ -163,7 +163,9 @@ int main()
     iop::c_kernel kernel;
     iop::c_sifcmd_bridge commands(kernel, sif);
     iop::c_disc_loader loader(kernel, folder.m_path);
-    iop::c_sif_rpc_bridge rpc(loader, commands, memory, dmac);
+    iop::c_sif_rpc_bridge rpc(
+        loader, kernel, commands, memory, dmac
+    );
     iop::c_sif1_bridge sif1(
         memory, kernel.cpu(), dmac, &commands, &rpc
     );
@@ -291,18 +293,120 @@ int main()
     // and preserve the last completed EE receive packet.
     dmac.acknowledge(5u);
     dmac.acknowledge(6u);
-    memory.write32(bind_source + 32u, 0x80000003u);
+    memory.write32(bind_source + 32u, 0x80000004u);
     iop::s_sif1_dma_diagnostic bind_rejection{};
     if (sif1.set_dma(list, 1u, &dma_id, &bind_rejection) ||
         bind_rejection.m_failure !=
             iop::e_sif1_dma_failure::unsupported_rpc_packet ||
-        bind_rejection.m_rpc_server != 0x80000003u ||
+        bind_rejection.m_rpc_server != 0x80000004u ||
         bind_rejection.m_rpc_client != 0x15000u ||
         memory.read32(ee_receive + 16u) != 5u ||
         rpc.pending_replies() != 0u ||
         (dmac.status() & ((1u << 5u) | (1u << 6u))) != 0u)
     {
         return fail("unknown 64-byte RPC bind mutated guest state");
+    }
+
+    // Bind the IOPHEAP server observed in the retail SDBZ bootstrap.
+    // The EE must see the actual server identity in the SIF0 reply.
+    dmac.acknowledge(5u);
+    dmac.acknowledge(6u);
+    memory.write32(bind_source + 32u,
+                   iop::c_sif_rpc_bridge::k_iop_heap_server);
+    if (!sif1.set_dma(list, 1u, &dma_id) ||
+        memory.read32(ee_receive + 0u) != 48u ||
+        memory.read32(ee_receive + 8u) !=
+            iop::c_sif_rpc_bridge::k_reply_cid ||
+        memory.read32(ee_receive + 32u) !=
+            iop::c_sif_rpc_bridge::k_bind_cid ||
+        memory.read32(ee_receive + 36u) !=
+            (iop::c_sif_rpc_bridge::k_iop_heap_server ^
+             iop::c_sif_rpc_bridge::k_server_xor) ||
+        memory.read32(ee_receive + 40u) !=
+            iop::c_sif_rpc_bridge::k_rpc_data_destination ||
+        rpc.load_requests() != 0u ||
+        (dmac.status() & (1u << 5u)) == 0u)
+    {
+        return fail("64-byte IOPHEAP BIND did not reply through SIF0");
+    }
+
+    // IOPHEAP alloc/free must use the same allocator as linked IOP
+    // modules and guest thread stacks, and cannot free those resources.
+    const std::vector<uint32_t> heap_call = {
+        56u, 0u, iop::c_sif_rpc_bridge::k_call_cid, 0u,
+        6u, 0x11060u, 0x1234u, 0x15000u,
+        1u, 16u, rpc_result, 4u, 1u,
+        iop::c_sif_rpc_bridge::k_iop_heap_server ^
+            iop::c_sif_rpc_bridge::k_server_xor
+    };
+    packet(memory, call_source, heap_call);
+    packet(memory, args_source, {0x100u, 0u, 0u, 0u});
+    descriptor(memory, list, args_source,
+               iop::c_sif_rpc_bridge::k_rpc_data_destination, 16u);
+    descriptor(memory, list + 16u, call_source,
+               iop::c_sifcmd_bridge::k_command_buffer, 56u);
+    memory.write32(list + 28u, 0x44u);
+    dmac.acknowledge(5u);
+    dmac.acknowledge(6u);
+    if (!sif1.set_dma(list, 2u, &dma_id) ||
+        memory.read32(rpc_result) < iop::c_kernel::k_user_base ||
+        memory.read32(rpc_result) >= iop::c_cpu::k_ram_size ||
+        (memory.read32(rpc_result) & 0x0fu) != 0u ||
+        memory.read32(ee_receive + 32u) !=
+            iop::c_sif_rpc_bridge::k_call_cid ||
+        (dmac.status() & (1u << 5u)) == 0u ||
+        rpc.load_requests() != 0u)
+    {
+        return fail("IOPHEAP method 1 did not allocate IOP RAM");
+    }
+    const uint32_t heap_address = memory.read32(rpc_result);
+
+    // Method 2 can only free a previously issued IOPHEAP block.
+    dmac.acknowledge(5u);
+    dmac.acknowledge(6u);
+    memory.write32(call_source + 32u, 2u);
+    memory.write32(args_source, heap_address);
+    if (!sif1.set_dma(list, 2u, &dma_id) ||
+        memory.read32(rpc_result) != 0u ||
+        memory.read32(ee_receive + 32u) !=
+            iop::c_sif_rpc_bridge::k_call_cid)
+    {
+        return fail("IOPHEAP method 2 could not free its own block");
+    }
+
+    // IOPHEAP method 3 (file-to-RAM) is deliberately not accepted:
+    // it needs a separately verified IOP file transport.
+    dmac.acknowledge(5u);
+    dmac.acknowledge(6u);
+    memory.write32(call_source + 32u, 3u);
+    iop::s_sif1_dma_diagnostic heap_rejection{};
+    if (sif1.set_dma(list, 2u, &dma_id, &heap_rejection) ||
+        heap_rejection.m_failure !=
+            iop::e_sif1_dma_failure::unsupported_rpc_packet ||
+        rpc.pending_replies() != 0u ||
+        rpc.load_requests() != 0u ||
+        (dmac.status() & ((1u << 5u) | (1u << 6u))) != 0u)
+    {
+        return fail("unsupported IOPHEAP file load fabricated success");
+    }
+
+    // IOPHEAP query methods expose actual IOP memory capacity.
+    memory.write32(call_source + 32u, 5u);
+    dmac.acknowledge(5u);
+    dmac.acknowledge(6u);
+    if (!sif1.set_dma(list, 2u, &dma_id) ||
+        memory.read32(rpc_result) != iop::c_cpu::k_ram_size)
+    {
+        return fail("IOPHEAP method 5 reported incorrect RAM size");
+    }
+    memory.write32(call_source + 32u, 6u);
+    dmac.acknowledge(5u);
+    dmac.acknowledge(6u);
+    if (!sif1.set_dma(list, 2u, &dma_id) ||
+        memory.read32(rpc_result) == 0u ||
+        memory.read32(rpc_result) > iop::c_cpu::k_ram_size)
+    {
+        return fail("IOPHEAP method 6 reported invalid free maximum");
     }
 
     const std::string guest_path = "cdrom0:\\PADMAN.IRX;1";

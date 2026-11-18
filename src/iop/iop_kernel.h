@@ -105,6 +105,14 @@ public:
     );
     const s_kernel_module* module(uint32_t id) const;
 
+    // HLE IOPHEAP shares the same first-fit IOP RAM address space
+    // as linked IRX modules and guest thread stacks. Only addresses
+    // allocated by this API can be freed through IOPHEAP.
+    uint32_t allocate_heap(uint32_t size);
+    bool free_heap(uint32_t address);
+    uint32_t heap_max_free() const;
+    uint32_t heap_total_free() const;
+
     // Create an initially dormant R3000 thread. Priority 0 is highest.
     // A kernel will eventually publish proper thread APIs to IRX imports.
     uint32_t create_thread(
@@ -140,6 +148,7 @@ private:
     c_cpu m_cpu{};
     c_hw m_hardware{};
     std::map<uint32_t, uint32_t> m_allocations;
+    std::map<uint32_t, uint32_t> m_heap_allocations;
     std::map<std::string, std::map<uint16_t, uint32_t>> m_libraries;
     std::map<uint32_t, s_kernel_module> m_modules;
     std::map<uint32_t, s_kernel_thread> m_threads;

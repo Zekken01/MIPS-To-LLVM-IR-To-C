@@ -64,6 +64,7 @@ void c_kernel::reset()
     m_hardware.reset();
     m_rom0_boot_active = false;
     m_allocations.clear();
+    m_heap_allocations.clear();
     m_libraries.clear();
     m_modules.clear();
     m_threads.clear();
@@ -176,6 +177,68 @@ uint32_t c_kernel::allocate(uint32_t size)
     const uint32_t base = static_cast<uint32_t>(candidate);
     m_allocations.emplace(base, static_cast<uint32_t>(required));
     return base;
+}
+
+uint32_t c_kernel::allocate_heap(uint32_t size)
+{
+    if (m_rom0_boot_active)
+    {
+        return 0u;
+    }
+    const uint32_t address = allocate(size);
+    if (address != 0u)
+    {
+        m_heap_allocations.emplace(address, m_allocations.at(address));
+    }
+    return address;
+}
+
+bool c_kernel::free_heap(uint32_t address)
+{
+    if (m_rom0_boot_active ||
+        m_heap_allocations.erase(address) == 0u)
+    {
+        return false;
+    }
+    return m_allocations.erase(address) == 1u;
+}
+
+uint32_t c_kernel::heap_max_free() const
+{
+    uint64_t candidate = k_user_base;
+    uint64_t largest = 0u;
+    for (const auto& item : m_allocations)
+    {
+        if (item.first > candidate)
+        {
+            largest = std::max(largest, item.first - candidate);
+        }
+        candidate = align16(std::max(
+            candidate, static_cast<uint64_t>(item.first) + item.second
+        ));
+    }
+    largest = std::max(
+        largest, static_cast<uint64_t>(c_cpu::k_ram_size) - candidate
+    );
+    return static_cast<uint32_t>(largest);
+}
+
+uint32_t c_kernel::heap_total_free() const
+{
+    uint64_t candidate = k_user_base;
+    uint64_t total = 0u;
+    for (const auto& item : m_allocations)
+    {
+        if (item.first > candidate)
+        {
+            total += item.first - candidate;
+        }
+        candidate = align16(std::max(
+            candidate, static_cast<uint64_t>(item.first) + item.second
+        ));
+    }
+    total += static_cast<uint64_t>(c_cpu::k_ram_size) - candidate;
+    return static_cast<uint32_t>(total);
 }
 
 bool c_kernel::estimate_module_size(

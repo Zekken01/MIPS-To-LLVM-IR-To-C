@@ -1125,7 +1125,8 @@ int main(int argc, char** argv)
                 );
             }
             iop_rpc = std::make_unique<iop::c_sif_rpc_bridge>(
-                *iop_disc, *iop_sifcmd, *memory, hardware.dmac()
+                *iop_disc, *iop_kernel, *iop_sifcmd,
+                *memory, hardware.dmac()
             );
             iop_sif1 = std::make_unique<iop::c_sif1_bridge>(
                 *memory, iop_kernel->cpu(), hardware.dmac(),

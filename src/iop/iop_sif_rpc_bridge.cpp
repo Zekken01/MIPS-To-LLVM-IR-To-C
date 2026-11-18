@@ -65,10 +65,11 @@ bool read_guest_path(
 } // namespace
 
 c_sif_rpc_bridge::c_sif_rpc_bridge(
-    c_disc_loader& loader, c_sifcmd_bridge& sifcmd,
-    ee::ee_memory& ee_ram, ee::c_ee_dmac& dmac
+    c_disc_loader& loader, c_kernel& kernel,
+    c_sifcmd_bridge& sifcmd, ee::ee_memory& ee_ram,
+    ee::c_ee_dmac& dmac
 )
-    : m_loader(loader), m_sifcmd(sifcmd),
+    : m_loader(loader), m_kernel(kernel), m_sifcmd(sifcmd),
       m_ee_ram(ee_ram), m_dmac(dmac)
 {
 }
@@ -107,36 +108,76 @@ bool c_sif_rpc_bridge::prepare_command(
     // The remaining bytes are reserved/padding, not a second RPC.
     if (cid == k_bind_cid && (size == 36u || size == 64u))
     {
-        if (packet[8] != k_loadfile_server)
+        if (packet[8] != k_loadfile_server &&
+            packet[8] != k_iop_heap_server)
         {
             return false;
         }
+        candidate.m_server_id = packet[8];
         *request = std::move(candidate);
         return true;
     }
 
-    if (cid != k_call_cid || size != 56u ||
-        packet[13] != (k_loadfile_server ^ k_server_xor) ||
-        packet[8] != 0u || // method 0 is sceSifLoadModule
-        packet[9] < 260u || packet[9] > 4096u ||
-        packet[11] < 8u || packet[11] > 4096u ||
+    if (cid != k_call_cid ||
+        (size != 56u && size != 64u) ||
+        packet[9] > 4096u ||
+        packet[11] > 4096u ||
         packet[12] > 1u ||
         payload_length < packet[9])
     {
         return false;
     }
 
+    const uint32_t server_id = packet[13] ^ k_server_xor;
+    const uint32_t method = packet[8];
     uint32_t result = 0u;
-    if (!normalize_ee_ram(packet[10], &result) ||
-        !m_ee_ram.contains(result, 8u) ||
-        !m_ee_ram.contains(payload_source, packet[9]) ||
-        !read_guest_path(
-            m_ee_ram, payload_source, packet[9],
-            &candidate.m_guest_path))
+    if (!normalize_ee_ram(packet[10], &result))
     {
         return false;
     }
+    candidate.m_server_id = server_id;
     candidate.m_result_destination = result;
+    if (server_id == k_loadfile_server)
+    {
+        if (method != 0u || packet[9] < 260u ||
+            packet[11] < 8u ||
+            !m_ee_ram.contains(result, 8u) ||
+            !m_ee_ram.contains(payload_source, packet[9]) ||
+            !read_guest_path(
+                m_ee_ram, payload_source, packet[9],
+                &candidate.m_guest_path))
+        {
+            return false;
+        }
+    }
+    else if (server_id == k_iop_heap_server)
+    {
+        // IOPHEAP methods match ps2-web-recomp/SDBZ:
+        // 1 alloc, 2 free, 4 system alloc, 5 size,
+        // 6 maximum free, 7 total free.
+        // Method 3 loads a file into IOP RAM and is not yet modeled.
+        const bool has_argument =
+            method == 1u || method == 2u || method == 4u;
+        if ((method != 1u && method != 2u && method != 4u &&
+             method != 5u && method != 6u && method != 7u) ||
+            (has_argument && packet[9] < (method == 4u ? 12u : 4u)) ||
+            packet[11] < 4u ||
+            !m_ee_ram.contains(result, 4u) ||
+            (packet[9] != 0u &&
+             !m_ee_ram.contains(payload_source, packet[9])))
+        {
+            return false;
+        }
+        if (has_argument)
+        {
+            candidate.m_heap_argument =
+                m_ee_ram.read32(payload_source);
+        }
+    }
+    else
+    {
+        return false;
+    }
     *request = std::move(candidate);
     return true;
 }
@@ -159,11 +200,12 @@ void c_sif_rpc_bridge::commit_command(const s_request& request)
 
     if (request.m_words[2] == k_bind_cid)
     {
-        response.m_words[9] = k_loadfile_server ^ k_server_xor;
+        response.m_words[9] = request.m_server_id ^ k_server_xor;
         response.m_words[10] = k_rpc_data_destination;
         response.m_words[11] = 0xdeadcafeu;
     }
-    else if (request.m_words[2] == k_call_cid)
+    else if (request.m_words[2] == k_call_cid &&
+             request.m_server_id == k_loadfile_server)
     {
         ++m_load_requests;
         const s_disc_load_result loaded = m_loader.load_requested(
@@ -182,6 +224,36 @@ void c_sif_rpc_bridge::commit_command(const s_request& request)
             loaded.m_result == e_disc_load_result::success
                 ? 0u : static_cast<uint32_t>(-1)
         );
+    }
+    else if (request.m_words[2] == k_call_cid &&
+             request.m_server_id == k_iop_heap_server)
+    {
+        uint32_t result = 0u;
+        switch (request.m_words[8])
+        {
+        case 1u:
+        case 4u:
+            result = m_kernel.allocate_heap(request.m_heap_argument);
+            break;
+        case 2u:
+            result = m_kernel.free_heap(request.m_heap_argument)
+                ? 0u : static_cast<uint32_t>(-1);
+            break;
+        case 5u:
+            result = c_cpu::k_ram_size;
+            break;
+        case 6u:
+            result = m_kernel.heap_max_free();
+            break;
+        case 7u:
+            result = m_kernel.heap_total_free();
+            break;
+        default:
+            // Unreachable: prepare_command refuses unimplemented methods.
+            result = static_cast<uint32_t>(-1);
+            break;
+        }
+        m_ee_ram.write32(request.m_result_destination, result);
     }
     m_replies.push_back(response);
     (void)pump();

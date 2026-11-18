@@ -12,7 +12,7 @@
 
 namespace iop
 {
-// Bounded, explicit LOADFILE RPC server connected to guest-initialized
+// Bounded, explicit LOADFILE and IOPHEAP RPC services connected to guest-initialized
 // IOP SIFCMD. Only actual EE SIF1 bind/call packets invoke this service.
 // Outgoing replies require an EE-provided receive buffer and armed SIF0.
 // No IOP firmware, SMFLAG readiness, or generic RPC dispatch is synthesized.
@@ -21,6 +21,7 @@ class c_sif_rpc_bridge
 public:
     static constexpr uint32_t k_rpc_data_destination = 0xdeadbef0u;
     static constexpr uint32_t k_loadfile_server = 0x80000006u;
+    static constexpr uint32_t k_iop_heap_server = 0x80000003u;
     static constexpr uint32_t k_bind_cid = 0x80000009u;
     static constexpr uint32_t k_call_cid = 0x8000000au;
     static constexpr uint32_t k_reply_cid = 0x80000008u;
@@ -31,11 +32,14 @@ public:
         uint32_t m_words[16]{};
         uint32_t m_word_count = 0u;
         uint32_t m_result_destination = 0u;
+        uint32_t m_server_id = 0u;
+        uint32_t m_heap_argument = 0u;
         std::string m_guest_path;
     };
 
     c_sif_rpc_bridge(
         c_disc_loader& loader,
+        c_kernel& kernel,
         c_sifcmd_bridge& sifcmd,
         ee::ee_memory& ee_ram,
         ee::c_ee_dmac& dmac
@@ -75,6 +79,7 @@ private:
     };
 
     c_disc_loader& m_loader;
+    c_kernel& m_kernel;
     c_sifcmd_bridge& m_sifcmd;
     ee::ee_memory& m_ee_ram;
     ee::c_ee_dmac& m_dmac;
