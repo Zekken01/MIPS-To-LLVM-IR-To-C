@@ -356,6 +356,76 @@ int main()
     }
     memory.write32(bind_source + 28u, 0x15000u);
 
+    // Retail SDBZ's first CdInit request is method 5, carried by
+    // a two-descriptor SIF1 RPC call with a full 64-byte SDK packet.
+    // Only result[3] changes, as in ps2-web-recomp's CDVDFSV HLE.
+    const std::vector<uint32_t> cdvd_call = {
+        0x440u, 0u, iop::c_sif_rpc_bridge::k_call_cid, 0u,
+        7u, 0x11080u, 0x1234u, 0x005688a8u,
+        5u, 16u, rpc_result, 16u, 1u,
+        iop::c_sif_rpc_bridge::k_cdvd_init_server ^
+            iop::c_sif_rpc_bridge::k_server_xor,
+        0u, 0u
+    };
+    packet(memory, call_source, cdvd_call);
+    packet(memory, args_source, {5u, 0u, 0u, 0u});
+    packet(memory, rpc_result, {
+        0x11111111u, 0x22222222u, 0x33333333u, 0x44444444u
+    });
+    descriptor(memory, list, args_source,
+               iop::c_sif_rpc_bridge::k_rpc_data_destination, 16u);
+    descriptor(memory, list + 16u, call_source,
+               iop::c_sifcmd_bridge::k_command_buffer, 64u);
+    memory.write32(list + 28u, 0x44u);
+    dmac.acknowledge(5u);
+    dmac.acknowledge(6u);
+    if (!sif1.set_dma(list, 2u, &dma_id) ||
+        memory.read32(rpc_result) != 0x11111111u ||
+        memory.read32(rpc_result + 4u) != 0x22222222u ||
+        memory.read32(rpc_result + 8u) != 0x33333333u ||
+        memory.read32(rpc_result + 12u) != 0xffu ||
+        memory.read32(ee_receive + 28u) != 0x005688a8u ||
+        memory.read32(ee_receive + 32u) !=
+            iop::c_sif_rpc_bridge::k_call_cid ||
+        rpc.pending_replies() != 0u ||
+        rpc.load_requests() != 0u ||
+        kernel.module(1u) != nullptr ||
+        (dmac.status() & (1u << 5u)) == 0u)
+    {
+        return fail("CDVD Init method 5 did not return through SIF0");
+    }
+
+    // An unmodeled CdInit method must not write a success result,
+    // emit a reply, or acknowledge a DMA that did not complete.
+    dmac.acknowledge(5u);
+    dmac.acknowledge(6u);
+    memory.write32(call_source + 32u, 6u);
+    iop::s_sif1_dma_diagnostic cdvd_call_rejection{};
+    if (sif1.set_dma(list, 2u, &dma_id, &cdvd_call_rejection) ||
+        cdvd_call_rejection.m_failure !=
+            iop::e_sif1_dma_failure::unsupported_rpc_packet ||
+        cdvd_call_rejection.m_rpc_server !=
+            iop::c_sif_rpc_bridge::k_cdvd_init_server ||
+        cdvd_call_rejection.m_rpc_client != 0x005688a8u ||
+        memory.read32(rpc_result + 12u) != 0xffu ||
+        rpc.pending_replies() != 0u ||
+        (dmac.status() & ((1u << 5u) | (1u << 6u))) != 0u)
+    {
+        return fail("unsupported CDVD Init call fabricated completion");
+    }
+    // Method 5 with no room for its sixteen-byte reply is also refused.
+    memory.write32(call_source + 32u, 5u);
+    memory.write32(call_source + 44u, 12u);
+    if (sif1.set_dma(list, 2u, &dma_id, &cdvd_call_rejection) ||
+        cdvd_call_rejection.m_failure !=
+            iop::e_sif1_dma_failure::unsupported_rpc_packet ||
+        memory.read32(rpc_result + 12u) != 0xffu ||
+        rpc.pending_replies() != 0u ||
+        (dmac.status() & ((1u << 5u) | (1u << 6u))) != 0u)
+    {
+        return fail("CDVD Init short reply buffer was accepted");
+    }
+
     // Bind the IOPHEAP server observed in the retail SDBZ bootstrap.
     // The EE must see the actual server identity in the SIF0 reply.
     dmac.acknowledge(5u);
