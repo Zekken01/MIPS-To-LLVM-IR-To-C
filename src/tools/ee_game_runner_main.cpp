@@ -1729,11 +1729,21 @@ int main(int argc, char** argv)
             ee::e_ee_exit_reason::EE_EXIT_DISPATCH);
         if (trace)
         {
-            std::printf("HLE %s callback enter: cause=%u "
-                        "handler=0x%08x arg=0x%08x gp=0x%08x\n",
-                        irq_callback_is_intc ? "INTC" : "DMAC",
-                        irq_callback_cause, handler.m_address,
-                        handler.m_arg, handler.m_gp);
+            if (irq_callback_is_intc)
+            {
+                std::printf("HLE INTC callback enter: cause=%u "
+                            "handler=0x%08x arg=0x%08x gp=0x%08x\n",
+                            irq_callback_cause, handler.m_address,
+                            handler.m_arg, handler.m_gp);
+            }
+            else
+            {
+                // Keep the established ROM0/DMA5 diagnostic contract.
+                std::printf("HLE DMAC callback enter: channel=%u "
+                            "handler=0x%08x arg=0x%08x gp=0x%08x\n",
+                            irq_callback_cause, handler.m_address,
+                            handler.m_arg, handler.m_gp);
+            }
         }
     };
     std::vector<s_syscall_sample> syscall_history;
@@ -2241,10 +2251,18 @@ int main(int argc, char** argv)
                 ee::e_ee_exit_reason::EE_EXIT_DISPATCH);
             if (trace)
             {
-                std::printf("HLE %s callback returned: cause=%u "
-                            "v0=%d resume=0x%08x\n",
-                            irq_callback_is_intc ? "INTC" : "DMAC",
-                            irq_callback_cause, result, cpu.m_pc);
+                if (irq_callback_is_intc)
+                {
+                    std::printf("HLE INTC callback returned: cause=%u "
+                                "v0=%d resume=0x%08x\n",
+                                irq_callback_cause, result, cpu.m_pc);
+                }
+                else
+                {
+                    std::printf("HLE DMAC callback returned: channel=%u "
+                                "v0=%d resume=0x%08x\n",
+                                irq_callback_cause, result, cpu.m_pc);
+                }
             }
             // A genuine interrupt-safe SignalSema may have promoted an EE
             // waiter to READY. The kernel must finish restoring interrupted
