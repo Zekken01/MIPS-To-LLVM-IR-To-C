@@ -1,7 +1,10 @@
 #include "ee_exceptions.h"
+#include "native_codegen.h"
 
 #include <cstdint>
 #include <cstdio>
+#include <string>
+#include <vector>
 
 namespace
 {
@@ -82,6 +85,22 @@ int main()
           cpu.m_cop0[ee::COP0_Cause] ==
               before_invalid.m_cop0[ee::COP0_Cause],
           "invalid indices and null CPU do not mutate architectural state");
+
+    // The less frequently used C/C++ emitter must obey the same ABI as
+    // generated LLVM, including the callable body's CPU pointer substitution.
+    ee::s_lifted_op mtc0{};
+    mtc0.kind = ee::LOP_MTC0;
+    mtc0.rt = 8u;
+    mtc0.rd = ee::COP0_Compare;
+    mtc0.pc = 0x00100000u;
+    ee::native_codegen generator;
+    const std::string callable = generator.emit_function_body(
+        std::vector<ee::s_lifted_op>{mtc0},
+        mtc0.pc, "cop0_callable"
+    );
+    check(callable.find("ee_cop0_write(cpu, 11,") != std::string::npos &&
+          callable.find("cpu->m_cop0[11] =") == std::string::npos,
+          "native callable emitter calls the shared COP0 write helper");
 
     std::printf("ee_cop0_write_test: %d failure(s)\n", s_failures);
     return s_failures != 0 ? 1 : 0;
