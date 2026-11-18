@@ -1160,12 +1160,17 @@ int main()
         0u, 16u, rpc_result, 4u, 1u,
         0x8000beefu ^ iop::c_sif_rpc_bridge::k_server_xor, 0u, 0u
     });
-    descriptor(memory, list + 16u, call_source,
+    // The payload descriptor must precede the command; otherwise
+    // prepare_command correctly rejects a missing payload before it can
+    // classify the intentionally unknown RPC server.
+    descriptor(memory, list + 16u, args_source,
+               iop::c_sif_rpc_bridge::k_rpc_data_destination, 16u);
+    descriptor(memory, list + 32u, call_source,
                iop::c_sifcmd_bridge::k_command_buffer, 64u);
-    memory.write32(list + 28u, 0x44u);
+    memory.write32(list + 44u, 0x44u);
     uint32_t guarded_after = 0u;
-    if (sif1.set_dma(list, 2u, &dma_id, &rejection) ||
-        rejection.m_descriptor_index != 1u ||
+    if (sif1.set_dma(list, 3u, &dma_id, &rejection) ||
+        rejection.m_descriptor_index != 2u ||
         rejection.m_rpc_rejection !=
             iop::e_rpc_rejection::unknown_server ||
         !kernel.cpu().read32(guarded_iop_address, &guarded_after) ||
