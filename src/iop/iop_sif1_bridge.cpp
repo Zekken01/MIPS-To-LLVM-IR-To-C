@@ -162,7 +162,15 @@ bool c_sif1_bridge::set_dma(
             diagnostic->m_size = size;
             diagnostic->m_attributes = attributes;
         }
-        if (size == 0u || size > 65536u || attributes != 0u)
+        // The terminal SIFCMD descriptor uses SIF_DMA_ERT |
+        // SIF_DMA_INT_O (0x40 | 0x04). It is a real command-buffer
+        // transfer, not an implicit command or DMA completion.
+        const bool terminal_command =
+            attributes == 0x44u &&
+            index + 1u == count &&
+            destination == c_sifcmd_bridge::k_command_buffer;
+        if (size == 0u || size > 65536u ||
+            (attributes != 0u && !terminal_command))
         {
             return refuse(e_sif1_dma_failure::invalid_size_or_attributes);
         }

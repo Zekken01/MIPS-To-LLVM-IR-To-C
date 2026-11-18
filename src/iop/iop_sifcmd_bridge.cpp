@@ -125,29 +125,38 @@ bool c_sifcmd_bridge::prepare_command(
     s_command* command
 ) const
 {
+    // The EE initialization and CHANGE_SADDR commands carry one word
+    // after the 16-byte SIFCMD header; SET_SREG carries two words.
+    // DMA transfers round to 16 bytes, but the header records the
+    // original 20/24-byte packet size.
     if (!m_initialized || command == nullptr ||
-        size != 24u || words.size() < 6u ||
-        (words[0] & 0xffu) != 24u ||
-        words[1] != 0u)
+        (size != 20u && size != 24u) ||
+        words.size() < size / 4u ||
+        (words[0] & 0xffu) != size ||
+        words[1] != 0u || words[3] != 0u)
     {
         return false;
     }
 
-    // The IOP consumes these SIF command packet headers directly;
-    // no host-synthesized command, readiness or return packet exists.
-    // CID 0x80000001 carries an SREG index/value.
-    // CID 0x80000002 publishes the EE command receive buffer (opt=0).
+    // The IOP consumes only validated command packets. Neither a
+    // published address nor a DMA flag synthesizes an RPC reply.
     const uint32_t cid = words[2];
-    const uint32_t opt = words[3];
     const uint32_t index_or_address = words[4];
-    if (cid == 0x80000001u && opt == 0u &&
+    if (cid == 0x80000001u && size == 24u &&
         index_or_address < 32u)
     {
         *command = {cid, index_or_address, words[5]};
         return true;
     }
 
-    if (cid == 0x80000002u && opt == 0u &&
+    // 0x80000000 = CHANGE_SADDR, 0x80000002 = INIT_CMD.
+    // Keep the already-tested 24-byte INIT_CMD variant only when
+    // its extra word is zero, while accepting the real 20-byte form.
+    const bool receive_command =
+        (cid == 0x80000000u && size == 20u) ||
+        (cid == 0x80000002u &&
+         (size == 20u || (size == 24u && words[5] == 0u)));
+    if (receive_command &&
         index_or_address != 0u &&
         (index_or_address & 0x0fu) == 0u &&
         index_or_address < 0x02000000u)
@@ -167,7 +176,8 @@ void c_sifcmd_bridge::commit_command(const s_command& command)
     {
         m_sregs[command.m_index] = command.m_value;
     }
-    else if (command.m_cid == 0x80000002u)
+    else if (command.m_cid == 0x80000000u ||
+             command.m_cid == 0x80000002u)
     {
         m_ee_receive_address = command.m_value;
     }

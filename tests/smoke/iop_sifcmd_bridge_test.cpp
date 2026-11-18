@@ -27,13 +27,14 @@ bool write_call(
 
 void descriptor(
     ee::ee_memory& memory,
-    uint32_t address, uint32_t src, uint32_t dst, uint32_t size
+    uint32_t address, uint32_t src, uint32_t dst, uint32_t size,
+    uint32_t attributes = 0u
 )
 {
     memory.write32(address, src);
     memory.write32(address + 4u, dst);
     memory.write32(address + 8u, size);
-    memory.write32(address + 12u, 0u);
+    memory.write32(address + 12u, attributes);
 }
 
 void command(
@@ -47,6 +48,21 @@ void command(
     memory.write32(address + 12u, 0u);
     memory.write32(address + 16u, first);
     memory.write32(address + 20u, second);
+    memory.write32(address + 24u, 0u);
+    memory.write32(address + 28u, 0u);
+}
+
+void command20(
+    ee::ee_memory& memory, uint32_t address,
+    uint32_t cid, uint32_t receive_address
+)
+{
+    memory.write32(address + 0u, 20u);
+    memory.write32(address + 4u, 0u);
+    memory.write32(address + 8u, cid);
+    memory.write32(address + 12u, 0u);
+    memory.write32(address + 16u, receive_address);
+    memory.write32(address + 20u, 0u);
     memory.write32(address + 24u, 0u);
     memory.write32(address + 28u, 0u);
 }
@@ -191,6 +207,68 @@ int main()
         return fail("EE command receive address or SMFLAG ownership");
     }
 
+    // Real EE sifcmd uses a terminal 20-byte 0x44 descriptor for
+    // CHANGE_SADDR and INIT_CMD. Receiving it updates only the real
+    // registered EE command buffer, never SMFLAG or an RPC reply.
+    dmac.acknowledge(6u);
+    command20(ee_ram, k_source, 0x80000000u, 0x00181000u);
+    descriptor(
+        ee_ram, k_list, k_source,
+        iop::c_sifcmd_bridge::k_command_buffer, 20u, 0x44u
+    );
+    if (!transport.set_dma(k_list, 1u, &dma_id) ||
+        dma_id != 3u ||
+        commands.ee_receive_address() != 0x00181000u ||
+        !kernel.cpu().read32(
+            iop::c_sifcmd_bridge::k_command_buffer + 16u, &iop_word) ||
+        iop_word != 0x00181000u ||
+        (dmac.status() & (1u << 6u)) == 0u ||
+        !sif.get_reg(4u, &smflag) || smflag != 0u)
+    {
+        return fail("terminal CHANGE_SADDR command was not delivered");
+    }
+
+    dmac.acknowledge(6u);
+    command20(ee_ram, k_source, 0x80000002u, 0x00182000u);
+    if (!transport.set_dma(k_list, 1u, &dma_id) ||
+        dma_id != 4u ||
+        commands.ee_receive_address() != 0x00182000u ||
+        !kernel.cpu().read32(
+            iop::c_sifcmd_bridge::k_command_buffer + 8u, &iop_word) ||
+        iop_word != 0x80000002u ||
+        (dmac.status() & (1u << 6u)) == 0u)
+    {
+        return fail("terminal 20-byte INIT_CMD not delivered");
+    }
+
+    // A terminal descriptor does not authorize an empty command or
+    // an arbitrary DMA endpoint. Reject these without IOP mutations,
+    // DMAC completion, or a newly issued transaction ID.
+    dmac.acknowledge(6u);
+    ee_ram.write32(k_source, 0u);
+    iop::s_sif1_dma_diagnostic command_rejection{};
+    if (transport.set_dma(k_list, 1u, &dma_id, &command_rejection) ||
+        command_rejection.m_failure !=
+            iop::e_sif1_dma_failure::unsupported_sifcmd_packet ||
+        command_rejection.m_packet_size != 0u ||
+        command_rejection.m_packet_cid != 0x80000002u ||
+        commands.ee_receive_address() != 0x00182000u ||
+        dmac.status() != 0u)
+    {
+        return fail("empty INIT_CMD was wrongly completed");
+    }
+
+    descriptor(
+        ee_ram, k_list, k_data_source, k_destination, 16u, 0x44u
+    );
+    if (transport.set_dma(k_list, 1u, &dma_id, &command_rejection) ||
+        command_rejection.m_failure !=
+            iop::e_sif1_dma_failure::invalid_size_or_attributes ||
+        dmac.status() != 0u)
+    {
+        return fail("terminal SIFCMD flags were accepted on ordinary DMA");
+    }
+
     // An unsupported RPC CID may not be mistaken for a completed
     // operation or reply. Check that earlier transfers in the same
     // descriptor list are not partially committed on rejection.
@@ -221,7 +299,7 @@ int main()
         rejection.m_packet_cid != 0x80000009u ||
         !kernel.cpu().read32(k_destination, &iop_word) ||
         iop_word != 0xdeadc0deu ||
-        commands.ee_receive_address() != 0x00180000u ||
+        commands.ee_receive_address() != 0x00182000u ||
         dmac.status() != 0u)
     {
         return fail("unsupported RPC command caused a partial DMA");
