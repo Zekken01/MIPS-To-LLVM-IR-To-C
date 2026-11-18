@@ -387,6 +387,88 @@ int main()
               ee::e_ee_probe_waw_policy::ORDERED_OVERLAP),
           "invalid or midstream overlap-mode changes fail closed");
 
+    // COP0 and VU0 VF/VI are independent architectural scoreboards.
+    // These candidate categories intentionally occupy a cycle alone,
+    // without asserting a verified hardware pairing or bypass rule.
+    clock.reset();
+    s_ee_probe_instruction write_cp0{};
+    write_cp0.m_pipe = e_ee_probe_pipe::SYSTEM_CONTROL;
+    write_cp0.m_gpr_read_mask = 1u << 8u;
+    write_cp0.m_cop0_write_mask = 1u << 12u;
+    write_cp0.m_cop0_result_latency = 6u;
+    s_ee_probe_instruction read_cp0{};
+    read_cp0.m_pipe = e_ee_probe_pipe::SYSTEM_CONTROL;
+    read_cp0.m_cop0_read_mask = 1u << 12u;
+    read_cp0.m_gpr_write_mask = 1u << 9u;
+    check(clock.issue(write_cp0, &at) && at == 0u &&
+          clock.issue(read_cp0, &at) && at == 6u,
+          "COP0 transfer RAW waits for explicit CP0-register readiness");
+
+    clock.reset();
+    read_cp0.m_cop0_read_mask = 1u << 13u;
+    check(clock.issue(write_cp0, &at) && at == 0u &&
+          clock.issue(read_cp0, &at) && at == 1u,
+          "independent COP0 registers do not share false dependencies");
+
+    clock.reset();
+    s_ee_probe_instruction write_vf{};
+    write_vf.m_pipe = e_ee_probe_pipe::VU0_TRANSFER;
+    write_vf.m_gpr_read_mask = 1u << 8u;
+    write_vf.m_vu0_vf_write_mask = 1u << 4u;
+    write_vf.m_vu0_vf_result_latency = 5u;
+    s_ee_probe_instruction read_vf{};
+    read_vf.m_pipe = e_ee_probe_pipe::VU0_TRANSFER;
+    read_vf.m_vu0_vf_read_mask = 1u << 4u;
+    read_vf.m_gpr_write_mask = 1u << 9u;
+    check(clock.issue(write_vf, &at) && at == 0u &&
+          clock.issue(read_vf, &at) && at == 5u,
+          "VU0 VF quadword transfer RAW waits for its own register");
+
+    clock.reset();
+    s_ee_probe_instruction read_vi{};
+    read_vi.m_pipe = e_ee_probe_pipe::VU0_TRANSFER;
+    read_vi.m_vu0_vi_read_mask = 1u << 4u;
+    read_vi.m_gpr_write_mask = 1u << 10u;
+    check(clock.issue(write_vf, &at) && at == 0u &&
+          clock.issue(read_vi, &at) && at == 1u,
+          "VU0 VF and VI register banks are tracked separately");
+
+    clock.reset();
+    write_vf.m_vu0_vf_write_mask = 1u;
+    read_vf.m_vu0_vf_read_mask = 1u;
+    check(clock.issue(write_vf, &at) && at == 0u &&
+          clock.issue(read_vf, &at) && at == 5u,
+          "VU0 register zero is conservatively tracked as a resource");
+
+    clock.reset();
+    write_cp0.m_cop0_result_latency = 8u;
+    s_ee_probe_instruction earlier_cp0 = write_cp0;
+    earlier_cp0.m_cop0_result_latency = 1u;
+    check(clock.configure_waw_policy(
+              ee::e_ee_probe_waw_policy::ORDERED_OVERLAP) &&
+          clock.issue(write_cp0, &at) && at == 0u &&
+          !clock.issue(earlier_cp0, &at) &&
+          clock.instructions_issued() == 1u &&
+          clock.estimated_cycles() == 1u,
+          "COP0 overlapping writers cannot overtake earlier completion");
+
+    clock.reset();
+    write_vf.m_vu0_vf_result_latency = 8u;
+    s_ee_probe_instruction earlier_vf = write_vf;
+    earlier_vf.m_vu0_vf_result_latency = 1u;
+    check(clock.configure_waw_policy(
+              ee::e_ee_probe_waw_policy::ORDERED_OVERLAP) &&
+          clock.issue(write_vf, &at) && at == 0u &&
+          !clock.issue(earlier_vf, &at) &&
+          clock.instructions_issued() == 1u,
+          "VU0 overlapping VF writers cannot overtake earlier completion");
+
+    clock.reset();
+    check(clock.issue(write_cp0, &at) && at == 0u &&
+          clock.issue(write_vf, &at) && at == 1u &&
+          clock.issue(read_cp0, &at) && at == 8u,
+          "COP0 readiness survives VU0 and host-execution boundaries");
+
     std::printf("ee_issue_timing_probe_test: %d failure(s)\n", g_failures);
     return g_failures != 0 ? 1 : 0;
 }
