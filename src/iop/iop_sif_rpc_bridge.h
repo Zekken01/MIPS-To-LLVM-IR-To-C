@@ -79,6 +79,10 @@ public:
     // Service execution occurs after SIF1 DMA staging/commit.
     void commit_command(const s_request& request);
 
+    // Invalidate outstanding RPC replies and CDVD streaming state
+    // whenever the IOP kernel is actually reset.
+    void reset_for_reboot();
+
     // The 16-byte EE INIT_CMD/opt=1 packet requests the original
     // IOP SET_SREG[0]=1 command. Reserve queue capacity during SIF1
     // validation; commit only after the entire batch is accepted.
