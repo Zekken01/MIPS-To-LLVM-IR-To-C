@@ -962,7 +962,8 @@ int main()
     }
 
     const auto cdvd_rpc_call = [&](uint32_t server, uint32_t method,
-                               uint32_t send_size, uint32_t recv_size) -> bool
+                               uint32_t send_size, uint32_t recv_size,
+                               iop::s_sif1_dma_diagnostic* diagnostic = nullptr) -> bool
     {
         packet(memory, call_source, {
             64u, 0u, iop::c_sif_rpc_bridge::k_call_cid, 0u,
@@ -978,7 +979,7 @@ int main()
         memory.write32(list + 28u, 0x44u);
         dmac.acknowledge(5u);
         dmac.acknowledge(6u);
-        return sif1.set_dma(list, 2u, &dma_id);
+        return sif1.set_dma(list, 2u, &dma_id, diagnostic);
     };
 
     packet(memory, args_source, {0u, 0u, 0u, 0u});
@@ -1090,6 +1091,108 @@ int main()
         (dmac.status() & ((1u << 5u) | (1u << 6u))) != 0u)
     {
         return fail("unknown CDVDFSV RPC invented a completion");
+    }
+
+    // Rejection categories are derived only from a genuine staged guest
+    // packet. A diagnosis must never acknowledge a SIF0/6 DMA event,
+    // alter the EE receive buffer or install an unknown service.
+    iop::s_sif1_dma_diagnostic rejection{};
+    const uint32_t unchanged_rpc_result = memory.read32(rpc_result);
+    dmac.acknowledge(5u);
+    dmac.acknowledge(6u);
+    if (cdvd_rpc_call(0x8000beefu, 0u, 16u, 4u, &rejection) ||
+        rejection.m_failure !=
+            iop::e_sif1_dma_failure::unsupported_rpc_packet ||
+        rejection.m_rpc_rejection !=
+            iop::e_rpc_rejection::unknown_server ||
+        rejection.m_rpc_server != 0x8000beefu ||
+        rejection.m_rpc_packet_word_count != 16u ||
+        memory.read32(rpc_result) != unchanged_rpc_result ||
+        rpc.pending_replies() != 0u ||
+        (dmac.status() & ((1u << 5u) | (1u << 6u))) != 0u)
+    {
+        return fail("unknown SIFRPC server was not diagnosed fail-closed");
+    }
+
+    if (cdvd_rpc_call(iop::c_sif_rpc_bridge::k_cdvd_s_server,
+                      0xffffu, 16u, 4u, &rejection) ||
+        rejection.m_rpc_rejection !=
+            iop::e_rpc_rejection::unsupported_method ||
+        memory.read32(rpc_result) != unchanged_rpc_result ||
+        (dmac.status() & ((1u << 5u) | (1u << 6u))) != 0u)
+    {
+        return fail("unsupported CDVDFSV method was not diagnosed");
+    }
+
+    if (cdvd_rpc_call(iop::c_sif_rpc_bridge::k_cdvd_n_server,
+                      0x01u, 4u, 4u, &rejection) ||
+        rejection.m_rpc_rejection !=
+            iop::e_rpc_rejection::invalid_arguments ||
+        rpc.pending_replies() != 0u)
+    {
+        return fail("truncated CDVDFSV arguments were not diagnosed");
+    }
+
+    if (cdvd_rpc_call(iop::c_sif_rpc_bridge::k_cdvd_stream_server,
+                      1u, 16u, 4u, &rejection) ||
+        rejection.m_rpc_rejection !=
+            iop::e_rpc_rejection::unavailable_backend ||
+        rpc.pending_replies() != 0u)
+    {
+        return fail("unscheduled CDVD stream RPC was not diagnosed");
+    }
+
+    // A valid first descriptor cannot partially write IOP RAM if a
+    // second descriptor carries an unsupported RPC packet.
+    const uint32_t guarded_iop_address = 0x00068000u;
+    uint32_t guarded_before = 0u;
+    if (!kernel.cpu().read32(guarded_iop_address, &guarded_before))
+    {
+        return fail("unable to inspect IOP rollback sentinel");
+    }
+    packet(memory, args_source, {0xdec0de11u, 0x12345678u, 0u, 0u});
+    descriptor(memory, list, args_source, guarded_iop_address, 16u);
+    // The rejected unknown-server call packet is still in call_source
+    // only after explicitly restoring it (the previous calls replaced it).
+    packet(memory, call_source, {
+        64u, 0u, iop::c_sif_rpc_bridge::k_call_cid, 0u,
+        8u, 0x110a0u, 0x1234u, 0x005688a8u,
+        0u, 16u, rpc_result, 4u, 1u,
+        0x8000beefu ^ iop::c_sif_rpc_bridge::k_server_xor, 0u, 0u
+    });
+    descriptor(memory, list + 16u, call_source,
+               iop::c_sifcmd_bridge::k_command_buffer, 64u);
+    memory.write32(list + 28u, 0x44u);
+    uint32_t guarded_after = 0u;
+    if (sif1.set_dma(list, 2u, &dma_id, &rejection) ||
+        rejection.m_descriptor_index != 1u ||
+        rejection.m_rpc_rejection !=
+            iop::e_rpc_rejection::unknown_server ||
+        !kernel.cpu().read32(guarded_iop_address, &guarded_after) ||
+        guarded_after != guarded_before ||
+        memory.read32(rpc_result) != unchanged_rpc_result ||
+        rpc.pending_replies() != 0u ||
+        (dmac.status() & ((1u << 5u) | (1u << 6u))) != 0u)
+    {
+        return fail("rejected second RPC partially committed prior IOP DMA");
+    }
+
+    // An explicitly successful prepare clears the diagnostic without
+    // altering its caller's guest memory or delivering a reply.
+    iop::c_sif_rpc_bridge::s_request staged{};
+    iop::e_rpc_rejection status = iop::e_rpc_rejection::unknown_server;
+    const std::vector<uint32_t> valid_bind = {
+        36u, 0u, iop::c_sif_rpc_bridge::k_bind_cid, 0u,
+        1u, 0x11000u, 0x1234u, 0x15000u,
+        iop::c_sif_rpc_bridge::k_loadfile_server
+    };
+    if (!rpc.prepare_command(valid_bind, 36u, 0u, 0u, &staged, &status) ||
+        status != iop::e_rpc_rejection::none ||
+        staged.m_server_id != iop::c_sif_rpc_bridge::k_loadfile_server ||
+        rpc.pending_replies() != 0u ||
+        memory.read32(rpc_result) != unchanged_rpc_result)
+    {
+        return fail("accepted RPC preview changed guest state or reason");
     }
 
     // Reset may not retain the previous IOPRP's LOADFILE version.
