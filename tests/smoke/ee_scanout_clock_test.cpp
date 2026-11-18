@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 
 namespace
 {
@@ -207,6 +208,18 @@ int main()
           delayed_bus.scanout().fields_started() == 0u,
           "unsupported CRT mode cannot retain the previous scanout schedule");
 
-    std::printf("ee_scanout_clock_test: %d failure(s)\\n", g_failed);
+    ee::c_ee_scanout_clock overflow_guard{};
+    const uint64_t origin =
+        std::numeric_limits<uint64_t>::max() -
+        2u * ee::c_ee_scanout_clock::k_ee_clock_hz;
+    check(overflow_guard.configure(1u, 2u, 0u, origin) &&
+          !overflow_guard.advance_to(
+              std::numeric_limits<uint64_t>::max(),
+              &intc, &flags, &memory) &&
+          overflow_guard.fields_started() == 0u &&
+          overflow_guard.last_ee_cycle() == origin,
+          "overflowing advance is rejected without delivering a field");
+
+    std::printf("ee_scanout_clock_test: %d failure(s)\n", g_failed);
     return g_failed ? 1 : 0;
 }

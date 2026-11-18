@@ -57,7 +57,12 @@ bool c_ee_scanout_clock::advance_to(
     c_ee_vsync_flags* flags, ee_memory* memory
 )
 {
+    // Keep enough headroom to queue the field *after* every delivered
+    // boundary. Otherwise an UINT64_MAX-adjacent timestamp could wrap the
+    // rational next-field accumulator and repeatedly fire a past event.
     if (!m_enabled || ee_cycle < m_last_ee_cycle ||
+        ee_cycle > std::numeric_limits<uint64_t>::max() -
+            2u * k_ee_clock_hz ||
         intc == nullptr || flags == nullptr || memory == nullptr)
     {
         return false;
