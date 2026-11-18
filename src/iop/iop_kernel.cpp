@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <utility>
 
@@ -201,6 +202,24 @@ bool c_kernel::free_heap(uint32_t address)
         return false;
     }
     return m_allocations.erase(address) == 1u;
+}
+
+bool c_kernel::owns_heap_span(uint32_t address, uint32_t size) const
+{
+    if (m_rom0_boot_active || size == 0u)
+    {
+        return false;
+    }
+    const auto upper = m_heap_allocations.upper_bound(address);
+    if (upper == m_heap_allocations.begin())
+    {
+        return false;
+    }
+    const auto allocation = std::prev(upper);
+    const uint64_t start = allocation->first;
+    const uint64_t end = start + allocation->second;
+    return static_cast<uint64_t>(address) >= start &&
+           static_cast<uint64_t>(address) + size <= end;
 }
 
 uint32_t c_kernel::heap_max_free() const

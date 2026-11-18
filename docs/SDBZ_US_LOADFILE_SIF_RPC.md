@@ -63,3 +63,10 @@ The most recent actual SDBZ US boot stopped at EE `0x001750B4`,
 6,945 dispatches, waiting for an IOP-produced SMFLAG bit.
 Do not claim a further game boot until a run with authentic IOP
 startup demonstrates it.
+
+
+## 2026-11-18 13:05: reboot metadata and LOADFILE/IOPHEAP service batch
+
+The matched retail replay reached 6,960 dispatches, accepted SIF_CMD_RESET_CMD, and issued a 64-byte SIFRPC CALL to LOADFILE server 0x80000006, method 0xFF, with zero send bytes and four receive bytes. The method queries the actual LOADFILE version, which is now extracted from the selected on-disc IOPRP image's PsIIloadfile marker, not inferred from its filename or a default. A missing marker remains unsupported. Reset invalidates previous version metadata. The real result is delivered through armed EE SIF0.
+
+IOPHEAP method 3 now copies actual mounted file bytes into a live, sufficiently large IOPHEAP allocation. Missing disc files return -2; invalid destinations, truncated paths, unknown methods and unbacked bytes fail closed. Regression covers the retail packet, version provenance, reset invalidation, file copies, failure replies and heap bounds. LOADFILE buffer method 6, module lookup method 9, nonzero module arguments, asynchronous completion and firmware IRX execution remain unimplemented. SetSyscall 0x12C remains unsupported.

@@ -264,15 +264,15 @@ bool c_sif_rpc_bridge::prepare_command(
     }
     else if (server_id == k_iop_heap_server)
     {
-        // IOPHEAP methods match ps2-web-recomp/SDBZ:
-        // 1 alloc, 2 free, 4 system alloc, 5 size,
-        // 6 maximum free, 7 total free.
-        // Method 3 loads a file into IOP RAM and is not yet modeled.
+        // IOPHEAP 1/2/4/5/6/7 share the real kernel allocator.
+        // Method 3 transfers actual mounted file bytes to a live
+        // IOPHEAP buffer, rather than writing kernel or IRX memory.
         const bool has_argument =
-            method == 1u || method == 2u || method == 4u;
-        if ((method != 1u && method != 2u && method != 4u &&
-             method != 5u && method != 6u && method != 7u) ||
-            (has_argument && packet[9] < (method == 4u ? 12u : 4u)) ||
+            method == 1u || method == 2u || method == 3u ||
+            method == 4u;
+        if ((method < 1u || method > 7u) ||
+            (has_argument && packet[9] <
+                (method == 3u ? 6u : (method == 4u ? 12u : 4u))) ||
             packet[11] < 4u ||
             !m_ee_ram.contains(result, 4u) ||
             (packet[9] != 0u &&
@@ -282,8 +282,73 @@ bool c_sif_rpc_bridge::prepare_command(
         }
         if (has_argument)
         {
-            candidate.m_heap_argument =
-                m_ee_ram.read32(payload_source);
+            candidate.m_heap_argument = m_ee_ram.read32(payload_source);
+        }
+        if (method == 3u)
+        {
+            const auto* folder =
+                dynamic_cast<c_folder_sector_source*>(m_sectors);
+            if (folder == nullptr)
+            {
+                return false;
+            }
+            const uint32_t region =
+                candidate.m_heap_argument & 0xe0000000u;
+            if (region != 0u && region != 0x80000000u &&
+                region != 0xa0000000u)
+            {
+                return false;
+            }
+            candidate.m_heap_argument &= 0x1fffffffu;
+            std::string path;
+            bool terminated = false;
+            for (uint32_t index = 4u; index < packet[9]; ++index)
+            {
+                const uint8_t ch =
+                    m_ee_ram.read8(payload_source + index);
+                if (ch == 0u)
+                {
+                    terminated = true;
+                    break;
+                }
+                if (ch < 0x21u || ch > 0x7eu ||
+                    path.size() >= 255u)
+                {
+                    return false;
+                }
+                path.push_back(static_cast<char>(ch));
+            }
+            if (!terminated || path.size() < 8u ||
+                path.find("..") != std::string::npos)
+            {
+                return false;
+            }
+            s_folder_file_info file{};
+            if (!folder->find_file(path, &file))
+            {
+                // Legitimate filesystem miss: reply -2, not success.
+                candidate.m_heap_file_found = false;
+            }
+            else
+            {
+                const uint32_t count =
+                    (file.m_size + c_iso_sector_source::k_sector_size -
+                     1u) / c_iso_sector_source::k_sector_size;
+                if (file.m_size == 0u ||
+                    !m_kernel.owns_heap_span(
+                        candidate.m_heap_argument, file.m_size) ||
+                    static_cast<uint64_t>(file.m_lba) + count >
+                        m_sectors->sector_count() ||
+                    !m_sectors->read_sectors(
+                        file.m_lba, count, candidate.m_heap_file_bytes) ||
+                    candidate.m_heap_file_bytes.size() < file.m_size)
+                {
+                    return false;
+                }
+                candidate.m_heap_file_size = file.m_size;
+                candidate.m_heap_file_bytes.resize(file.m_size);
+                candidate.m_heap_file_found = true;
+            }
         }
     }
     else if (server_id == k_cdvd_s_server ||
@@ -717,6 +782,20 @@ void c_sif_rpc_bridge::commit_command(const s_request& request)
         uint32_t result = 0u;
         switch (request.m_words[8])
         {
+        case 3u:
+            if (request.m_heap_file_found)
+            {
+                const bool copied = m_kernel.cpu().dma_write(
+                    request.m_heap_argument,
+                    request.m_heap_file_bytes.data(),
+                    request.m_heap_file_size);
+                result = copied ? 0u : static_cast<uint32_t>(-1);
+            }
+            else
+            {
+                result = static_cast<uint32_t>(-2);
+            }
+            break;
         case 1u:
         case 4u:
             result = m_kernel.allocate_heap(request.m_heap_argument);

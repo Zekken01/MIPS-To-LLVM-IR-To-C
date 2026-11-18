@@ -110,6 +110,8 @@ public:
     // allocated by this API can be freed through IOPHEAP.
     uint32_t allocate_heap(uint32_t size);
     bool free_heap(uint32_t address);
+    // Enforce ownership for guest-requested file copies into IOP RAM.
+    bool owns_heap_span(uint32_t address, uint32_t size) const;
     uint32_t heap_max_free() const;
     uint32_t heap_total_free() const;
 

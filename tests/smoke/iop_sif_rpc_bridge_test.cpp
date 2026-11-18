@@ -634,21 +634,94 @@ int main()
         return fail("IOPHEAP method 2 could not free its own block");
     }
 
-    // IOPHEAP method 3 (file-to-RAM) is deliberately not accepted:
-    // it needs a separately verified IOP file transport.
+    // IOPHEAP method 3 transfers the mounted file into an owned
+    // IOPHEAP allocation; no arbitrary IOP RAM write is permitted.
+    const uint32_t heap_file_buffer = kernel.allocate_heap(0x400u);
+    if (heap_file_buffer == 0u)
+    {
+        return fail("IOPHEAP file copy destination allocation failed");
+    }
+    const std::string heap_file_path = "cdrom0:\\PADMAN.IRX;1";
+    memory.write32(call_source + 32u, 3u);
+    memory.write32(call_source + 36u, 48u);
+    memory.write32(args_source, heap_file_buffer);
+    for (size_t index = 0u; index <= heap_file_path.size(); ++index)
+    {
+        memory.write8(args_source + 4u + static_cast<uint32_t>(index),
+                      index == heap_file_path.size() ? 0u :
+                          static_cast<uint8_t>(heap_file_path[index]));
+    }
+    descriptor(memory, list, args_source,
+               iop::c_sif_rpc_bridge::k_rpc_data_destination, 48u);
+    memory.write32(list + 28u, 0x44u);
     dmac.acknowledge(5u);
     dmac.acknowledge(6u);
-    memory.write32(call_source + 32u, 3u);
+    uint32_t heap_file_magic = 0u;
+    if (!sif1.set_dma(list, 2u, &dma_id) ||
+        memory.read32(rpc_result) != 0u ||
+        !kernel.cpu().read32(heap_file_buffer, &heap_file_magic) ||
+        heap_file_magic != 0x464c457fu ||
+        (dmac.status() & (1u << 5u)) == 0u)
+    {
+        return fail("IOPHEAP file-to-RAM did not copy real mounted bytes");
+    }
+
+    // The same file must not escape its allocated destination.
+    memory.write32(args_source, heap_file_buffer + 0x300u);
+    memory.write32(rpc_result, 0xccccccccu);
+    dmac.acknowledge(5u);
+    dmac.acknowledge(6u);
     iop::s_sif1_dma_diagnostic heap_rejection{};
     if (sif1.set_dma(list, 2u, &dma_id, &heap_rejection) ||
         heap_rejection.m_failure !=
             iop::e_sif1_dma_failure::unsupported_rpc_packet ||
+        memory.read32(rpc_result) != 0xccccccccu ||
         rpc.pending_replies() != 0u ||
-        rpc.load_requests() != 0u ||
         (dmac.status() & ((1u << 5u) | (1u << 6u))) != 0u)
     {
-        return fail("unsupported IOPHEAP file load fabricated success");
+        return fail("IOPHEAP out-of-allocation transfer mutated guest RAM");
     }
+
+    const std::string absent_path = "cdrom0:\\NOFILE.IRX;1";
+    memory.write32(args_source, heap_file_buffer);
+    for (size_t index = 0u; index <= absent_path.size(); ++index)
+    {
+        memory.write8(args_source + 4u + static_cast<uint32_t>(index),
+                      index == absent_path.size() ? 0u :
+                          static_cast<uint8_t>(absent_path[index]));
+    }
+    dmac.acknowledge(5u);
+    dmac.acknowledge(6u);
+    if (!sif1.set_dma(list, 2u, &dma_id) ||
+        memory.read32(rpc_result) != 0xfffffffeu ||
+        !kernel.cpu().read32(heap_file_buffer, &heap_file_magic) ||
+        heap_file_magic != 0x464c457fu)
+    {
+        return fail("IOPHEAP missing file falsely reported success");
+    }
+
+    memory.write32(call_source + 36u, 8u);
+    dmac.acknowledge(5u);
+    dmac.acknowledge(6u);
+    if (sif1.set_dma(list, 2u, &dma_id, &heap_rejection) ||
+        heap_rejection.m_failure !=
+            iop::e_sif1_dma_failure::unsupported_rpc_packet ||
+        rpc.pending_replies() != 0u)
+    {
+        return fail("IOPHEAP truncated pathname was accepted");
+    }
+    memory.write32(call_source + 32u, 9u);
+    memory.write32(call_source + 36u, 16u);
+    descriptor(memory, list, args_source,
+               iop::c_sif_rpc_bridge::k_rpc_data_destination, 16u);
+    dmac.acknowledge(5u);
+    dmac.acknowledge(6u);
+    if (sif1.set_dma(list, 2u, &dma_id, &heap_rejection) ||
+        rpc.pending_replies() != 0u)
+    {
+        return fail("unknown IOPHEAP method was accepted");
+    }
+    memory.write32(call_source + 32u, 5u);
 
     // IOPHEAP query methods expose actual IOP memory capacity.
     memory.write32(call_source + 32u, 5u);

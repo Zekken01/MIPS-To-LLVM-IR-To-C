@@ -42,6 +42,9 @@ public:
         uint32_t m_result_destination = 0u;
         uint32_t m_server_id = 0u;
         uint32_t m_heap_argument = 0u;
+        uint32_t m_heap_file_size = 0u;
+        bool m_heap_file_found = false;
+        std::vector<uint8_t> m_heap_file_bytes;
         uint32_t m_cdvd_lba = 0u;
         uint32_t m_cdvd_count = 0u;
         uint32_t m_cdvd_destination = 0u;
