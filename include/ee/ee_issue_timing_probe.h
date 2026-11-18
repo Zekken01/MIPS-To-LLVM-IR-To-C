@@ -288,15 +288,16 @@ public:
         }
 
         // With explicitly selected ordered overlap, a later result must
-        // never become visible before an older write to the same resource.
-        // No artificial retirement delay is introduced: a reversed finish
-        // order is rejected atomically as unmodeled timing.
+        // never become visible before or simultaneously with an older write
+        // to the same resource. Equal deadlines are ambiguous without a
+        // verified same-cycle writeback priority, so reject them too.
+        // No artificial retirement delay is introduced.
         if (m_waw_policy == e_ee_probe_waw_policy::ORDERED_OVERLAP)
         {
             for (uint32_t reg = 1u; reg < 32u; ++reg)
             {
                 if ((writes & (uint32_t{1} << reg)) != 0u &&
-                    candidate + instruction.m_result_latency <
+                    candidate + instruction.m_result_latency <=
                         m_gpr_ready[reg])
                 {
                     return false;
@@ -305,7 +306,7 @@ public:
             for (uint32_t reg = 0u; reg < 4u; ++reg)
             {
                 if ((hwrites & (1u << reg)) != 0u &&
-                    candidate + hilo_latency < m_hilo_ready[reg])
+                    candidate + hilo_latency <= m_hilo_ready[reg])
                 {
                     return false;
                 }
@@ -313,18 +314,18 @@ public:
             for (uint32_t reg = 0u; reg < 32u; ++reg)
             {
                 if ((fwrites & (1u << reg)) != 0u &&
-                    candidate + fpr_latency < m_fpr_ready[reg])
+                    candidate + fpr_latency <= m_fpr_ready[reg])
                 {
                     return false;
                 }
             }
             if (instruction.m_acc_write &&
-                candidate + acc_latency < m_acc_ready)
+                candidate + acc_latency <= m_acc_ready)
             {
                 return false;
             }
             if (instruction.m_fcsr_write &&
-                candidate + fcsr_latency < m_fcsr_ready)
+                candidate + fcsr_latency <= m_fcsr_ready)
             {
                 return false;
             }
