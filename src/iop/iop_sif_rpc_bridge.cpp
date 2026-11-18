@@ -108,8 +108,12 @@ bool c_sif_rpc_bridge::prepare_command(
     // The remaining bytes are reserved/padding, not a second RPC.
     if (cid == k_bind_cid && (size == 36u || size == 64u))
     {
+        // CDVDFSV's CdInit server is a built-in HLE service,
+        // as in ps2-web-recomp/SDBZ. This only binds the client;
+        // unsupported CDVD RPC methods must still fail closed.
         if (packet[8] != k_loadfile_server &&
-            packet[8] != k_iop_heap_server)
+            packet[8] != k_iop_heap_server &&
+            packet[8] != k_cdvd_init_server)
         {
             return false;
         }
