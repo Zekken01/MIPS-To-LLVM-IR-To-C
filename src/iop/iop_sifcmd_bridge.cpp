@@ -151,7 +151,9 @@ bool c_sifcmd_bridge::prepare_command(
         return true;
     }
 
-    if (words[3] != 0u)
+    // Every remaining command needs at least the fifth word.
+    // Only the explicitly handled opt=1 handshake is 16 bytes.
+    if (size == 16u || words[3] != 0u)
     {
         return false;
     }
