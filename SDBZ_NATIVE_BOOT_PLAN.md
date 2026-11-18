@@ -403,3 +403,14 @@ privileged GS display MMIO capture, renderer/presenter, real VBlank
 producer or live frame output is claimed by this foundational step.
 Next wire actual guest privileged GS display writes to the snapshot,
 then add opt-in VRAM image export; primitive rendering remains separate.
+
+The display-readback foundation now also captures six privileged GS
+registers via 32/64-bit guest MMIO (PMODE, SMODE2, DISPFB1/2, DISPLAY1/2),
+preserving high-half writes and returning exact values on reads. These
+are kept separate from GIF register writes, GS_CSR and GS_IMR.
+An opt-in `--gs-snapshot=FILE.ppm` option is available both in the
+direct EE runner and `tools/run_game.py`; it writes a P6 image from
+the **guest-selected display buffer only when configured and readable**
+at the eventual stop. No synthetic frame, GS event, rasterizer,
+exception or interrupt is ever generated. Failure to obtain a display
+image is reported distinctly from guest boot status.

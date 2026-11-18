@@ -1,4 +1,5 @@
 #include "ee_gs_display.h"
+#include "ee_hw_bus.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -97,6 +98,38 @@ int main()
               gs, regs, 2u, pixels, width, height) &&
           pixels == before,
           "indexed-texture PSM refuses false display output");
+
+    // Feed the same snapshot through the genuine EE privileged MMIO bus.
+    ee::c_ee_hw_bus bus{};
+    check(bus.set_gs_crt(1u, 2u, 0u), "guest CRT configured");
+    const auto write_reg = [&](uint32_t address, uint64_t v)
+    {
+        const ee::s_ee_u128 value{v, 0u};
+        return ee::c_ee_hw_bus::mmio_write(&bus, address, 8u, &value);
+    };
+    check(write_reg(0x12000000u, 1u) &&
+          write_reg(0x12000020u, 0u) &&
+          write_reg(0x12000070u, uint64_t{1} << 9u) &&
+          write_reg(0x12000080u, uint64_t{7} << 32u),
+          "privileged PMODE/SMODE2/DISPFB/DISPLAY writes accepted");
+    check(ee::c_ee_gs_display::readback(
+              gs, bus.gs_display_registers(), bus.gs_crt_mode(),
+              pixels, width, height) &&
+          pixels[0] == 0xff291501u &&
+          bus.scanout().fields_started() == 0u &&
+          bus.intc().status() == 0u,
+          "MMIO-captured guest display decodes VRAM without an event");
+    ee::s_ee_u128 read_value{};
+    const ee::s_ee_u128 high_word{7u, 0u};
+    check(ee::c_ee_hw_bus::mmio_read(
+              &bus, 0x12000080u, 8u, &read_value) &&
+          read_value.m_lo == (uint64_t{7} << 32u) &&
+          ee::c_ee_hw_bus::mmio_write(
+              &bus, 0x12000084u, 4u, &high_word) &&
+          ee::c_ee_hw_bus::mmio_read(
+              &bus, 0x12000084u, 4u, &read_value) &&
+          read_value.m_lo == 7u,
+          "GS display supports coherent 64-bit and high-word MMIO");
 
     regs.m_pmode = 0u;
     check(!ee::c_ee_gs_display::readback(

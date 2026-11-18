@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ee_dmac.h"
+#include "ee_gs_display.h"
 #include "ee_intc.h"
 #include "ee_scanout_clock.h"
 #include "ee_sif.h"
@@ -41,6 +42,7 @@ public:
         m_dmac.reset();
         m_sif.reset();
         m_gs_imr = 0u;
+        m_gs_display = {};
         m_scanout = {};
         m_gs_crt_interlace = 0u;
         m_gs_crt_mode = 0u;
@@ -70,6 +72,32 @@ public:
     const c_ee_scanout_clock& scanout() const
     {
         return m_scanout;
+    }
+
+    const s_ee_gs_display_registers& gs_display_registers() const
+    {
+        return m_gs_display;
+    }
+
+    uint32_t gs_crt_mode() const
+    {
+        return m_gs_crt_mode;
+    }
+
+    // These are privileged GS registers, not the GIF A+D register bank.
+    // No write below can advance scanout, signal VBlank or draw primitives.
+    static int32_t display_register_index(uint32_t address)
+    {
+        switch (address & ~4u)
+        {
+        case 0x12000000u: return 0; // PMODE
+        case 0x12000020u: return 1; // SMODE2
+        case 0x12000070u: return 2; // DISPFB1
+        case 0x12000080u: return 3; // DISPLAY1
+        case 0x12000090u: return 4; // DISPFB2
+        case 0x120000a0u: return 5; // DISPLAY2
+        default: return -1;
+        }
     }
 
     static constexpr uint32_t k_gs_csr = 0x12001000u;
@@ -120,6 +148,20 @@ public:
         }
 
         c_ee_hw_bus* bus = static_cast<c_ee_hw_bus*>(user);
+        const int32_t display_index = display_register_index(address);
+        if (display_index >= 0)
+        {
+            if (value == nullptr || (width != 4u && width != 8u) ||
+                (width == 8u && (address & 4u) != 0u))
+            {
+                return false;
+            }
+            const uint64_t data = bus->m_gs_display.m_values[
+                static_cast<size_t>(display_index)];
+            value->m_lo = (address & 4u) != 0u ? data >> 32u : data;
+            value->m_hi = 0u;
+            return true;
+        }
         if (value != nullptr && (width == 4u || width == 8u) &&
             (address == k_gs_csr || address == k_gs_imr ||
              (width == 4u &&
@@ -147,6 +189,33 @@ public:
         }
 
         c_ee_hw_bus* bus = static_cast<c_ee_hw_bus*>(user);
+        const int32_t display_index = display_register_index(address);
+        if (display_index >= 0)
+        {
+            if (value == nullptr || (width != 4u && width != 8u) ||
+                (width == 8u && (address & 4u) != 0u))
+            {
+                return false;
+            }
+            const size_t index = static_cast<size_t>(display_index);
+            uint64_t data = bus->m_gs_display.m_values[index];
+            if (width == 8u)
+            {
+                data = value->m_lo;
+            }
+            else if ((address & 4u) != 0u)
+            {
+                data = (data & 0xffffffffull) |
+                    ((value->m_lo & 0xffffffffull) << 32u);
+            }
+            else
+            {
+                data = (data & 0xffffffff00000000ull) |
+                    (value->m_lo & 0xffffffffull);
+            }
+            bus->m_gs_display.m_values[index] = data;
+            return true;
+        }
         if (value != nullptr && (width == 4u || width == 8u) &&
             (address == k_gs_csr || address == k_gs_imr ||
              (width == 4u &&
@@ -176,6 +245,7 @@ private:
     c_ee_sif m_sif;
     c_ee_scanout_clock m_scanout;
     uint64_t m_gs_imr = 0u;
+    s_ee_gs_display_registers m_gs_display{};
     uint32_t m_gs_crt_interlace = 0u;
     uint32_t m_gs_crt_mode = 0u;
     uint32_t m_gs_crt_ffmd = 0u;

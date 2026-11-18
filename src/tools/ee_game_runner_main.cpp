@@ -6,6 +6,7 @@
 #include "ee_vsync_flags.h"
 #include "ee_gif.h"
 #include "ee_gs.h"
+#include "ee_gs_display.h"
 #include "elf_loader.h"
 #include "iop_kernel.h"
 #include "iop_cdvd.h"
@@ -276,6 +277,7 @@ void usage(const char* program)
         "  --disc-folder=DIR    Mount extracted files for HLE IOP LOADFILE (no ISO)\n"
         "  --iop-start-all      Start all loaded IOP modules (default: last only)\n"
         "  --iop-quantum=N      Max R3000 instructions per SIF poll (default 256)\n"
+        "  --gs-snapshot=FILE   Opt-in read-only GS display VRAM PPM (not a frame)\n"
         "  --trace              Print guest PC, reason and dispatch count per step\n"
         "  --trace-entry=0xPC   Print arguments and pointed-to words at a guest entry\n"
         "  --watch-word=0xADDR  Report guest word changes between native dispatches\n"
@@ -603,6 +605,7 @@ int main(int argc, char** argv)
     bool kseg_ram = false;
     const char* kernel_ram_path = nullptr;
     const char* report_path = nullptr;
+    const char* gs_snapshot_path = nullptr;
     const char* instruction_trace_path = nullptr;
     uint32_t instruction_trace_first_pc = 0u;
     uint32_t instruction_trace_last_pc = 0xffffffffu;
@@ -672,6 +675,16 @@ int main(int argc, char** argv)
         }
         if (argument == "--trace")        {
             trace = true;
+            continue;
+        }
+        if (argument.compare(0, 14, "--gs-snapshot=") == 0)
+        {
+            if (argument.size() == 14u || gs_snapshot_path != nullptr)
+            {
+                std::fprintf(stderr, "invalid or duplicate GS snapshot path\n");
+                return 2;
+            }
+            gs_snapshot_path = argv[i] + 14;
             continue;
         }
         if (argument.compare(0, 9, "--report=") == 0)
@@ -4489,6 +4502,65 @@ int main(int argc, char** argv)
             gs_state.state().m_image_qwc,
             gs_state.state().m_transfer_pixels_written
         );
+    }
+
+    if (gs_snapshot_path != nullptr)
+    {
+        std::vector<uint32_t> pixels;
+        uint32_t width = 0u;
+        uint32_t height = 0u;
+        if (ee::c_ee_gs_display::readback(
+                gs_state, hardware.gs_display_registers(),
+                hardware.gs_crt_mode(), pixels, width, height))
+        {
+            FILE* output = std::fopen(gs_snapshot_path, "wb");
+            bool success = output != nullptr;
+            if (success)
+            {
+                success = std::fprintf(
+                    output, "P6\n%u %u\n255\n", width, height) > 0;
+                for (uint32_t color : pixels)
+                {
+                    const uint8_t rgb[3] =
+                    {
+                        static_cast<uint8_t>(color),
+                        static_cast<uint8_t>(color >> 8u),
+                        static_cast<uint8_t>(color >> 16u)
+                    };
+                    if (!success || std::fwrite(rgb, 1u, 3u, output) != 3u)
+                    {
+                        success = false;
+                        break;
+                    }
+                }
+                if (std::fclose(output) != 0)
+                {
+                    success = false;
+                }
+                if (!success)
+                {
+                    std::remove(gs_snapshot_path);
+                }
+            }
+            if (success)
+            {
+                std::printf(
+                    "GS diagnostic VRAM snapshot: %ux%u path=%s "
+                    "(not a rendered frame; no VBlank generated)\n",
+                    width, height, gs_snapshot_path);
+            }
+            else
+            {
+                std::fprintf(stderr,
+                    "GS snapshot failed to write: %s\n", gs_snapshot_path);
+            }
+        }
+        else
+        {
+            std::fprintf(stderr,
+                "GS snapshot unavailable: no supported guest-configured "
+                "display circuit (no image or VBlank fabricated)\n");
+        }
     }
 
     std::printf(

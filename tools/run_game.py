@@ -705,6 +705,8 @@ def main(argv=None):
                         help="Trace native guest V0 changes within an aligned guest PC interval START:END")
     parser.add_argument("--trace-store", type=lambda value: int(value, 0),
                         help="Trace guest store PCs and operands overlapping a 32-bit guest word")
+    parser.add_argument("--gs-snapshot", type=Path,
+                        help="Optional PPM display VRAM readback (not a completed frame)")
     parser.add_argument("--report", type=Path,
                         help="Save structured EE stop state and last 64 native dispatches as JSON")
     parser.add_argument("--kernel-ram", type=Path,
@@ -947,6 +949,8 @@ def main(argv=None):
             command.append(f"--trace-store=0x{args.trace_store:08x}")
         if args.trace_v0 is not None:
             command.append(f"--trace-v0={args.trace_v0}")
+        if args.gs_snapshot is not None:
+            command.append(f"--gs-snapshot={args.gs_snapshot.resolve()}")
         if args.report is not None:
             report_path = args.report.resolve()
             report_path.parent.mkdir(parents=True, exist_ok=True)
