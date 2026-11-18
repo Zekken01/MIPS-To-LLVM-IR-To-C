@@ -64,6 +64,7 @@ struct s_module_load_result
 {
     e_irx_load_result m_status = e_irx_load_result::invalid_module;
     uint32_t m_id = 0u;
+    s_irx_link_diagnostic m_link_diagnostic{};
 };
 
 // Called after the R3000 encounters a syscall. The callback may update

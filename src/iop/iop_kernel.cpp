@@ -394,7 +394,8 @@ s_module_load_result c_kernel::load_module(
 
     s_irx_module image{};
     result.m_status = load_irx(
-        m_cpu, bytes, base, &image, resolve, accept_exports
+        m_cpu, bytes, base, &image, resolve, accept_exports,
+        &result.m_link_diagnostic
     );
     if (result.m_status != e_irx_load_result::success)
     {
