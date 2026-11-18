@@ -77,11 +77,18 @@ int main(int argc, char** argv)
         last_arg.rfind(k_completion_option, 0u) == 0u;
     const bool export_any = export_events || export_completions;
     const int argc_without_export = argc - (export_any ? 1 : 0);
+    constexpr const char* k_packed_option = "--packed-mmi-latency=";
+    const std::string packed_arg = argc_without_export > 1
+        ? argv[argc_without_export - 1] : "";
+    const bool explicit_packed =
+        packed_arg.rfind(k_packed_option, 0u) == 0u;
+    const int argc_without_packed =
+        argc_without_export - (explicit_packed ? 1 : 0);
     const bool ordered_waw_overlap =
-        argc_without_export > 1 &&
-        std::string(argv[argc_without_export - 1]) == "--ordered-waw-overlap";
+        argc_without_packed > 1 &&
+        std::string(argv[argc_without_packed - 1]) == "--ordered-waw-overlap";
     const int argc_without_overlap =
-        argc_without_export - (ordered_waw_overlap ? 1 : 0);
+        argc_without_packed - (ordered_waw_overlap ? 1 : 0);
     constexpr const char* k_throughput_option = "--throughput=";
     const std::string throughput_arg = argc_without_overlap > 1
         ? argv[argc_without_overlap - 1] : "";
@@ -113,12 +120,24 @@ int main(int argc, char** argv)
             "[--throughput=<mac-mult>,<mac-div>,<mac-acc>,"
             "<cop1-arith>,<cop1-div>,<cop1-sqrt>,<cop1-rsqrt>] "
             "[--ordered-waw-overlap] "
+            "[--packed-mmi-latency=<explicit-positive-value>] "
             "[--candidate-events=<path>|--candidate-completions=<path>]\n"
             "Diagnostic only. Supplied latencies are NOT verified R5900 cycles.\n");
         return 2;
     }
 
     ee::s_ee_issue_replay_profile profile{};
+    if (explicit_packed)
+    {
+        const std::string value = packed_arg.substr(
+            std::char_traits<char>::length(k_packed_option));
+        if (!parse_latency(value.c_str(), &profile.m_packed_mmi_latency))
+        {
+            std::fprintf(stderr,
+                "packed MMI timing requires an explicit positive latency\n");
+            return 2;
+        }
+    }
     if (!parse_latency(argv[2], &profile.m_integer_latency) ||
         !parse_latency(argv[3], &profile.m_load_latency))
     {
