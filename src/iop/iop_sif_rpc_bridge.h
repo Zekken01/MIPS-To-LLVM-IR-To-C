@@ -13,6 +13,18 @@
 
 namespace iop
 {
+// Host-only explanation of a *rejected* real guest SIFRPC packet.
+// This never authorizes HLE success or mutates the staged descriptor.
+enum class e_rpc_rejection : uint8_t
+{
+    none = 0u,
+    invalid_envelope,
+    unknown_server,
+    unsupported_method,
+    unavailable_backend,
+    invalid_arguments
+};
+
 // Bounded, explicit LOADFILE and IOPHEAP RPC services connected to guest-initialized
 // IOP SIFCMD. Only actual EE SIF1 bind/call packets invoke this service.
 // Outgoing replies require an EE-provided receive buffer and armed SIF0.
@@ -105,8 +117,11 @@ public:
         uint32_t size,
         uint32_t payload_source,
         uint32_t payload_length,
-        s_request* request
+        s_request* request,
+        e_rpc_rejection* rejected_reason = nullptr
     ) const;
+
+    static const char* rejection_name(e_rpc_rejection rejection);
 
     // Service execution occurs after SIF1 DMA staging/commit.
     void commit_command(const s_request& request);
