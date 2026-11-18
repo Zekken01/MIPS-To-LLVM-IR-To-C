@@ -689,6 +689,10 @@ def main(argv=None):
     parser.add_argument("--entry", type=lambda value: int(value, 0))
     parser.add_argument("--stack", type=lambda value: int(value, 0))
     parser.add_argument("--trace", action="store_true")
+    parser.add_argument("--trace-instructions", type=Path,
+                        help="Save a bounded native guest PC stream (NOT EE cycles)")
+    parser.add_argument("--trace-instructions-window", type=str,
+                        help="Optional inclusive guest PC window START:END")
     parser.add_argument("--trace-entry", type=lambda value: int(value, 0),
                         help="Dump guest arguments and backed pointer words on entry to a specified PC")
     parser.add_argument("--watch-word", type=lambda value: int(value, 0),
@@ -916,6 +920,14 @@ def main(argv=None):
             )
         if args.trace:
             command.append("--trace")
+        if args.trace_instructions is not None:
+            instruction_trace_path = args.trace_instructions.resolve()
+            instruction_trace_path.parent.mkdir(parents=True, exist_ok=True)
+            command.append(f"--trace-instructions={instruction_trace_path}")
+        if args.trace_instructions_window is not None:
+            if args.trace_instructions is None:
+                parser.error("--trace-instructions-window requires --trace-instructions")
+            command.append(f"--trace-instructions-window={args.trace_instructions_window}")
         if args.trace_entry is not None:
             command.append(f"--trace-entry=0x{args.trace_entry:08x}")
         if args.watch_word is not None:

@@ -52,6 +52,7 @@ constexpr uint32_t k_report_history_limit = 64u;
 constexpr uint64_t k_report_snapshot_interval = 128u;
 constexpr uint64_t k_report_progress_interval = 256u;
 constexpr uint32_t k_kernel_ram_snapshot_size = 0x80000u;
+constexpr uint32_t k_instruction_trace_limit = 65536u;
 // ps2-web-recomp runtime/src/kernel.cpp uses this guest-visible HLE
 // syscall table. Kernel addresses 0x80001800..0x80001BFF alias it.
 constexpr uint32_t k_kernel_syscall_table_base = 0x00001800u;
@@ -215,6 +216,8 @@ void usage(const char* program)
         "  --watch-word=0xADDR  Report guest word changes between native dispatches\n"
         "  --trace-store=0xADDR Trace individual guest stores overlapping this word (64 max)\n"
         "  --trace-v0=0xSTART:0xEND Trace low-64 V0 changes by guest PC (64 max)\n"
+        "  --trace-instructions=FILE  Save bounded native guest PC/word stream (not cycles)\n"
+        "  --trace-instructions-window=START:END  Restrict PC stream to this range\n"
         "  --hle-startup        Handle selected startup and semaphore kernel calls\n"
         "  --kseg-ram           Enable direct EE RAM aliases (KSEG0/1 and 0x2/0x3)\n"
         "  --kernel-ram=FILE    Load 512 KiB of captured EE kernel RAM (not BIOS ROM)\n"
@@ -535,6 +538,10 @@ int main(int argc, char** argv)
     bool kseg_ram = false;
     const char* kernel_ram_path = nullptr;
     const char* report_path = nullptr;
+    const char* instruction_trace_path = nullptr;
+    uint32_t instruction_trace_first_pc = 0u;
+    uint32_t instruction_trace_last_pc = 0xffffffffu;
+    bool instruction_trace_window_seen = false;
     std::vector<std::string> iop_irx_paths;
     const char* iop_rom0_path = nullptr;
     const char* disc_image_path = nullptr;
@@ -566,8 +573,38 @@ int main(int argc, char** argv)
             usage(argv[0]);
             return 0;
         }
-        if (argument == "--trace")
+        if (argument.compare(0, 21, "--trace-instructions=") == 0)
         {
+            if (argument.size() == 21u || instruction_trace_path != nullptr)
+            {
+                std::fprintf(stderr, "invalid or duplicate instruction trace path\n");
+                return 2;
+            }
+            instruction_trace_path = argv[i] + 21;
+            continue;
+        }
+        if (argument.compare(0, 28, "--trace-instructions-window=") == 0)
+        {
+            const std::string range = argument.substr(28);
+            const size_t separator = range.find(':');
+            if (separator == std::string::npos || separator == 0u ||
+                separator + 1u >= range.size() ||
+                range.find(':', separator + 1u) != std::string::npos ||
+                !parse_u32(range.substr(0, separator).c_str(),
+                           &instruction_trace_first_pc) ||
+                !parse_u32(range.substr(separator + 1u).c_str(),
+                           &instruction_trace_last_pc) ||
+                (instruction_trace_first_pc & 3u) != 0u ||
+                (instruction_trace_last_pc & 3u) != 0u ||
+                instruction_trace_first_pc > instruction_trace_last_pc)
+            {
+                std::fprintf(stderr, "invalid instruction PC trace window\n");
+                return 2;
+            }
+            instruction_trace_window_seen = true;
+            continue;
+        }
+        if (argument == "--trace")        {
             trace = true;
             continue;
         }
@@ -1106,6 +1143,20 @@ int main(int argc, char** argv)
         }
     }
 
+    if (instruction_trace_window_seen && instruction_trace_path == nullptr)
+    {
+        std::fprintf(stderr,
+                     "instruction trace window requires --trace-instructions\n");
+        return 2;
+    }
+
+    // Bounded, host-owned instruction stream. Recording executes no guest
+    // opcodes and changes neither EE timing nor MMIO/interrupt scheduling.
+    std::vector<ee::s_ee_instruction_trace_entry> instruction_trace;
+    if (instruction_trace_path != nullptr)
+    {
+        instruction_trace.resize(k_instruction_trace_limit);
+    }
     ee::s_ee_runtime runtime{};
     runtime.m_user = memory.get();
     runtime.m_vu0_state = &vu0;
@@ -1117,6 +1168,12 @@ int main(int argc, char** argv)
     runtime.m_loop_safepoint_limit = loop_budget;
     runtime.m_loop_safepoint_remaining = loop_budget;
     runtime.m_loop_safepoint_yield_enabled = loop_yield_resumes != 0u ? 1u : 0u;
+    runtime.m_instruction_trace = instruction_trace.empty() ? nullptr :
+        instruction_trace.data();
+    runtime.m_instruction_trace_capacity =
+        static_cast<uint32_t>(instruction_trace.size());
+    runtime.m_instruction_trace_first_pc = instruction_trace_first_pc;
+    runtime.m_instruction_trace_last_pc = instruction_trace_last_pc;
     runtime.m_guest_store_trace_enabled = has_trace_store;
     runtime.m_guest_store_trace_word = trace_store;
     runtime.m_guest_store_trace_remaining = has_trace_store ? 64u : 0u;
@@ -3983,6 +4040,38 @@ int main(int argc, char** argv)
                       reason, status, history, syscall_history, false))
     {
         return 1;
+    }
+    if (instruction_trace_path != nullptr)
+    {
+        FILE* output = std::fopen(instruction_trace_path, "wb");
+        if (output == nullptr)
+        {
+            std::fprintf(stderr, "failed to write instruction trace: %s\n",
+                         instruction_trace_path);
+            return 1;
+        }
+        std::fprintf(output, "attempt,pc,opcode_word\n");
+        for (uint32_t index = 0u; index < runtime.m_instruction_trace_count; ++index)
+        {
+            const auto& item = instruction_trace[index];
+            std::fprintf(output, "%llu,0x%08x,0x%08x\n",
+                         static_cast<unsigned long long>(item.m_attempt),
+                         item.m_pc, item.m_opcode_word);
+        }
+        std::fprintf(output, "# truncated=%s range=0x%08x:0x%08x\n",
+                     runtime.m_instruction_trace_overflow ? "true" : "false",
+                     instruction_trace_first_pc, instruction_trace_last_pc);
+        if (std::fclose(output) != 0)
+        {
+            std::fprintf(stderr, "failed to close instruction trace: %s\n",
+                         instruction_trace_path);
+            return 1;
+        }
+        std::printf("EE instruction trace: %u entries truncated=%u path=%s "
+                    "(NO cycle timestamps)\n",
+                    runtime.m_instruction_trace_count,
+                    runtime.m_instruction_trace_overflow,
+                    instruction_trace_path);
     }
     if (status == 1u && remaining == 0)
     {

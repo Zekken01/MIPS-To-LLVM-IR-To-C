@@ -3,6 +3,8 @@
 import importlib.util
 from pathlib import Path
 import unittest
+import tempfile
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location(
@@ -55,6 +57,66 @@ class ChunkDispatcherTests(unittest.TestCase):
         self.assertIn("entries[2] = &guest_fn_00100020;", second)
         self.assertIn("compiled->functions.push_back", first)
         self.assertIn("compiled->functions.push_back", second)
+
+    def test_windows_link_driver_discovery_and_override(self):
+        # CMake may build EE tools using cl.exe; the generated native DLL
+        # needs the GNU-style clang++ driver, not cl.exe or clang-cl.exe.
+        with tempfile.TemporaryDirectory(prefix="native-clang-driver-") as tmp:
+            program_files = Path(tmp) / "Program Files"
+            llvm_exe = program_files / "LLVM" / "bin" / "clang++.exe"
+            llvm_exe.parent.mkdir(parents=True)
+            llvm_exe.write_bytes(b"test-only compiler fixture")
+
+            with mock.patch.object(linker.shutil, "which", return_value=None):
+                selected = linker.select_native_link_compiler(
+                    platform="win32", environment={
+                        "ProgramFiles": str(program_files),
+                    }
+                )
+                self.assertEqual(selected, str(llvm_exe.resolve()))
+
+                explicit = linker.select_native_link_compiler(
+                    str(llvm_exe), platform="win32",
+                    environment={"CXX": "cl.exe"},
+                )
+                self.assertEqual(explicit, str(llvm_exe.resolve()))
+
+                for wrong_driver in ("cl", "cl.exe", "clang-cl.exe"):
+                    with self.subTest(wrong_driver=wrong_driver):
+                        with self.assertRaisesRegex(ValueError, "requires clang"):
+                            linker.select_native_link_compiler(
+                                platform="win32",
+                                environment={"CXX": wrong_driver},
+                            )
+
+                # Isolate the negative case from a real LLVM installation.
+                # The search always considers C:/Program Files/LLVM even
+                # when a synthetic ProgramFiles environment is supplied.
+                with mock.patch.object(Path, "is_file", return_value=False):
+                    with self.assertRaisesRegex(
+                        ValueError, "clang\\+\\+\\.exe not found"
+                    ):
+                        linker.select_native_link_compiler(
+                            platform="win32",
+                            environment={
+                                "ProgramFiles": str(Path(tmp) / "missing")
+                            },
+                        )
+
+    def test_non_windows_link_driver_keeps_override(self):
+        self.assertEqual(
+            linker.select_native_link_compiler(
+                platform="linux", environment={"CXX": "/usr/bin/g++"}
+            ),
+            "/usr/bin/g++"
+        )
+        self.assertEqual(
+            linker.select_native_link_compiler(
+                "/opt/custom/c++", platform="linux",
+                environment={"CXX": "/usr/bin/g++"},
+            ),
+            "/opt/custom/c++"
+        )
 
     def test_cpp_escaping(self):
         item = make_function(0)

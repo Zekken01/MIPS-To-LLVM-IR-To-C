@@ -95,7 +95,7 @@ void module_builder::declare_memory_helpers()
     // Private helper avoids unresolved external symbols in MCJIT fixtures.
     // Count executed VALID guest instructions, not host dispatches/loops.
     // This is NOT an EE cycle counter and must not drive GS scanout.
-    m_out += "define internal void @ee_count_guest_instruction(ptr %rt) {\n";
+    m_out += "define internal void @ee_count_guest_instruction(ptr %rt, i32 %pc, i32 %opcode) {\n";
     m_out += "entry:\n";
     m_out += "  %valid_rt = icmp ne ptr %rt, null\n";
     m_out += "  br i1 %valid_rt, label %count, label %done\n";
@@ -106,6 +106,50 @@ void module_builder::declare_memory_helpers()
     m_out += "  %old_count = load i64, ptr %counter_ptr\n";
     m_out += "  %new_count = add i64 %old_count, 1\n";
     m_out += "  store i64 %new_count, ptr %counter_ptr\n";
+    m_out += "  %trace_ptr_field = getelementptr i8, ptr %rt, i64 " +
+             std::to_string(offsetof(ee::s_ee_runtime, m_instruction_trace)) + "\n";
+    m_out += "  %trace_ptr = load ptr, ptr %trace_ptr_field\n";
+    m_out += "  %trace_enabled = icmp ne ptr %trace_ptr, null\n";
+    m_out += "  br i1 %trace_enabled, label %trace_window, label %done\n";
+    m_out += "trace_window:\n";
+    m_out += "  %first_field = getelementptr i8, ptr %rt, i64 " +
+             std::to_string(offsetof(ee::s_ee_runtime, m_instruction_trace_first_pc)) + "\n";
+    m_out += "  %last_field = getelementptr i8, ptr %rt, i64 " +
+             std::to_string(offsetof(ee::s_ee_runtime, m_instruction_trace_last_pc)) + "\n";
+    m_out += "  %first = load i32, ptr %first_field\n";
+    m_out += "  %last = load i32, ptr %last_field\n";
+    m_out += "  %above = icmp uge i32 %pc, %first\n";
+    m_out += "  %below = icmp ule i32 %pc, %last\n";
+    m_out += "  %in_window = and i1 %above, %below\n";
+    m_out += "  br i1 %in_window, label %trace_capacity, label %done\n";
+    m_out += "trace_capacity:\n";
+    m_out += "  %count_field = getelementptr i8, ptr %rt, i64 " +
+             std::to_string(offsetof(ee::s_ee_runtime, m_instruction_trace_count)) + "\n";
+    m_out += "  %capacity_field = getelementptr i8, ptr %rt, i64 " +
+             std::to_string(offsetof(ee::s_ee_runtime, m_instruction_trace_capacity)) + "\n";
+    m_out += "  %used = load i32, ptr %count_field\n";
+    m_out += "  %capacity = load i32, ptr %capacity_field\n";
+    m_out += "  %has_space = icmp ult i32 %used, %capacity\n";
+    m_out += "  br i1 %has_space, label %trace_write, label %trace_overflow\n";
+    m_out += "trace_write:\n";
+    m_out += "  %index = zext i32 %used to i64\n";
+    m_out += "  %offset = mul i64 %index, " +
+             std::to_string(sizeof(ee::s_ee_instruction_trace_entry)) + "\n";
+    m_out += "  %slot = getelementptr i8, ptr %trace_ptr, i64 %offset\n";
+    m_out += "  store i64 %new_count, ptr %slot\n";
+    m_out += "  %slot_pc = getelementptr i8, ptr %slot, i64 " +
+             std::to_string(offsetof(ee::s_ee_instruction_trace_entry, m_pc)) + "\n";
+    m_out += "  %slot_op = getelementptr i8, ptr %slot, i64 " +
+             std::to_string(offsetof(ee::s_ee_instruction_trace_entry, m_opcode_word)) + "\n";
+    m_out += "  store i32 %pc, ptr %slot_pc\n";
+    m_out += "  store i32 %opcode, ptr %slot_op\n";
+    m_out += "  %next_used = add i32 %used, 1\n";
+    m_out += "  store i32 %next_used, ptr %count_field\n";
+    m_out += "  br label %done\n";
+    m_out += "trace_overflow:\n";
+    m_out += "  %overflow_field = getelementptr i8, ptr %rt, i64 " +
+             std::to_string(offsetof(ee::s_ee_runtime, m_instruction_trace_overflow)) + "\n";
+    m_out += "  store i32 1, ptr %overflow_field\n";
     m_out += "  br label %done\n";
     m_out += "done:\n";
     m_out += "  ret void\n";
@@ -723,7 +767,9 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
 
     // Instructions that the code generator refuses remain uncounted.
     // The call is internal to each IR module, so it has no host ABI cost.
-    m_out += "  call void @ee_count_guest_instruction(ptr %rt)\n";
+    m_out += "  call void @ee_count_guest_instruction(ptr %rt, i32 " +
+             std::to_string(ins.pc) + ", i32 " +
+             std::to_string(ins.opcode_word) + ")\n";
 
     if (fallthrough_pc == 0)
         fallthrough_pc = ins.pc + 8;
@@ -2571,7 +2617,9 @@ void module_builder::emit_block(const std::vector<ee::s_ee_instruction>& block,
             // Split into taken (delay + target) and not-taken (skip delay, ft).
             // ---------------------------------------------------------------
             // The branch condition reads the PRE-delay-slot register values.
-            m_out += "  call void @ee_count_guest_instruction(ptr %rt)\n";
+            m_out += "  call void @ee_count_guest_instruction(ptr %rt, i32 " +
+                         std::to_string(ctrl.pc) + ", i32 " +
+                         std::to_string(ctrl.opcode_word) + ")\n";
             std::string cmp = make_cond(ctrl);
 
             // BLTZALL/BGEZALL write the link unconditionally, including when
@@ -2637,7 +2685,9 @@ void module_builder::emit_block(const std::vector<ee::s_ee_instruction>& block,
                   ctrl.rs == static_cast<uint8_t>(e_ee_opcode::COP2_BC2)));
             if (supported_conditional)
             {
-                m_out += "  call void @ee_count_guest_instruction(ptr %rt)\n";
+                m_out += "  call void @ee_count_guest_instruction(ptr %rt, i32 " +
+                         std::to_string(ctrl.pc) + ", i32 " +
+                         std::to_string(ctrl.opcode_word) + ")\n";
                 const std::string cmp = make_cond(ctrl);
 
                 // BLTZAL/BGEZAL always set $ra to PC+8 before the ordinary
@@ -2658,7 +2708,9 @@ void module_builder::emit_block(const std::vector<ee::s_ee_instruction>& block,
             }
             else if (ctrl.opcode == e_ee_opcode::OP_JAL)
             {
-                m_out += "  call void @ee_count_guest_instruction(ptr %rt)\n";
+                m_out += "  call void @ee_count_guest_instruction(ptr %rt, i32 " +
+                         std::to_string(ctrl.pc) + ", i32 " +
+                         std::to_string(ctrl.opcode_word) + ")\n";
                 // JAL writes $ra before the delay slot executes.
                 std::string link = newtemp();
                 char link_pc[32];
@@ -2681,7 +2733,9 @@ void module_builder::emit_block(const std::vector<ee::s_ee_instruction>& block,
                      (ctrl.funct == static_cast<uint8_t>(e_ee_opcode::FUNCT_JR) ||
                       ctrl.funct == static_cast<uint8_t>(e_ee_opcode::FUNCT_JALR)))
             {
-                m_out += "  call void @ee_count_guest_instruction(ptr %rt)\n";
+                m_out += "  call void @ee_count_guest_instruction(ptr %rt, i32 " +
+                         std::to_string(ctrl.pc) + ", i32 " +
+                         std::to_string(ctrl.opcode_word) + ")\n";
                 // Register-indirect targets are sampled before the delay slot:
                 // the slot may overwrite rs, or rd may alias rs in JALR.
                 const std::string jump_target = src_lo(ctrl.rs);
