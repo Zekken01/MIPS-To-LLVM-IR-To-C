@@ -39,6 +39,13 @@ void c_hw::reset()
     std::fill(m_cdrom_dma, m_cdrom_dma + 3u, 0u);
     m_dma_pcr = 0u;
     m_dma_pcr2 = 0u;
+    for (auto& bank : m_sio2_dma)
+    {
+        for (uint32_t& register_value : bank)
+        {
+            register_value = 0u;
+        }
+    }
     m_dma_global_enable = 0u;
     m_sif_mscom = 0u;
     m_sif_smcom = 0u;
@@ -203,6 +210,17 @@ bool c_hw::read(
     {
         *value = m_cdrom_dma[(address - k_cdrom_dma_base) / 4u];
         return true;
+    }
+
+    for (uint32_t index = 0u; index < 2u; ++index)
+    {
+        const uint32_t base = index == 0u
+            ? k_sio2_dma_rx_base : k_sio2_dma_tx_base;
+        if (address >= base && address < base + 12u)
+        {
+            *value = m_sio2_dma[index][(address - base) / 4u];
+            return true;
+        }
     }
 
     uint32_t channel = 0u;
@@ -381,6 +399,19 @@ bool c_hw::write(
             m_cdvd_start(m_cdvd_user);
         }
         return true;
+    }
+
+    for (uint32_t index = 0u; index < 2u; ++index)
+    {
+        const uint32_t base = index == 0u
+            ? k_sio2_dma_rx_base : k_sio2_dma_tx_base;
+        if (address >= base && address < base + 12u)
+        {
+            // No SIO2 DMA data producer is connected. The transfer
+            // remains requested, and no hardware IRQ/completion occurs.
+            m_sio2_dma[index][(address - base) / 4u] = value;
+            return true;
+        }
     }
 
     uint32_t channel = 0u;

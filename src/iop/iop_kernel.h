@@ -98,6 +98,10 @@ public:
     uint32_t current_thread_id() const;
 
     // Actual IOP library exports supply concrete executable targets.
+    bool lookup_library(
+        const std::string& name, uint16_t ordinal,
+        uint32_t* entry
+    ) const;
     bool register_library(
         const std::string& name, uint16_t ordinal, uint32_t entry
     );
@@ -128,9 +132,11 @@ public:
         uint32_t stack_size = 0x4000u
     );
     bool start_thread(uint32_t id);
+    bool start_thread_with_argument(uint32_t id, uint32_t argument);
     bool wake_thread(uint32_t id);
     bool stop_thread(uint32_t id);
     bool sleep_current(uint64_t delay_cycles);
+    bool block_current();
     const s_kernel_thread* thread(uint32_t id) const;
     // Only scheduled guest work permits an HLE transport-triggered
     // IOP execution turn; absent modules cannot advance IOP time.

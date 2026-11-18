@@ -51,6 +51,10 @@ public:
     static constexpr uint32_t k_dma_global_enable = 0x1f801578u;
     // Secondary controller DMA9 (IOP -> EE SIF0) and
     // DMA10 (EE -> IOP SIF1) channel registers.
+    // SIO2 DMA11/12 register banks. Programming STR records a
+    // request; no transfer or completion is fabricated without SIO2.
+    static constexpr uint32_t k_sio2_dma_rx_base = 0x1f801540u;
+    static constexpr uint32_t k_sio2_dma_tx_base = 0x1f801550u;
     static constexpr uint32_t k_sif0_dma_base = 0x1f801520u;
     static constexpr uint32_t k_sif1_dma_base = 0x1f801530u;
     // IOP-side SIF bus mirror of the EE's SBUS F200-F230 registers.
@@ -155,6 +159,7 @@ private:
     // MADR, BCR, CHCR and TADR; transfers remain active until the
     // connected DMA backend explicitly completes them.
     uint32_t m_sif_dma[2][4]{};
+    uint32_t m_sio2_dma[2][3]{};
     uint32_t m_sif_mscom = 0u;
     uint32_t m_sif_smcom = 0u;
     uint32_t m_sif_msflag = 0u;

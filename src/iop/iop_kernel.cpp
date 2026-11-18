@@ -135,6 +135,29 @@ uint32_t c_kernel::current_thread_id() const
     return m_current_thread_id;
 }
 
+bool c_kernel::lookup_library(
+    const std::string& name, uint16_t ordinal,
+    uint32_t* entry
+) const
+{
+    if (entry == nullptr)
+    {
+        return false;
+    }
+    const auto library = m_libraries.find(name);
+    if (library == m_libraries.end())
+    {
+        return false;
+    }
+    const auto symbol = library->second.find(ordinal);
+    if (symbol == library->second.end())
+    {
+        return false;
+    }
+    *entry = symbol->second;
+    return true;
+}
+
 bool c_kernel::register_library(
     const std::string& name, uint16_t ordinal, uint32_t entry
 )
@@ -518,6 +541,18 @@ bool c_kernel::start_thread(uint32_t id)
     return true;
 }
 
+bool c_kernel::start_thread_with_argument(
+    uint32_t id, uint32_t argument
+)
+{
+    if (!start_thread(id))
+    {
+        return false;
+    }
+    m_threads.at(id).m_cpu.m_gpr[4] = argument;
+    return true;
+}
+
 bool c_kernel::wake_thread(uint32_t id)
 {
     const auto found = m_threads.find(id);
@@ -540,6 +575,19 @@ bool c_kernel::stop_thread(uint32_t id)
         return false;
     }
     found->second.m_status = e_thread_status::dormant;
+    found->second.m_wake_cycle = 0u;
+    return true;
+}
+
+bool c_kernel::block_current()
+{
+    const auto found = m_threads.find(m_current_thread_id);
+    if (found == m_threads.end() ||
+        found->second.m_status != e_thread_status::running)
+    {
+        return false;
+    }
+    found->second.m_status = e_thread_status::blocked;
     found->second.m_wake_cycle = 0u;
     return true;
 }

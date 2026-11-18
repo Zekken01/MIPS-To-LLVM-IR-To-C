@@ -80,6 +80,8 @@ public:
 
     uint64_t cycles() const;
     const s_memory_fault& last_memory_fault() const;
+    bool read8(uint32_t address, uint8_t* value) const;
+    bool write8(uint32_t address, uint8_t value);
     bool read32(uint32_t address, uint32_t* value) const;
     bool write32(uint32_t address, uint32_t value);
     // Hardware DMA writes physical IOP RAM without going through MMIO.
