@@ -261,10 +261,10 @@ def main() -> int:
 
         packed_trace = root / "mmi-full-128.csv"
         packed_trace.write_text(
-            "attempt,pc,opcode_word,kind,reference_slot,hle_service\\n"
-            f"1,0x00001000,0x{make_mmi(8, 9, 10, 0, 8):08x},0,1,0\\n"
-            f"2,0x00001004,0x{make_mmi(10, 11, 12, 5, 8):08x},0,2,0\\n"
-            "# truncated=false range=0x00001000:0x00001004\\n",
+            "attempt,pc,opcode_word,kind,reference_slot,hle_service\n"
+            f"1,0x00001000,0x{make_mmi(8, 9, 10, 0, 8):08x},0,1,0\n"
+            f"2,0x00001004,0x{make_mmi(10, 11, 12, 5, 8):08x},0,2,0\n"
+            "# truncated=false range=0x00001000:0x00001004\n",
             encoding="utf-8",
         )
         unconfigured = subprocess.run(
@@ -306,9 +306,9 @@ def main() -> int:
 
         qfsrv_trace = root / "mmi-qfsrv.csv"
         qfsrv_trace.write_text(
-            "attempt,pc,opcode_word,kind,reference_slot,hle_service\\n"
-            f"1,0x00001000,0x{make_mmi(8, 9, 10, 27, 0x28):08x},0,1,0\\n"
-            "# truncated=false range=0x00001000:0x00001000\\n",
+            "attempt,pc,opcode_word,kind,reference_slot,hle_service\n"
+            f"1,0x00001000,0x{make_mmi(8, 9, 10, 27, 0x28):08x},0,1,0\n"
+            "# truncated=false range=0x00001000:0x00001000\n",
             encoding="utf-8",
         )
         qfsrv = subprocess.run(
