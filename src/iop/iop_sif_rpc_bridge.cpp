@@ -175,7 +175,7 @@ bool c_sif_rpc_bridge::prepare_command(
         {
             *rejected_reason = reason;
         }
-        return refuse(e_rpc_rejection::invalid_arguments);
+        return false;
     };
     if (rejected_reason != nullptr)
     {
