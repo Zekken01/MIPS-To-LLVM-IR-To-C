@@ -95,6 +95,24 @@ The native LLVM emitter now invokes an **internal** function-pointer observer (n
 An installed observer that refuses a RAM-interpreted committed step now terminates that interpreter immediately with `TIMING_OBSERVER_REJECTED`; the runner checks the same failure latch at the start of each host dispatch iteration so HLE continuations cannot silently proceed. Native translated code checks at the dispatch boundary. The default observer is null, preserving the baseline boot. No issue model or observer installs an EE timing source implicitly.
 
 
+### Optional functional-unit initiation-interval probe
+
+A new isolated scoreboard accepts explicit per-instruction unit identities
+and positive initiation intervals, reserving MAC0, MAC1 and shared scalar
+COP1 next-issue timestamps without changing the runtime clock. A zero
+interval for a named unit, an interval for `NONE`, or an unknown unit
+fails atomically. `c_ee_issue_trace_replay` exposes
+`m_require_throughput` to reject timed unit operations that lack an
+explicit interval. The CLI accepts one optional seven-value
+`--throughput=...` group and marks the stream `throughput_mode=explicit`.
+Without it the older latency-only profile remains an **unvalidated,
+incomplete** offline replay (diagnosed as `unconfigured`).
+
+The shared COP1 scalar unit, cross-cycle WAW deferrals and incomplete
+pipeline occupancy are conservative **candidate** choices, not evidence
+that these values reproduce R5900 hardware. No automatic enablement of
+GS/INTC, no new local game boot and no calibrated scheduler source.
+
 ### EE Core manual audit (18 November 2026)
 
 See [M1_A_R5900_REFERENCE_AUDIT.md](M1_A_R5900_REFERENCE_AUDIT.md) for
