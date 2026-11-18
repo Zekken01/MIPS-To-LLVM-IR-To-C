@@ -307,6 +307,55 @@ int main()
         return fail("unknown 64-byte RPC bind mutated guest state");
     }
 
+    // The next retail SDBZ bind targets CDVDFSV CdInit (0x80000592).
+    // It uses the ordinary 64-byte SDK packet and terminal 0x44 DMA.
+    // Only the registered HLE service gets an actual SIF0 reply.
+    dmac.acknowledge(5u);
+    dmac.acknowledge(6u);
+    memory.write32(bind_source + 28u, 0x005688a8u);
+    memory.write32(bind_source + 32u,
+                   iop::c_sif_rpc_bridge::k_cdvd_init_server);
+    if (!sif1.set_dma(list, 1u, &dma_id) ||
+        memory.read32(ee_receive + 0u) != 48u ||
+        memory.read32(ee_receive + 8u) !=
+            iop::c_sif_rpc_bridge::k_reply_cid ||
+        memory.read32(ee_receive + 28u) != 0x005688a8u ||
+        memory.read32(ee_receive + 32u) !=
+            iop::c_sif_rpc_bridge::k_bind_cid ||
+        memory.read32(ee_receive + 36u) !=
+            (iop::c_sif_rpc_bridge::k_cdvd_init_server ^
+             iop::c_sif_rpc_bridge::k_server_xor) ||
+        memory.read32(ee_receive + 40u) !=
+            iop::c_sif_rpc_bridge::k_rpc_data_destination ||
+        rpc.pending_replies() != 0u ||
+        rpc.load_requests() != 0u ||
+        kernel.module(1u) != nullptr ||
+        (dmac.status() & (1u << 5u)) == 0u)
+    {
+        return fail("64-byte CDVD Init BIND did not reply through SIF0");
+    }
+
+    // CDVDFSV's other services have not been implemented. A valid
+    // identity alone must not synthesize another server or interrupt.
+    dmac.acknowledge(5u);
+    dmac.acknowledge(6u);
+    memory.write32(bind_source + 32u, 0x80000593u);
+    iop::s_sif1_dma_diagnostic cdvd_rejection{};
+    if (sif1.set_dma(list, 1u, &dma_id, &cdvd_rejection) ||
+        cdvd_rejection.m_failure !=
+            iop::e_sif1_dma_failure::unsupported_rpc_packet ||
+        cdvd_rejection.m_rpc_server != 0x80000593u ||
+        cdvd_rejection.m_rpc_client != 0x005688a8u ||
+        memory.read32(ee_receive + 36u) !=
+            (iop::c_sif_rpc_bridge::k_cdvd_init_server ^
+             iop::c_sif_rpc_bridge::k_server_xor) ||
+        rpc.pending_replies() != 0u ||
+        (dmac.status() & ((1u << 5u) | (1u << 6u))) != 0u)
+    {
+        return fail("unsupported CDVDFSV bind fabricated a response");
+    }
+    memory.write32(bind_source + 28u, 0x15000u);
+
     // Bind the IOPHEAP server observed in the retail SDBZ bootstrap.
     // The EE must see the actual server identity in the SIF0 reply.
     dmac.acknowledge(5u);
