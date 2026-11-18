@@ -717,6 +717,9 @@ def main(argv=None):
                         help="Map EE KSEG0/KSEG1 RAM mirrors (not MMIO or TLB)")
     parser.add_argument("--hle-startup", action="store_true",
                         help="Experimental SetupThread and SetupHeap HLE")
+    parser.add_argument("--ee-clock", choices=("reference-compat", "off"),
+                        default="reference-compat",
+                        help="HLE event clock: ps2-web-recomp-style budget or disabled")
     parser.add_argument("--no-recompile", action="store_true",
                         help="Reuse existing metadata and linked library; --auto-expand may still add functions")
     parser.add_argument("--relink-existing", action="store_true",
@@ -911,6 +914,7 @@ def main(argv=None):
             f"--max-dispatches={args.max_dispatches}",
             f"--loop-budget={args.loop_budget}",
             f"--loop-yield-resumes={args.loop_yield_resumes}",
+            f"--ee-clock={args.ee_clock}",
             f"--sif-poll-limit={args.sif_poll_limit}",
             f"--entry=0x{entry:08x}",
         ]
