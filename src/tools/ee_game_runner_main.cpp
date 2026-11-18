@@ -4756,6 +4756,17 @@ int main(int argc, char** argv)
                 }
                 continue;
             }
+            if (irq_callback_active)
+            {
+                // Architectural EPC still belongs to the interrupted EE
+                // thread. m_pad records this nested syscall's actual PC.
+                // Preserve the exception and fail closed; report the
+                // callback PC so the next unmodeled HLE service is visible.
+                std::fprintf(stderr,
+                    "HLE IRQ callback syscall unsupported: signed=%d "
+                    "actual_pc=0x%08x architectural_epc=0x%08x\n",
+                    signed_service, cpu.m_pad, cpu.m_cop0[14]);
+            }
         }
 
         if (status != 1u || count == 0u)
