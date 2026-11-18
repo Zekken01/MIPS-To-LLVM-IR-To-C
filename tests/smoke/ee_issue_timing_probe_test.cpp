@@ -247,6 +247,62 @@ int main()
           clock.issue(fcsr_writer, &at) && at == 1u,
           "FCR31 read/write do not pair in the same probe cycle");
 
+    // An initiation interval is not a result latency. In the isolated
+    // offline probe, a later independent issue of the same functional unit
+    // must wait for its *throughput* reservation, even with no RAW hazard.
+    clock.reset();
+    s_ee_probe_instruction mac0_unit{};
+    mac0_unit.m_pipe = e_ee_probe_pipe::MULT_DIV;
+    mac0_unit.m_unit = ee::e_ee_probe_unit::MAC0;
+    mac0_unit.m_initiation_interval = 4u;
+    s_ee_probe_instruction mac1_unit{};
+    mac1_unit.m_pipe = e_ee_probe_pipe::MULT_DIV_1;
+    mac1_unit.m_unit = ee::e_ee_probe_unit::MAC1;
+    mac1_unit.m_initiation_interval = 2u;
+    check(clock.issue(mac0_unit, &at) && at == 0u &&
+          clock.issue(mac1_unit, &at) && at == 0u &&
+          clock.issue(mac0_unit, &at) && at == 4u &&
+          clock.issue(mac1_unit, &at) && at == 4u &&
+          clock.instructions_issued() == 4u &&
+          clock.estimated_cycles() == 5u,
+          "MAC0 and MAC1 have independent initiation reservations");
+
+    clock.reset();
+    s_ee_probe_instruction fpu_unit{};
+    fpu_unit.m_pipe = e_ee_probe_pipe::COPROCESSOR_OP;
+    fpu_unit.m_unit = ee::e_ee_probe_unit::COP1_SCALAR;
+    fpu_unit.m_initiation_interval = 9u;
+    check(clock.issue(fpu_unit, &at) && at == 0u &&
+          clock.issue(fpu_unit, &at) && at == 9u &&
+          clock.issue(fpu_unit, &at) && at == 18u,
+          "independent COP1 operations share explicit unit initiation interval");
+
+    clock.reset();
+    check(clock.issue(fpu_unit, &at) && at == 0u &&
+          clock.charge_hle_overhead(3u) &&
+          clock.issue(fpu_unit, &at) && at == 9u,
+          "explicit HLE host boundary does not discard outstanding occupancy");
+
+    clock.reset();
+    s_ee_probe_instruction missing_interval = fpu_unit;
+    missing_interval.m_initiation_interval = 0u;
+    s_ee_probe_instruction orphan_interval = fpu_unit;
+    orphan_interval.m_unit = ee::e_ee_probe_unit::NONE;
+    s_ee_probe_instruction invalid_unit = fpu_unit;
+    invalid_unit.m_unit = static_cast<ee::e_ee_probe_unit>(255u);
+    check(!clock.issue(missing_interval) &&
+          !clock.issue(orphan_interval) &&
+          !clock.issue(invalid_unit) &&
+          clock.instructions_issued() == 0u &&
+          clock.estimated_cycles() == 0u &&
+          clock.issue(fpu_unit, &at) && at == 0u,
+          "invalid or absent unit throughput is rejected atomically");
+
+    clock.reset();
+    check(clock.issue(fpu_unit, &at) && at == 0u &&
+          clock.issue(fpu_unit, &at) && at == 9u,
+          "reset clears all unit reservations");
+
     std::printf("ee_issue_timing_probe_test: %d failure(s)\n", g_failures);
     return g_failures != 0 ? 1 : 0;
 }
