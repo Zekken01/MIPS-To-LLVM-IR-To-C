@@ -633,6 +633,16 @@ void c_sif_rpc_bridge::commit_command(const s_request& request)
             observed.m_link_status = loaded.m_link_status;
             observed.m_module_id = loaded.m_module_id;
             observed.m_thread_id = loaded.m_thread_id;
+            observed.m_unresolved_library =
+                loaded.m_link_diagnostic.m_unresolved_library;
+            observed.m_unresolved_ordinal =
+                loaded.m_link_diagnostic.m_unresolved_ordinal;
+            observed.m_irx_entry_offset =
+                loaded.m_link_diagnostic.m_entry_offset;
+            observed.m_irx_gp_offset =
+                loaded.m_link_diagnostic.m_gp_offset;
+            observed.m_irx_image_size =
+                loaded.m_link_diagnostic.m_image_size;
             observed.m_module_started =
                 loaded.m_result == e_disc_load_result::success &&
                 loaded.m_thread_id != 0u;

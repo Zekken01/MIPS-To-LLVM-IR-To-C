@@ -3701,7 +3701,9 @@ int main(int argc, char** argv)
                                     "method=0x%08x client=0x%08x "
                                     "send=%u recv=%u result=0x%08x "
                                     "path=%s load_status=%u link_status=%u "
-                                    "module=%u thread=%u started=%u\n",
+                                    "module=%u thread=%u started=%u "
+                                    "irx_entry=%08x irx_gp=%08x "
+                                    "irx_image=%08x unresolved=%s#%u\n",
                                     static_cast<unsigned long long>(
                                         event.m_sequence),
                                     event.m_cid, event.m_server_id,
@@ -3715,7 +3717,14 @@ int main(int argc, char** argv)
                                     static_cast<uint32_t>(
                                         event.m_link_status),
                                     event.m_module_id, event.m_thread_id,
-                                    event.m_module_started ? 1u : 0u);
+                                    event.m_module_started ? 1u : 0u,
+                                    event.m_irx_entry_offset,
+                                    event.m_irx_gp_offset,
+                                    event.m_irx_image_size,
+                                    event.m_unresolved_library.empty()
+                                        ? "(none)"
+                                        : event.m_unresolved_library.c_str(),
+                                    event.m_unresolved_ordinal);
                             }
                             last_iop_rpc_server = event.m_server_id;
                             last_iop_rpc_method = event.m_method;

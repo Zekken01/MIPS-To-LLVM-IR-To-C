@@ -292,6 +292,7 @@ s_disc_load_result c_disc_loader::load_requested(
     // to actual registered guest/HLE exports; missing providers fail.
     const s_module_load_result loaded = m_kernel.load_module(bytes);
     output.m_link_status = loaded.m_status;
+    output.m_link_diagnostic = loaded.m_link_diagnostic;
     if (loaded.m_status != e_irx_load_result::success)
     {
         output.m_result = e_disc_load_result::link_failed;

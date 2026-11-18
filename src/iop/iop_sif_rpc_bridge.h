@@ -77,6 +77,11 @@ public:
         e_irx_load_result m_link_status = e_irx_load_result::invalid_elf;
         uint32_t m_module_id = 0u;
         uint32_t m_thread_id = 0u;
+        std::string m_unresolved_library;
+        uint16_t m_unresolved_ordinal = 0u;
+        uint32_t m_irx_entry_offset = 0u;
+        uint32_t m_irx_gp_offset = 0u;
+        uint32_t m_irx_image_size = 0u;
         bool m_module_started = false;
         std::string m_guest_path;
     };

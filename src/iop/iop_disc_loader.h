@@ -30,6 +30,7 @@ struct s_disc_load_result
     e_irx_load_result m_link_status = e_irx_load_result::invalid_elf;
     uint32_t m_module_id = 0u;
     uint32_t m_thread_id = 0u;
+    s_irx_link_diagnostic m_link_diagnostic{};
     std::filesystem::path m_host_path;
 };
 
