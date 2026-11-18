@@ -41,6 +41,12 @@ struct s_sif1_dma_diagnostic
     uint32_t m_packet_arg = 0u;
     uint32_t m_rpc_server = 0u;
     uint32_t m_rpc_client = 0u;
+    // A rejected RPC is diagnosed using the actual staged EE packet,
+    // not the static IRX catalog or a fabricated reference packet.
+    uint32_t m_rpc_packet_word_count = 0u;
+    uint32_t m_rpc_packet_words[16]{};
+    uint32_t m_rpc_payload_source = 0u;
+    uint32_t m_rpc_payload_length = 0u;
 };
 
 // Guest EE sceSifSetDma (syscall 0x77) to IOP RAM transport.
