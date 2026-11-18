@@ -21,7 +21,8 @@ enum class e_ee_probe_pipe : uint8_t
     COPROCESSOR_OP,   // COP1 operation: logical Pipe 0
     COPROCESSOR = COPROCESSOR_OP, // compatibility with existing probes
     SYSTEM_CONTROL, // COP0 transfer: single-issue candidate until verified
-    VU0_TRANSFER // COP2 VF/VI transfer: single-issue candidate
+    VU0_TRANSFER, // COP2 VF/VI transfer: single-issue candidate
+    PACKED_MMI // Full-128-bit GPR SIMD; unverified pairing, single-issue
 };
 
 // Only a candidate functional-unit occupancy scoreboard. Real hardware
@@ -48,6 +49,12 @@ struct s_ee_probe_instruction
 {
     uint32_t m_gpr_read_mask = 0u;
     uint32_t m_gpr_write_mask = 0u;
+    // Explicit full-128-bit operands. These must be subsets of the ordinary
+    // GPR masks: the existing whole-register scoreboard already enforces
+    // cross-class RAW/WAR/WAW, including scalar <-> packed aliases. Keeping
+    // separate coverage masks prevents silently treating MMI as low-64-only.
+    uint32_t m_gpr_128_read_mask = 0u;
+    uint32_t m_gpr_128_write_mask = 0u;
     e_ee_probe_pipe m_pipe = e_ee_probe_pipe::INTEGER;
     // Experimental scoreboard reservation, supplied by a validated caller.
     // A latency of one allows a dependent instruction in the next probe cycle.
@@ -190,6 +197,10 @@ public:
                 (instruction.m_initiation_interval == 0u) ||
             ((instruction.m_hilo_read_mask | instruction.m_hilo_write_mask) &
                 ~0x0fu) != 0u ||
+            (instruction.m_gpr_128_read_mask &
+                ~instruction.m_gpr_read_mask) != 0u ||
+            (instruction.m_gpr_128_write_mask &
+                ~instruction.m_gpr_write_mask) != 0u ||
             m_issued == std::numeric_limits<uint64_t>::max())
         {
             return false;
@@ -626,6 +637,7 @@ private:
             return 0x1u;
         case e_ee_probe_pipe::SYSTEM_CONTROL:
         case e_ee_probe_pipe::VU0_TRANSFER:
+        case e_ee_probe_pipe::PACKED_MMI:
             return 0x3u; // Valid only as nonpairable conservative classes
         default:
             return 0u;
@@ -638,7 +650,9 @@ private:
         if (first == e_ee_probe_pipe::SYSTEM_CONTROL ||
             second == e_ee_probe_pipe::SYSTEM_CONTROL ||
             first == e_ee_probe_pipe::VU0_TRANSFER ||
-            second == e_ee_probe_pipe::VU0_TRANSFER)
+            second == e_ee_probe_pipe::VU0_TRANSFER ||
+            first == e_ee_probe_pipe::PACKED_MMI ||
+            second == e_ee_probe_pipe::PACKED_MMI)
         {
             // Their actual R5900 pairing/resource rules are not calibrated.
             return false;
