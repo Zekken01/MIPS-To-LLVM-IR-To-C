@@ -386,6 +386,98 @@ int main()
         return fail("guest SetSreg was not executed correctly");
     }
 
+    // Retail SDBZ issues SIF_CMD_RESET_CMD after shutting down EE
+    // SIF0. The 104-byte command carries arglen, mode and up to 80
+    // command-line bytes without a required NUL terminator. A valid
+    // SIF1 transfer is not itself proof of successful IOP reboot.
+    const std::string reboot_line =
+        "rom0:UDNL cdrom0:\\IOPRP300.IMG;1";
+    const auto write_reboot = [&](uint32_t arglen, uint32_t mode)
+    {
+        for (uint32_t offset = 0u; offset < 112u; offset += 4u)
+        {
+            ee_ram.write32(k_source + offset, 0u);
+        }
+        ee_ram.write32(k_source, 104u);
+        ee_ram.write32(k_source + 8u, 0x80000003u);
+        ee_ram.write32(k_source + 16u, arglen);
+        ee_ram.write32(k_source + 20u, mode);
+        for (uint32_t index = 0u; index < reboot_line.size(); ++index)
+        {
+            ee_ram.write8(
+                k_source + 24u + index,
+                static_cast<uint8_t>(reboot_line[index])
+            );
+        }
+    };
+    write_reboot(static_cast<uint32_t>(reboot_line.size()), 0u);
+    descriptor(
+        ee_ram, k_list, k_source,
+        iop::c_sifcmd_bridge::k_command_buffer, 104u, 0x44u
+    );
+    dmac.acknowledge(6u);
+    std::string accepted_reboot;
+    if (!transport.set_dma(k_list, 1u, &dma_id) ||
+        (dmac.status() & (1u << 6u)) == 0u ||
+        !commands.take_reboot_request(&accepted_reboot) ||
+        accepted_reboot != reboot_line ||
+        commands.take_reboot_request(&accepted_reboot) ||
+        !kernel.cpu().read32(
+            iop::c_sifcmd_bridge::k_command_buffer + 8u,
+            &iop_word) ||
+        iop_word != 0x80000003u)
+    {
+        return fail("validated IOP reboot was not staged through SIF1");
+    }
+
+    // Bad packet lengths, modes and embedded NULs must fail before
+    // changing IOP RAM or completing DMA, including 0x44 terminal flags.
+    dmac.acknowledge(6u);
+    write_reboot(81u, 0u);
+    if (transport.set_dma(k_list, 1u, &dma_id, &rejection) ||
+        rejection.m_failure !=
+            iop::e_sif1_dma_failure::unsupported_sifcmd_packet ||
+        dmac.status() != 0u ||
+        commands.take_reboot_request(&accepted_reboot))
+    {
+        return fail("oversized IOP reset argument accepted");
+    }
+    write_reboot(static_cast<uint32_t>(reboot_line.size()), 1u);
+    if (transport.set_dma(k_list, 1u, &dma_id, &rejection) ||
+        rejection.m_failure !=
+            iop::e_sif1_dma_failure::unsupported_sifcmd_packet ||
+        dmac.status() != 0u)
+    {
+        return fail("unsupported IOP reset mode accepted");
+    }
+    write_reboot(static_cast<uint32_t>(reboot_line.size()), 0u);
+    ee_ram.write8(k_source + 24u + 4u, 0u);
+    if (transport.set_dma(k_list, 1u, &dma_id, &rejection) ||
+        rejection.m_failure !=
+            iop::e_sif1_dma_failure::unsupported_sifcmd_packet ||
+        dmac.status() != 0u ||
+        commands.take_reboot_request(&accepted_reboot))
+    {
+        return fail("malformed IOP reset arguments accepted");
+    }
+
+    // The host HLE reset coordinator must discard the IOP-owned flags
+    // and old kernel state before it can install services again. In
+    // particular, receiving the reboot DMA alone never publishes BOOTEND.
+    sif.publish_iop_smflag(0x60000u);
+    sif.begin_iop_reboot();
+    kernel.reset();
+    commands.reset_for_reboot();
+    if (!sif.get_reg(4u, &smflag) || smflag != 0u ||
+        commands.initialized() ||
+        commands.sreg(5u) != 0u ||
+        !commands.install() ||
+        !commands.initialize_hle_bootstrap() ||
+        !sif.get_reg(4u, &smflag) || smflag != 0x60000u)
+    {
+        return fail("IOP HLE reset/reinstall lifecycle was inconsistent");
+    }
+
     std::printf("IOP guest SIFCMD: PASS\n");
     return 0;
 }
