@@ -95,9 +95,9 @@ def main() -> int:
 
         mac_fixture = root / "mac.csv"
         mac_fixture.write_text(
-            "attempt,pc,opcode_word,kind,reference_slot,hle_service\\n"
-            "1,0x00001000,0x00853018,0,1,0\\n"
-            "# truncated=false range=0x00001000:0x00001000\\n",
+            "attempt,pc,opcode_word,kind,reference_slot,hle_service\n"
+            "1,0x00001000,0x00853018,0,1,0\n"
+            "# truncated=false range=0x00001000:0x00001000\n",
             encoding="utf-8"
         )
         for argv_values in (
