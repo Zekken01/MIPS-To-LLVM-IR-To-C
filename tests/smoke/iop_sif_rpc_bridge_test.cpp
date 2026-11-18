@@ -413,6 +413,14 @@ int main()
         cdvd_call_rejection.m_rpc_server !=
             iop::c_sif_rpc_bridge::k_cdvd_init_server ||
         cdvd_call_rejection.m_rpc_client != 0x005688a8u ||
+        cdvd_call_rejection.m_rpc_packet_word_count != 16u ||
+        cdvd_call_rejection.m_rpc_packet_words[0] != 0x440u ||
+        cdvd_call_rejection.m_rpc_packet_words[8] != 6u ||
+        cdvd_call_rejection.m_rpc_packet_words[13] !=
+            (iop::c_sif_rpc_bridge::k_cdvd_init_server ^
+             iop::c_sif_rpc_bridge::k_server_xor) ||
+        cdvd_call_rejection.m_rpc_payload_source != args_source ||
+        cdvd_call_rejection.m_rpc_payload_length != 16u ||
         memory.read32(rpc_result + 12u) != 0xffu ||
         rpc.pending_replies() != 0u ||
         (dmac.status() & ((1u << 5u) | (1u << 6u))) != 0u)
@@ -425,12 +433,33 @@ int main()
     if (sif1.set_dma(list, 2u, &dma_id, &cdvd_call_rejection) ||
         cdvd_call_rejection.m_failure !=
             iop::e_sif1_dma_failure::unsupported_rpc_packet ||
+        cdvd_call_rejection.m_rpc_packet_words[8] != 5u ||
+        cdvd_call_rejection.m_rpc_packet_words[11] != 12u ||
+        cdvd_call_rejection.m_rpc_payload_length != 16u ||
         memory.read32(rpc_result + 12u) != 0xffu ||
         rpc.pending_replies() != 0u ||
         (dmac.status() & ((1u << 5u) | (1u << 6u))) != 0u)
     {
         return fail("CDVD Init short reply buffer was accepted");
     }
+
+    // The real SIF packet's advertised send size cannot exceed the
+    // staged DMA payload. Preserve its complete header on failure.
+    memory.write32(call_source + 44u, 16u);
+    memory.write32(call_source + 36u, 20u);
+    if (sif1.set_dma(list, 2u, &dma_id, &cdvd_call_rejection) ||
+        cdvd_call_rejection.m_failure !=
+            iop::e_sif1_dma_failure::unsupported_rpc_packet ||
+        cdvd_call_rejection.m_rpc_packet_words[9] != 20u ||
+        cdvd_call_rejection.m_rpc_packet_words[11] != 16u ||
+        cdvd_call_rejection.m_rpc_payload_length != 16u ||
+        memory.read32(rpc_result + 12u) != 0xffu ||
+        rpc.pending_replies() != 0u ||
+        (dmac.status() & ((1u << 5u) | (1u << 6u))) != 0u)
+    {
+        return fail("CDVD Init payload length violation committed DMA");
+    }
+    memory.write32(call_source + 36u, 16u);
 
     // Restore the single-command descriptor used by the next BIND.
     // The CdInit CALL above used a two-descriptor payload+command DMA.
