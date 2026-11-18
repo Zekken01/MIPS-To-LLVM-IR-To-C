@@ -77,9 +77,10 @@ int main()
           clock.annulled_slots_reserved() == 0u,
           "configured HLE overhead is separate from issue and annul slots");
 
-    check(!clock.probe_budget_reached(0u) &&
-          !clock.probe_budget_reached(302u) &&
-          clock.probe_budget_reached(301u),
+    check(clock.estimated_cycles() == 302u &&
+          !clock.probe_budget_reached(0u) &&
+          !clock.probe_budget_reached(303u) &&
+          clock.probe_budget_reached(302u),
           "probe budget is a read-only diagnostic, never a VBlank producer");
 
     clock.reset();
