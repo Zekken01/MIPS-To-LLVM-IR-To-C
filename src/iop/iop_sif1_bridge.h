@@ -10,6 +10,7 @@ namespace iop
 {
 class c_sifcmd_bridge;
 class c_sif_rpc_bridge;
+enum class e_rpc_rejection : uint8_t;
 // An unhandled guest SIF1 descriptor is a distinct validation failure.
 // The record is diagnostic only; no IOP state or DMA is committed.
 enum class e_sif1_dma_failure
@@ -47,6 +48,9 @@ struct s_sif1_dma_diagnostic
     uint32_t m_rpc_packet_words[16]{};
     uint32_t m_rpc_payload_source = 0u;
     uint32_t m_rpc_payload_length = 0u;
+    // Refusal reason from the side-effect-free SIFRPC validator.
+    // Valid only when m_failure is unsupported_rpc_packet.
+    e_rpc_rejection m_rpc_rejection = static_cast<e_rpc_rejection>(0u);
 };
 
 // Guest EE sceSifSetDma (syscall 0x77) to IOP RAM transport.
