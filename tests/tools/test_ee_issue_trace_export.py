@@ -63,6 +63,55 @@ def main() -> int:
                 values, bad.stdout, bad.stderr
             )
 
+        # Strict throughput is a separate, explicit offline candidate mode.
+        # It must preserve the old no-unit trace without silently
+        # installing hardware cycle calibration.
+        strict_option = "--throughput=2,37,2,1,7,7,13"
+        strict_output = root / "throughput.csv"
+        strict = subprocess.run(
+            [str(binary), str(fixture), "1", "3", strict_option,
+             f"--candidate-events={strict_output}"],
+            text=True, capture_output=True, check=False
+        )
+        assert strict.returncode == 0, strict.stdout + strict.stderr
+        assert "throughput_mode=explicit" in strict.stdout, strict.stdout
+        assert strict_output.read_text(encoding="utf-8") == (
+            output.read_text(encoding="utf-8")
+        )
+
+        for invalid in (
+            "--throughput=2,37,2,1,7,7",
+            "--throughput=2,37,2,1,7,7,0",
+            "--throughput=2,37,2,1,7,7,-1",
+            "--throughput=2,37,2,1,7,7,13,9",
+        ):
+            rejected = subprocess.run(
+                [str(binary), str(fixture), "1", "3", invalid],
+                text=True, capture_output=True, check=False
+            )
+            assert rejected.returncode == 2, (
+                invalid, rejected.stdout, rejected.stderr
+            )
+
+        mac_fixture = root / "mac.csv"
+        mac_fixture.write_text(
+            "attempt,pc,opcode_word,kind,reference_slot,hle_service\\n"
+            "1,0x00001000,0x00853018,0,1,0\\n"
+            "# truncated=false range=0x00001000:0x00001000\\n",
+            encoding="utf-8"
+        )
+        for argv_values in (
+            ["1", "3", "7", "11", "4", "8"],
+            ["1", "3", "7", "11", "4", "8", strict_option],
+        ):
+            result = subprocess.run(
+                [str(binary), str(mac_fixture), *argv_values],
+                text=True, capture_output=True, check=False
+            )
+            assert result.returncode == 0, (
+                argv_values, result.stdout, result.stderr
+            )
+
         # The replay must refuse HLE transitions and a partial trace,
         # without producing a deceptively complete candidate CSV.
         original = fixture.read_text(encoding="utf-8")
