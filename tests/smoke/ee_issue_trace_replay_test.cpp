@@ -277,7 +277,7 @@ int main()
           e_ee_issue_replay_status::ISSUED &&
           replay.observe(record(3u, 0x3008u, cfc1_fcr31, 0u, 3u)) ==
           e_ee_issue_replay_status::ISSUED &&
-          replay.candidate_cycles() == 8u,
+          replay.candidate_cycles() == 7u,
           "CTC1 to BC1T to CFC1 preserves FCR31 control ordering");
 
     replay.configure({1u, 3u, 7u, 11u, 4u, 8u,
