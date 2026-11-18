@@ -62,17 +62,25 @@ if errorlevel 1 (
 )
 
 echo.
-set "TEST_FILTER=^(ee_chunked_dispatcher|ee_instruction_trace_comparator|game_runner_end_to_end)$"
+rem Do not put regex alternation bars inside a parenthesized IF block.
+rem cmd.exe treats those pipes as command operators while parsing the block.
+if /I "%~1"=="quick" goto quick_tests
+goto full_tests
+
+:quick_tests
+set "TEST_LOG=%CD%\build\sdbz-native-regression-quick-ctest.log"
+echo === Quick: Windows linker selection and guest PC trace ===
+ctest --test-dir build -C Release --output-on-failure --output-log "%TEST_LOG%" -R "^(ee_chunked_dispatcher|ee_instruction_trace_comparator)$"
+set "TEST_EXIT=%ERRORLEVEL%"
+goto report_tests
+
+:full_tests
 set "TEST_LOG=%CD%\build\sdbz-native-regression-ctest.log"
-if /I "%~1"=="quick" (
-    set "TEST_FILTER=^(ee_chunked_dispatcher|ee_instruction_trace_comparator)$"
-    set "TEST_LOG=%CD%\build\sdbz-native-regression-quick-ctest.log"
-)
-echo === Test Windows linker selection and EE guest trace ===
-echo Test filter: %TEST_FILTER%
-ctest --test-dir build -C Release --output-on-failure --output-log "%TEST_LOG%" -R "%TEST_FILTER%"
+echo === Full: Windows linker selection, guest PC trace and runner ===
+ctest --test-dir build -C Release --output-on-failure --output-log "%TEST_LOG%" -R "^(ee_chunked_dispatcher|ee_instruction_trace_comparator|game_runner_end_to_end)$"
 set "TEST_EXIT=%ERRORLEVEL%"
 
+:report_tests
 echo.
 echo CTest log: "%TEST_LOG%"
 if not "%TEST_EXIT%"=="0" (
