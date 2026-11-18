@@ -62,7 +62,8 @@ int main()
           e_ee_issue_replay_status::ISSUED &&
           replay.candidate_cycles() == 8u &&
           replay.executed_instructions() == 6u &&
-          replay.annulled_slots() == 1u,
+          replay.annulled_slots() == 1u &&
+          replay.last_event_candidate_cycle() == 7u,
           "annulled delay slot reserves candidate time without execution");
 
     replay.configure({1u, 3u});
@@ -108,7 +109,8 @@ int main()
           e_ee_issue_replay_status::ISSUED &&
           replay.observe(record(2u, 0x1004u, mflo, 0u, 2u)) ==
           e_ee_issue_replay_status::ISSUED &&
-          replay.candidate_cycles() == 8u,
+          replay.candidate_cycles() == 8u &&
+          replay.last_event_candidate_cycle() == 7u,
           "separate MULT HI0/LO0 latency delays MFLO without GPR aliasing");
 
     replay.configure({1u, 3u, 7u, 11u, 4u, 8u});

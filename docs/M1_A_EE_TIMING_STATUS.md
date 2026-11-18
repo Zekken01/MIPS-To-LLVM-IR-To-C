@@ -77,3 +77,7 @@ The offline candidate can now replay supported MFC1/MTC1, COP1.S scalar arithmet
 ### Explicit host HLE entry boundaries
 
 Native and RAM instructions, annulled slots and recognized EE startup/registered syscall HLE handoffs now share one bounded observation stream. `kind=3` identifies an HLE boundary, carries `hle_service`, and records the *current* instruction/slot ordinals without consuming any new slot or time. The runner also exposes a cumulative `hle_timing_boundaries` diagnostic. The offline replay rejects HLE boundaries as unmodeled rather than silently assigning guessed kernel time. This is not a calibrated HLE cost and does not enable GS/INTC events.
+
+### Per-instruction candidate issue-cycle output
+
+The offline analyzer now optionally writes `--candidate-events=<path>` after all profile arguments, producing `reference_slot,pc,opcode_word,kind,candidate_issue_cycle`. Each event is stamped from the candidate probe's own issue/reservation state, not from a host dispatch or guest instruction count. The CSV is created only for a complete, supported, non-truncated trace; replay failures produce no candidate timeline. These are experimental relative cycles and cannot drive VBlank.

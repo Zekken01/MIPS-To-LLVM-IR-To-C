@@ -7,6 +7,7 @@
 #include <fstream>
 #include <limits>
 #include <string>
+#include <vector>
 
 namespace
 {
@@ -27,6 +28,15 @@ bool parse_latency(const char* text, uint32_t* value)
     *value = static_cast<uint32_t>(parsed);
     return true;
 }
+
+struct s_candidate_event
+{
+    uint64_t m_slot = 0u;
+    uint32_t m_pc = 0u;
+    uint32_t m_opcode = 0u;
+    uint32_t m_kind = 0u;
+    uint64_t m_cycle = 0u;
+};
 
 bool parse_entry(const std::string& line,
                  ee::s_ee_instruction_trace_entry* entry)
@@ -58,7 +68,16 @@ bool parse_entry(const std::string& line,
 
 int main(int argc, char** argv)
 {
-    if (argc != 4 && argc != 8 && argc != 12)
+    constexpr const char* k_output_option = "--candidate-events=";
+    const std::string last_arg = argc > 1 ? argv[argc - 1] : "";
+    const bool export_events = last_arg.rfind(k_output_option, 0u) == 0u;
+    const int profile_argc = argc - (export_events ? 1 : 0);
+    const std::string output_path = export_events
+        ? last_arg.substr(std::char_traits<char>::length(k_output_option))
+        : std::string{};
+
+    if ((profile_argc != 4 && profile_argc != 8 && profile_argc != 12) ||
+        (export_events && (output_path.empty() || output_path == argv[1])))
     {
         std::fprintf(stderr,
             "usage: ee_issue_trace_candidate <trace.csv> "
@@ -66,7 +85,8 @@ int main(int argc, char** argv)
             "[<multiply-latency> <divide-latency> <hilo-transfer-latency> "
             "<hilo-accumulate-latency>] "
             "[<fpu-transfer-latency> <fpu-arithmetic-latency> "
-            "<fpu-divide-latency> <fpu-accumulate-latency>]\n"
+            "<fpu-divide-latency> <fpu-accumulate-latency>] "
+            "[--candidate-events=<path>]\n"
             "Diagnostic only. Supplied latencies are NOT verified R5900 cycles.\n");
         return 2;
     }
@@ -79,7 +99,7 @@ int main(int argc, char** argv)
         return 2;
     }
 
-    if (argc >= 8 &&
+    if (profile_argc >= 8 &&
         (!parse_latency(argv[4], &profile.m_hilo_multiply_latency) ||
          !parse_latency(argv[5], &profile.m_hilo_divide_latency) ||
          !parse_latency(argv[6], &profile.m_hilo_transfer_latency) ||
@@ -89,7 +109,7 @@ int main(int argc, char** argv)
         return 2;
     }
 
-    if (argc == 12 &&
+    if (profile_argc == 12 &&
         (!parse_latency(argv[8], &profile.m_fpu_transfer_latency) ||
          !parse_latency(argv[9], &profile.m_fpu_arithmetic_latency) ||
          !parse_latency(argv[10], &profile.m_fpu_divide_latency) ||
@@ -130,6 +150,7 @@ int main(int argc, char** argv)
 
     uint64_t event_count = 0u;
     bool complete_footer = false;
+    std::vector<s_candidate_event> candidates;
     while (std::getline(input, line))
     {
         if (!line.empty() && line.back() == '\r')
@@ -163,6 +184,20 @@ int main(int argc, char** argv)
                 static_cast<unsigned>(result));
             return 3;
         }
+        if (export_events)
+        {
+            // Native runner captures at most 65536 observations. Leave
+            // generous room for external traces without unbounded memory.
+            if (candidates.size() >= 1048576u)
+            {
+                std::fprintf(stderr, "candidate export event cap exceeded\n");
+                return 3;
+            }
+            candidates.push_back({
+                entry.m_reference_slot, entry.m_pc, entry.m_opcode_word,
+                entry.m_kind, replay.last_event_candidate_cycle()
+            });
+        }
         ++event_count;
     }
     if (!complete_footer || std::getline(input, line))
@@ -171,6 +206,33 @@ int main(int argc, char** argv)
             "trace is truncated or lacks a complete footer "
             "(NO absolute timing claimed)\n");
         return 3;
+    }
+
+    if (export_events)
+    {
+        FILE* output = std::fopen(output_path.c_str(), "wb");
+        if (output == nullptr)
+        {
+            std::fprintf(stderr, "cannot open output: %s\n", output_path.c_str());
+            return 3;
+        }
+        std::fprintf(output,
+            "reference_slot,pc,opcode_word,kind,candidate_issue_cycle\n");
+        for (const s_candidate_event& item : candidates)
+        {
+            std::fprintf(output, "%llu,0x%08x,0x%08x,%u,%llu\n",
+                static_cast<unsigned long long>(item.m_slot),
+                item.m_pc, item.m_opcode, item.m_kind,
+                static_cast<unsigned long long>(item.m_cycle));
+        }
+        const bool written = std::ferror(output) == 0;
+        const bool closed = std::fclose(output) == 0;
+        if (!written || !closed)
+        {
+            std::remove(output_path.c_str());
+            std::fprintf(stderr, "failed to write complete candidate timeline\n");
+            return 3;
+        }
     }
 
     std::printf(

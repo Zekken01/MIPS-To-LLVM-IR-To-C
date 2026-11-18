@@ -62,6 +62,7 @@ public:
         m_pending_likely_slot = false;
         m_delay_pc = 0u;
         m_failure_pc = 0u;
+        m_last_event_cycle = 0u;
         return true;
     }
 
@@ -103,6 +104,7 @@ public:
                 return fail(e_ee_issue_replay_status::INVALID_SLOT, entry.m_pc);
             }
             m_pending_likely_slot = false;
+            m_last_event_cycle = m_probe.estimated_cycles() - 1u;
             ++m_next_slot;
             return e_ee_issue_replay_status::ANNULLED;
         }
@@ -120,10 +122,12 @@ public:
         {
             return fail(e_ee_issue_replay_status::UNMODELED_INSTRUCTION, entry.m_pc);
         }
-        if (!m_probe.issue(instruction))
+        uint64_t issue_cycle = 0u;
+        if (!m_probe.issue(instruction, &issue_cycle))
         {
             return fail(e_ee_issue_replay_status::INVALID_SLOT, entry.m_pc);
         }
+        m_last_event_cycle = issue_cycle;
 
         m_pending_likely_slot = decoded.branch_likely;
         m_delay_pc = decoded.pc + 4u;
@@ -134,6 +138,8 @@ public:
 
     bool usable_prefix() const { return m_configured && !m_failed; }
     uint64_t candidate_cycles() const { return m_probe.estimated_cycles(); }
+    // An experimental per-event issue/reserved-slot time, not an EE clock.
+    uint64_t last_event_candidate_cycle() const { return m_last_event_cycle; }
     uint64_t executed_instructions() const { return m_probe.instructions_issued(); }
     uint64_t annulled_slots() const { return m_probe.annulled_slots_reserved(); }
     uint32_t failure_pc() const { return m_failure_pc; }
@@ -456,6 +462,7 @@ private:
     uint32_t m_failure_pc = 0u;
     uint64_t m_next_slot = 1u;
     uint64_t m_next_attempt = 1u;
+    uint64_t m_last_event_cycle = 0u;
 };
 
 } // namespace ee
