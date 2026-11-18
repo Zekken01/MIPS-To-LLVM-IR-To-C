@@ -59,6 +59,30 @@ public:
         std::string m_guest_path;
     };
 
+    // Actual committed SIFRPC operations. This diagnostic is populated
+    // only after a complete SIF1 descriptor list passes validation; it
+    // never infers successful IRX startup from the static disc catalog.
+    struct s_rpc_observation
+    {
+        uint64_t m_sequence = 0u;
+        uint32_t m_cid = 0u;
+        uint32_t m_server_id = 0u;
+        uint32_t m_method = 0u;
+        uint32_t m_client = 0u;
+        uint32_t m_send_size = 0u;
+        uint32_t m_recv_size = 0u;
+        uint32_t m_return_word = 0u;
+        e_disc_load_result m_load_status =
+            e_disc_load_result::invalid_guest_path;
+        e_irx_load_result m_link_status = e_irx_load_result::invalid_elf;
+        uint32_t m_module_id = 0u;
+        uint32_t m_thread_id = 0u;
+        bool m_module_started = false;
+        std::string m_guest_path;
+    };
+
+    const s_rpc_observation& last_observation() const;
+
     c_sif_rpc_bridge(
         c_disc_loader& loader,
         c_kernel& kernel,
@@ -119,6 +143,8 @@ private:
     uint32_t m_cdvd_stream_position = 0u;
     std::deque<s_reply> m_replies;
     uint32_t m_load_requests = 0u;
+    uint64_t m_total_rpc_requests = 0u;
+    s_rpc_observation m_last_observation{};
     bool m_reply_in_flight = false;
 };
 } // namespace iop

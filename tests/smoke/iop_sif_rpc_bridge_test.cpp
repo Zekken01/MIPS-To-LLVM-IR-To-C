@@ -539,6 +539,15 @@ int main()
     dmac.acknowledge(5u);
     dmac.acknowledge(6u);
     if (!sif1.set_dma(list, 1u, &dma_id) ||
+        rpc.last_observation().m_cid !=
+            iop::c_sif_rpc_bridge::k_call_cid ||
+        rpc.last_observation().m_server_id !=
+            iop::c_sif_rpc_bridge::k_loadfile_server ||
+        rpc.last_observation().m_method != 0xffu ||
+        rpc.last_observation().m_send_size != 0u ||
+        rpc.last_observation().m_recv_size != 4u ||
+        rpc.last_observation().m_return_word != 0x30343033u ||
+        rpc.last_observation().m_module_started ||
         memory.read32(rpc_result) != 0x30343033u ||
         memory.read32(ee_receive + 16u) != 5u ||
         memory.read32(ee_receive + 28u) != 0x00564d40u ||
@@ -783,6 +792,15 @@ int main()
         iop::c_sifcmd_bridge::k_command_buffer, 56u
     );
     if (!sif1.set_dma(list, 2u, &dma_id) ||
+        rpc.last_observation().m_method != 0u ||
+        rpc.last_observation().m_server_id !=
+            iop::c_sif_rpc_bridge::k_loadfile_server ||
+        rpc.last_observation().m_guest_path != guest_path ||
+        rpc.last_observation().m_load_status !=
+            iop::e_disc_load_result::success ||
+        !rpc.last_observation().m_module_started ||
+        rpc.last_observation().m_module_id != 1u ||
+        rpc.last_observation().m_thread_id == 0u ||
         rpc.load_requests() != 1u ||
         rpc.pending_replies() != 0u ||
         memory.read32(rpc_result) != 1u ||
@@ -816,6 +834,11 @@ int main()
     }
     dmac.acknowledge(5u);
     if (!sif1.set_dma(list, 2u, &dma_id) ||
+        rpc.last_observation().m_load_status !=
+            iop::e_disc_load_result::missing_file ||
+        rpc.last_observation().m_guest_path != missing ||
+        rpc.last_observation().m_module_started ||
+        rpc.last_observation().m_return_word != 0xffffffffu ||
         rpc.load_requests() != 2u ||
         memory.read32(rpc_result) != 0xffffffffu ||
         memory.read32(rpc_result + 4u) != 0xffffffffu ||

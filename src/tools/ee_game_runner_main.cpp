@@ -1031,6 +1031,12 @@ int main(int argc, char** argv)
     std::unique_ptr<iop::c_sifcmd_bridge> iop_sifcmd;
     std::unique_ptr<iop::c_disc_loader> iop_disc;
     std::unique_ptr<iop::c_sif_rpc_bridge> iop_rpc;
+    uint64_t last_iop_rpc_sequence = 0u;
+    uint64_t observed_iop_rpc_calls = 0u;
+    uint32_t last_iop_rpc_server = 0u;
+    uint32_t last_iop_rpc_method = 0u;
+    uint32_t last_iop_rpc_result = 0u;
+    std::string last_iop_rpc_path;
     std::unique_ptr<s_cdvd_context> cdvd;
     std::unique_ptr<iop::c_cdvdman_bridge> iop_cdvdman;
     const iop::c_folder_sector_source* folder_disc_source = nullptr;
@@ -3667,6 +3673,98 @@ int main(int argc, char** argv)
                                 "(services reinstalled; boot flags pending)\n",
                                 reboot_argument.c_str()
                             );
+                        }
+                    }
+                    // Expose accepted RPC identity and actual backend
+                    // result, not only unsupported packet diagnostics.
+                    // Collapse repeated calls in normal logs; trace mode
+                    // intentionally retains every committed observation.
+                    if (iop_rom0_path == nullptr && iop_rpc != nullptr)
+                    {
+                        const auto& event = iop_rpc->last_observation();
+                        if (event.m_sequence != 0u &&
+                            event.m_sequence != last_iop_rpc_sequence)
+                        {
+                            last_iop_rpc_sequence = event.m_sequence;
+                            ++observed_iop_rpc_calls;
+                            const bool changed =
+                                event.m_server_id != last_iop_rpc_server ||
+                                event.m_method != last_iop_rpc_method ||
+                                event.m_return_word != last_iop_rpc_result ||
+                                event.m_guest_path != last_iop_rpc_path;
+                            if (trace || observed_iop_rpc_calls <= 24u ||
+                                changed || observed_iop_rpc_calls % 128u == 0u)
+                            {
+                                std::printf(
+                                    "IOP HLE RPC committed: seq=%llu "
+                                    "cid=0x%08x server=0x%08x "
+                                    "method=0x%08x client=0x%08x "
+                                    "send=%u recv=%u result=0x%08x "
+                                    "path=%s load_status=%u link_status=%u "
+                                    "module=%u thread=%u started=%u\n",
+                                    static_cast<unsigned long long>(
+                                        event.m_sequence),
+                                    event.m_cid, event.m_server_id,
+                                    event.m_method, event.m_client,
+                                    event.m_send_size, event.m_recv_size,
+                                    event.m_return_word,
+                                    event.m_guest_path.empty() ? "(none)"
+                                        : event.m_guest_path.c_str(),
+                                    static_cast<uint32_t>(
+                                        event.m_load_status),
+                                    static_cast<uint32_t>(
+                                        event.m_link_status),
+                                    event.m_module_id, event.m_thread_id,
+                                    event.m_module_started ? 1u : 0u);
+                            }
+                            last_iop_rpc_server = event.m_server_id;
+                            last_iop_rpc_method = event.m_method;
+                            last_iop_rpc_result = event.m_return_word;
+                            last_iop_rpc_path = event.m_guest_path;
+
+                            if (event.m_module_started)
+                            {
+                                // A real LOADFILE module entrypoint must
+                                // receive a bounded R3000 execution slice.
+                                // An EE semaphore that never blocks cannot
+                                // otherwise schedule this guest thread.
+                                const iop::s_kernel_run_result progressed =
+                                    iop_kernel->run(iop_quantum, 128u);
+                                if (progressed.m_stop !=
+                                        iop::e_kernel_stop::budget_exhausted &&
+                                    progressed.m_stop !=
+                                        iop::e_kernel_stop::idle)
+                                {
+                                    std::fprintf(
+                                        stderr,
+                                        "IOP HLE loaded module stopped: "
+                                        "module=%u thread=%u reason=%u "
+                                        "pc=0x%08x opcode=0x%08x "
+                                        "executed=%llu\n",
+                                        event.m_module_id,
+                                        progressed.m_thread_id,
+                                        static_cast<uint32_t>(
+                                            progressed.m_stop),
+                                        progressed.m_guest_pc,
+                                        progressed.m_opcode,
+                                        static_cast<unsigned long long>(
+                                            progressed.m_executed));
+                                    break;
+                                }
+                                if (trace)
+                                {
+                                    std::printf(
+                                        "IOP HLE LOADFILE ran guest: "
+                                        "module=%u thread=%u "
+                                        "instructions=%llu stop=%u\n",
+                                        event.m_module_id,
+                                        event.m_thread_id,
+                                        static_cast<unsigned long long>(
+                                            progressed.m_executed),
+                                        static_cast<uint32_t>(
+                                            progressed.m_stop));
+                                }
+                            }
                         }
                     }
                     cpu.m_gpr[2].m_lo = dma_id;

@@ -570,8 +570,28 @@ bool c_sif_rpc_bridge::prepare_command(
     return true;
 }
 
+const c_sif_rpc_bridge::s_rpc_observation&
+c_sif_rpc_bridge::last_observation() const
+{
+    return m_last_observation;
+}
+
 void c_sif_rpc_bridge::commit_command(const s_request& request)
 {
+    // Track the actual committed packet; a static ELF path is not
+    // evidence that the IOP loaded or executed a module.
+    s_rpc_observation observed{};
+    observed.m_sequence = ++m_total_rpc_requests;
+    observed.m_cid = request.m_words[2];
+    observed.m_server_id = request.m_server_id;
+    observed.m_client = request.m_words[7];
+    if (observed.m_cid == k_call_cid)
+    {
+        observed.m_method = request.m_words[8];
+        observed.m_send_size = request.m_words[9];
+        observed.m_recv_size = request.m_words[11];
+    }
+    observed.m_guest_path = request.m_guest_path;
     s_reply response{};
     // SIFCMD Rend: 48-byte header, echoed guest transaction identity,
     // and the command serviced. No reply is queued before real request
@@ -609,6 +629,13 @@ void c_sif_rpc_bridge::commit_command(const s_request& request)
             const s_disc_load_result loaded = m_loader.load_requested(
                 request.m_guest_path, true
             );
+            observed.m_load_status = loaded.m_result;
+            observed.m_link_status = loaded.m_link_status;
+            observed.m_module_id = loaded.m_module_id;
+            observed.m_thread_id = loaded.m_thread_id;
+            observed.m_module_started =
+                loaded.m_result == e_disc_load_result::success &&
+                loaded.m_thread_id != 0u;
             const uint32_t result =
                 loaded.m_result == e_disc_load_result::success
                     ? loaded.m_module_id
@@ -820,6 +847,14 @@ void c_sif_rpc_bridge::commit_command(const s_request& request)
         }
         m_ee_ram.write32(request.m_result_destination, result);
     }
+    if (observed.m_cid == k_call_cid &&
+        observed.m_recv_size >= 4u &&
+        m_ee_ram.contains(request.m_result_destination, 4u))
+    {
+        observed.m_return_word =
+            m_ee_ram.read32(request.m_result_destination);
+    }
+    m_last_observation = std::move(observed);
     m_replies.push_back(response);
     (void)pump();
 }
@@ -833,6 +868,7 @@ void c_sif_rpc_bridge::reset_for_reboot()
     m_cdvd_stream_position = 0u;
     m_replies.clear();
     m_load_requests = 0u;
+    m_last_observation = {};
     m_reply_in_flight = false;
 }
 
