@@ -113,6 +113,7 @@ bool execute_comparison(c_cpu& memory, uint32_t ordinal,
     // strcmp and strncmp compare one byte at a time and may return before
     // the first terminator. This avoids reading unrelated guest addresses.
     int32_t difference = 0;
+    bool resolved = false;
     for (uint32_t i = 0u; i < limit; ++i)
     {
         uint8_t lhs = 0u;
@@ -127,8 +128,15 @@ bool execute_comparison(c_cpu& memory, uint32_t ordinal,
         difference = compare_bytes(lhs, rhs);
         if (difference != 0 || lhs == 0u)
         {
+            resolved = true;
             break;
         }
+    }
+    // strcmp cannot declare two strings equal after exhausting only the
+    // bounded scan limit without observing a terminator.
+    if (ordinal == 22u && !resolved)
+    {
+        return false;
     }
     *result = static_cast<uint32_t>(difference);
     return true;
