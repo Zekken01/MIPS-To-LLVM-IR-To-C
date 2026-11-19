@@ -282,7 +282,7 @@ s_ee_instruction decode(uint32_t pc, uint32_t word)
             break;
         default:
             insn.valid = e_ee_valid::INVALID;
-            set_mnemonic(insn, "special_reserved");
+            set_mnemonic(insn, "special_rsvd");
             break;
         }
         break;
