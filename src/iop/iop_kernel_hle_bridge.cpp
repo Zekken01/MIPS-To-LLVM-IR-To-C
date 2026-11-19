@@ -91,7 +91,10 @@ constexpr s_export k_exports[] = {
     {"thvpool", 4u, 13u}, {"thvpool", 5u, 13u},
     {"thvpool", 6u, 13u}, {"thvpool", 7u, 13u},
     {"thvpool", 8u, 13u}, {"thvpool", 9u, 13u},
-    {"thvpool", 11u, 13u}, {"thvpool", 12u, 13u}
+    {"thvpool", 11u, 13u}, {"thvpool", 12u, 13u},
+    {"modload", 10u, 14u}, {"modload", 13u, 14u},
+    {"modload", 16u, 14u}, {"modload", 17u, 14u},
+    {"modload", 18u, 14u}, {"modload", 22u, 14u}
 };
 
 // SYSCLIB byte-memory functions operate on IOP RAM, including KSEG0/1
@@ -257,6 +260,7 @@ void c_kernel_hle_bridge::reset_for_reboot()
     std::fill(std::begin(m_dma_direction),
               std::end(m_dma_direction), 0u);
     m_strtok_next = 0u;
+    m_check_kelf_path_callback = 0u;
     m_next_object = 1u;
     m_cpu_interrupts_suspended = false;
     m_installed = false;
@@ -2202,6 +2206,176 @@ bool c_kernel_hle_bridge::handle_sysclib(uint32_t ordinal)
     return false;
 }
 
+
+bool c_kernel_hle_bridge::handle_modload(uint32_t ordinal)
+{
+    s_cpu_state& cpu = m_kernel.cpu().state();
+    constexpr uint32_t k_error_illegal_object =
+        static_cast<uint32_t>(-201);
+    constexpr uint32_t k_error_unknown_module =
+        static_cast<uint32_t>(-202);
+
+    if (ordinal == 13u) // SetCheckKelfPathCallback
+    {
+        // Registration is stateful, but this is NOT a KELF verifier.
+        // Encrypted module loading remains unsupported and fail-closed.
+        const uint32_t callback = cpu.m_gpr[4];
+        uint32_t instruction = 0u;
+        if (callback != 0u &&
+            ((callback & 3u) != 0u ||
+             !is_iop_ram_span(callback, 4u) ||
+             !m_kernel.cpu().read32(callback, &instruction)))
+        {
+            cpu.m_gpr[2] = k_error_illegal_object;
+            return true;
+        }
+        m_check_kelf_path_callback = callback;
+        cpu.m_gpr[2] = 0u;
+        return true;
+    }
+
+    if (ordinal == 10u) // LoadModuleBuffer, link but do not start
+    {
+        const uint32_t source = cpu.m_gpr[4];
+        if (!is_iop_ram_span(source, 52u))
+        {
+            cpu.m_gpr[2] = k_error_illegal_object;
+            return true;
+        }
+        const uint32_t physical = source & 0x1fffffffu;
+        const uint32_t bytes_available = std::min<uint32_t>(
+            c_cpu::k_ram_size - physical, 2u * 1024u * 1024u);
+        std::vector<uint8_t> image;
+        if (!read_iop_ram(m_kernel.cpu(), source, bytes_available, image))
+        {
+            return false;
+        }
+        const s_module_load_result loaded = m_kernel.load_module(image);
+        cpu.m_gpr[2] = loaded.m_status == e_irx_load_result::success
+            ? loaded.m_id : k_error_illegal_object;
+        return true;
+    }
+
+    if (ordinal == 17u) // ReferModuleStatus
+    {
+        const s_kernel_module* module = m_kernel.module(cpu.m_gpr[4]);
+        if (module == nullptr)
+        {
+            cpu.m_gpr[2] = k_error_unknown_module;
+            return true;
+        }
+        const uint32_t destination = cpu.m_gpr[5];
+        if (!is_iop_ram_span(destination, 0x50u))
+        {
+            cpu.m_gpr[2] = k_error_illegal_object;
+            return true;
+        }
+        std::vector<uint8_t> status(0x50u, 0u);
+        const std::string& name = module->m_irx.m_name;
+        for (size_t i = 0u; i < name.size() && i < 55u; ++i)
+        {
+            status[i] = static_cast<uint8_t>(name[i]);
+        }
+        const auto set_word = [&status](size_t offset, uint32_t value)
+        {
+            for (uint32_t i = 0u; i < 4u; ++i)
+            {
+                status[offset + i] = static_cast<uint8_t>(
+                    value >> (i * 8u));
+            }
+        };
+        set_word(0x38u, module->m_id);
+        set_word(0x40u, module->m_irx.m_entry);
+        set_word(0x44u, module->m_irx.m_gp);
+        set_word(0x48u, module->m_irx.m_base);
+        set_word(0x4cu, module->m_irx.m_size);
+        if (!write_iop_ram(m_kernel.cpu(), destination, status))
+        {
+            return false;
+        }
+        cpu.m_gpr[2] = 0u;
+        return true;
+    }
+
+    if (ordinal == 22u || ordinal == 18u || ordinal == 16u)
+    {
+        // Snapshot the real linked modules. No synthetic IDs or start states.
+        const bool by_name = ordinal != 16u;
+        std::string requested;
+        if (by_name)
+        {
+            if (!read_string(cpu.m_gpr[4], 64u, &requested))
+            {
+                cpu.m_gpr[2] = k_error_illegal_object;
+                return true;
+            }
+            std::transform(
+                requested.begin(), requested.end(), requested.begin(),
+                [](unsigned char ch)
+                {
+                    return static_cast<char>(std::tolower(ch));
+                });
+        }
+        std::vector<uint32_t> matching;
+        for (const auto& pair : m_kernel.modules())
+        {
+            std::string name = pair.second.m_irx.m_name;
+            if (by_name)
+            {
+                std::transform(
+                    name.begin(), name.end(), name.begin(),
+                    [](unsigned char ch)
+                    {
+                        return static_cast<char>(std::tolower(ch));
+                    });
+            }
+            if (!by_name || name == requested)
+            {
+                matching.push_back(pair.first);
+            }
+        }
+        if (ordinal == 22u)
+        {
+            cpu.m_gpr[2] = matching.empty()
+                ? k_error_unknown_module : matching.front();
+            return true;
+        }
+        const uint32_t output = cpu.m_gpr[by_name ? 5u : 4u];
+        const uint32_t capacity = cpu.m_gpr[by_name ? 6u : 5u];
+        const uint32_t count_output = cpu.m_gpr[by_name ? 7u : 6u];
+        if (capacity > c_cpu::k_ram_size / 4u ||
+            (capacity != 0u &&
+             !is_iop_ram_span(output, capacity * 4u)) ||
+            (count_output != 0u &&
+             !is_iop_ram_span(count_output, 4u)))
+        {
+            cpu.m_gpr[2] = k_error_illegal_object;
+            return true;
+        }
+        const uint32_t count = std::min<uint32_t>(
+            capacity, static_cast<uint32_t>(matching.size()));
+        for (uint32_t i = 0u; i < count; ++i)
+        {
+            if (!m_kernel.cpu().write32(output + i * 4u, matching[i]))
+            {
+                return false;
+            }
+        }
+        if (count_output != 0u &&
+            !m_kernel.cpu().write32(
+                count_output, static_cast<uint32_t>(matching.size())))
+        {
+            return false;
+        }
+        cpu.m_gpr[2] = 0u;
+        return true;
+    }
+
+    // LoadStartModule and StartModule require correct guest entrypoint
+    // completion and caller-wakeup semantics; do not fabricate either.
+    return false;
+}
+
 bool c_kernel_hle_bridge::handle_syscall(
     c_kernel& kernel, uint32_t service
 )
@@ -2230,6 +2404,7 @@ bool c_kernel_hle_bridge::handle_syscall(
     case 11u: return handle_heaplib(ordinal);
     case 12u: return handle_fixed_pool(ordinal);
     case 13u: return handle_variable_pool(ordinal);
+    case 14u: return handle_modload(ordinal);
     default: return false;
     }
 }
