@@ -40,7 +40,7 @@ def main():
     assert "bool attach_surface" in gpu
     assert "WGPUSurface" in gpu
     assert "enum class Mode { off, mirror, primary }" in header
-    assert "vs_main" in blit and "fs_main" in blit
+    assert re.search(r"@vertex\\s+fn\\s+vs\\s*\\(", blit)\n    assert re.search(r"@fragment\\s+fn\\s+fs\\s*\\(", blit)
     assert "@fragment" in font or "@compute" in font or "@vertex" in font
     # Source import must not drag browser frontend code into this repo.
     assert not (root / "third_party" / "ps2_web_recomp_gpu" / "web").exists()
