@@ -124,6 +124,7 @@ private:
     bool handle_thevent(uint32_t ordinal);
     bool handle_thsemap(uint32_t ordinal);
     bool handle_sysclib(uint32_t ordinal);
+    bool handle_modload(uint32_t ordinal);
 
     c_kernel& m_kernel;
     std::map<uint32_t, s_interrupt> m_interrupts;
@@ -135,6 +136,7 @@ private:
     std::map<uint32_t, s_variable_pool> m_variable_pools;
     uint32_t m_dma_direction[16]{};
     uint32_t m_strtok_next = 0u;
+    uint32_t m_check_kelf_path_callback = 0u;
     uint32_t m_next_object = 1u;
     bool m_cpu_interrupts_suspended = false;
     bool m_installed = false;
