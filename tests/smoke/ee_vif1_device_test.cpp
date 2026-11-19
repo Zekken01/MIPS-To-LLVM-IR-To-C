@@ -341,6 +341,21 @@ int main()
         return 1;
     }
 
+    // An unsupported arithmetic opcode with mask=0 is still invalid:
+    // a zero destination mask must not turn an unknown op into NOP.
+    const ee::s_ee_u128 masked_bad_pair{nop_lower, 0x00000008u};
+    if (!check(ee::c_ee_vif1::mmio_write(
+                   &vif1, ee::c_ee_vif1::k_vu1_code_base,
+                   16u, &masked_bad_pair),
+               "masked unknown-code MMIO failed") ||
+        !check(!send(vif1, {0x14000000u, 0u, 0u, 0u}) &&
+               vif1.diagnostic().m_vu_upper == 0x00000008u &&
+               capture.m_calls == after_kick,
+               "masked unknown VU opcode silently executed"))
+    {
+        return 1;
+    }
+
     // The upper pair writes back after the lower pair; vector arithmetic
     // uses actual floating-point register bit patterns.
     ee::s_ee_vu1_state state{};

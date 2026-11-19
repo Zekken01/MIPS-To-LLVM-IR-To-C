@@ -150,6 +150,20 @@ bool upper(const s_ee_vu1_state& state, uint32_t hi,
         // pipelines are implemented in a later batch. Never guess effects.
         return false;
     }
+    // Validate even if the destination lane mask is zero. Unsupported
+    // opcode families must never become accidental successful NOPs.
+    const bool supported =
+        operation <= 0x07u ||
+        (operation >= 0x10u && operation <= 0x1bu) ||
+        operation == 0x1eu || operation == 0x22u ||
+        operation == 0x26u || operation == 0x28u ||
+        operation == 0x2au || operation == 0x2bu ||
+        operation == 0x2cu || operation == 0x2fu;
+    if (!supported)
+    {
+        return false;
+    }
+
     // Source selectors: 0..27 use broadcast lanes, 28..2f use Q/I or
     // vector operations. Q-dependent ops need the real Q timing pipeline.
     if ((operation >= 0x1cu && operation <= 0x1fu) ||
