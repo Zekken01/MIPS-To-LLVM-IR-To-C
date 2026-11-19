@@ -470,6 +470,31 @@ uint32_t c_kernel::heap_total_free() const
     return static_cast<uint32_t>(total);
 }
 
+bool c_kernel::query_heap_block(
+    uint32_t address, uint32_t* base, uint32_t* size
+) const
+{
+    if (base == nullptr || size == nullptr)
+    {
+        return false;
+    }
+    const auto upper = m_heap_allocations.upper_bound(address);
+    if (upper == m_heap_allocations.begin())
+    {
+        return false;
+    }
+    const auto found = std::prev(upper);
+    const uint64_t end =
+        static_cast<uint64_t>(found->first) + found->second;
+    if (static_cast<uint64_t>(address) >= end)
+    {
+        return false;
+    }
+    *base = found->first;
+    *size = found->second;
+    return true;
+}
+
 bool c_kernel::estimate_module_size(
     const std::vector<uint8_t>& bytes, uint32_t* size
 ) const
