@@ -3264,6 +3264,11 @@ def main():
         snapshot = json.loads(report_path.read_text(encoding="utf-8"))
         assert snapshot["exit_name"] == "UNSUPPORTED", snapshot
         assert snapshot["final_pc"] == 0x00100008, snapshot
+        # Static expansion identifies the actual unsupported/invalid guest
+        # instruction, even when execution later exits on the same word.
+        assert ("not-lowered pc=0x00100008 opcode=0x4c000000 "
+                "mnemonic=unknown classification=invalid" in
+                (result.stdout + result.stderr)), (result.stdout, result.stderr)
         assert ("EE unsupported guest PC: pc=0x00100008 "
                 "elf=0x4c000000 ram=0x4c000000") in result.stderr, (
             result.stdout, result.stderr
