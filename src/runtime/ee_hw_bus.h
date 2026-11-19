@@ -5,6 +5,7 @@
 #include "ee_intc.h"
 #include "ee_scanout_clock.h"
 #include "ee_sif.h"
+#include "ee_vif1.h"
 
 namespace ee
 {
@@ -30,6 +31,11 @@ public:
         m_dmac.bind_device_transfer(user, callback);
     }
 
+    void bind_vif1(c_ee_vif1* vif1)
+    {
+        m_vif1 = vif1;
+    }
+
     void bind_device_download(
         void* user, c_ee_dmac::t_device_download_callback callback)
     {
@@ -40,6 +46,10 @@ public:
     {
         m_intc.reset();
         m_dmac.reset();
+        if (m_vif1 != nullptr)
+        {
+            m_vif1->reset();
+        }
         m_sif.reset();
         m_gs_imr = 0u;
         m_gs_display = {};
@@ -186,7 +196,9 @@ public:
             value->m_hi = 0u;
             return true;
         }
-        return c_ee_intc::mmio_read(&bus->m_intc, address, width, value) ||
+        return (bus->m_vif1 != nullptr &&
+                c_ee_vif1::mmio_read(bus->m_vif1, address, width, value)) ||
+               c_ee_intc::mmio_read(&bus->m_intc, address, width, value) ||
                c_ee_dmac::mmio_read(&bus->m_dmac, address, width, value) ||
                c_ee_sif::mmio_read(&bus->m_sif, address, width, value);
     }
@@ -247,7 +259,9 @@ public:
             }
             return true;
         }
-        return c_ee_intc::mmio_write(&bus->m_intc, address, width, value) ||
+        return (bus->m_vif1 != nullptr &&
+                c_ee_vif1::mmio_write(bus->m_vif1, address, width, value)) ||
+               c_ee_intc::mmio_write(&bus->m_intc, address, width, value) ||
                c_ee_dmac::mmio_write(&bus->m_dmac, address, width, value) ||
                c_ee_sif::mmio_write(&bus->m_sif, address, width, value);
     }
@@ -255,6 +269,7 @@ public:
 private:
     c_ee_intc m_intc;
     c_ee_dmac m_dmac;
+    c_ee_vif1* m_vif1 = nullptr;
     c_ee_sif m_sif;
     c_ee_scanout_clock m_scanout;
     uint64_t m_gs_imr = 0u;
