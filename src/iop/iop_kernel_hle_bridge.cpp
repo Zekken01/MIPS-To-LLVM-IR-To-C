@@ -1,4 +1,5 @@
 #include "iop_kernel_hle_bridge.h"
+#include "iop_sysclib_strings.h"
 
 #include <algorithm>
 #include <cctype>
@@ -42,8 +43,15 @@ constexpr s_export k_exports[] = {
     {"sysclib", 11u, 8u}, {"sysclib", 12u, 8u},
     {"sysclib", 13u, 8u}, {"sysclib", 14u, 8u},
     {"sysclib", 15u, 8u}, {"sysclib", 16u, 8u},
-    {"sysclib", 17u, 8u}, {"sysclib", 29u, 8u},
-    {"sysclib", 36u, 8u}
+    {"sysclib", 17u, 8u},
+    {"sysclib", 20u, 8u}, {"sysclib", 21u, 8u},
+    {"sysclib", 22u, 8u}, {"sysclib", 23u, 8u},
+    {"sysclib", 24u, 8u}, {"sysclib", 25u, 8u},
+    {"sysclib", 26u, 8u}, {"sysclib", 27u, 8u},
+    {"sysclib", 28u, 8u}, {"sysclib", 29u, 8u},
+    {"sysclib", 30u, 8u}, {"sysclib", 31u, 8u},
+    {"sysclib", 32u, 8u}, {"sysclib", 33u, 8u},
+    {"sysclib", 34u, 8u}, {"sysclib", 36u, 8u}
 };
 
 // SYSCLIB byte-memory functions operate on IOP RAM, including KSEG0/1
@@ -914,36 +922,9 @@ bool c_kernel_hle_bridge::handle_sysclib(uint32_t ordinal)
             return true;
         }
     }
-    if (ordinal == 29u)
+    if (ordinal >= 20u && ordinal <= 34u)
     {
-        const uint32_t limit = cpu.m_gpr[6];
-        if (limit > 65536u)
-        {
-            return false;
-        }
-        cpu.m_gpr[2] = 0u;
-        for (uint32_t i = 0u; i < limit; ++i)
-        {
-            uint8_t lhs = 0u;
-            uint8_t rhs = 0u;
-            if (!m_kernel.cpu().read8(cpu.m_gpr[4] + i, &lhs) ||
-                !m_kernel.cpu().read8(cpu.m_gpr[5] + i, &rhs))
-            {
-                return false;
-            }
-            if (lhs != rhs)
-            {
-                cpu.m_gpr[2] = static_cast<uint32_t>(
-                    static_cast<int32_t>(lhs) -
-                    static_cast<int32_t>(rhs));
-                break;
-            }
-            if (lhs == 0u)
-            {
-                break;
-            }
-        }
-        return true;
+        return execute_sysclib_string(m_kernel.cpu(), ordinal);
     }
     if (ordinal == 36u)
     {
