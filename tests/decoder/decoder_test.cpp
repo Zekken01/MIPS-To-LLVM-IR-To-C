@@ -37,7 +37,8 @@ int main()
     // In particular 0x38, though SC on some MIPS variants, is not
     // a second LD encoding on PS2. Unknown selectors fail closed.
     expect("ld primary", R(0x37, 4, 5, 0, 0, 0), "ld", V);
-    expect("0x38 reserved", R(0x38, 4, 5, 0, 0, 0), "unknown", X);
+    // SC is a defined MIPS opcode but deliberately unavailable on EE.
+    expect("0x38 EE-unsupported SC", R(0x38, 4, 5, 0, 0, 0), "sc", X);
     expect("0x30 reserved", R(0x30, 4, 5, 0, 0, 0), "unknown", X);
     expect("0x35 reserved", R(0x35, 4, 5, 0, 0, 0), "unknown", X);
     expect("0x3d reserved", R(0x3d, 4, 5, 0, 0, 0), "unknown", X);
