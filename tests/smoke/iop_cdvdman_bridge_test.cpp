@@ -1,6 +1,7 @@
 #include "iop_cdvdman_bridge.h"
 
 #include <chrono>
+#include <array>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -297,6 +298,108 @@ int main()
         return fail("null guest pathname pointer was accepted");
     }
 
-    std::printf("IOP cdvdman sceCdSearchFile guest import: PASS\n");
+
+    // Clock and mounted-disc state are actual guest-callable imports,
+    // not merely synthetic static registration. No unsupported read,
+    // seek, interrupt, or callback completion may be registered.
+    for (uint16_t ordinal : {4u, 8u, 10u, 12u, 13u, 24u, 28u})
+    {
+        uint32_t entry = 0u;
+        uint32_t instruction = 0u;
+        if (!kernel.lookup_library("cdvdman", ordinal, &entry) ||
+            !kernel.cpu().read32(entry + 8u, &instruction) ||
+            instruction != 0x0000000cu)
+        {
+            return fail("supported CDVDMAN import has no guest stub");
+        }
+    }
+    for (uint16_t ordinal : {6u, 7u, 11u, 22u, 37u})
+    {
+        uint32_t entry = 0u;
+        if (kernel.lookup_library("cdvdman", ordinal, &entry))
+        {
+            return fail("unsupported CDVDMAN command falsely registered");
+        }
+    }
+
+    // Isolate a second authentic guest IRX import for sceCdReadClock.
+    // Its R3000 module executes JAL into the new HLE import trampoline.
+    iop::c_kernel clock_kernel;
+    iop::c_cdvdman_bridge clock_bridge(clock_kernel, media);
+    if (!clock_bridge.install())
+    {
+        return fail("CDVDMAN clock bridge install failed");
+    }
+    const iop::s_module_load_result clock_module =
+        clock_kernel.load_module(make_irx(24u));
+    if (clock_module.m_status != iop::e_irx_load_result::success)
+    {
+        return fail("CDVDMAN clock IRX import did not link");
+    }
+    const uint32_t clock_thread =
+        clock_kernel.create_module_thread(clock_module.m_id, 1u);
+    if (clock_thread == 0u || !clock_kernel.start_thread(clock_thread))
+    {
+        return fail("CDVDMAN clock module thread did not start");
+    }
+    clock_kernel.bind_syscall([&](iop::c_kernel& active, uint32_t service)
+    {
+        return clock_bridge.handle_syscall(active, service);
+    });
+    const iop::s_kernel_run_result clock_run =
+        clock_kernel.run(64u, 64u);
+    const iop::s_kernel_thread* clock_guest =
+        clock_kernel.thread(clock_thread);
+    if (clock_run.m_stop != iop::e_kernel_stop::budget_exhausted ||
+        clock_guest == nullptr || clock_guest->m_cpu.m_gpr[2] != 1u)
+    {
+        return fail("guest R3000 sceCdReadClock failed");
+    }
+    uint8_t rtc[8]{};
+    for (uint32_t i = 0u; i < 8u; ++i)
+    {
+        if (!clock_kernel.cpu().read8(0x31000u + i, &rtc[i]))
+        {
+            return fail("CDVD RTC output not readable");
+        }
+    }
+    const auto bcd = [](uint8_t value)
+    {
+        return ((value >> 4u) * 10u) + (value & 15u);
+    };
+    if (rtc[0] != 0u || rtc[4] != 0u ||
+        bcd(rtc[1]) > 59u || bcd(rtc[2]) > 59u ||
+        bcd(rtc[3]) > 23u || bcd(rtc[5]) < 1u ||
+        bcd(rtc[5]) > 31u || bcd(rtc[6]) < 1u ||
+        bcd(rtc[6]) > 12u)
+    {
+        return fail("CDVD clock format is not bounded BCD/JST");
+    }
+    // Observe immutable mounted media and absence of pending CDVDMAN
+    // commands; these queries cannot fabricate a DMA completion.
+    for (const auto& query : std::array<std::array<uint32_t, 2u>, 5u>{{
+        {{4u, 1u}}, {{8u, 0u}}, {{12u, 0x14u}},
+        {{13u, 2u}}, {{28u, 0x0au}}
+    }})
+    {
+        if (!clock_bridge.handle_syscall(
+                clock_kernel,
+                iop::c_cdvdman_bridge::k_service_base + query[0]) ||
+            clock_kernel.cpu().state().m_gpr[2] != query[1])
+        {
+            return fail("CDVDMAN media/clock state query failed");
+        }
+    }
+    // A clock read with an invalid guest pointer fails closed and
+    // must not claim that valid clock data was delivered.
+    clock_kernel.cpu().state().m_gpr[4] = 0x001ffffcu;
+    if (clock_bridge.handle_syscall(
+            clock_kernel,
+            iop::c_cdvdman_bridge::k_service_base + 24u))
+    {
+        return fail("CDVDMAN clock read crossed IOP RAM");
+    }
+
+    std::printf("IOP CDVDMAN search/clock/media guest imports: PASS\n");
     return 0;
 }
