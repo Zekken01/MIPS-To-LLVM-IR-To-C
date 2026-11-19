@@ -5068,6 +5068,53 @@ int main(int argc, char** argv)
             static_cast<unsigned long long>(hardware.scanout().fields_started()),
             static_cast<unsigned long long>(
                 runtime.m_ee_cycle_scheduler.current_cycle()));
+        // Capture the genuine DMA2 channel state at a host-yield stop.
+        // This only reads the DMAC's host-owned registers and validated
+        // guest RAM; it neither retries nor completes a DMA transfer.
+        const auto gif_register = [&](uint32_t offset) -> uint32_t
+        {
+            ee::s_ee_u128 value{};
+            if (!ee::c_ee_dmac::mmio_read(
+                    &hardware.dmac(),
+                    ee::c_ee_dmac::k_gif_base + offset, 4u, &value))
+            {
+                return 0u;
+            }
+            return static_cast<uint32_t>(value.m_lo);
+        };
+        const uint32_t gif_chcr = gif_register(0u);
+        const uint32_t gif_madr = gif_register(0x10u);
+        const uint32_t gif_qwc = gif_register(0x20u);
+        const uint32_t gif_tadr = gif_register(0x30u);
+        std::fprintf(stderr,
+            "EE host GIF DMA: CHCR=0x%08x MADR=0x%08x "
+            "QWC=0x%04x TADR=0x%08x D_STAT=0x%08x\n",
+            gif_chcr, gif_madr, gif_qwc, gif_tadr,
+            hardware.dmac().status());
+        if ((gif_chcr & ee::c_ee_dmac::k_chcr_str) != 0u &&
+            ((gif_chcr >> 2u) & 3u) == 1u &&
+            (gif_tadr & 15u) == 0u &&
+            gif_tadr < 0x02000000u &&
+            memory->contains(gif_tadr, 16u))
+        {
+            const uint64_t tag = memory->read64(gif_tadr);
+            std::fprintf(stderr,
+                "EE host GIF tag: raw=0x%016llx ID=%u "
+                "QWC=%u ADDR=0x%08x IRQ=%u TTE=%u TIE=%u\n",
+                static_cast<unsigned long long>(tag),
+                static_cast<uint32_t>((tag >> 28u) & 7u),
+                static_cast<uint32_t>(tag & 0xffffu),
+                static_cast<uint32_t>(tag >> 32u),
+                (tag & 0x80000000ull) != 0u ? 1u : 0u,
+                (gif_chcr & 0x40u) != 0u ? 1u : 0u,
+                (gif_chcr & 0x80u) != 0u ? 1u : 0u);
+        }
+        else if ((gif_chcr & ee::c_ee_dmac::k_chcr_str) != 0u &&
+                 ((gif_chcr >> 2u) & 3u) == 1u)
+        {
+            std::fprintf(stderr,
+                "EE host GIF tag: unavailable (invalid or unbacked TADR)\n");
+        }
         for (uint32_t timer_index = 0u; timer_index < 4u; ++timer_index)
         {
             std::fprintf(stderr,
