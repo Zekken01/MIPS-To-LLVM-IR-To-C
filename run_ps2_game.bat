@@ -11,9 +11,12 @@ set "DISC_ROOT=%CD%\PS2_GAME"
 set "WORK_DIR=build\ps2-game-hle"
 if not defined EMIT_JOBS set "EMIT_JOBS=8"
 if not defined SIF_POLL_LIMIT set "SIF_POLL_LIMIT=2048"
-rem Up to eight capped auto-expansion passes (128 new functions per pass).
-rem Set EXPANSION_PASSES=1..8 to override; stop early at real guest blockers.
+rem Bound each native auto-expansion session; both limits are configurable.
+rem EXPANSION_PASSES: 1..64, number of bounded passes (default 8).
+rem EXPANSION_PER_PASS: 1..128, newly emitted functions per pass (default 128).
+rem Stop early at genuine guest blockers; never fabricate completion.
 if not defined EXPANSION_PASSES set "EXPANSION_PASSES=8"
+if not defined EXPANSION_PER_PASS set "EXPANSION_PER_PASS=128"
 
 where python >nul 2>nul
 if errorlevel 1 (
@@ -108,6 +111,7 @@ if exist "%WORK_DIR%\translation-cache.json" (
 )
 
 echo === Starting extracted-disc HLE boot session ===
+echo Expansion budget: %EXPANSION_PASSES% passes, %EXPANSION_PER_PASS% new functions per pass
 echo Boot log: "%WORK_DIR%\boot.log"
 echo Expansion log: "%WORK_DIR%\expansion.log"
 echo Report: "%WORK_DIR%\first-boot.json"
@@ -125,7 +129,7 @@ python tools\run_boot_session.py "%GAME_ELF%" ^
     --gs-snapshot "%WORK_DIR%\gs-display.ppm" ^
     --gs-upload-snapshot "%WORK_DIR%\gs-upload.ppm" ^
     --expansion-passes=%EXPANSION_PASSES% ^
-    --expansion-per-pass=128 ^
+    --expansion-per-pass=%EXPANSION_PER_PASS% ^
     --ll-progress ^
     --hle-startup ^
     --kseg-ram ^
