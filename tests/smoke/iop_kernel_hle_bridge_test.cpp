@@ -451,6 +451,64 @@ int main()
         return fail("refer semaphore status reported false count");
     }
 
+    // Polling does not block, status describes actual objects, and a
+    // successfully destroyed object cannot be polled again.
+    if (!call_guest(
+            kernel, "thevent", 11u,
+            {1u, 0x20u, 0u, 0x2660u}, &result) ||
+        result != 0u ||
+        !call_guest(
+            kernel, "thevent", 12u,
+            {1u, 0x40u, 0u, 0x2660u}, &result) ||
+        result != static_cast<uint32_t>(-421) ||
+        !call_guest(
+            kernel, "thevent", 13u,
+            {1u, 0x2680u, 0u, 0u}, &result) ||
+        result != 0u ||
+        !kernel.cpu().read32(0x268cu, &event_bits) ||
+        event_bits != 0x20u ||
+        !call_guest(
+            kernel, "thevent", 9u,
+            {1u, 0u, 0u, 0u}, &result) ||
+        result != 0u ||
+        !call_guest(
+            kernel, "thevent", 14u,
+            {1u, 0x2680u, 0u, 0u}, &result) ||
+        !kernel.cpu().read32(0x268cu, &event_bits) ||
+        event_bits != 0u ||
+        !call_guest(
+            kernel, "thevent", 5u,
+            {1u, 0u, 0u, 0u}, &result) ||
+        result != 0u)
+    {
+        return fail("event polling, status or delete failed");
+    }
+    if (!call_guest(
+            kernel, "thsemap", 9u,
+            {2u, 0u, 0u, 0u}, &result) ||
+        result != 0u ||
+        !call_guest(
+            kernel, "thsemap", 9u,
+            {2u, 0u, 0u, 0u}, &result) ||
+        result != static_cast<uint32_t>(-419) ||
+        !call_guest(
+            kernel, "thsemap", 7u,
+            {2u, 0u, 0u, 0u}, &result) ||
+        result != 0u ||
+        !call_guest(
+            kernel, "thsemap", 12u,
+            {2u, 0x2780u, 0u, 0u}, &result) ||
+        result != 0u ||
+        !kernel.cpu().read32(0x2790u, &remaining) ||
+        remaining != 1u ||
+        !call_guest(
+            kernel, "thsemap", 5u,
+            {2u, 0u, 0u, 0u}, &result) ||
+        result != 0u)
+    {
+        return fail("semaphore polling, status or delete failed");
+    }
+
     // SIO2 DMA MMIO request retains STR, but never invents a DMA
     // completion or sets IOP interrupt readiness.
     uint32_t request = 0u;
