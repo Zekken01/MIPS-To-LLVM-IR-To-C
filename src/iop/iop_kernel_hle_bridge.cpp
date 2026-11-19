@@ -1,4 +1,5 @@
 #include "iop_kernel_hle_bridge.h"
+#include "iop_folder_sector_source.h"
 #include "iop_sysclib_strings.h"
 
 #include <algorithm>
@@ -94,7 +95,13 @@ constexpr s_export k_exports[] = {
     {"thvpool", 11u, 13u}, {"thvpool", 12u, 13u},
     {"modload", 10u, 14u}, {"modload", 13u, 14u},
     {"modload", 16u, 14u}, {"modload", 17u, 14u},
-    {"modload", 18u, 14u}, {"modload", 22u, 14u}
+    {"modload", 18u, 14u}, {"modload", 22u, 14u},
+    {"ioman", 4u, 15u}, {"ioman", 5u, 15u},
+    {"ioman", 6u, 15u}, {"ioman", 7u, 15u},
+    {"ioman", 8u, 15u}, {"ioman", 16u, 15u},
+    {"ioman", 20u, 15u}, {"ioman", 21u, 15u},
+    {"secrman", 4u, 16u}, {"secrman", 5u, 16u},
+    {"secrman", 6u, 16u}
 };
 
 // SYSCLIB byte-memory functions operate on IOP RAM, including KSEG0/1
@@ -214,6 +221,13 @@ c_kernel_hle_bridge::c_kernel_hle_bridge(c_kernel& kernel)
 {
 }
 
+void c_kernel_hle_bridge::attach_disc_source(
+    const c_folder_sector_source* source)
+{
+    m_ioman_files.clear();
+    m_disc_source = source;
+}
+
 bool c_kernel_hle_bridge::install()
 {
     if (m_installed || m_kernel.rom0_boot_active())
@@ -261,6 +275,7 @@ void c_kernel_hle_bridge::reset_for_reboot()
               std::end(m_dma_direction), 0u);
     m_strtok_next = 0u;
     m_check_kelf_path_callback = 0u;
+    m_ioman_files.clear();
     m_next_object = 1u;
     m_cpu_interrupts_suspended = false;
     m_installed = false;
@@ -2376,13 +2391,231 @@ bool c_kernel_hle_bridge::handle_modload(uint32_t ordinal)
     return false;
 }
 
+
+// The original IOMAN interface is broader than the read-only CD-ROM
+// subset supported here. Never report successful driver registration,
+// writes to disc/media, or memory-card operations without guest handlers.
+bool c_kernel_hle_bridge::handle_ioman(uint32_t ordinal)
+{
+    s_cpu_state& cpu = m_kernel.cpu().state();
+    constexpr uint32_t k_no_entry = static_cast<uint32_t>(-2);
+    constexpr uint32_t k_bad_fd = static_cast<uint32_t>(-9);
+    constexpr uint32_t k_permission = static_cast<uint32_t>(-13);
+    constexpr uint32_t k_invalid = static_cast<uint32_t>(-22);
+    constexpr uint32_t k_too_many = static_cast<uint32_t>(-24);
+    const uint32_t argument = cpu.m_gpr[4];
+
+    if (ordinal == 20u || ordinal == 21u)
+    {
+        // AddDrv/DelDrv must execute the guest driver's init/deinit
+        // callbacks and install/remove its operations table. The IOP
+        // scheduler has no synchronous guest-callback bridge for this.
+        // Match the reference's explicit unsuccessful boundary.
+        // In particular, do not pretend a memory card driver exists.
+        cpu.m_gpr[2] = static_cast<uint32_t>(-1);
+        return true;
+    }
+
+    if (ordinal == 4u || ordinal == 16u)
+    {
+        std::string path;
+        if (!read_string(argument, 256u, &path))
+        {
+            cpu.m_gpr[2] = k_invalid;
+            return true;
+        }
+        s_folder_file_info file{};
+        if (m_disc_source == nullptr ||
+            !m_disc_source->valid() ||
+            !m_disc_source->find_file(path, &file))
+        {
+            cpu.m_gpr[2] = k_no_entry;
+            return true;
+        }
+
+        if (ordinal == 4u) // open: CD-ROM, read-only
+        {
+            const uint32_t flags = cpu.m_gpr[5];
+            if (flags != 0u && flags != 1u)
+            {
+                cpu.m_gpr[2] = k_permission;
+                return true;
+            }
+            uint32_t fd = 3u;
+            for (; fd < 64u; ++fd)
+            {
+                if (m_ioman_files.count(fd) == 0u)
+                {
+                    break;
+                }
+            }
+            if (fd == 64u)
+            {
+                cpu.m_gpr[2] = k_too_many;
+                return true;
+            }
+            m_ioman_files.emplace(
+                fd, s_ioman_file{file.m_lba, file.m_size, 0u});
+            cpu.m_gpr[2] = fd;
+            return true;
+        }
+
+        // getstat: io_stat_t (40 bytes), file mode and size populated
+        // from a real directory record; all other fields zero.
+        if (!is_iop_ram_span(cpu.m_gpr[5], 40u))
+        {
+            cpu.m_gpr[2] = k_invalid;
+            return true;
+        }
+        std::vector<uint8_t> status(40u, 0u);
+        status[0] = 0x17u;
+        for (uint32_t i = 0u; i < 4u; ++i)
+        {
+            status[8u + i] = static_cast<uint8_t>(
+                file.m_size >> (i * 8u));
+        }
+        if (!write_iop_ram(m_kernel.cpu(), cpu.m_gpr[5], status))
+        {
+            return false;
+        }
+        cpu.m_gpr[2] = 0u;
+        return true;
+    }
+
+    if (ordinal == 5u) // close
+    {
+        const auto found = m_ioman_files.find(argument);
+        if (found == m_ioman_files.end())
+        {
+            cpu.m_gpr[2] = k_bad_fd;
+            return true;
+        }
+        m_ioman_files.erase(found);
+        cpu.m_gpr[2] = 0u;
+        return true;
+    }
+
+    if (ordinal == 7u) // write: console only, never disc/media
+    {
+        if (argument != 1u && argument != 2u)
+        {
+            cpu.m_gpr[2] = m_ioman_files.count(argument) != 0u
+                ? k_permission : k_bad_fd;
+            return true;
+        }
+        std::vector<uint8_t> data;
+        const uint32_t length = cpu.m_gpr[6];
+        if (!read_iop_ram(m_kernel.cpu(), cpu.m_gpr[5],
+                          length, data))
+        {
+            cpu.m_gpr[2] = k_invalid;
+            return true;
+        }
+        if (!write_console(std::string(data.begin(), data.end())))
+        {
+            return false;
+        }
+        cpu.m_gpr[2] = length;
+        return true;
+    }
+
+    const auto found = m_ioman_files.find(argument);
+    if (found == m_ioman_files.end())
+    {
+        cpu.m_gpr[2] = k_bad_fd;
+        return true;
+    }
+    s_ioman_file& file = found->second;
+    if (ordinal == 8u) // lseek: clamp to actual file size
+    {
+        const int64_t offset = static_cast<int32_t>(cpu.m_gpr[5]);
+        const uint32_t whence = cpu.m_gpr[6];
+        if (whence > 2u)
+        {
+            cpu.m_gpr[2] = k_invalid;
+            return true;
+        }
+        const int64_t base = whence == 0u ? 0 :
+            whence == 1u ? static_cast<int64_t>(file.m_position) :
+                           static_cast<int64_t>(file.m_size);
+        const int64_t target = std::max<int64_t>(0, std::min<int64_t>(
+            static_cast<int64_t>(file.m_size), base + offset));
+        file.m_position = static_cast<uint32_t>(target);
+        cpu.m_gpr[2] = file.m_position;
+        return true;
+    }
+    if (ordinal == 6u) // read: bounded guest RAM + real ISO sectors
+    {
+        const uint32_t destination = cpu.m_gpr[5];
+        const uint32_t requested = cpu.m_gpr[6];
+        const uint32_t count = std::min<uint32_t>(
+            requested, file.m_size - file.m_position);
+        if (!is_iop_ram_span(destination, count))
+        {
+            cpu.m_gpr[2] = k_invalid;
+            return true;
+        }
+        if (count == 0u)
+        {
+            cpu.m_gpr[2] = 0u;
+            return true;
+        }
+        if (m_disc_source == nullptr || !m_disc_source->valid())
+        {
+            cpu.m_gpr[2] = k_no_entry;
+            return true;
+        }
+        constexpr uint32_t sector_size = c_iso_sector_source::k_sector_size;
+        const uint32_t first = file.m_position / sector_size;
+        const uint32_t start = file.m_position % sector_size;
+        const uint32_t sector_count =
+            static_cast<uint32_t>(
+                (static_cast<uint64_t>(start) + count + sector_size - 1u)
+                    / sector_size);
+        std::vector<uint8_t> sectors;
+        if (!m_disc_source->read_sectors(
+                file.m_lba + first, sector_count, sectors) ||
+            static_cast<uint64_t>(start) + count > sectors.size())
+        {
+            cpu.m_gpr[2] = k_no_entry;
+            return true;
+        }
+        const std::vector<uint8_t> data(
+            sectors.begin() + start,
+            sectors.begin() + start + count);
+        if (!write_iop_ram(m_kernel.cpu(), destination, data))
+        {
+            return false;
+        }
+        file.m_position += count;
+        cpu.m_gpr[2] = count;
+        return true;
+    }
+    return false;
+}
+
+bool c_kernel_hle_bridge::handle_secrman(uint32_t ordinal)
+{
+    if (ordinal != 4u && ordinal != 5u && ordinal != 6u)
+    {
+        return false;
+    }
+    // A software HLE must never acknowledge a card challenge or KELF
+    // authentication as successful without a verified security backend.
+    // Return false for SecrAuthCard, and an explicit failed result for
+    // the two opaque device-specific entrypoints.
+    m_kernel.cpu().state().m_gpr[2] =
+        ordinal == 6u ? 0u : static_cast<uint32_t>(-1);
+    return true;
+}
+
 bool c_kernel_hle_bridge::handle_syscall(
     c_kernel& kernel, uint32_t service
 )
 {
     if (&kernel != &m_kernel ||
         service < k_service_base ||
-        service >= k_service_base + 0x1000u ||
+        service >= k_service_base + 0x1100u ||
         !m_installed)
     {
         return false;
@@ -2405,6 +2638,8 @@ bool c_kernel_hle_bridge::handle_syscall(
     case 12u: return handle_fixed_pool(ordinal);
     case 13u: return handle_variable_pool(ordinal);
     case 14u: return handle_modload(ordinal);
+    case 15u: return handle_ioman(ordinal);
+    case 16u: return handle_secrman(ordinal);
     default: return false;
     }
 }
