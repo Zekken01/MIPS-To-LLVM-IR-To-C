@@ -186,6 +186,11 @@ target_link_libraries(ee_vu0_runtime_test PRIVATE ee_core)
 add_executable(ee_vu0_macro_fmac_test tests/smoke/vu0_macro_fmac_test.cpp)
 target_link_libraries(ee_vu0_macro_fmac_test PRIVATE ee_core)
 
+# Host-only HLE bridge for VU0 indexed memory macros; no translation
+# fingerprint change and no fake success for unknown COP2 instructions.
+add_executable(ee_host_vu0_macro_test tests/smoke/ee_host_vu0_macro_test.cpp)
+target_link_libraries(ee_host_vu0_macro_test PRIVATE ee_core)
+
 add_executable(ee_vsync_flag_test tests/smoke/ee_vsync_flag_test.cpp)
 target_link_libraries(ee_vsync_flag_test PRIVATE ee_core)
 
@@ -516,6 +521,7 @@ add_test(NAME ee_vu0_memory_map COMMAND ee_vu0_memory_map_test)
 add_test(NAME ee_unaligned_memory COMMAND ee_unaligned_memory_test)
 add_test(NAME vu0_runtime COMMAND ee_vu0_runtime_test)
 add_test(NAME vu0_macro_fmac COMMAND ee_vu0_macro_fmac_test)
+add_test(NAME ee_host_vu0_macro COMMAND ee_host_vu0_macro_test)
 add_test(NAME ee_vsync_flag COMMAND ee_vsync_flag_test)
 add_test(NAME ee_scanout_clock COMMAND ee_scanout_clock_test)
 add_test(NAME ee_issue_timing_probe COMMAND ee_issue_timing_probe_test)

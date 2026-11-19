@@ -4,6 +4,7 @@
 #include "ee_ram_interpreter.h"
 #include "ee_hw_bus.h"
 #include "ee_host_timers.h"
+#include "ee_host_vu0_macro.h"
 #include "ee_vsync_flags.h"
 #include "ee_gif.h"
 #include "ee_gs.h"
@@ -2197,6 +2198,47 @@ int main(int argc, char** argv)
             std::printf("dispatch=%llu pc=0x%08x -> 0x%08x reason=%s(%u) status=%u\n",
                         static_cast<unsigned long long>(dispatched), from_pc,
                         out_pc, exit_name(reason), reason, status);
+        }
+
+        // Narrow HLE-first fallback for legal COP2 VU0 indexed vector
+        // memory operations (VLQI/VSQI/VLQD/VSQD). The existing native
+        // module stops at the exact unsupported PC; verify that both the
+        // original ELF and live RAM contain the same supported opcode.
+        // This bridge advances only one authentic guest instruction.
+        // Unknown encodings, non-executable addresses, or a failed VU0
+        // synchronization remain UNSUPPORTED rather than becoming no-ops.
+        if (hle_startup &&
+            reason == static_cast<uint32_t>(
+                ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED) &&
+            count != 0u && status == 0u &&
+            image.is_executable_address(cpu.m_pc) &&
+            memory->contains(cpu.m_pc, 4u))
+        {
+            const uint32_t macro_pc = cpu.m_pc;
+            uint32_t elf_word = 0u;
+            const uint32_t live_word = memory->read32(macro_pc);
+            if (image.read32_at(macro_pc, &elf_word) &&
+                elf_word == live_word &&
+                ee::c_ee_host_vu0_macro::indexed_memory_opcode(elf_word) &&
+                ee::c_ee_host_vu0_macro::execute(
+                    &cpu, &runtime, elf_word, macro_pc))
+            {
+                const uint32_t secondary =
+                    (elf_word & 3u) | ((elf_word >> 4u) & 0x7cu);
+                const uint32_t base_index =
+                    (secondary & 1u) == 0u
+                        ? ((elf_word >> 11u) & 31u)
+                        : ((elf_word >> 16u) & 31u);
+                std::printf(
+                    "HLE VU0 indexed memory: pc=0x%08x opcode=0x%08x "
+                    "special2=0x%02x base_vi=%u next_vi=0x%04x\n",
+                    macro_pc, elf_word, secondary, base_index,
+                    ee::ee_vu0_read_vi(&vu0, base_index) & 0xffffu);
+                cpu.m_pc = macro_pc + 4u;
+                cpu.m_exit_reason = static_cast<uint32_t>(
+                    ee::e_ee_exit_reason::EE_EXIT_DISPATCH);
+                continue;
+            }
         }
 
         // A translated-loop yield has already committed the preceding
