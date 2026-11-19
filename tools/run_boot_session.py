@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 
 from iop_disc_catalog import build_catalog, reconcile_runtime_loadfile
@@ -39,16 +40,92 @@ def read_report(path):
         return {}
 
 
-def run_session(command, log_path, append=False):
+class c_ll_file_progress:
+    """One in-place console counter; never emits progress into boot logs."""
+
+    def __init__(self, work, stream=None):
+        self.m_ir = Path(work) / "ir"
+        self.m_stream = sys.stdout if stream is None else stream
+        self.m_enabled = bool(getattr(self.m_stream, "isatty", lambda: False)())
+        self.m_last = None
+        self.m_visible = False
+        self.m_line_width = 0
+
+    def refresh(self):
+        if not self.m_enabled:
+            return
+        marker = self.m_ir / "ee_expected_ll_count.txt"
+        total = None
+        try:
+            if marker.is_file():
+                value = marker.read_text(encoding="ascii").strip()
+                if value.isdecimal():
+                    total = int(value)
+            if total is None or total <= 0:
+                report = read_report(self.m_ir / "ee_functions.json")
+                value = report.get("functions_discovered")
+                if type(value) is int and value > 0:
+                    total = value
+            if total is None or total <= 0:
+                return
+            current = sum(1 for _ in self.m_ir.glob("*.ll"))
+        except OSError:
+            return
+
+        # New runtime-discovered entries can extend the original static
+        # discovery total. Never display impossible progress (N > total).
+        total = max(total, current)
+        status = (current, total)
+        if status == self.m_last:
+            return
+        line = f"LLVM IR [{current}/{total}]"
+        self.m_stream.write("\r" + line +
+                            " " * max(0, self.m_line_width - len(line)))
+        self.m_stream.flush()
+        self.m_line_width = len(line)
+        self.m_visible = True
+        self.m_last = status
+
+    def finish_line(self):
+        if self.m_visible:
+            self.m_stream.write("\n")
+            self.m_stream.flush()
+            self.m_visible = False
+            self.m_line_width = 0
+
+
+def watch_ll_files(progress, stopped):
+    # At most four terminal updates per second. Filesystem scanning does
+    # not hash or open individual IR files; only completed .ll filenames
+    # are counted. All compiler output stays in the diagnostic log.
+    while not stopped.wait(0.25):
+        progress.refresh()
+
+
+def run_session(command, log_path, append=False, progress=None):
     started = time.monotonic()
-    result = subprocess.run(
-        [str(item) for item in command],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        errors="replace",
-        check=False,
-    )
+    stopped = threading.Event()
+    worker = None
+    if progress is not None and progress.m_enabled:
+        worker = threading.Thread(
+            target=watch_ll_files, args=(progress, stopped), daemon=True
+        )
+        worker.start()
+    try:
+        result = subprocess.run(
+            [str(item) for item in command],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors="replace",
+            check=False,
+        )
+    finally:
+        if worker is not None:
+            stopped.set()
+            worker.join()
+            progress.refresh()
+            progress.finish_line()
     output = result.stdout or ""
     with log_path.open("a" if append else "w", encoding="utf-8") as log:
         log.write("+ " + subprocess.list2cmdline([str(item) for item in command]) + "\n")
@@ -76,6 +153,10 @@ def main(argv=None):
     parser.add_argument("--expansion-passes", type=int, default=2)
     parser.add_argument("--expansion-per-pass", type=int, default=128)
     parser.add_argument("--no-recompile", action="store_true")
+    parser.add_argument(
+        "--ll-progress", action="store_true",
+        help="Show live in-place [completed/expected] .ll file count on a terminal",
+    )
     parser.add_argument(
         "--disc-root", type=Path,
         help="Extracted CD-ROM root (default: directory containing the ELF)",
@@ -164,6 +245,7 @@ def main(argv=None):
             flush=True,
         )
 
+    progress = c_ll_file_progress(work) if args.ll_progress else None
     expansion_log = work / "expansion.log"
     boot_log = work / "boot.log"
     metadata_path = work / "ir" / "ee_functions.json"
@@ -199,7 +281,9 @@ def main(argv=None):
         # creates its initial linked baseline before replay zero.
         # A jump-table relink can compile many functions in one replay.
         prior_count = read_function_count(metadata_path) if reuse else None
-        code, output, elapsed = run_session(command, expansion_log, append=True)
+        code, output, elapsed = run_session(
+            command, expansion_log, append=True, progress=progress
+        )
         state = read_report(report)
         replays = REPLAY_PATTERN.findall(output)
         last_replay = int(replays[-1]) if replays else -1
@@ -280,7 +364,9 @@ def main(argv=None):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.unlink(missing_ok=True)
             final_command.append(f"{option}={target}")
-    code, final_output, elapsed = run_session(final_command, boot_log)
+    code, final_output, elapsed = run_session(
+        final_command, boot_log, progress=progress
+    )
     if catalog is not None:
         try:
             reconcile_runtime_loadfile(catalog, final_output)
