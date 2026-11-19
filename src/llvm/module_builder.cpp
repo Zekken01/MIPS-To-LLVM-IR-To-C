@@ -2451,11 +2451,15 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
         store_dirty_regs(dirty);
         reset_tracking();
 
-        // PCSX2's delay-slot policy differs for reads and writes: reads finish
-        // the active microprogram to E, while writes wait for E or M.
-        const uint32_t sync_mode = !in_delay_slot
-            ? 0u
-            : (reads_vu0 ? 1u : 2u);
+        // VU User's Manual v6.0, chapter 6: transfer bit 0 selects
+        // the interlock with an active micro-subroutine. Non-interlocked
+        // transfers may catch up to the current EE cycle but do not wait
+        // for VCALLMS completion; .I reads wait for E, writes for E/M.
+        // This choice is encoded in the guest instruction, not inferred
+        // from whether the transfer occupies a branch delay slot.
+        const bool interlock = (ins.opcode_word & 1u) != 0u;
+        const uint32_t sync_mode = interlock
+            ? (reads_vu0 ? 1u : 2u) : 0u;
         const std::string result = newtemp();
         if (vu0_macro)
         {
