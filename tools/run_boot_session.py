@@ -246,6 +246,10 @@ def main(argv=None):
         )
 
     progress = c_ll_file_progress(work) if args.ll_progress else None
+    # Keep legacy run_session calls unchanged unless the console progress
+    # feature was explicitly requested. Diagnostic tools and tests use the
+    # existing three-argument interface without a progress keyword.
+    progress_kwargs = {"progress": progress} if progress is not None else {}
     expansion_log = work / "expansion.log"
     boot_log = work / "boot.log"
     metadata_path = work / "ir" / "ee_functions.json"
@@ -282,7 +286,7 @@ def main(argv=None):
         # A jump-table relink can compile many functions in one replay.
         prior_count = read_function_count(metadata_path) if reuse else None
         code, output, elapsed = run_session(
-            command, expansion_log, append=True, progress=progress
+            command, expansion_log, append=True, **progress_kwargs
         )
         state = read_report(report)
         replays = REPLAY_PATTERN.findall(output)
@@ -365,7 +369,7 @@ def main(argv=None):
             target.unlink(missing_ok=True)
             final_command.append(f"{option}={target}")
     code, final_output, elapsed = run_session(
-        final_command, boot_log, progress=progress
+        final_command, boot_log, **progress_kwargs
     )
     if catalog is not None:
         try:
