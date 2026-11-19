@@ -29,14 +29,14 @@ def write_mips_elf(path):
 
 def write_irx_import_fixture(path):
     image = bytearray(0x180)
-    image[:7] = b"\\x7fELF\\x01\\x01\\x01"
+    image[:7] = b"\x7fELF\x01\x01\x01"
     struct.pack_into("<HHI", image, 16, 0xFF80, 8, 1)
     struct.pack_into("<I", image, 28, 52)
     struct.pack_into("<HH", image, 42, 32, 1)
     struct.pack_into("<IIIIIIII", image, 52,
                      1, 0x80, 0, 0, 0x80, 0x80, 5, 4)
     struct.pack_into("<I", image, 0xA0, 0x41E00000)
-    image[0xAC:0xB4] = b"sysclib\\x00"
+    image[0xAC:0xB4] = b"sysclib\x00"
     struct.pack_into("<II", image, 0xB4, 0x03E00008, 0x2400000C)
     struct.pack_into("<II", image, 0xBC, 0x03E00008, 0x2400000D)
     path.write_bytes(image)
