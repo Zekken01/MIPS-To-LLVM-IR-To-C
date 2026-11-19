@@ -68,6 +68,14 @@ if /I "%EE_WEBGPU_SNAPSHOT%"=="1" (
     if not defined EE_WEBGPU_ROOT set "EE_WEBGPU_ROOT=%CD%\third_party\wgpu-native"
     set "EE_WEBGPU_RUN_ARG=--gs-webgpu-snapshot=%WORK_DIR%\gs-webgpu.ppm"
 )
+rem Obtain the same pinned MSVC wgpu-native SDK used in WebGPU CI.
+rem Verify its checksum, headers, import library and runtime DLL before CMake.
+rem A complete existing SDK is reused offline; an incomplete one fails
+rem explicitly rather than silently overwriting local user files.
+if /I "%EE_WEBGPU_SNAPSHOT%"=="1" (
+    python "tools\ensure_wgpu_native.py" --root "%EE_WEBGPU_ROOT%"
+    if errorlevel 1 exit /b 1
+)
 echo === Configuring native host tools ===
 if /I "%EE_WEBGPU_SNAPSHOT%"=="1" (
     if exist "build\CMakeCache.txt" (
