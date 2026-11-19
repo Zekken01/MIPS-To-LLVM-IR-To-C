@@ -1182,9 +1182,9 @@ def make_ee_timer_poll_elf(path):
         0x29410020,  # slti at,t2,32
         0x1420fffc,  # bne at,zero,poll
         0x00000000,  # delay slot
-        0x01408021,  # addu s0,t2,zero
         0xad000010,  # sw zero,0x10(t0): freeze counter
-        0x8d110000,  # lw s1,0(t0): frozen reading
+        0x8d100000,  # lw s0,0(t0): first frozen reading
+        0x8d110000,  # lw s1,0(t0): second frozen reading
         0x0000000d,  # BREAK: expected terminal trap
     ]
     for index, word in enumerate(program):
