@@ -755,6 +755,98 @@ int main()
         return fail("THVPOOL status, release or deletion failed");
     }
 
+    // SYS_MEM block metadata comes from actual allocator ownership,
+    // including interior pointers; non-owned addresses have no block.
+    if (!call_guest(
+            kernel, "sysmem", 4u,
+            {0u, 64u, 0u, 0u}, &result) ||
+        result < iop::c_kernel::k_user_base)
+    {
+        return fail("second SYS_MEM allocation failed");
+    }
+    const uint32_t owned_block = result;
+    if (!call_guest(
+            kernel, "sysmem", 9u,
+            {owned_block + 4u, 0u, 0u, 0u}, &result) ||
+        result != owned_block ||
+        !call_guest(
+            kernel, "sysmem", 10u,
+            {owned_block + 4u, 0u, 0u, 0u}, &result) ||
+        result != 64u ||
+        !call_guest(
+            kernel, "sysmem", 5u,
+            {owned_block, 0u, 0u, 0u}, &result) ||
+        result != 0u ||
+        !call_guest(
+            kernel, "sysmem", 9u,
+            {owned_block, 0u, 0u, 0u}, &result) ||
+        result != 0u)
+    {
+        return fail("SYS_MEM ownership/block metadata did not match");
+    }
+
+    const std::string strtok_input = "aaa,bb";
+    for (size_t i = 0u; i <= strtok_input.size(); ++i)
+    {
+        if (!kernel.cpu().write8(
+                0x2f00u + static_cast<uint32_t>(i),
+                i == strtok_input.size() ? 0u :
+                static_cast<uint8_t>(strtok_input[i])))
+        {
+            return fail("cannot initialize SYSCLIB token input");
+        }
+    }
+    kernel.cpu().write8(0x2f40u, ',');
+    kernel.cpu().write8(0x2f41u, 0u);
+    if (!call_guest(
+            kernel, "sysclib", 35u,
+            {0x2f00u, 0x2f40u, 0u, 0u}, &result) ||
+        result != 0x2f00u ||
+        !call_guest(
+            kernel, "sysclib", 35u,
+            {0u, 0x2f40u, 0u, 0u}, &result) ||
+        result != 0x2f04u ||
+        !call_guest(
+            kernel, "sysclib", 35u,
+            {0u, 0x2f40u, 0u, 0u}, &result) ||
+        result != 0u)
+    {
+        return fail("bounded SYSCLIB strtok continuation was incorrect");
+    }
+    const std::string unsigned_input = "4294967295tail";
+    for (size_t i = 0u; i <= unsigned_input.size(); ++i)
+    {
+        if (!kernel.cpu().write8(
+                0x2f60u + static_cast<uint32_t>(i),
+                i == unsigned_input.size() ? 0u :
+                static_cast<uint8_t>(unsigned_input[i])))
+        {
+            return fail("cannot initialize SYSCLIB unsigned input");
+        }
+    }
+    uint32_t unsigned_end = 0u;
+    if (!call_guest(
+            kernel, "sysclib", 38u,
+            {0x2f60u, 0x2f90u, 10u, 0u}, &result) ||
+        result != 0xffffffffu ||
+        !kernel.cpu().read32(0x2f90u, &unsigned_end) ||
+        unsigned_end != 0x2f6au ||
+        !call_guest(
+            kernel, "sysclib", 41u,
+            {0x2fa0u, 0x12345678u, 8u, 0u}, &result) ||
+        result != 0x2fa0u ||
+        !call_guest(
+            kernel, "sysclib", 40u,
+            {0x2fb0u, 0x2fa0u, 8u, 0u}, &result) ||
+        result != 0x2fb0u ||
+        !kernel.cpu().read32(0x2fb0u, &remaining) ||
+        remaining != 0x12345678u ||
+        !kernel.cpu().read32(0x2fb4u, &remaining) ||
+        remaining != 0x12345678u)
+    {
+        return fail("SYSCLIB strtoul or word memory operations failed");
+    }
+
     // SIO2 DMA MMIO request retains STR, but never invents a DMA
     // completion or sets IOP interrupt readiness.
     uint32_t request = 0u;
