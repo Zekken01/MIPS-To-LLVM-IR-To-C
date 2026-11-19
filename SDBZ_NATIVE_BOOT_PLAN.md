@@ -1,9 +1,11 @@
 # Super Dragon Ball Z (US) — Native Boot Development Plan
 
 **Repository:** [twist84/MIPS-To-LLVM-IR-To-C](https://github.com/twist84/MIPS-To-LLVM-IR-To-C)  
-**Status date:** 2026-11-17  
-**Baseline:** `main` at `c7ca053af2e022bd5709ee6583c7c5427ef75016` (squash-merged [PR #135](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/pull/135)); opt-in bounded runner resumes in the next feature branch.  
-**Goal:** Boot and eventually play **Super Dragon Ball Z (USA, `SLUS_214.42`)** using recompiled EE code, genuine guest IOP execution, and a native runtime, without PCSX2.
+**Status date:** 2026-11-18  
+**Current merged baseline:** `main` at `b3584825e115a6a1072c2fc7a0a960344f26c044` (squash-merged [PR #141](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/pull/141), 95/95 CTests).  
+**Goal:** Boot and eventually play **Super Dragon Ball Z (USA, `SLUS_214.42`)** using native recompiled EE code, HLE EE/IOP kernel services, original game-supplied IRX code and a native hardware runtime. **OpenPS2BIOS is an opt-in reference, not the target boot dependency.**
+
+**HLE-first migration decision:** [docs/HLE_FIRST_RUNTIME_PLAN.md](docs/HLE_FIRST_RUNTIME_PLAN.md) supersedes the earlier firmware-first target architecture. Historical ROM0 replays and evidence below remain valid *for that old path*; they are not evidence that a no-BIOS HLE boot already works.
 
 > This is a milestone and acceptance plan, **not** a statement that the game currently boots or renders a usable frame. Update the checkpoint and evidence as new PRs merge. Re-check `main` and any newer work before acting on these instructions.
 
@@ -12,7 +14,7 @@
 The architecture should remain closer to [ps2-web-recomp](https://github.com/snuri00/ps2-web-recomp) than PCSX2:
 
 - **EE/R5900:** statically recompiled via MIPS → LLVM IR → host-native objects; native dispatcher owns each reachable guest entry.
-- **IOP/R3000:** execute genuine guest code with the lightweight interpreter and [OpenPS2BIOS](https://github.com/TamaribaEmu/OpenPS2BIOS) where supported.
+- **IOP/R3000:** emulate IOP BIOS/kernel services with explicit, tested HLE; execute **game-supplied IRX modules** with the existing R3000A interpreter. Keep [OpenPS2BIOS](https://github.com/TamaribaEmu/OpenPS2BIOS) optional for reference and regression, not normal boot.
 - **CDVD/SIF/DMA:** use the original disc sectors and actual guest-visible registers, data, callbacks, and interrupts.
 - **GIF/GS:** consume original guest GIF packets and maintain real GS state/VRAM; native primitive rendering can follow once demanded by guest execution.
 - **PCSX2:** hardware behavior reference and differential oracle, **not** the runtime architecture.
@@ -282,3 +284,196 @@ Create feature branches from up-to-date `main`, commit incremental source/tests,
 - **Timing acceptance remains open:** obtain independent, cycle-stamped R5900 reference records for the **same exact PC filter and start alignment**, with emulator/hardware build/configuration provenance; compare opcode ordering first, then study issue/stall latency and dual issue. No reference cycles were present in these uploaded artifacts. Do not yet feed any count into `c_ee_scanout_clock`, synthesize VBlank/INTC, or claim rendered output.
 
 **Next developer instruction:** The authentic run now reaches the real VBlank polling loop at `0x00175210`. Implement cycle-driven GS VBlank scheduling only after verifying guest CRT timing, EE cycle accounting and INTC masks/callback delivery. The verified SetVSyncFlag registration alone does not create a VSync. Preserve all prior genuine CDVD/SIF/GIF and VMAC state; continue through a new trace-proven blocker.
+### 2026-11-18 14:37 — original US HLE-first SIO2 advancement and VBlank dependency
+
+The matched group `boot(20261118-143750).log`,
+`expansion(20261118-143750).log`,
+`first-boot(20261118-143750).json`,
+`iop-disc-catalog(20261118-143752).json` and
+`translation-cache(20261118-143749).json` share ELF SHA-256
+`1b213a85a2c305dc0f893c007a502c93e0851d1bb7db6164f9e0b72adb074a16`.
+The final expansion replay and trace agree: **10,491 EE dispatches**,
+**9,001,372 actual guest instruction attempts**, GS PATH3 accepts 33
+tags and 16,384 image QWC / 65,536 written pixels, and the final EE
+reason is **LOOP_BUDGET(5)** at `0x00175210`. Authentic
+`SIO2MAN.IRX` loads as module 1, thread 1; its initial IOP quantum
+completes 256 real guest instructions without the former memory fault.
+The static disc catalog's `runtime_load_count=0` is still not connected
+to runtime loading.
+
+The guest's `SetVSyncFlag(0x01ffeeb0,0x01ffeeb8)` succeeds with
+no immediate VSync, then the original guest waits for VBlank start
+(`INTC_STAT & 4`), matching the earlier verified `0x00175210`
+dependency. No later IOP module or actual presented video frame is proven.
+The `SetSyscall(0x12c)` diagnostic remains independently unsupported,
+but it did not cause this stop.
+
+The next GS/EE integration batch exposes privileged GS_CSR and GS_IMR
+through the EE physical bus; accepts W1C acknowledgement without making
+up a VBlank, routes SetGsCrt timing configuration into the existing
+rational scanout schedule and includes field delivery, interrupt mask,
+one-shot flag, register width, and reset tests. The native runner
+adds a VBlank-wait snapshot showing actual INTC status, registered
+flag and CSR state **without ever advancing the clock**. Guest
+instruction attempts, native dispatch count, safepoint visits and host
+wall time are *not* treated as EE cycles. This prepares a real
+cycle-budget scheduler but **does not fix the VBlank wait** until
+architecturally credible EE cycle accounting is implemented.
+
+### 2026-11-18 15:10 — matched HLE-first VBlank wait; reference instruction-slot foundation
+
+The five-file set `boot(20261118-151007).log`,
+`expansion(20261118-151007).log`,
+`first-boot(20261118-151007).json`,
+`iop-disc-catalog(20261118-151008).json` and
+`translation-cache(20261118-151007).json` share the USA retail
+ELF SHA-256 `1b213a85a2c305dc0f893c007a502c93e0851d1bb7db6164f9e0b72adb074a16`.
+The final stop is unchanged from 14:37: **10,491 dispatches**, **9,001,372
+actual reached-instruction attempts**, `LOOP_BUDGET(5)` at
+`0x00175210`. `SIO2MAN.IRX` links/starts correctly, executing a
+bounded initial 256 R3000 instructions without a memory fault. GS
+PATH3 still accepts 33 tags and 16,384 image QWC. No later module or
+presented framebuffer is established.
+
+New runtime diagnostics prove `INTC_STAT=0`, `INTC_MASK=0x804`,
+guest flag `[0x01ffeeb0]=0`, CSR destination `[0x01ffeeb8]=0`,
+`GS_CSR=0`, `CRT_configured=1`, `fields_started=0`, and
+`cycle_source=unavailable`. The missing timed VBlank producer, not
+IRX linkage or translation cache, remains the first blocker.
+The 126 expansion-run attempts are not separate independent boots.
+
+**Reference-only clock-model step:** `ps2-web-recomp` currently uses a
+simplified interpreter budget: 1 slot for ordinary guest instructions,
+2 slots for a branch including its reserved delay slot, and separately
+configurable syscall overhead (default 300). The generated EE IR now
+maintains an ABI-appended, host-only `m_reference_instruction_slots`
+distinct from `m_guest_instruction_attempts`, including an extra
+reserved slot when a branch-likely annuls a delay instruction. Runtime
+MCJIT regressions cover JR, BEQ, JAL and both branch-likely outcomes,
+plus resumed native guest loops. No reference slots are promoted to
+hardware-accurate R5900 cycles; syscall cost, dual issue, pipeline
+stalls, VU timing and event-edge scheduling require further validation.
+The runner displays this *reference accounting only* for diagnostics,
+and does not feed `c_ee_scanout_clock` or synthesize VBlank. This
+phase supplies a measurable timing baseline, not a boot-unblocking
+claim.
+
+### 2026-11-18 15:44 — verified VBlank blocker and isolated issue-timing probe
+
+The matched `boot(20261118-154418).log`, `expansion(20261118-154419).log`,
+`first-boot(20261118-154418).json`, `iop-disc-catalog(20261118-154418).json`,
+and `translation-cache(20261118-154419).json` retain the USA retail ELF SHA-256
+`1b213a85a2c305dc0f893c007a502c93e0851d1bb7db6164f9e0b72adb074a16`.
+The final expansion has **zero newly discovered functions** and agrees with the
+boot report: 10,491 dispatches, 9,001,372 guest attempts, 9,001,546
+reference slots, `LOOP_BUDGET(5)` at `0x00175210`. SIO2MAN.IRX links,
+starts and executes a 256-instruction IOP slice. GS still accepts 33 tags,
+16,384 image QWC and 65,536 pixels. VBlank has no authoritative EE
+cycle source: INTC_STAT=0, GS_CSR=0, flag [0x01ffeeb0]=0, fields=0.
+
+`ee_issue_timing_probe.h` adds an **isolated experimental** two-wide issue
+scoreboard and explicit dependency/result-latency, serialization, branch-delay
+reservation and configured HLE overhead hooks, plus CTest regression. It
+models timing **candidates**, not validated R5900 issue rules. Latencies are
+provided explicitly by the caller; no hardware latency table is presumed.
+This probe is not connected to translated EE instruction execution or the
+GS/INTC scheduler, and therefore deliberately **does not unblock VBlank**.
+Next: obtain and validate instruction-class pairing/latency evidence, connect
+reached guest instructions to a separately controlled timing pipeline, verify
+boundary preemption against a reference before granting scanout cycle authority.
+
+### 2026-11-18 16:18 — matched unchanged VBlank and start of GS readback
+
+The matched five-file 16:18 batch has byte-identical boot-report JSON
+and disc catalog against the prior 15:44 run. It again reaches 10,491
+EE dispatches, 9,001,372 attempts, 9,001,546 reference slots and
+`LOOP_BUDGET(5)` at `0x00175210`. No new native translations were
+discovered. The library cache hash changed after source updates; guest
+execution and ELF provenance remain unchanged. GS accepts 33 tags and
+65,536 uploaded pixels but **zero vertices**, so there is no observed
+rasterized geometry or completed frame.
+
+A separate, side-effect-free `c_ee_gs_display::readback` now decodes
+an explicitly supplied guest GS PMODE/SMODE2/DISPFB/DISPLAY register
+snapshot using the reference display width, magnification, visible line
+limits and swizzled PSMCT32/24/16/16S color pixels. A new regression
+uploads pixel data via the actual GS GIF IMAGE consumer and verifies
+readback/circuit selection and fail-closed unsupported formats. No
+privileged GS display MMIO capture, renderer/presenter, real VBlank
+producer or live frame output is claimed by this foundational step.
+Next wire actual guest privileged GS display writes to the snapshot,
+then add opt-in VRAM image export; primitive rendering remains separate.
+
+The display-readback foundation now also captures six privileged GS
+registers via 32/64-bit guest MMIO (PMODE, SMODE2, DISPFB1/2, DISPLAY1/2),
+preserving high-half writes and returning exact values on reads. These
+are kept separate from GIF register writes, GS_CSR and GS_IMR.
+An opt-in `--gs-snapshot=FILE.ppm` option is available both in the
+direct EE runner and `tools/run_game.py`; it writes a P6 image from
+the **guest-selected display buffer only when configured and readable**
+at the eventual stop. No synthetic frame, GS event, rasterizer,
+exception or interrupt is ever generated. Failure to obtain a display
+image is reported distinctly from guest boot status.
+
+### 2026-11-18 16:58 — matched HLE trace and automatic GS diagnostics
+
+The single 16:58 local session expanded the guest translation coverage by
+128 functions in pass one and 5 functions in pass two (133 total new
+functions), then replayed the same 10,491-dispatch boot to
+`0x00175210`/`LOOP_BUDGET(5)`. 9,001,372 instruction attempts,
+33 accepted GS GIF tags, zero vertices and 65,536 VRAM-transfer pixels
+remain unchanged. VBlank is still blocked by missing cycle authority;
+zero fields started and `INTC_STAT=0`.
+
+The launcher now requests two *diagnostic-only* snapshots automatically:
+`build/ps2-game-hle/gs-display.ppm` from a valid configured display
+circuit and `build/ps2-game-hle/gs-upload.ppm` from the **fully completed**
+current host-to-local GIF IMAGE rectangle. The two images are not
+interchangeable: uploaded textures are not final scanout. Neither
+snapshot affects guest execution, VBlank, DMA completion, or the stop.
+The batch wrapper passes image options **only on its final traced
+replay**, clearing previous PPM files beforehand; incomplete/unsupported
+transfer or absent display state remains explicitly unavailable.
+A regression covers actual GIF IMAGE upload preview, its rejection
+before completion and snapshot orchestration.
+
+### 2026-11-18 17:31 — real GS image inspection and zero-FBW display
+
+The five matched files produced by the new launcher show the same
+10,491 EE dispatches, 9,001,372 guest instruction attempts and
+`0x00175210`/`LOOP_BUDGET` stop, with GS tags=33, vertices=0,
+IMAGE QWC=16,384, and transfer pixels=65,536. The uploaded
+`gs-upload.ppm` is a genuine 1024 × 64 P6 RGB export from GS VRAM,
+entirely black (all 65,536 pixels). This is not a rendered frame.
+The captured guest display regs are PMODE=`0x7F27`, SMODE2=1,
+DISPFB1/2=`0xA0000070`, DISPLAY1=`0x001BF9FF0203327C` and
+DISPLAY2=`0x001BF9FF0203227C`, CRT mode=NTSC.
+
+Before this change `gs-display.ppm` was not generated because both
+DISPFB registers decode FBW=0, which readback incorrectly rejected.
+The ps2-web-recomp GS `page_address()` calculation instead uses
+`max(1, FBW * 64 / page_width)`, i.e., one page per row for FBW=0.
+Read-only PSMCT32/24/16/16S display access now matches that reference
+without changing the guest register, rasterizing a primitive or
+generating VBlank. The selected display circuit/FBP/FBW/PSM and DW/MAGH
+are reported separately. The zero-FBW address normalization is tested
+against actual nonzero swizzled VRAM pixels.
+
+The known boot blocker remains the absence of a validated EE cycle
+source for scanout fields and interrupt delivery. Do not claim the
+resulting display PPM is a presented game frame.
+
+
+### 2026-11-18 17:34 — raise bounded native ELF auto-expansion cap
+
+Default `run_ps2_game.bat` maximum expansion passes is now **8** (previously
+2), with up to **128 new guest functions per pass**, for a conditional
+maximum of 1,024 new compiled functions. Environment variable
+`EXPANSION_PASSES` can override the launcher count, within the existing
+`run_boot_session.py` validated range 1–8. The existing per-pass
+translation cap and early stop behavior remain unchanged. This is a
+*maximum*, not eight unconditional executions: the uploaded 17:31 log
+shows pass 1 added 128 new functions, pass 2 only 5, then the same
+`0x00175210` VBlank loop. Without new runtime progress the wrapper
+still stops after pass 2, preserving the translation cache. All GS PPM
+diagnostics remain final-traced-replay only.

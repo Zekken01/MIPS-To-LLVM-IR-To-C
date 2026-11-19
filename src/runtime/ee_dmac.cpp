@@ -5,6 +5,65 @@
 
 namespace ee
 {
+c_ee_dmac::s_gif_channel_state c_ee_dmac::gif_channel_state() const
+{
+    const s_spr_channel& channel = m_device_channels[2u];
+    return {channel.m_chcr, channel.m_madr, channel.m_qwc, channel.m_tadr};
+}
+
+c_ee_dmac::s_gif_channel_state c_ee_dmac::vif1_channel_state() const
+{
+    const s_spr_channel& channel = m_device_channels[1u];
+    return {channel.m_chcr, channel.m_madr, channel.m_qwc, channel.m_tadr};
+}
+
+uint64_t c_ee_dmac::gif_trace_count() const
+{
+    return m_gif_trace_count;
+}
+
+bool c_ee_dmac::gif_trace_newest(
+    uint32_t offset, s_gif_dma_write* result) const
+{
+    if (result == nullptr || offset >= k_gif_trace_capacity ||
+        offset >= m_gif_trace_count)
+    {
+        return false;
+    }
+
+    *result = m_gif_trace[
+        (m_gif_trace_count - 1u - offset) % k_gif_trace_capacity];
+    return true;
+}
+
+c_ee_dmac::e_gif_dma_reject c_ee_dmac::gif_last_reject() const
+{
+    return m_gif_last_reject;
+}
+
+c_ee_dmac::e_vif1_chain_reject
+c_ee_dmac::vif1_chain_last_reject() const
+{
+    return m_vif1_chain_last_reject;
+}
+
+void c_ee_dmac::trace_gif_write(
+    uint32_t offset, uint32_t value, uint32_t previous)
+{
+    s_gif_dma_write& event =
+        m_gif_trace[m_gif_trace_count % k_gif_trace_capacity];
+    event = {};
+    event.m_sequence = ++m_gif_trace_count;
+    event.m_offset = offset;
+    event.m_value = value;
+    event.m_previous = previous;
+    event.m_chcr = m_device_channels[2u].m_chcr;
+    event.m_madr = m_device_channels[2u].m_madr;
+    event.m_qwc = m_device_channels[2u].m_qwc;
+    event.m_tadr = m_device_channels[2u].m_tadr;
+    event.m_reject = m_gif_last_reject;
+}
+
 void c_ee_dmac::sync_interrupt_line()
 {
     if (m_cpu == nullptr)
@@ -244,6 +303,13 @@ void c_ee_dmac::reset()
 {
     m_status = 0u;
     m_sqwc = 0u;
+    m_gif_trace_count = 0u;
+    m_gif_last_reject = e_gif_dma_reject::none;
+    m_vif1_chain_last_reject = e_vif1_chain_reject::none;
+    for (s_gif_dma_write& event : m_gif_trace)
+    {
+        event = {};
+    }
     for (s_spr_channel& channel : m_device_channels)
     {
         channel = {};
@@ -469,69 +535,390 @@ bool c_ee_dmac::transfer_device_normal(uint32_t channel_index)
     return raise(channel_index);
 }
 
-// The initial observed SDBZ GIF chain has one END source tag and nine
-// inline PATH3 quadwords. Deliver the actual bytes before completing DMAC.
-bool c_ee_dmac::transfer_gif_chain_end()
+// Walk a complete GIF PATH3 source chain before consuming any bytes.
+// Supported: REFE, CNT, NEXT, REF and END, including TIE/IRQ termination.
+// A DMA address with bit 31 set reads EE scratchpad at its low 14-bit
+// offset, matching ps2-web-recomp/runtime/src/dmac.cpp::source().
+// TTE, REFS stalls, CALL/RET and MFIFO remain fail-closed.
+// VIF1 source chain, matching the guest-visible tag/transfer ordering in
+// ps2-web-recomp:SDBZ/runtime/src/dmac.cpp::run_chain(1).
+//
+// Host-side prevalidation is transactional: neither a partial tag walk,
+// partial payload, nor a refusing VIF consumer may retire STR, advance
+// MADR/TADR/ASR, or publish D_STAT channel 1. TTE delivers the high
+// 64 tag bits as a qword with its first eight bytes zeroed.
+bool c_ee_dmac::transfer_vif1_source_chain()
+{
+    using reject = e_vif1_chain_reject;
+    m_vif1_chain_last_reject = reject::none;
+    s_spr_channel& current = m_device_channels[1u];
+    if (m_memory == nullptr || m_device_transfer == nullptr)
+    {
+        m_vif1_chain_last_reject = reject::missing_memory_or_sink;
+        return false;
+    }
+    if ((current.m_chcr & k_chcr_str) == 0u ||
+        ((current.m_chcr >> 2u) & 3u) != 1u ||
+        (current.m_chcr & 1u) == 0u ||
+        current.m_qwc != 0u ||
+        ((current.m_chcr >> 4u) & 3u) != 0u)
+    {
+        m_vif1_chain_last_reject = reject::invalid_start_state;
+        return false;
+    }
+
+    const auto resolve = [&](uint64_t address, uint32_t* resolved) -> bool
+    {
+        if (resolved == nullptr || address > UINT32_MAX ||
+            (address & 15u) != 0u)
+        {
+            return false;
+        }
+        const uint32_t physical = static_cast<uint32_t>(address);
+        uint32_t mapped = physical;
+        if ((physical & 0x80000000u) != 0u)
+        {
+            mapped = ee_memory::k_scratchpad_base +
+                (physical & static_cast<uint32_t>(
+                    ee_memory::k_scratchpad_size - 1u));
+        }
+        else if (physical >= 0x02000000u)
+        {
+            return false;
+        }
+        if (!m_memory->contains(mapped, 16u))
+        {
+            return false;
+        }
+        *resolved = mapped;
+        return true;
+    };
+
+    constexpr uint32_t k_max_tags = 1024u;
+    constexpr size_t k_max_packet_qwc = 0xffffu;
+    s_spr_channel next = current;
+    uint64_t tag_address = next.m_tadr;
+    const bool tte = (next.m_chcr & 0x40u) != 0u;
+    const bool tie = (next.m_chcr & 0x80u) != 0u;
+    std::vector<uint8_t> packet;
+    bool terminal = false;
+
+    for (uint32_t tag_index = 0u;
+         tag_index < k_max_tags && !terminal; ++tag_index)
+    {
+        uint32_t tag_host_address = 0u;
+        if (!resolve(tag_address, &tag_host_address))
+        {
+            m_vif1_chain_last_reject = reject::invalid_tag_address;
+            return false;
+        }
+        s_ee_u128 tag{};
+        m_memory->read128(tag_host_address, &tag);
+        const uint64_t low = tag.m_lo;
+        const uint32_t qwc = static_cast<uint32_t>(low & 0xffffu);
+        const uint32_t id = static_cast<uint32_t>((low >> 28u) & 7u);
+        const bool tag_irq = (low & 0x80000000ull) != 0u;
+        const uint64_t external = tag.m_hi & 0xfffffff0ull;
+        uint64_t data_address = tag_address + 16u;
+        uint64_t next_tag_address = data_address +
+            static_cast<uint64_t>(qwc) * 16u;
+        bool tag_terminal = false;
+        uint32_t asp = (next.m_chcr >> 4u) & 3u;
+
+        switch (id)
+        {
+        case 0u: // REFE: external payload, end
+            tag_terminal = true;
+            [[fallthrough]];
+        case 3u: // REF
+            data_address = external;
+            next_tag_address = tag_address + 16u;
+            break;
+        case 1u: // CNT: inline payload
+            break;
+        case 2u: // NEXT: inline payload then jump
+            next_tag_address = external;
+            break;
+        case 4u: // REFS: STADR stall control is not modeled
+            m_vif1_chain_last_reject = reject::unsupported_tag;
+            return false;
+        case 5u: // CALL: save the post-payload return tag address
+            if (asp >= 2u)
+            {
+                m_vif1_chain_last_reject = reject::unsupported_tag;
+                return false;
+            }
+            next.m_asr[asp] = static_cast<uint32_t>(next_tag_address);
+            ++asp;
+            next.m_chcr = (next.m_chcr & ~0x30u) | (asp << 4u);
+            next_tag_address = external;
+            break;
+        case 6u: // RET: return to saved tag address
+            if (asp == 0u)
+            {
+                tag_terminal = true;
+            }
+            else
+            {
+                --asp;
+                next_tag_address = next.m_asr[asp];
+                next.m_chcr = (next.m_chcr & ~0x30u) | (asp << 4u);
+            }
+            break;
+        case 7u: // END
+            tag_terminal = true;
+            break;
+        default:
+            m_vif1_chain_last_reject = reject::unsupported_tag;
+            return false;
+        }
+
+        // A TTE tag sends one additional VIF quadword before its payload.
+        const size_t extra = tte ? 1u : 0u;
+        if (packet.size() / 16u > k_max_packet_qwc ||
+            static_cast<size_t>(qwc) + extra >
+                k_max_packet_qwc - packet.size() / 16u)
+        {
+            m_vif1_chain_last_reject = reject::chain_qwc_limit;
+            return false;
+        }
+
+        // Reject missing or out-of-range source words BEFORE invoking
+        // the consumer. In particular, do not commit a TTE tag by itself.
+        std::vector<uint32_t> addresses(qwc);
+        for (uint32_t i = 0u; i < qwc; ++i)
+        {
+            if (!resolve(data_address + static_cast<uint64_t>(i) * 16u,
+                         &addresses[i]))
+            {
+                m_vif1_chain_last_reject = reject::invalid_payload_span;
+                return false;
+            }
+        }
+        if (tte)
+        {
+            const size_t offset = packet.size();
+            packet.resize(offset + 16u, 0u);
+            for (uint32_t b = 0u; b < 8u; ++b)
+            {
+                packet[offset + 8u + b] =
+                    static_cast<uint8_t>(tag.m_hi >> (b * 8u));
+            }
+        }
+        for (const uint32_t address : addresses)
+        {
+            s_ee_u128 quad{};
+            m_memory->read128(address, &quad);
+            for (uint32_t lane = 0u; lane < 16u; ++lane)
+            {
+                const uint64_t half = lane < 8u ? quad.m_lo : quad.m_hi;
+                packet.push_back(static_cast<uint8_t>(
+                    half >> ((lane & 7u) * 8u)));
+            }
+        }
+
+        // Tag upper half is reflected into CHCR after processing.
+        next.m_chcr = (next.m_chcr & 0x0000ffffu) |
+            (static_cast<uint32_t>(low) & 0xffff0000u);
+        next.m_madr = static_cast<uint32_t>(
+            data_address + static_cast<uint64_t>(qwc) * 16u);
+        next.m_tadr = static_cast<uint32_t>(next_tag_address);
+        tag_address = next_tag_address;
+        terminal = tag_terminal || (tie && tag_irq);
+    }
+    if (!terminal)
+    {
+        m_vif1_chain_last_reject = reject::chain_tag_limit;
+        return false;
+    }
+    if (!packet.empty() && !m_device_transfer(
+        m_device_user, 1u, packet.data(),
+        static_cast<uint32_t>(packet.size() / 16u)))
+    {
+        m_vif1_chain_last_reject = reject::rejected_by_sink;
+        return false;
+    }
+
+    next.m_qwc = 0u;
+    next.m_chcr &= ~k_chcr_str;
+    m_device_channels[1u] = next;
+    return raise(1u);
+}
+
+bool c_ee_dmac::transfer_gif_source_chain()
 {
     s_spr_channel& channel = m_device_channels[2u];
-    if (m_memory == nullptr || m_device_transfer == nullptr ||
-        (channel.m_chcr & k_chcr_str) == 0u ||
+    m_gif_last_reject = e_gif_dma_reject::none;
+    if (m_memory == nullptr || m_device_transfer == nullptr)
+    {
+        m_gif_last_reject = e_gif_dma_reject::missing_memory_or_sink;
+        return false;
+    }
+    if ((channel.m_chcr & k_chcr_str) == 0u ||
         ((channel.m_chcr >> 2u) & 3u) != 1u ||
         (channel.m_chcr & 1u) == 0u ||
+        (channel.m_chcr & 0x40u) != 0u ||
         channel.m_qwc != 0u)
     {
+        m_gif_last_reject = e_gif_dma_reject::invalid_start_state;
         return false;
     }
 
-    const uint64_t tag_address = channel.m_tadr;
-    if ((tag_address & 15u) != 0u ||
-        tag_address >= 0x02000000ull ||
-        tag_address + 16u > 0x02000000ull ||
-        !m_memory->contains(static_cast<uint32_t>(tag_address), 16u))
+    // This resolves one physical DMA quadword, not an EE CPU virtual
+    // address. The high selector bit means scratchpad and its low
+    // 14 bits wrap within 16 KiB. RAM sources never silently wrap.
+    const auto source_qword =
+        [&](uint64_t dma_address, uint32_t* host_address) -> bool
     {
-        return false;
-    }
-
-    const uint32_t tag = static_cast<uint32_t>(
-        m_memory->read64(static_cast<uint32_t>(tag_address)));
-    const uint32_t tag_id = (tag >> 28u) & 7u;
-    const uint32_t qwc = tag & 0xffffu;
-    const uint64_t data_address = tag_address + 16u;
-    const uint64_t end_address = data_address + uint64_t(qwc) * 16u;
-    if (tag_id != 7u ||
-        end_address > 0x02000000ull ||
-        !m_memory->contains(
-            static_cast<uint32_t>(data_address),
-            static_cast<size_t>(qwc) * 16u))
-    {
-        return false;
-    }
-
-    // The GIF sink must accept the complete stream atomically. No DMA
-    // state changes or completion IRQ are reported on rejection.
-    std::vector<uint8_t> packet(static_cast<size_t>(qwc) * 16u);
-    for (uint32_t i = 0u; i < qwc; ++i)
-    {
-        s_ee_u128 quad{};
-        m_memory->read128(static_cast<uint32_t>(data_address) + i * 16u, &quad);
-        for (uint32_t lane = 0u; lane < 8u; ++lane)
+        if (host_address == nullptr || dma_address > 0xffffffffull ||
+            (dma_address & 15u) != 0u)
         {
-            packet[static_cast<size_t>(i) * 16u + lane] =
-                static_cast<uint8_t>(quad.m_lo >> (lane * 8u));
-            packet[static_cast<size_t>(i) * 16u + lane + 8u] =
-                static_cast<uint8_t>(quad.m_hi >> (lane * 8u));
+            return false;
         }
-    }
-    if (qwc != 0u &&
-        !m_device_transfer(m_device_user, 2u, packet.data(), qwc))
+
+        const uint32_t address = static_cast<uint32_t>(dma_address);
+        uint32_t mapped = 0u;
+        if ((address & 0x80000000u) != 0u)
+        {
+            const uint32_t offset = address &
+                static_cast<uint32_t>(ee_memory::k_scratchpad_size - 1u);
+            mapped = ee_memory::k_scratchpad_base + offset;
+        }
+        else
+        {
+            if (address >= 0x02000000u ||
+                static_cast<uint64_t>(address) + 16u > 0x02000000ull)
+            {
+                return false;
+            }
+            mapped = address;
+        }
+
+        if (!m_memory->contains(mapped, 16u))
+        {
+            return false;
+        }
+        *host_address = mapped;
+        return true;
+    };
+
+    constexpr uint32_t k_max_chain_tags = 1024u;
+    constexpr size_t k_max_chain_qwc = 0xffffu;
+    uint64_t tag_address = channel.m_tadr;
+    uint32_t final_tag = 0u;
+    uint32_t final_madr = channel.m_madr;
+    std::vector<uint8_t> packet;
+    bool completed = false;
+
+    for (uint32_t tag_index = 0u;
+         tag_index < k_max_chain_tags && !completed; ++tag_index)
     {
+        uint32_t tag_host_address = 0u;
+        if (!source_qword(tag_address, &tag_host_address))
+        {
+            m_gif_last_reject = e_gif_dma_reject::invalid_tag_address;
+            return false;
+        }
+
+        const uint64_t tag = m_memory->read64(tag_host_address);
+        const uint32_t tag_id = static_cast<uint32_t>(
+            (tag >> 28u) & 7u);
+        const uint32_t qwc = static_cast<uint32_t>(tag & 0xffffu);
+        // The tag's ADDR low nibble is not part of its DMA address.
+        const uint64_t tag_data_address =
+            static_cast<uint32_t>(tag >> 32u) & ~uint64_t{15};
+        const uint64_t inline_data_address = tag_address + 16u;
+        uint64_t data_address = inline_data_address;
+        uint64_t next_tag_address = inline_data_address +
+            static_cast<uint64_t>(qwc) * 16u;
+        bool terminal = false;
+
+        switch (tag_id)
+        {
+        case 0u: // REFE: external payload, terminate
+            terminal = true;
+            [[fallthrough]];
+        case 3u: // REF: external payload, continue sequentially
+            data_address = tag_data_address;
+            next_tag_address = inline_data_address;
+            break;
+        case 1u: // CNT: inline payload, sequentially
+            break;
+        case 2u: // NEXT: inline payload, jump to ADDR
+            next_tag_address = tag_data_address;
+            break;
+        case 7u: // END: inline payload, terminate
+            terminal = true;
+            break;
+        default:
+            // REFS, CALL and RET require additional architectural state.
+            m_gif_last_reject = e_gif_dma_reject::unsupported_tag;
+            return false;
+        }
+
+        if (packet.size() / 16u > k_max_chain_qwc ||
+            static_cast<size_t>(qwc) >
+                k_max_chain_qwc - packet.size() / 16u)
+        {
+            m_gif_last_reject = e_gif_dma_reject::chain_qwc_limit;
+            return false;
+        }
+
+        // Prevalidate every source quadword before the sink sees any
+        // bytes. Scratchpad may wrap at 0x3ff0; RAM must stay in range.
+        std::vector<uint32_t> source_addresses(qwc);
+        for (uint32_t i = 0u; i < qwc; ++i)
+        {
+            if (!source_qword(
+                    data_address + static_cast<uint64_t>(i) * 16u,
+                    &source_addresses[i]))
+            {
+                m_gif_last_reject = e_gif_dma_reject::invalid_payload_span;
+                return false;
+            }
+        }
+
+        const size_t previous_size = packet.size();
+        packet.resize(previous_size + static_cast<size_t>(qwc) * 16u);
+        for (uint32_t i = 0u; i < qwc; ++i)
+        {
+            s_ee_u128 quad{};
+            m_memory->read128(source_addresses[i], &quad);
+            for (uint32_t lane = 0u; lane < 8u; ++lane)
+            {
+                packet[previous_size + static_cast<size_t>(i) * 16u + lane] =
+                    static_cast<uint8_t>(quad.m_lo >> (lane * 8u));
+                packet[previous_size + static_cast<size_t>(i) * 16u + 8u + lane] =
+                    static_cast<uint8_t>(quad.m_hi >> (lane * 8u));
+            }
+        }
+
+        final_tag = static_cast<uint32_t>(tag);
+        final_madr = static_cast<uint32_t>(
+            data_address + static_cast<uint64_t>(qwc) * 16u);
+        tag_address = next_tag_address;
+        completed = terminal ||
+            ((channel.m_chcr & 0x80u) != 0u &&
+             (tag & 0x80000000ull) != 0u);
+    }
+
+    if (!completed)
+    {
+        m_gif_last_reject = e_gif_dma_reject::chain_tag_limit;
+        return false;
+    }
+    if (!packet.empty() && !m_device_transfer(
+            m_device_user, 2u, packet.data(),
+            static_cast<uint32_t>(packet.size() / 16u)))
+    {
+        m_gif_last_reject = e_gif_dma_reject::rejected_by_sink;
         return false;
     }
 
     channel.m_chcr = ((channel.m_chcr & 0x0000ffffu) |
-                       (tag & 0xffff0000u)) & ~k_chcr_str;
-    channel.m_madr = static_cast<uint32_t>(end_address);
-    channel.m_tadr = static_cast<uint32_t>(end_address);
+                       (final_tag & 0xffff0000u)) & ~k_chcr_str;
+    channel.m_madr = final_madr;
+    channel.m_tadr = static_cast<uint32_t>(tag_address);
     channel.m_qwc = 0u;
     return raise(2u);
 }
@@ -1056,7 +1443,13 @@ bool c_ee_dmac::write_spr_channel(uint32_t address, uint32_t value)
     {
     case 0x00u:
     {
+        const uint32_t previous_chcr = channel->m_chcr;
         const bool was_running = (channel->m_chcr & k_chcr_str) != 0u;
+        if (channel_index == 2u && !was_running &&
+            (value & k_chcr_str) != 0u)
+        {
+            m_gif_last_reject = e_gif_dma_reject::none;
+        }
         channel->m_chcr = value;
         if (!was_running && (value & k_chcr_str) != 0u)
         {
@@ -1087,7 +1480,11 @@ bool c_ee_dmac::write_spr_channel(uint32_t address, uint32_t value)
             {
                 if (channel_index == 2u && mode == 1u)
                 {
-                    (void)transfer_gif_chain_end();
+                    (void)transfer_gif_source_chain();
+                }
+                else if (channel_index == 1u && mode == 1u)
+                {
+                    (void)transfer_vif1_source_chain();
                 }
                 else
                 {
@@ -1111,11 +1508,42 @@ bool c_ee_dmac::write_spr_channel(uint32_t address, uint32_t value)
                 (void)transfer_spr_normal(channel_index);
             }
         }
+        if (channel_index == 2u)
+        {
+            trace_gif_write(0x00u, value, previous_chcr);
+        }
         return true;
     }
-    case 0x10u: channel->m_madr = value; return true;
-    case 0x20u: channel->m_qwc = value & 0xffffu; return true;
-    case 0x30u: channel->m_tadr = value; return true;
+    case 0x10u:
+    {
+        const uint32_t previous = channel->m_madr;
+        channel->m_madr = value;
+        if (channel_index == 2u)
+        {
+            trace_gif_write(0x10u, value, previous);
+        }
+        return true;
+    }
+    case 0x20u:
+    {
+        const uint32_t previous = channel->m_qwc;
+        channel->m_qwc = value & 0xffffu;
+        if (channel_index == 2u)
+        {
+            trace_gif_write(0x20u, value, previous);
+        }
+        return true;
+    }
+    case 0x30u:
+    {
+        const uint32_t previous = channel->m_tadr;
+        channel->m_tadr = value;
+        if (channel_index == 2u)
+        {
+            trace_gif_write(0x30u, value, previous);
+        }
+        return true;
+    }
     case 0x40u: channel->m_asr[0] = value; return true;
     case 0x50u: channel->m_asr[1] = value; return true;
     case 0x80u:

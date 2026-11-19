@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <utility>
 
@@ -64,6 +65,7 @@ void c_kernel::reset()
     m_hardware.reset();
     m_rom0_boot_active = false;
     m_allocations.clear();
+    m_heap_allocations.clear();
     m_libraries.clear();
     m_modules.clear();
     m_threads.clear();
@@ -95,6 +97,17 @@ bool c_kernel::start_rom0_boot(const std::vector<uint8_t>& image)
     m_cycles = 0u;
     m_current_thread_id = 0u;
     m_rom0_boot_active = true;
+    return true;
+}
+
+bool c_kernel::attach_hle_hardware()
+{
+    if (m_rom0_boot_active)
+    {
+        return false;
+    }
+    // Reset detaches MMIO; the HLE bootstrap reattaches explicitly.
+    m_cpu.bind_hardware(&m_hardware);
     return true;
 }
 
@@ -131,6 +144,29 @@ uint64_t c_kernel::cycles() const
 uint32_t c_kernel::current_thread_id() const
 {
     return m_current_thread_id;
+}
+
+bool c_kernel::lookup_library(
+    const std::string& name, uint16_t ordinal,
+    uint32_t* entry
+) const
+{
+    if (entry == nullptr)
+    {
+        return false;
+    }
+    const auto library = m_libraries.find(name);
+    if (library == m_libraries.end())
+    {
+        return false;
+    }
+    const auto symbol = library->second.find(ordinal);
+    if (symbol == library->second.end())
+    {
+        return false;
+    }
+    *entry = symbol->second;
+    return true;
 }
 
 bool c_kernel::register_library(
@@ -176,6 +212,86 @@ uint32_t c_kernel::allocate(uint32_t size)
     const uint32_t base = static_cast<uint32_t>(candidate);
     m_allocations.emplace(base, static_cast<uint32_t>(required));
     return base;
+}
+
+uint32_t c_kernel::allocate_heap(uint32_t size)
+{
+    if (m_rom0_boot_active)
+    {
+        return 0u;
+    }
+    const uint32_t address = allocate(size);
+    if (address != 0u)
+    {
+        m_heap_allocations.emplace(address, m_allocations.at(address));
+    }
+    return address;
+}
+
+bool c_kernel::free_heap(uint32_t address)
+{
+    if (m_rom0_boot_active ||
+        m_heap_allocations.erase(address) == 0u)
+    {
+        return false;
+    }
+    return m_allocations.erase(address) == 1u;
+}
+
+bool c_kernel::owns_heap_span(uint32_t address, uint32_t size) const
+{
+    if (m_rom0_boot_active || size == 0u)
+    {
+        return false;
+    }
+    const auto upper = m_heap_allocations.upper_bound(address);
+    if (upper == m_heap_allocations.begin())
+    {
+        return false;
+    }
+    const auto allocation = std::prev(upper);
+    const uint64_t start = allocation->first;
+    const uint64_t end = start + allocation->second;
+    return static_cast<uint64_t>(address) >= start &&
+           static_cast<uint64_t>(address) + size <= end;
+}
+
+uint32_t c_kernel::heap_max_free() const
+{
+    uint64_t candidate = k_user_base;
+    uint64_t largest = 0u;
+    for (const auto& item : m_allocations)
+    {
+        if (item.first > candidate)
+        {
+            largest = std::max(largest, item.first - candidate);
+        }
+        candidate = align16(std::max(
+            candidate, static_cast<uint64_t>(item.first) + item.second
+        ));
+    }
+    largest = std::max(
+        largest, static_cast<uint64_t>(c_cpu::k_ram_size) - candidate
+    );
+    return static_cast<uint32_t>(largest);
+}
+
+uint32_t c_kernel::heap_total_free() const
+{
+    uint64_t candidate = k_user_base;
+    uint64_t total = 0u;
+    for (const auto& item : m_allocations)
+    {
+        if (item.first > candidate)
+        {
+            total += item.first - candidate;
+        }
+        candidate = align16(std::max(
+            candidate, static_cast<uint64_t>(item.first) + item.second
+        ));
+    }
+    total += static_cast<uint64_t>(c_cpu::k_ram_size) - candidate;
+    return static_cast<uint32_t>(total);
 }
 
 bool c_kernel::estimate_module_size(
@@ -312,7 +428,8 @@ s_module_load_result c_kernel::load_module(
 
     s_irx_module image{};
     result.m_status = load_irx(
-        m_cpu, bytes, base, &image, resolve, accept_exports
+        m_cpu, bytes, base, &image, resolve, accept_exports,
+        &result.m_link_diagnostic
     );
     if (result.m_status != e_irx_load_result::success)
     {
@@ -404,6 +521,25 @@ const s_kernel_thread* c_kernel::thread(uint32_t id) const
     return found == m_threads.end() ? nullptr : &found->second;
 }
 
+bool c_kernel::has_guest_work() const
+{
+    if (m_rom0_boot_active)
+    {
+        return false;
+    }
+    for (const auto& item : m_threads)
+    {
+        const s_kernel_thread& thread = item.second;
+        if (thread.m_status == e_thread_status::ready ||
+            (thread.m_status == e_thread_status::blocked &&
+             thread.m_wake_cycle != 0u))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool c_kernel::start_thread(uint32_t id)
 {
     const auto found = m_threads.find(id);
@@ -413,6 +549,18 @@ bool c_kernel::start_thread(uint32_t id)
         return false;
     }
     found->second.m_status = e_thread_status::ready;
+    return true;
+}
+
+bool c_kernel::start_thread_with_argument(
+    uint32_t id, uint32_t argument
+)
+{
+    if (!start_thread(id))
+    {
+        return false;
+    }
+    m_threads.at(id).m_cpu.m_gpr[4] = argument;
     return true;
 }
 
@@ -438,6 +586,19 @@ bool c_kernel::stop_thread(uint32_t id)
         return false;
     }
     found->second.m_status = e_thread_status::dormant;
+    found->second.m_wake_cycle = 0u;
+    return true;
+}
+
+bool c_kernel::block_current()
+{
+    const auto found = m_threads.find(m_current_thread_id);
+    if (found == m_threads.end() ||
+        found->second.m_status != e_thread_status::running)
+    {
+        return false;
+    }
+    found->second.m_status = e_thread_status::blocked;
     found->second.m_wake_cycle = 0u;
     return true;
 }

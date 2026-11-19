@@ -6,6 +6,7 @@
 namespace ee
 {
 class ee_memory;
+struct s_ee_runtime;
 
 // Conservatively execute code installed into EE RAM by the game. This is
 // a bounded fallback for the static runner, not a full R5900 interpreter.
@@ -16,7 +17,8 @@ enum class e_ee_ram_result : uint32_t
     UNMAPPED,
     UNSUPPORTED,
     BRANCH_IN_DELAY_SLOT,
-    INSTRUCTION_BUDGET
+    INSTRUCTION_BUDGET,
+    TIMING_OBSERVER_REJECTED
 };
 
 struct s_ee_ram_execution
@@ -32,7 +34,8 @@ s_ee_ram_execution ee_execute_ram_callback(
     ee_memory* memory,
     uint32_t entry_pc,
     uint32_t return_pc,
-    uint32_t max_instructions
+    uint32_t max_instructions,
+    s_ee_runtime* runtime = nullptr
 );
 
 const char* ee_ram_result_name(e_ee_ram_result result);

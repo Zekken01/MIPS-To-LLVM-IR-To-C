@@ -12,6 +12,24 @@ namespace ee
 // GS register-state and swizzled PSMCT, PSMZ and indexed PSMT transfers.
 // It does not rasterize primitives, present frames or implement GS IRQs.
 // Based on ps2-web-recomp/runtime/src/gs/gs.cpp::write/write_packed.
+// Bounded read-only provenance for committed sprite pairs. Raw GS values
+// preserve all context/alpha/test/offset fields for offline interpretation.
+struct s_ee_gs_sprite_sample
+{
+    uint64_t m_index = 0u;
+    uint64_t m_prim = 0u;
+    uint64_t m_effective_prim = 0u;
+    uint64_t m_rgbaq = 0u;
+    uint64_t m_xyz0 = 0u;
+    uint64_t m_xyz1 = 0u;
+    uint64_t m_xyoffset = 0u;
+    uint64_t m_scissor = 0u;
+    uint64_t m_frame = 0u;
+    uint64_t m_zbuf = 0u;
+    uint64_t m_test = 0u;
+    uint32_t m_context = 0u;
+};
+
 struct s_ee_gs_state
 {
     std::array<uint64_t, 128> m_registers{};
@@ -19,7 +37,37 @@ struct s_ee_gs_state
     uint32_t m_q_bits = 0x3f800000u; // GIFtag resets the STQ Q to 1.0
     uint64_t m_tag_count = 0;
     uint64_t m_vertex_count = 0; // diagnostic only; no rasterization
-    uint32_t m_image_qwc = 0;
+    uint32_t m_image_qwc = 0; // current host-to-local transfer, reset by TRXDIR=0
+
+    // Cumulative *committed* GIF PATH3 traffic. These host diagnostics
+    // do not draw, advance DMA, schedule GS fields, or alter guest registers.
+    // Unlike m_vertex_count and m_image_qwc, these never reset on a new
+    // PRIM or TRXDIR; reset() is the only clearing operation.
+    uint64_t m_committed_gif_batches = 0u;
+    uint64_t m_total_prim_writes = 0u;
+    uint64_t m_total_vertex_writes = 0u;
+    uint64_t m_total_vertex_kicks = 0u; // XYZF2/XYZ2, excluding ADC vertices
+    uint64_t m_total_adc_vertices = 0u; // XYZF3/XYZ3
+    uint64_t m_total_packed_events = 0u;
+    uint64_t m_total_reglist_events = 0u;
+    uint64_t m_total_ad_events = 0u;
+    uint64_t m_total_image_events = 0u;
+    uint64_t m_total_image_qwc = 0u;
+    std::array<uint64_t, 4> m_tag_format_counts{}; // PACKED, REGLIST, IMAGE, IMAGE2
+    std::array<uint64_t, 8> m_prim_type_counts{};
+    std::array<uint64_t, 16> m_packed_register_counts{};
+    std::array<uint64_t, 128> m_ad_register_counts{};
+
+    static constexpr size_t k_sprite_sample_capacity = 8u;
+    uint64_t m_total_sprite_pair_kicks = 0u; // committed primitive-6 XYZ2 pairs
+    uint64_t m_total_sprite_textured_kicks = 0u; // effective PRIM.TME=1
+    uint64_t m_total_sprite_nonblack_rgb_kicks = 0u; // raw RGBAQ RGB != 0
+    uint64_t m_pending_sprite_xyz0 = 0u; // first vertex of next sprite pair
+    std::array<s_ee_gs_sprite_sample, k_sprite_sample_capacity>
+        m_first_sprite_samples{};
+    std::array<s_ee_gs_sprite_sample, k_sprite_sample_capacity>
+        m_recent_sprite_samples{};
+
     std::vector<uint8_t> m_image_data; // bounded diagnostic transfer capture
     bool m_transfer_started = false;
     uint32_t m_transfer_pixels_written = 0; // across IMAGE events
@@ -51,6 +99,17 @@ struct s_ee_gs_state
 class c_ee_gs_state
 {
 public:
+    using t_committed_event_callback = void (*)(
+        void* user, const s_ee_gif_event* events, size_t count,
+        const uint8_t* data, uint32_t qwc
+    );
+
+    // Optional GPU mirror: invoked only AFTER transactional GS acceptance.
+    // The callback is observer-only and cannot complete or reject guest DMA.
+    void bind_committed_event_observer(
+        void* user, t_committed_event_callback callback
+    );
+
     static constexpr size_t k_max_image_bytes = 4u * 1024u * 1024u;
     static constexpr size_t k_vram_bytes = 4u * 1024u * 1024u;
     // Keep per-batch staged writes bounded for malformed transfer sizes.
@@ -62,6 +121,11 @@ public:
     // Returns false for out-of-range raw VRAM accesses.
     bool read_vram16(uint32_t offset, uint16_t& value) const;
     bool read_vram32(uint32_t offset, uint32_t& value) const;
+
+    // Read-only swizzled GS display color access. RGB bytes are stored as
+    // 0xAABBGGRR, with alpha forced opaque. No drawing or scanout occurs.
+    bool read_color_pixel(uint32_t psm, uint32_t base, uint32_t fbw,
+                          uint32_t x, uint32_t y, uint32_t& rgba) const;
 
     // Produce 16*qwc bytes from TRXDIR=1 into caller-owned memory.
     // Source pixels are swizzled as on GS, serialized little-endian
@@ -192,6 +256,9 @@ private:
     static bool write_packed(
         s_ee_gs_state& state, uint32_t reg, uint64_t low, uint64_t high
     );
+
+    void* m_committed_user = nullptr;
+    t_committed_event_callback m_committed_callback = nullptr;
 
     s_ee_gs_state m_state{};
     std::vector<uint8_t> m_vram = std::vector<uint8_t>(k_vram_bytes, 0u);

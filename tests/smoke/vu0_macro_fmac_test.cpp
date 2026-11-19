@@ -121,6 +121,44 @@ int main()
           (vu0.m_mac_flags & 0x7777u) == 0,
           "lane mask preserves unmapped ACC lanes and clears their MAC flags");
 
+    // Manual section 3.3.2: sticky Z/S/U/O are the OR accumulation
+    // of current flags, never merely the previous instruction's flags.
+    vu0.m_status_flags = 0u;
+    cpu.m_vu0[4] = make_vector(-2.f, 0.f, 0.f, 0.f);
+    cpu.m_vu0[8] = make_vector(3.f, 0.f, 0.f, 0.f);
+    check(ee::ee_vu0_macro_fmac(&cpu, &runtime, x_only, 0x108240) == 0 &&
+          (vu0.m_status_flags & 0x0082u) == 0x0082u,
+          "negative product sets current S and sticky SS");
+    cpu.m_vu0[4] = make_vector(2.f, 0.f, 0.f, 0.f);
+    check(ee::ee_vu0_macro_fmac(&cpu, &runtime, x_only, 0x108240) == 0 &&
+          (vu0.m_status_flags & 0x0082u) == 0x0080u,
+          "positive product clears current S but preserves sticky SS");
+    check(ee::ee_vu0_macro_fmac(&cpu, &runtime, x_only, 0x108240) == 0 &&
+          (vu0.m_status_flags & 0x0080u) != 0u,
+          "sticky SS persists across multiple later normal FMACs");
+
+    // Existing sticky I/D and OS cannot be erased by ordinary FMAC
+    // results, including with masked-off lanes. Current flags remain
+    // consistent with active lanes rather than the old MAC register.
+    vu0.m_status_flags = 0x0e30u;
+    check(ee::ee_vu0_macro_fmac(&cpu, &runtime, x_only, 0x108240) == 0 &&
+          (vu0.m_status_flags & 0x0e30u) == 0x0e30u &&
+          (vu0.m_status_flags & 0x000fu) == 0u,
+          "sticky OS/IS/DS and current I/D preserved across normal FMAC");
+
+    // The result can generate a new sticky overflow, which survives a
+    // subsequent operation even after the current overflow bit clears.
+    vu0.m_status_flags = 0u;
+    cpu.m_vu0[4] = make_vector(3.0e38f, 0.f, 0.f, 0.f);
+    cpu.m_vu0[8] = make_vector(2.f, 0.f, 0.f, 0.f);
+    check(ee::ee_vu0_macro_fmac(&cpu, &runtime, x_only, 0x108240) == 0 &&
+          (vu0.m_status_flags & 0x0208u) == 0x0208u,
+          "FMAC overflow sets current O and sticky OS");
+    cpu.m_vu0[4] = make_vector(1.f, 0.f, 0.f, 0.f);
+    check(ee::ee_vu0_macro_fmac(&cpu, &runtime, x_only, 0x108240) == 0 &&
+          (vu0.m_status_flags & 0x0208u) == 0x0200u,
+          "ordinary FMAC clears current O but preserves sticky OS");
+
     // A VF0 destination discards writes but still updates flags. The
     // physical backing of VF0 must be ignored for reads and remain unchanged.
     cpu.m_vu0[0] = make_vector(21.f, 22.f, 23.f, 24.f);

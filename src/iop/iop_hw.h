@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace iop
 {
@@ -29,7 +30,15 @@ public:
     static constexpr uint32_t k_cache_control = 0xfffe0130u;
     // SIO2 serial-interface control. Firmware resets/configures this
     // register while loading IOP modules; transfer emulation is separate.
+    static constexpr uint32_t k_sio2_send3_base = 0x1f808200u;
+    static constexpr uint32_t k_sio2_port_base = 0x1f808240u;
+    static constexpr uint32_t k_sio2_tx_fifo = 0x1f808260u;
+    static constexpr uint32_t k_sio2_rx_fifo = 0x1f808264u;
     static constexpr uint32_t k_sio2_ctrl = 0x1f808268u;
+    static constexpr uint32_t k_sio2_stat = 0x1f80826cu;
+    static constexpr uint32_t k_sio2_port_status = 0x1f808270u;
+    static constexpr uint32_t k_sio2_aux_status = 0x1f808274u;
+    static constexpr size_t k_sio2_tx_limit = 4096u;
     // OpenPS2BIOS emits guest TTY bytes to this emulator-facing port.
     // It is a write-only diagnostic extension, not IOP boot readiness.
     static constexpr uint32_t k_debug_console = 0x1f802080u;
@@ -51,6 +60,10 @@ public:
     static constexpr uint32_t k_dma_global_enable = 0x1f801578u;
     // Secondary controller DMA9 (IOP -> EE SIF0) and
     // DMA10 (EE -> IOP SIF1) channel registers.
+    // SIO2 DMA11/12 register banks. Programming STR records a
+    // request; no transfer or completion is fabricated without SIO2.
+    static constexpr uint32_t k_sio2_dma_rx_base = 0x1f801540u;
+    static constexpr uint32_t k_sio2_dma_tx_base = 0x1f801550u;
     static constexpr uint32_t k_sif0_dma_base = 0x1f801520u;
     static constexpr uint32_t k_sif1_dma_base = 0x1f801530u;
     // IOP-side SIF bus mirror of the EE's SBUS F200-F230 registers.
@@ -120,6 +133,9 @@ public:
     bool cdvd_ncmd_parameter(uint32_t index, uint8_t* value) const;
     bool cdrom_dma_register(uint32_t index, uint32_t* value) const;
     bool complete_cdvd_read(uint8_t interrupt_reason);
+    size_t sio2_pending_tx_bytes() const;
+    bool sio2_tx_byte(size_t index, uint8_t* value) const;
+    bool sio2_transfer_requested() const;
 
 private:
     bool scratchpad_range(uint32_t address, uint32_t width) const;
@@ -142,6 +158,10 @@ private:
     uint32_t m_i_ctrl = 1u;
     uint32_t m_cache_control = 0u;
     uint32_t m_sio2_ctrl = 0u;
+    uint32_t m_sio2_send3[16]{};
+    uint32_t m_sio2_port[8]{};
+    std::vector<uint8_t> m_sio2_pending_tx;
+    bool m_sio2_transfer_requested = false;
     uint32_t m_timer5_count = 0u;
     uint32_t m_timer5_mode = 0u;
     uint32_t m_timer5_target = 0u;
@@ -155,6 +175,7 @@ private:
     // MADR, BCR, CHCR and TADR; transfers remain active until the
     // connected DMA backend explicitly completes them.
     uint32_t m_sif_dma[2][4]{};
+    uint32_t m_sio2_dma[2][3]{};
     uint32_t m_sif_mscom = 0u;
     uint32_t m_sif_smcom = 0u;
     uint32_t m_sif_msflag = 0u;

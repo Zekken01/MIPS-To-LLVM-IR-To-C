@@ -129,6 +129,30 @@ extern "C" uint32_t ee_exception_return(s_ee_cpu_state* cpu)
     return resume_pc;
 }
 
+// ---- Guest COP0 writes -----------------------------------------------------
+//
+// EE Core User's Manual v6.0, section 3.2, Compare (printed p.72):
+// writing Compare acknowledges the timer interrupt by clearing Cause.IP7.
+// This action is independent of a Count tick or a scheduler deadline.
+// Until individually audited, all other guest-writable COP0 registers keep
+// their prior raw assignment semantics instead of inventing bit masks.
+extern "C" void ee_cop0_write(s_ee_cpu_state* cpu,
+                              uint32_t reg,
+                              uint32_t value)
+{
+    if (!cpu || reg >= 32u)
+    {
+        return;
+    }
+
+    cpu->m_cop0[reg] = value;
+
+    if (reg == COP0_Compare)
+    {
+        ee_interrupt_clear(cpu, INT_TIMER);
+    }
+}
+
 // ---- Interrupts ----------------------------------------------------------
 
 extern "C" void ee_interrupt_request(s_ee_cpu_state* cpu, uint32_t line)

@@ -173,6 +173,34 @@ int main()
         return fail("malformed export target was accepted or corrupted RAM");
     }
 
+    // The actual SIO2MAN export table has holes (#4 and #27)
+    // followed by valid exports. A zero is not always the end of
+    // the export table. This fixture leaves ordinal #1 empty,
+    // supplies #2, then terminates before a MIPS code word.
+    {
+        std::vector<uint8_t> sparse = make_module(true);
+        put32(sparse, 0x13cu, 0x10u); // ordinal 2
+        put32(sparse, 0x144u, 0x03e00008u); // code after end
+        put32(sparse, 0x1d4u, 16u);
+        put32(sparse, 0x218u, 0x3cu); // second R_MIPS_32
+        put32(sparse, 0x21cu, 2u);
+        iop::c_kernel sparse_kernel;
+        const iop::s_module_load_result sparse_result =
+            sparse_kernel.load_module(sparse);
+        uint32_t second_export = 0u;
+        if (sparse_result.m_status !=
+                iop::e_irx_load_result::success ||
+            sparse_result.m_id != 1u ||
+            !sparse_kernel.lookup_library(
+                "PROVIDER", 2u, &second_export) ||
+            second_export != k_base + 0x10u ||
+            sparse_kernel.lookup_library(
+                "PROVIDER", 1u, &second_export))
+        {
+            return fail("sparse export ordinal was lost or invented");
+        }
+    }
+
     // Now the kernel resolves the consumer's import against the
     // real, relocated guest address registered by the provider.
     const iop::s_module_load_result linked = kernel.load_module(consumer);

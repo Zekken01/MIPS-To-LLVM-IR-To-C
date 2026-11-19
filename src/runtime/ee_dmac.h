@@ -14,9 +14,10 @@ namespace ee
 // Includes VIF1 reverse GS image downloads (CHCR.DIR=0).
 // Reference: ps2-web-recomp/runtime/src/dmac.cpp and hw.cpp.
 // Transfers execute synchronously, prevalidating physical RAM ranges.
-// GIF channel 2 supports bounded source-chain END tags (inline payload).
-// MFIFO, general device emulation, other device chain forms, arbitration,
-// and cycle-accurate completion remain unimplemented.
+// GIF channel 2 supports bounded transactional REFE/CNT/NEXT/REF/END
+// source chains in EE RAM and scratchpad-selected DMA memory.
+// TTE, REFS, CALL/RET, MFIFO, general device emulation,
+// arbitration and cycle-accurate completion remain unimplemented.
 class c_ee_dmac
 {
 public:
@@ -31,6 +32,65 @@ public:
     static constexpr uint32_t k_to_spr_base = 0x1000d400u; // channel 9
     static constexpr uint32_t k_from_spr_base = 0x1000d000u; // channel 8
     static constexpr uint32_t k_chcr_str = 0x100u;
+
+    // Read-only bounded history of actual GIF channel MMIO writes.
+    // The ring is host-owned and never changes guest DMA behavior.
+    static constexpr uint32_t k_gif_trace_capacity = 32u;
+    enum class e_gif_dma_reject : uint32_t
+    {
+        none = 0u,
+        missing_memory_or_sink,
+        invalid_start_state,
+        invalid_tag_address,
+        unsupported_tag,
+        invalid_payload_span,
+        chain_qwc_limit,
+        chain_tag_limit,
+        rejected_by_sink
+    };
+    struct s_gif_dma_write
+    {
+        uint64_t m_sequence = 0u;
+        uint32_t m_offset = 0u;
+        uint32_t m_value = 0u;
+        uint32_t m_previous = 0u;
+        uint32_t m_chcr = 0u;
+        uint32_t m_madr = 0u;
+        uint32_t m_qwc = 0u;
+        uint32_t m_tadr = 0u;
+        e_gif_dma_reject m_reject = e_gif_dma_reject::none;
+    };
+
+    struct s_gif_channel_state
+    {
+        uint32_t m_chcr = 0u;
+        uint32_t m_madr = 0u;
+        uint32_t m_qwc = 0u;
+        uint32_t m_tadr = 0u;
+    };
+
+    // Physical GIF-channel state for host diagnostics (read only).
+    s_gif_channel_state gif_channel_state() const;
+    // The same read-only CHCR/MADR/QWC/TADR view for physical VIF1.
+    // This does not advance the DMA engine or read guest MMIO.
+    s_gif_channel_state vif1_channel_state() const;
+    uint64_t gif_trace_count() const;
+    bool gif_trace_newest(uint32_t offset, s_gif_dma_write* result) const;
+    e_gif_dma_reject gif_last_reject() const;
+
+    enum class e_vif1_chain_reject : uint32_t
+    {
+        none = 0u,
+        missing_memory_or_sink,
+        invalid_start_state,
+        invalid_tag_address,
+        unsupported_tag,
+        invalid_payload_span,
+        chain_qwc_limit,
+        chain_tag_limit,
+        rejected_by_sink
+    };
+    e_vif1_chain_reject vif1_chain_last_reject() const;
 
     void bind_cpu(s_ee_cpu_state* cpu);
     void bind_memory(ee_memory* memory);
@@ -98,10 +158,13 @@ private:
     };
 
     void sync_interrupt_line();
+    void trace_gif_write(uint32_t offset, uint32_t value,
+                         uint32_t previous);
     bool read_spr_channel(uint32_t address, uint32_t* value) const;
     bool write_spr_channel(uint32_t address, uint32_t value);
     bool transfer_device_normal(uint32_t channel);
-    bool transfer_gif_chain_end();
+    bool transfer_gif_source_chain();
+    bool transfer_vif1_source_chain();
     bool transfer_spr_normal(uint32_t channel);
     bool transfer_spr_interleave(uint32_t channel);
     bool transfer_from_spr_chain();
@@ -123,6 +186,11 @@ private:
     t_device_download_callback m_device_download = nullptr;
     uint32_t m_status = 0;
     uint32_t m_sqwc = 0;
+    s_gif_dma_write m_gif_trace[k_gif_trace_capacity]{};
+    uint64_t m_gif_trace_count = 0u;
+    e_gif_dma_reject m_gif_last_reject = e_gif_dma_reject::none;
+    e_vif1_chain_reject m_vif1_chain_last_reject =
+        e_vif1_chain_reject::none;
     s_spr_channel m_device_channels[3]{}; // VIF0, VIF1, GIF PATH3
     s_spr_channel m_sif0_channel{}; // SIF0, guest IOP DMA9 producer
     bool m_sif0_chain_end = false;

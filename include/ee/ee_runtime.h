@@ -1,5 +1,6 @@
 #pragma once
 #include "ee_state.h"
+#include "ee_cycle_scheduler.h"
 #include <cstdint>
 #include <cstddef>
 
@@ -214,7 +215,22 @@ struct s_ee_instruction_trace_entry
     uint64_t m_attempt = 0u;
     uint32_t m_pc = 0u;
     uint32_t m_opcode_word = 0u;
+    // 0=native reached, 1=annulled branch-likely slot,
+    // 2=RAM interpreter committed, 3=host HLE boundary.
+    // None is a cycle timestamp; kind=3 does not advance a slot.
+    uint32_t m_kind = 0u;
+    uint64_t m_reference_slot = 0u;
+    // For kind=3 only, the normalized EE HLE service number.
+    uint32_t m_hle_service = 0u;
 };
+
+// Pure observation only. Implementations may compare externally validated
+// reference issue timestamps, but cannot enable hardware time themselves.
+// Returning false latches a host-side failure, never a guest exception.
+using t_ee_timing_observer = bool (*)(
+    void* user, uint32_t pc, uint32_t opcode, uint32_t kind,
+    uint32_t service, uint64_t attempt, uint64_t reference_slot
+);
 
 struct s_ee_runtime
 {
@@ -277,7 +293,89 @@ struct s_ee_runtime
     uint32_t m_instruction_trace_first_pc = 0u;
     uint32_t m_instruction_trace_last_pc = 0xffffffffu;
     uint32_t m_instruction_trace_overflow = 0u;
+
+    // Deterministic instruction-slot count matching the *simplified*
+    // ps2-web-recomp interpreter's basic pending+branch accounting:
+    // reached instruction = one slot; annulled branch-likely delay slot
+    // still consumes its reserved slot. Excludes syscall overhead and
+    // pipeline stalls. NOT authoritative R5900 cycles, NOT a GS clock.
+    // Append only: the compiled runtime ABI prefix must remain stable.
+    uint64_t m_reference_instruction_slots = 0u;
+
+    // Hardware-time timeline: unavailable until a separately validated
+    // R5900 instruction/issue timing producer publishes actual EE cycles.
+    // Appended to preserve all existing translated runtime field offsets.
+    c_ee_cycle_scheduler m_ee_cycle_scheduler{};
+
+    // Number of recognized host EE HLE transitions, not issue cycles.
+    // Appended after all existing translated ABI fields.
+    uint64_t m_hle_timing_boundaries = 0u;
+
+    // Optional host timing-observation sink. The stock runner installs
+    // neither a sink nor a validated EE cycle source. New fields append
+    // after the existing native runtime ABI prefix.
+    void* m_timing_observer_user = nullptr;
+    t_ee_timing_observer m_timing_observer = nullptr;
+    uint32_t m_timing_observer_failed = 0u;
 };
+
+// Never infer cycles from these observations or implicitly install
+// c_ee_cycle_scheduler. A rejected event is latched for the host to detect
+// at the next architectural safepoint.
+inline void ee_observe_timing_event(
+    s_ee_runtime& runtime, uint32_t pc, uint32_t opcode,
+    uint32_t kind, uint32_t service,
+    uint64_t attempt, uint64_t reference_slot)
+{
+    if (runtime.m_timing_observer != nullptr &&
+        runtime.m_timing_observer_failed == 0u &&
+        !runtime.m_timing_observer(
+            runtime.m_timing_observer_user,
+            pc, opcode, kind, service, attempt, reference_slot))
+    {
+        runtime.m_timing_observer_failed = 1u;
+    }
+}
+
+
+// Record host HLE handoff without guessing a latency or advancing any
+// guest instruction/slot counter. The trace is optional and bounded.
+inline void ee_record_hle_timing_boundary(
+    s_ee_runtime& runtime, uint32_t pc, uint32_t opcode,
+    uint32_t service)
+{
+    if (runtime.m_hle_timing_boundaries != UINT64_MAX)
+    {
+        ++runtime.m_hle_timing_boundaries;
+    }
+
+    if (runtime.m_instruction_trace != nullptr &&
+        pc >= runtime.m_instruction_trace_first_pc &&
+        pc <= runtime.m_instruction_trace_last_pc)
+    {
+        if (runtime.m_instruction_trace_count <
+            runtime.m_instruction_trace_capacity)
+        {
+            s_ee_instruction_trace_entry& entry =
+                runtime.m_instruction_trace[runtime.m_instruction_trace_count++];
+            entry.m_attempt = runtime.m_guest_instruction_attempts;
+            entry.m_pc = pc;
+            entry.m_opcode_word = opcode;
+            entry.m_kind = 3u;
+            entry.m_reference_slot = runtime.m_reference_instruction_slots;
+            entry.m_hle_service = service;
+        }
+        else
+        {
+            runtime.m_instruction_trace_overflow = 1u;
+        }
+    }
+    ee_observe_timing_event(
+        runtime, pc, opcode, 3u, service,
+        runtime.m_guest_instruction_attempts,
+        runtime.m_reference_instruction_slots);
+}
+
 
 // Outside a branch delay slot, all four transfer forms only catch VU0 up to
 // the EE cycle. In a delay slot, reads finish to E while writes wait to E or M.
@@ -415,9 +513,21 @@ uint32_t ee_vu0_ctc2(s_ee_cpu_state* cpu, s_ee_runtime* rt,
 uint32_t ee_vu0_macro_fmac(s_ee_cpu_state* cpu, s_ee_runtime* rt,
                             uint32_t instruction_word, uint32_t pc);
 
+// Native-lowered VU0 indexed vector memory macros VLQI/VSQI/VLQD/VSQD.
+// These operate on VI-addressed VU0 quadwords with lane masking.
+uint32_t ee_vu0_macro_indexed_memory(
+    s_ee_cpu_state* cpu, s_ee_runtime* rt,
+    uint32_t instruction_word, uint32_t pc);
+
 // BC2 reads VPU_STAT bit 8 directly, as the interpreter branch handlers do.
 // Returns 0/1 for false/true, or 2 when VU0 state is unavailable.
 uint32_t ee_vu0_get_branch_condition(const s_ee_runtime* rt);
+
+// COP0 guest writes: centralize documented side effects. Writing Compare
+// acknowledges Cause.IP7; this does not advance Count or produce EE cycles.
+// Other registers retain the existing raw write behavior until their writable
+// masks and side effects are independently audited.
+void ee_cop0_write(s_ee_cpu_state* cpu, uint32_t reg, uint32_t value);
 
 // Exception entry / return and interrupt helpers (ee_exceptions.cpp).
 uint32_t ee_raise_exception(s_ee_cpu_state* cpu, s_ee_runtime* rt,

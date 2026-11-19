@@ -52,6 +52,17 @@ using t_irx_export_validator = std::function<bool(
     const std::vector<s_irx_export>& exports
 )>;
 
+// Import failures keep their actual guest library and ordinal.
+struct s_irx_link_diagnostic
+{
+    e_irx_load_result m_result = e_irx_load_result::invalid_module;
+    uint32_t m_entry_offset = 0u;
+    uint32_t m_gp_offset = 0u;
+    uint32_t m_image_size = 0u;
+    std::string m_unresolved_library;
+    uint16_t m_unresolved_ordinal = 0u;
+};
+
 // Load one Sony IOP ELF32 MIPS IRX at an explicitly allocated, aligned IOP
 // RAM base. All parsing, relocation and import linking are performed on a
 // private staging buffer. On failure, guest memory and output stay unchanged.
@@ -64,6 +75,7 @@ e_irx_load_result load_irx(
     uint32_t base,
     s_irx_module* module,
     const t_irx_import_resolver& resolver = {},
-    const t_irx_export_validator& validate_exports = {}
+    const t_irx_export_validator& validate_exports = {},
+    s_irx_link_diagnostic* diagnostic = nullptr
 );
 } // namespace iop

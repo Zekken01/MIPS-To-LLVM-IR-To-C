@@ -27,13 +27,14 @@ bool write_call(
 
 void descriptor(
     ee::ee_memory& memory,
-    uint32_t address, uint32_t src, uint32_t dst, uint32_t size
+    uint32_t address, uint32_t src, uint32_t dst, uint32_t size,
+    uint32_t attributes = 0u
 )
 {
     memory.write32(address, src);
     memory.write32(address + 4u, dst);
     memory.write32(address + 8u, size);
-    memory.write32(address + 12u, 0u);
+    memory.write32(address + 12u, attributes);
 }
 
 void command(
@@ -47,6 +48,21 @@ void command(
     memory.write32(address + 12u, 0u);
     memory.write32(address + 16u, first);
     memory.write32(address + 20u, second);
+    memory.write32(address + 24u, 0u);
+    memory.write32(address + 28u, 0u);
+}
+
+void command20(
+    ee::ee_memory& memory, uint32_t address,
+    uint32_t cid, uint32_t receive_address
+)
+{
+    memory.write32(address + 0u, 20u);
+    memory.write32(address + 4u, 0u);
+    memory.write32(address + 8u, cid);
+    memory.write32(address + 12u, 0u);
+    memory.write32(address + 16u, receive_address);
+    memory.write32(address + 20u, 0u);
     memory.write32(address + 24u, 0u);
     memory.write32(address + 28u, 0u);
 }
@@ -130,6 +146,38 @@ int main()
         return fail("R3000 sifcmd init did not publish only SUBADDR");
     }
 
+    // The production extracted-disc HLE kernel may explicitly start
+    // already-installed SIFCMD services without guest firmware. It is a
+    // distinct mode: install() and guest-import initialization above
+    // must not silently publish the initial boot flags.
+    {
+        ee::c_ee_sif hle_sif;
+        hle_sif.reset();
+        iop::c_kernel hle_kernel;
+        iop::c_sifcmd_bridge hle_commands(hle_kernel, hle_sif);
+        uint32_t subaddr = 0xffffffffu;
+        uint32_t flags = 0xffffffffu;
+        if (hle_commands.initialize_hle_bootstrap() ||
+            !hle_commands.install() ||
+            !hle_sif.get_reg(4u, &flags) || flags != 0u ||
+            !hle_commands.initialize_hle_bootstrap() ||
+            hle_commands.initialize_hle_bootstrap() ||
+            !hle_commands.initialized() ||
+            !hle_sif.get_reg(2u, &subaddr) ||
+            subaddr != iop::c_sifcmd_bridge::k_command_buffer ||
+            !hle_sif.get_reg(4u, &flags) || flags != 0x60000u)
+        {
+            return fail("explicit HLE-only SIFCMD bootstrap state");
+        }
+        // The IOP-owned SMFLAG still follows real EE acknowledgment
+        // semantics; it is not a stuck/high fake return value.
+        if (!hle_sif.set_reg(4u, 0x20000u) ||
+            !hle_sif.get_reg(4u, &flags) || flags != 0x40000u)
+        {
+            return fail("HLE SMFLAG EE acknowledgment semantics");
+        }
+    }
+
     uint32_t dma_id = 0u;
     if (!transport.set_dma(k_list, 1u, &dma_id) ||
         dma_id != 1u ||
@@ -159,6 +207,90 @@ int main()
         return fail("EE command receive address or SMFLAG ownership");
     }
 
+    // Real EE sifcmd uses a terminal 20-byte 0x44 descriptor for
+    // CHANGE_SADDR and INIT_CMD. Receiving it updates only the real
+    // registered EE command buffer, never SMFLAG or an RPC reply.
+    dmac.acknowledge(6u);
+    command20(ee_ram, k_source, 0x80000000u, 0x00181000u);
+    descriptor(
+        ee_ram, k_list, k_source,
+        iop::c_sifcmd_bridge::k_command_buffer, 20u, 0x44u
+    );
+    if (!transport.set_dma(k_list, 1u, &dma_id) ||
+        dma_id != 3u ||
+        commands.ee_receive_address() != 0x00181000u ||
+        !kernel.cpu().read32(
+            iop::c_sifcmd_bridge::k_command_buffer + 16u, &iop_word) ||
+        iop_word != 0x00181000u ||
+        (dmac.status() & (1u << 6u)) == 0u ||
+        !sif.get_reg(4u, &smflag) || smflag != 0u)
+    {
+        return fail("terminal CHANGE_SADDR command was not delivered");
+    }
+
+    dmac.acknowledge(6u);
+    command20(ee_ram, k_source, 0x80000002u, 0x00182000u);
+    if (!transport.set_dma(k_list, 1u, &dma_id) ||
+        dma_id != 4u ||
+        commands.ee_receive_address() != 0x00182000u ||
+        !kernel.cpu().read32(
+            iop::c_sifcmd_bridge::k_command_buffer + 8u, &iop_word) ||
+        iop_word != 0x80000002u ||
+        (dmac.status() & (1u << 6u)) == 0u)
+    {
+        return fail("terminal 20-byte INIT_CMD not delivered");
+    }
+
+    // A terminal descriptor does not authorize an empty command or
+    // an arbitrary DMA endpoint. Reject these without IOP mutations,
+    // DMAC completion, or a newly issued transaction ID.
+    dmac.acknowledge(6u);
+    ee_ram.write32(k_source, 0u);
+    iop::s_sif1_dma_diagnostic command_rejection{};
+    if (transport.set_dma(k_list, 1u, &dma_id, &command_rejection) ||
+        command_rejection.m_failure !=
+            iop::e_sif1_dma_failure::unsupported_sifcmd_packet ||
+        command_rejection.m_packet_size != 0u ||
+        command_rejection.m_packet_dest != 0u ||
+        command_rejection.m_packet_cid != 0x80000002u ||
+        command_rejection.m_packet_opt != 0u ||
+        command_rejection.m_packet_arg != 0x00182000u ||
+        commands.ee_receive_address() != 0x00182000u ||
+        dmac.status() != 0u)
+    {
+        return fail("empty INIT_CMD was wrongly completed");
+    }
+
+    descriptor(
+        ee_ram, k_list, k_data_source, k_destination, 16u, 0x44u
+    );
+    if (transport.set_dma(k_list, 1u, &dma_id, &command_rejection) ||
+        command_rejection.m_failure !=
+            iop::e_sif1_dma_failure::invalid_size_or_attributes ||
+        dmac.status() != 0u)
+    {
+        return fail("terminal SIFCMD flags were accepted on ordinary DMA");
+    }
+
+    // A 16-byte opt=1 INIT_CMD needs an IOP->EE reply transport.
+    // This fixture has no RPC/SIF0 reply backend; reject before
+    // changing command state, RAM, or DMAC.
+    dmac.acknowledge(6u);
+    ee_ram.write32(k_source, 16u);
+    ee_ram.write32(k_source + 4u, 0u);
+    ee_ram.write32(k_source + 8u, 0x80000002u);
+    ee_ram.write32(k_source + 12u, 1u);
+    descriptor(
+        ee_ram, k_list, k_source,
+        iop::c_sifcmd_bridge::k_command_buffer, 16u, 0x44u
+    );
+    if (transport.set_dma(k_list, 1u, &dma_id) ||
+        commands.ee_receive_address() != 0x00182000u ||
+        dmac.status() != 0u)
+    {
+        return fail("INIT_CMD reply accepted without SIF0 backend");
+    }
+
     // An unsupported RPC CID may not be mistaken for a completed
     // operation or reply. Check that earlier transfers in the same
     // descriptor list are not partially committed on rejection.
@@ -175,10 +307,21 @@ int main()
     command(
         ee_ram, k_source, 0x80000009u, 0x80000006u, 0u
     );
-    if (transport.set_dma(k_list, 2u, &dma_id) ||
+    iop::s_sif1_dma_diagnostic rejection{};
+    if (transport.set_dma(k_list, 2u, &dma_id, &rejection) ||
+        rejection.m_failure !=
+            iop::e_sif1_dma_failure::unsupported_rpc_packet ||
+        rejection.m_descriptor_index != 1u ||
+        rejection.m_source != k_source ||
+        rejection.m_destination !=
+            iop::c_sifcmd_bridge::k_command_buffer ||
+        rejection.m_size != 24u ||
+        rejection.m_attributes != 0u ||
+        rejection.m_packet_size != 24u ||
+        rejection.m_packet_cid != 0x80000009u ||
         !kernel.cpu().read32(k_destination, &iop_word) ||
         iop_word != 0xdeadc0deu ||
-        commands.ee_receive_address() != 0x00180000u ||
+        commands.ee_receive_address() != 0x00182000u ||
         dmac.status() != 0u)
     {
         return fail("unsupported RPC command caused a partial DMA");
@@ -191,13 +334,30 @@ int main()
         return fail("unsupported command overwrote prior packet");
     }
 
+    // An IOP reset packet is a special operation, not a physical
+    // write to RAM zero and never an implicitly completed DMA.
+    descriptor(ee_ram, k_list, k_data_source, 0u, 16u);
+    if (transport.set_dma(k_list, 1u, &dma_id, &rejection) ||
+        rejection.m_failure !=
+            iop::e_sif1_dma_failure::unsupported_iop_reboot ||
+        rejection.m_destination != 0u ||
+        rejection.m_source != k_data_source ||
+        dmac.status() != 0u ||
+        !kernel.cpu().read32(k_destination, &iop_word) ||
+        iop_word != 0xdeadc0deu)
+    {
+        return fail("IOP reboot DMA was silently accepted or mutated RAM");
+    }
+
     // Even an ordinary transfer may not overlap the reserved command
     // buffer without passing the command validation protocol.
     descriptor(
         ee_ram, k_list, k_data_source,
         iop::c_sifcmd_bridge::k_command_buffer - 16u, 32u
     );
-    if (transport.set_dma(k_list, 1u, &dma_id))
+    if (transport.set_dma(k_list, 1u, &dma_id, &rejection) ||
+        rejection.m_failure !=
+            iop::e_sif1_dma_failure::command_buffer_overlap)
     {
         return fail("unaligned command-region crossing accepted");
     }
@@ -224,6 +384,98 @@ int main()
         !sif.get_reg(4u, &smflag) || smflag != 0u)
     {
         return fail("guest SetSreg was not executed correctly");
+    }
+
+    // Retail SDBZ issues SIF_CMD_RESET_CMD after shutting down EE
+    // SIF0. The 104-byte command carries arglen, mode and up to 80
+    // command-line bytes without a required NUL terminator. A valid
+    // SIF1 transfer is not itself proof of successful IOP reboot.
+    const std::string reboot_line =
+        "rom0:UDNL cdrom0:\\IOPRP300.IMG;1";
+    const auto write_reboot = [&](uint32_t arglen, uint32_t mode)
+    {
+        for (uint32_t offset = 0u; offset < 112u; offset += 4u)
+        {
+            ee_ram.write32(k_source + offset, 0u);
+        }
+        ee_ram.write32(k_source, 104u);
+        ee_ram.write32(k_source + 8u, 0x80000003u);
+        ee_ram.write32(k_source + 16u, arglen);
+        ee_ram.write32(k_source + 20u, mode);
+        for (uint32_t index = 0u; index < reboot_line.size(); ++index)
+        {
+            ee_ram.write8(
+                k_source + 24u + index,
+                static_cast<uint8_t>(reboot_line[index])
+            );
+        }
+    };
+    write_reboot(static_cast<uint32_t>(reboot_line.size()), 0u);
+    descriptor(
+        ee_ram, k_list, k_source,
+        iop::c_sifcmd_bridge::k_command_buffer, 104u, 0x44u
+    );
+    dmac.acknowledge(6u);
+    std::string accepted_reboot;
+    if (!transport.set_dma(k_list, 1u, &dma_id) ||
+        (dmac.status() & (1u << 6u)) == 0u ||
+        !commands.take_reboot_request(&accepted_reboot) ||
+        accepted_reboot != reboot_line ||
+        commands.take_reboot_request(&accepted_reboot) ||
+        !kernel.cpu().read32(
+            iop::c_sifcmd_bridge::k_command_buffer + 8u,
+            &iop_word) ||
+        iop_word != 0x80000003u)
+    {
+        return fail("validated IOP reboot was not staged through SIF1");
+    }
+
+    // Bad packet lengths, modes and embedded NULs must fail before
+    // changing IOP RAM or completing DMA, including 0x44 terminal flags.
+    dmac.acknowledge(6u);
+    write_reboot(81u, 0u);
+    if (transport.set_dma(k_list, 1u, &dma_id, &rejection) ||
+        rejection.m_failure !=
+            iop::e_sif1_dma_failure::unsupported_sifcmd_packet ||
+        dmac.status() != 0u ||
+        commands.take_reboot_request(&accepted_reboot))
+    {
+        return fail("oversized IOP reset argument accepted");
+    }
+    write_reboot(static_cast<uint32_t>(reboot_line.size()), 1u);
+    if (transport.set_dma(k_list, 1u, &dma_id, &rejection) ||
+        rejection.m_failure !=
+            iop::e_sif1_dma_failure::unsupported_sifcmd_packet ||
+        dmac.status() != 0u)
+    {
+        return fail("unsupported IOP reset mode accepted");
+    }
+    write_reboot(static_cast<uint32_t>(reboot_line.size()), 0u);
+    ee_ram.write8(k_source + 24u + 4u, 0u);
+    if (transport.set_dma(k_list, 1u, &dma_id, &rejection) ||
+        rejection.m_failure !=
+            iop::e_sif1_dma_failure::unsupported_sifcmd_packet ||
+        dmac.status() != 0u ||
+        commands.take_reboot_request(&accepted_reboot))
+    {
+        return fail("malformed IOP reset arguments accepted");
+    }
+
+    // The host HLE reset coordinator must discard the IOP-owned flags
+    // and old kernel state before it can install services again. In
+    // particular, receiving the reboot DMA alone never publishes BOOTEND.
+    sif.publish_iop_smflag(0x60000u);
+    sif.begin_iop_reboot();
+    kernel.reset();
+    commands.reset_for_reboot();
+    if (!sif.get_reg(4u, &smflag) || smflag != 0u ||
+        commands.initialized() ||
+        commands.sreg(5u) != 0u ||
+        !commands.install() ||
+        !commands.initialize_hle_bootstrap() ||
+        !sif.get_reg(4u, &smflag) || smflag != 0x60000u)
+    {
+        return fail("IOP HLE reset/reinstall lifecycle was inconsistent");
     }
 
     std::printf("IOP guest SIFCMD: PASS\n");

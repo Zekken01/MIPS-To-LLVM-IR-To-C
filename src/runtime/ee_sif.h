@@ -88,6 +88,17 @@ public:
         }
     }
 
+    // An explicitly accepted IOP reboot invalidates the old IOP-owned
+    // mailbox and readiness. The EE's other software registers and
+    // receive-buffer state are not silently reinitialized.
+    void begin_iop_reboot()
+    {
+        m_smcom = 0u;
+        m_smflag = 0u;
+        m_msflag = 0u;
+        m_sysregs[2] = 0u;
+    }
+
     // Future IOP emulator / HLE producer hooks; never called implicitly
     // by the EE kernel service handlers.
     void publish_iop_subaddr(uint32_t value)

@@ -93,6 +93,88 @@ def resolve_disc_path(root, guest_path):
     return current
 
 
+# Only host-committed SIFRPC events from the FINAL bounded replay count.
+# This is diagnostics, not proof that an IRX ran on a full IOP scheduler.
+RPC_COMMIT_PATTERN = re.compile(
+    r"^IOP HLE RPC committed: seq=(?P<seq>[0-9]+) "
+    r"cid=(?P<cid>0x[0-9a-fA-F]{8}) "
+    r"server=(?P<server>0x[0-9a-fA-F]{8}) "
+    r"method=(?P<method>0x[0-9a-fA-F]{8}) "
+    r"client=0x[0-9a-fA-F]{8} send=[0-9]+ recv=[0-9]+ "
+    r"result=0x[0-9a-fA-F]{8} path=(?P<path>.*?) "
+    r"load_status=(?P<load>[0-9]+) "
+    r"link_status=(?P<link>[0-9]+) "
+    r"module=(?P<module>[0-9]+) thread=(?P<thread>[0-9]+) "
+    r"started=(?P<started>[01]) "
+    r"irx_entry=[0-9a-fA-F]{8} irx_gp=[0-9a-fA-F]{8} "
+    r"irx_image=[0-9a-fA-F]{8} unresolved=.*$"
+)
+
+
+def reconcile_runtime_loadfile(catalog, final_output):
+    """Add real committed LOADFILE evidence; never promote static candidates.
+
+    The complete final replay is the only input: expansion replays may
+    execute the same module repeatedly and must not inflate the count.
+    Malformed commit evidence fails closed, leaving the caller's catalog
+    unchanged.
+    """
+    sequence = 0
+    rpc_commits = 0
+    events = []
+    for line in final_output.splitlines():
+        if not line.startswith("IOP HLE RPC committed: "):
+            continue
+        match = RPC_COMMIT_PATTERN.fullmatch(line)
+        if match is None:
+            raise ValueError("unparseable committed SIFRPC diagnostic")
+        fields = match.groupdict()
+        current = int(fields["seq"])
+        if current != sequence + 1 or current > 0xFFFFFFFFFFFFFFFF:
+            raise ValueError("non-monotonic or gapped committed SIFRPC sequence")
+        sequence = current
+        rpc_commits += 1
+        if (int(fields["cid"], 16) != 0x8000000A or
+                int(fields["server"], 16) != 0x80000006 or
+                int(fields["method"], 16) != 0):
+            continue
+        loaded = int(fields["load"])
+        linked = int(fields["link"])
+        module = int(fields["module"])
+        thread = int(fields["thread"])
+        started = fields["started"] == "1"
+        succeeded = (loaded == 0 and linked == 0 and
+                     module != 0 and thread != 0 and started)
+        events.append({
+            "sequence": current,
+            "guest_path": fields["path"],
+            "load_status": loaded,
+            "link_status": linked,
+            "module_id": module,
+            "thread_id": thread,
+            "module_started": started,
+            "success": succeeded,
+            "source": "final-replay-committed-sifrpc",
+        })
+
+    # Commit metadata only after all lines are checked.
+    catalog["runtime_rpc_commit_count"] = rpc_commits
+    catalog["runtime_load_attempt_count"] = len(events)
+    catalog["runtime_load_count"] = sum(event["success"] for event in events)
+    catalog["runtime_load_events"] = events
+    catalog["runtime_evidence_source"] = "final-replay-committed-sifrpc"
+    catalog["limitations"] = [
+        item for item in catalog["limitations"]
+        if item != "Runtime LOADFILE RPC handling is not yet attached to the catalog."
+    ]
+    catalog["limitations"].append(
+        "Only the final replay's committed SIFRPC LOADFILE method-0 "
+        "diagnostics are counted; no inference from static ELF paths, "
+        "expansion replays, or uncommitted packets."
+    )
+    return catalog
+
+
 def build_catalog(elf, disc_root=None):
     elf = Path(elf).resolve(strict=True)
     root = Path(disc_root).resolve(strict=True) if disc_root else elf.parent
@@ -127,6 +209,10 @@ def build_catalog(elf, disc_root=None):
             item["status"] == "resolved" for item in candidates
         ),
         "runtime_load_count": 0,
+        "runtime_load_attempt_count": 0,
+        "runtime_rpc_commit_count": 0,
+        "runtime_load_events": [],
+        "runtime_evidence_source": "static-only",
         "limitations": [
             "Only ELF-embedded cdrom0: IRX paths are discovered.",
             "Static candidates do not establish runtime load order.",

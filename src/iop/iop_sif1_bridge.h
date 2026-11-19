@@ -10,6 +10,49 @@ namespace iop
 {
 class c_sifcmd_bridge;
 class c_sif_rpc_bridge;
+enum class e_rpc_rejection : uint8_t;
+// An unhandled guest SIF1 descriptor is a distinct validation failure.
+// The record is diagnostic only; no IOP state or DMA is committed.
+enum class e_sif1_dma_failure
+{
+    none,
+    invalid_list,
+    invalid_size_or_attributes,
+    invalid_source,
+    invalid_destination,
+    unsupported_iop_reboot,
+    command_buffer_overlap,
+    duplicate_rpc_payload,
+    unsupported_rpc_packet,
+    unsupported_sifcmd_packet
+};
+
+struct s_sif1_dma_diagnostic
+{
+    e_sif1_dma_failure m_failure = e_sif1_dma_failure::none;
+    uint32_t m_descriptor_index = 0xffffffffu;
+    uint32_t m_source = 0u;
+    uint32_t m_destination = 0u;
+    uint32_t m_size = 0u;
+    uint32_t m_attributes = 0u;
+    uint32_t m_packet_size = 0u;
+    uint32_t m_packet_dest = 0u;
+    uint32_t m_packet_cid = 0u;
+    uint32_t m_packet_opt = 0u;
+    uint32_t m_packet_arg = 0u;
+    uint32_t m_rpc_server = 0u;
+    uint32_t m_rpc_client = 0u;
+    // A rejected RPC is diagnosed using the actual staged EE packet,
+    // not the static IRX catalog or a fabricated reference packet.
+    uint32_t m_rpc_packet_word_count = 0u;
+    uint32_t m_rpc_packet_words[16]{};
+    uint32_t m_rpc_payload_source = 0u;
+    uint32_t m_rpc_payload_length = 0u;
+    // Refusal reason from the side-effect-free SIFRPC validator.
+    // Valid only when m_failure is unsupported_rpc_packet.
+    e_rpc_rejection m_rpc_rejection = static_cast<e_rpc_rejection>(0u);
+};
+
 // Guest EE sceSifSetDma (syscall 0x77) to IOP RAM transport.
 //
 // This is a synchronous, bounded transport foundation, not an IOP BIOS,
@@ -26,7 +69,12 @@ public:
 
     // Returns false on unsupported destinations, flags, or unmapped ranges.
     // Validate and stage the entire descriptor list before any IOP write.
-    bool set_dma(uint32_t list, uint32_t count, uint32_t* dma_id);
+    bool set_dma(
+        uint32_t list, uint32_t count, uint32_t* dma_id,
+        s_sif1_dma_diagnostic* diagnostic = nullptr
+    );
+
+    static const char* failure_name(e_sif1_dma_failure failure);
 
     // Only IDs produced by a successful transfer have a status. Until a
     // cycle-based scheduler exists, transfers finish synchronously (-1).

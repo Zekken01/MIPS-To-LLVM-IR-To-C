@@ -1,0 +1,171 @@
+#include "ee_gs_display.h"
+#include "ee_hw_bus.h"
+
+#include <cstdint>
+#include <cstdio>
+#include <vector>
+
+namespace
+{
+int g_failed = 0;
+
+void check(bool success, const char* label)
+{
+    if (!success)
+    {
+        std::printf("FAIL: %s\n", label);
+        ++g_failed;
+    }
+}
+
+bool upload(ee::c_ee_gs_state& gs, uint32_t psm,
+            const std::vector<uint8_t>& source)
+{
+    if (source.size() != 32u)
+    {
+        return false;
+    }
+    uint8_t data[96]{};
+    for (uint32_t i = 0u; i < 32u; ++i)
+    {
+        data[64u + i] = source[i];
+    }
+    ee::s_ee_gif_event events[5]{};
+    const uint32_t regs[4] = {0x50u, 0x51u, 0x52u, 0x53u};
+    const uint64_t values[4] =
+    {
+        (uint64_t{1} << 48u) | (uint64_t{psm} << 56u),
+        0u,
+        uint64_t{8} | (uint64_t{1} << 32u),
+        0u
+    };
+    for (uint32_t i = 0u; i < 4u; ++i)
+    {
+        events[i].m_type = ee::e_ee_gif_event_type::packed;
+        events[i].m_register = 0x0eu;
+        events[i].m_byte_offset = i * 16u;
+        events[i].m_word0 = values[i];
+        events[i].m_word1 = regs[i];
+    }
+    events[4].m_type = ee::e_ee_gif_event_type::image;
+    events[4].m_byte_offset = 64u;
+    events[4].m_qwc = 2u;
+    return gs.consume(events, 5u, data, 6u);
+}
+}
+
+int main()
+{
+    ee::c_ee_gs_state gs{};
+    ee::s_ee_gs_display_registers regs{};
+    std::vector<uint32_t> pixels{0x12345678u};
+    uint32_t width = 99u;
+    uint32_t height = 88u;
+    check(!ee::c_ee_gs_display::readback(
+              gs, regs, 2u, pixels, width, height) &&
+          pixels.size() == 1u && width == 99u && height == 88u,
+          "disabled PMODE leaves outputs untouched");
+
+    regs.m_pmode = 1u;
+    regs.m_dispfb[0] = uint64_t{1} << 9u; // FBW=1
+    regs.m_display[0] = uint64_t{7} << 32u; // width=8 height=1
+    std::vector<uint8_t> source(32u);
+    for (uint32_t p = 0u; p < 8u; ++p)
+    {
+        source[p * 4u] = static_cast<uint8_t>(p + 1u);
+        source[p * 4u + 1u] = static_cast<uint8_t>(p + 21u);
+        source[p * 4u + 2u] = static_cast<uint8_t>(p + 41u);
+    }
+    // The upload preview reads the *real destination rectangle* and
+    // refuses incomplete transfers; it is not a presented frame.
+    std::vector<uint32_t> upload_pixels{0x12345678u};
+    uint32_t upload_width = 10u;
+    uint32_t upload_height = 11u;
+    check(!ee::c_ee_gs_display::readback_upload(
+              gs, upload_pixels, upload_width, upload_height) &&
+          upload_width == 10u && upload_height == 11u,
+          "no upload cannot produce a texture preview");
+
+    check(upload(gs, 0u, source), "real GS IMAGE upload accepted");
+    check(ee::c_ee_gs_display::readback_upload(
+              gs, upload_pixels, upload_width, upload_height) &&
+          upload_width == 8u && upload_height == 1u &&
+          upload_pixels.size() == 8u &&
+          upload_pixels.front() == 0xff291501u &&
+          upload_pixels.back() == 0xff301c08u,
+          "upload preview recovers completed GIF transfer, not a frame");
+    check(ee::c_ee_gs_display::readback(
+              gs, regs, 2u, pixels, width, height) &&
+          width == 8u && height == 1u && pixels.size() == 8u &&
+          pixels[0] == 0xff291501u &&
+          pixels[7] == 0xff301c08u,
+          "PSMCT32 display readback follows swizzled IMAGE upload");
+
+    regs.m_pmode = 2u;
+    regs.m_dispfb[1] = regs.m_dispfb[0];
+    regs.m_display[1] = regs.m_display[0];
+    check(ee::c_ee_gs_display::readback(
+              gs, regs, 2u, pixels, width, height) &&
+          pixels[4] == 0xff2d1905u,
+          "second GS display circuit uses its own guest registers");
+
+    // SDBZ at the VBlank wait writes DISPFB1/2 with FBW=0.
+    // The reference GS page_address() treats this as one page per row;
+    // the diagnostic display must still read the real VRAM buffer.
+    regs.m_dispfb[1] = 0u; // FBP=0 FBW=0 PSMCT32
+    check(ee::c_ee_gs_display::readback(
+              gs, regs, 2u, pixels, width, height) &&
+          width == 8u && height == 1u &&
+          pixels[0] == 0xff291501u &&
+          pixels[7] == 0xff301c08u &&
+          gs.read_color_pixel(0u, 0u, 0u, 0u, 0u, pixels[0]) &&
+          pixels[0] == 0xff291501u,
+          "zero-FBW display uses reference one-page VRAM stride");
+
+    regs.m_dispfb[1] |= uint64_t{0x13u} << 15u;
+    const std::vector<uint32_t> before = pixels;
+    check(!ee::c_ee_gs_display::readback(
+              gs, regs, 2u, pixels, width, height) &&
+          pixels == before,
+          "indexed-texture PSM refuses false display output");
+
+    // Feed the same snapshot through the genuine EE privileged MMIO bus.
+    ee::c_ee_hw_bus bus{};
+    check(bus.set_gs_crt(1u, 2u, 0u), "guest CRT configured");
+    const auto write_reg = [&](uint32_t address, uint64_t v)
+    {
+        const ee::s_ee_u128 value{v, 0u};
+        return ee::c_ee_hw_bus::mmio_write(&bus, address, 8u, &value);
+    };
+    check(write_reg(0x12000000u, 1u) &&
+          write_reg(0x12000020u, 0u) &&
+          write_reg(0x12000070u, uint64_t{1} << 9u) &&
+          write_reg(0x12000080u, uint64_t{7} << 32u),
+          "privileged PMODE/SMODE2/DISPFB/DISPLAY writes accepted");
+    check(ee::c_ee_gs_display::readback(
+              gs, bus.gs_display_registers(), bus.gs_crt_mode(),
+              pixels, width, height) &&
+          pixels[0] == 0xff291501u &&
+          bus.scanout().fields_started() == 0u &&
+          bus.intc().status() == 0u,
+          "MMIO-captured guest display decodes VRAM without an event");
+    ee::s_ee_u128 read_value{};
+    const ee::s_ee_u128 high_word{7u, 0u};
+    check(ee::c_ee_hw_bus::mmio_read(
+              &bus, 0x12000080u, 8u, &read_value) &&
+          read_value.m_lo == (uint64_t{7} << 32u) &&
+          ee::c_ee_hw_bus::mmio_write(
+              &bus, 0x12000084u, 4u, &high_word) &&
+          ee::c_ee_hw_bus::mmio_read(
+              &bus, 0x12000084u, 4u, &read_value) &&
+          read_value.m_lo == 7u,
+          "GS display supports coherent 64-bit and high-word MMIO");
+
+    regs.m_pmode = 0u;
+    check(!ee::c_ee_gs_display::readback(
+              gs, regs, 2u, pixels, width, height),
+          "no scanout is manufactured when display is disabled");
+
+    std::printf("ee_gs_display_test: %d failure(s)\n", g_failed);
+    return g_failed != 0 ? 1 : 0;
+}

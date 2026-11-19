@@ -1,5 +1,6 @@
 #include "ee_recomp.h"
 #include "ee_instruction.h"
+#include "ee_isa_inventory.h"
 #include "ee_opcode.h"
 #include "ee_decoder.h"
 #include "ee_runtime.h"
@@ -337,6 +338,45 @@ bool ee_recomp(const char* elf_path,
     result->machine = loader.machine();
     result->segment_count = (uint32_t)loader.segments().size();
 
+    if (!opts.only_functions.empty() &&
+        (opts.only_function != 0u || opts.max_functions != 0u))
+    {
+        if (error)
+        {
+            *error = "batched --functions conflicts with single/capped emission";
+        }
+        return false;
+    }
+    const std::vector<uint32_t> requested_functions =
+        !opts.only_functions.empty()
+            ? opts.only_functions
+            : (opts.only_function != 0u
+                ? std::vector<uint32_t>{opts.only_function}
+                : std::vector<uint32_t>{});
+    for (uint32_t entry : requested_functions)
+    {
+        if (entry == 0u || (entry & 3u) != 0u ||
+            !loader.is_executable_address(entry))
+        {
+            if (error)
+            {
+                *error = "requested function address is not executable/aligned: "
+                    + u32hex(entry);
+            }
+            return false;
+        }
+    }
+    if (requested_functions.size() >
+        std::set<uint32_t>(requested_functions.begin(),
+                           requested_functions.end()).size())
+    {
+        if (error)
+        {
+            *error = "duplicate requested function entry";
+        }
+        return false;
+    }
+
     // ------------------------------------------------------------------
     // Worklist-based code discovery: start from entry points and follow
     // control-flow edges. Only decode instructions that are actually
@@ -360,7 +400,10 @@ bool ee_recomp(const char* elf_path,
         }
     };
     seed_entry(loader.entry_point());
-    seed_entry(opts.only_function);
+    for (uint32_t entry : requested_functions)
+    {
+        seed_entry(entry);
+    }
     for (const auto& sym : loader.symbols())
     {
         if (sym.is_function && !sym.is_undefined && sym.value != 0)
@@ -498,11 +541,11 @@ bool ee_recomp(const char* elf_path,
     }
     else
     {
-        if (opts.only_function == 0)
+        if (requested_functions.empty())
         {
             if (error)
             {
-                *error = "--discovery-cache requires --function";
+                *error = "--discovery-cache requires explicit function entries";
             }
             return false;
         }
@@ -525,15 +568,19 @@ bool ee_recomp(const char* elf_path,
         // A dynamic dispatcher entry need not have been reachable from
         // static ELF discovery. Decode newly reached instructions locally,
         // without re-running all-ELF direct/indirect call discovery.
-        std::set<uint32_t> pending{opts.only_function};
+        std::set<uint32_t> pending(
+            requested_functions.begin(), requested_functions.end());
         std::set<uint32_t> seen;
         const std::set<uint32_t> known_entries(entries.begin(), entries.end());
+        const std::set<uint32_t> selected_entries(
+            requested_functions.begin(), requested_functions.end());
         while (!pending.empty())
         {
             const uint32_t pc = *pending.begin();
             pending.erase(pending.begin());
-            if (!seen.insert(pc).second || (pc != opts.only_function &&
-                known_entries.count(pc) != 0))
+            if (!seen.insert(pc).second ||
+                (selected_entries.count(pc) == 0 &&
+                 known_entries.count(pc) != 0))
             {
                 continue;
             }
@@ -567,6 +614,52 @@ bool ee_recomp(const char* elf_path,
 
     const auto discovery_done = std::chrono::steady_clock::now();
     const std::vector<uint32_t> discovered_entries = entries;
+    // Publish the discovery-derived expected IR file count *before* lengthy
+    // emission. The Windows HLE launcher polls this small marker and counts
+    // completed .ll files, updating one console line without forwarding the
+    // per-function diagnostic log to the screen. The file is advisory only:
+    // it does not change translation/discovery or cache provenance.
+    {
+        const std::filesystem::path progress_path =
+            std::filesystem::path(output_dir) / "ee_expected_ll_count.txt";
+        const std::filesystem::path temporary = progress_path.string() + ".tmp";
+        std::FILE* progress = std::fopen(temporary.string().c_str(), "wb");
+        if (progress)
+        {
+            const bool written = std::fprintf(progress, "%zu\n",
+                discovered_entries.size()) > 0;
+            const bool closed = std::fclose(progress) == 0;
+            if (written && closed)
+            {
+                std::error_code progress_error;
+                std::filesystem::remove(progress_path, progress_error);
+                progress_error.clear();
+                std::filesystem::rename(
+                    temporary, progress_path, progress_error);
+                if (progress_error)
+                {
+                    std::filesystem::remove(temporary, progress_error);
+                }
+            }
+            else
+            {
+                std::error_code progress_error;
+                std::filesystem::remove(temporary, progress_error);
+            }
+        }
+    }
+    // A batch shares one immutable discovery and one CFG boundary index.
+    // Treat all requested dynamic entries as function boundaries so a
+    // sibling's successor blocks cannot be spuriously claimed by another.
+    // Single-function mode retains its existing discovery/CFG semantics.
+    if (!opts.only_functions.empty())
+    {
+        entries.insert(entries.end(), requested_functions.begin(),
+                       requested_functions.end());
+        std::sort(entries.begin(), entries.end());
+        entries.erase(std::unique(entries.begin(), entries.end()),
+                      entries.end());
+    }
     function_analyzer analyzer;
     llvm::llvm_context ctx("ee_game");
 
@@ -583,8 +676,8 @@ bool ee_recomp(const char* elf_path,
     std::set<uint32_t> stop_entries(entries.begin(), entries.end());
     std::set<uint32_t> function_pcs;
     std::set<uint32_t> analyzed_entries;
-    const std::vector<uint32_t> coverage_entries = opts.only_function != 0
-        ? std::vector<uint32_t>{opts.only_function} : entries;
+    const std::vector<uint32_t> coverage_entries =
+        !requested_functions.empty() ? requested_functions : entries;
     for (uint32_t ep : coverage_entries)
     {
         if (!analyzed_entries.insert(ep).second) continue;
@@ -604,6 +697,7 @@ bool ee_recomp(const char* elf_path,
     }
 
     uint32_t total_insns = 0, total_supported = 0, total_unsupported = 0;
+    c_ee_isa_inventory m2_inventory;
     std::map<uint16_t, std::pair<uint32_t, uint32_t>> coverage;
     std::map<std::tuple<uint16_t, uint16_t, uint16_t>, std::pair<uint32_t, uint32_t>> sub_cov;
 
@@ -636,6 +730,7 @@ bool ee_recomp(const char* elf_path,
         total_insns++;
         coverage[(uint16_t)ins.opcode].first++;
         bool ok = opcode_supported(ins);
+        m2_inventory.record(ins, ok);
         if (ok) total_supported++; else total_unsupported++;
         coverage[(uint16_t)ins.opcode].second += ok ? 1u : 0u;
         record_sub(ins, ok);
@@ -686,6 +781,8 @@ bool ee_recomp(const char* elf_path,
         rfn.insn_count = 0;
         rfn.supported_count = 0;
         rfn.unsupported_count = 0;
+        constexpr size_t k_max_unsupported_samples = 16u;
+        std::vector<s_ee_instruction> unsupported_samples;
         for (const auto& bb : fn.blocks)
         {
             for (uint32_t pc = bb.start_pc; pc < bb.end_pc; pc += 4)
@@ -693,8 +790,18 @@ bool ee_recomp(const char* elf_path,
                 auto it = global_insns.find(pc);
                 if (it == global_insns.end()) continue;
                 rfn.insn_count++;
-                if (opcode_supported(it->second)) rfn.supported_count++;
-                else rfn.unsupported_count++;
+                if (opcode_supported(it->second))
+                {
+                    ++rfn.supported_count;
+                }
+                else
+                {
+                    ++rfn.unsupported_count;
+                    if (unsupported_samples.size() < k_max_unsupported_samples)
+                    {
+                        unsupported_samples.push_back(it->second);
+                    }
+                }
             }
         }
         if (!fn.blocks.empty()) {
@@ -709,40 +816,51 @@ bool ee_recomp(const char* elf_path,
                     result->functions.back().supported_count,
                     result->functions.back().unsupported_count,
                     result->functions.back().block_count);
+        // These are static decode/lift observations, not evidence that
+        // guest execution ever reached the instruction. Retain exact PC
+        // and opcode so later boot audits can distinguish classification
+        // gaps from runtime blocks without re-inspecting the ELF.
+        for (const s_ee_instruction& insn : unsupported_samples)
+        {
+            const s_lifted_op lifted = lift(insn);
+            const char* classification = insn.valid == e_ee_valid::INVALID
+                ? "invalid" : (insn.valid == e_ee_valid::UNSUPPORTED
+                    ? "unsupported" : "valid_lift_gap");
+            std::printf(
+                "    not-lowered pc=0x%08x opcode=0x%08x mnemonic=%s "
+                "classification=%s lift_unsupported=%u\n",
+                insn.pc, insn.opcode_word, insn.mnemonic,
+                classification, lifted.kind == LOP_UNSUPPORTED ? 1u : 0u);
+        }
+        if (result->functions.back().unsupported_count > unsupported_samples.size())
+        {
+            std::printf("    not-lowered more=%u (details capped at %u per function)\n",
+                result->functions.back().unsupported_count -
+                    static_cast<uint32_t>(unsupported_samples.size()),
+                static_cast<uint32_t>(k_max_unsupported_samples));
+        }
         return true;
     };
 
-    result->functions_discovered = (uint32_t)entries.size();
+    result->functions_discovered =
+        static_cast<uint32_t>(discovered_entries.size());
 
-    if (opts.only_function != 0)
+    if (!requested_functions.empty())
     {
-        // Single-function mode: still use full entry set for CFG bounds.
-        bool found = false;
-        for (uint32_t ep : entries)
+        for (uint32_t entry : requested_functions)
         {
-            if (ep == opts.only_function)
+            // Preserve legacy single-entry behaviour for a dynamic address:
+            // its own CFG may be translated without harvesting new callees.
+            if (opts.only_functions.empty() &&
+                stop_entries.insert(entry).second)
             {
-                found = true;
-                break;
+                entries.push_back(entry);
+                std::sort(entries.begin(), entries.end());
+                entries.erase(std::unique(entries.begin(), entries.end()),
+                              entries.end());
             }
+            emit_entry(entry);
         }
-        if (!found && loader.is_executable_address(opts.only_function))
-        {
-            // Allow an explicit address even if not in the harvested set.
-            entries.push_back(opts.only_function);
-            stop_entries.insert(opts.only_function);
-            std::sort(entries.begin(), entries.end());
-            entries.erase(std::unique(entries.begin(), entries.end()),
-                          entries.end());
-            found = true;
-        }
-        if (!found)
-        {
-            if (error)
-                *error = "only_function address not found in executable image";
-            return false;
-        }
-        emit_entry(opts.only_function);
     }
     else
     {
@@ -928,6 +1046,9 @@ bool ee_recomp(const char* elf_path,
         if (result->linear_insns)
             os << "  \"linear_supported_pct\": "
                << (100.0 * result->linear_supported / result->linear_insns) << ",\n";
+        os << "  \"m2_instruction_inventory\": ";
+        m2_inventory.write_json(os, !requested_functions.empty());
+        os << ",\n";
         os << "  \"opcode_coverage\": [\n";
         for (size_t i = 0; i < result->coverage.size(); ++i)
         {

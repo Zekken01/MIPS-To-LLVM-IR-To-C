@@ -200,6 +200,45 @@ int main()
         }
     }
 
+    // Derived from original SDBZ IOPMOD metadata only; synthetic ELF
+    // data tests both real out-of-image GP offsets without embedding IRX.
+    for (uint32_t gp : {0x8fb0u, 0x10030u})
+    {
+        auto with_gp = elf;
+        put32(with_gp, 0x188u, gp);
+        iop::c_cpu gp_cpu;
+        iop::s_irx_module gp_module{};
+        iop::s_irx_link_diagnostic gp_diagnostic{};
+        if (iop::load_irx(
+                gp_cpu, with_gp, base, &gp_module,
+                resolver, {}, &gp_diagnostic) !=
+                iop::e_irx_load_result::success ||
+            gp_module.m_gp != base + gp ||
+            gp_module.m_size != 0x80u ||
+            gp_diagnostic.m_gp_offset != gp ||
+            gp_diagnostic.m_image_size != 0x80u)
+        {
+            return fail("valid out-of-image IRX GP was rejected");
+        }
+        if (iop::load_irx(
+                gp_cpu, with_gp, iop::c_cpu::k_ram_size - gp,
+                &gp_module, resolver) !=
+                iop::e_irx_load_result::invalid_module)
+        {
+            return fail("GP outside physical IOP RAM was accepted");
+        }
+    }
+
+    iop::s_irx_link_diagnostic import_diagnostic{};
+    if (iop::load_irx(cpu, elf, base, &module,
+                      {}, {}, &import_diagnostic) !=
+            iop::e_irx_load_result::unresolved_import ||
+        import_diagnostic.m_unresolved_library != "LIBRARY" ||
+        import_diagnostic.m_unresolved_ordinal != 7u)
+    {
+        return fail("unresolved guest import identity was lost");
+    }
+
     // Malformed relocation offsets and unsupported types are rejected
     // before *any* IOP RAM is overwritten.
     const uint32_t sentinel_location = base + 0x1000u;

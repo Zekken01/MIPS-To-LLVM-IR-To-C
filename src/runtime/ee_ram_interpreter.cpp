@@ -1,5 +1,6 @@
 #include "ee_ram_interpreter.h"
 #include "ee_memory.h"
+#include "ee_runtime.h"
 
 #include <cstdint>
 
@@ -294,7 +295,8 @@ s_ee_ram_execution ee_execute_ram_callback(
     ee_memory* memory,
     uint32_t entry_pc,
     uint32_t return_pc,
-    uint32_t max_instructions
+    uint32_t max_instructions,
+    s_ee_runtime* runtime
 )
 {
     s_ee_ram_execution result{};
@@ -343,6 +345,49 @@ s_ee_ram_execution ee_execute_ram_callback(
             return result;
         }
         ++result.m_instructions;
+        // Interpreted RAM contributes committed instructions to the same
+        // diagnostics as translated code; it cannot advance EE cycle time.
+        if (runtime != nullptr)
+        {
+            ++runtime->m_guest_instruction_attempts;
+            ++runtime->m_reference_instruction_slots;
+            // Same bounded, optional observation domain as translated
+            // execution. Unsupported/unmapped steps never emit an event.
+            if (runtime->m_instruction_trace != nullptr &&
+                pc >= runtime->m_instruction_trace_first_pc &&
+                pc <= runtime->m_instruction_trace_last_pc)
+            {
+                if (runtime->m_instruction_trace_count <
+                    runtime->m_instruction_trace_capacity)
+                {
+                    s_ee_instruction_trace_entry& entry =
+                        runtime->m_instruction_trace[
+                            runtime->m_instruction_trace_count++];
+                    entry.m_attempt = runtime->m_guest_instruction_attempts;
+                    entry.m_pc = pc;
+                    entry.m_opcode_word = instruction;
+                    entry.m_kind = 2u;
+                    entry.m_reference_slot = runtime->m_reference_instruction_slots;
+                    entry.m_hle_service = 0u;
+                }
+                else
+                {
+                    runtime->m_instruction_trace_overflow = 1u;
+                }
+            }
+            ee_observe_timing_event(
+                *runtime, pc, instruction, 2u, 0u,
+                runtime->m_guest_instruction_attempts,
+                runtime->m_reference_instruction_slots);
+            // Stop at the first committed RAM instruction whose live
+            // observer rejects its timing provenance. Do not keep
+            // executing a fallback handler after a rejected cycle.
+            if (runtime->m_timing_observer_failed != 0u)
+            {
+                result.m_result = e_ee_ram_result::TIMING_OBSERVER_REJECTED;
+                return result;
+            }
+        }
         if (delay_slot)
         {
             delay_slot = false;
@@ -377,6 +422,7 @@ const char* ee_ram_result_name(e_ee_ram_result result)
     case e_ee_ram_result::UNSUPPORTED: return "unsupported R5900 instruction";
     case e_ee_ram_result::BRANCH_IN_DELAY_SLOT: return "branch in delay slot";
     case e_ee_ram_result::INSTRUCTION_BUDGET: return "instruction budget exhausted";
+    case e_ee_ram_result::TIMING_OBSERVER_REJECTED: return "timing observer rejected";
     default: return "unknown";
     }
 }

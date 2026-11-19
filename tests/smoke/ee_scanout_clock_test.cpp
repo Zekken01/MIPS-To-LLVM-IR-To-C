@@ -1,10 +1,12 @@
 #include "ee_scanout_clock.h"
+#include "ee_hw_bus.h"
 #include "ee_intc.h"
 #include "ee_vsync_flags.h"
 #include "ee_memory.h"
 
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 
 namespace
 {
@@ -131,6 +133,93 @@ int main()
           clock.advance_to(5898240ull, &intc, &flags, &memory) &&
           clock.fields_started() == 1u,
           "PAL CRT mode 3 schedules a real 50 Hz field boundary");
+    // The HLE EE bus now exposes privileged GS_CSR/GS_IMR through
+    // the same scanout state used for real VBlank callbacks. No manual
+    // CSR store can generate VBlank or set an interrupt.
+    ee::c_ee_hw_bus bus{};
+    ee::s_ee_cpu_state bus_cpu{};
+    bus.bind_cpu(&bus_cpu);
+    ee::c_ee_vsync_flags bus_flags{};
+    ee::ee_memory bus_ram(0x1000u);
+    ee::s_ee_u128 read_value{};
+    const ee::s_ee_u128 imr_write{0x0000ab00u, 0u};
+    const ee::s_ee_u128 invalid_write{0x00000008u, 0u};
+    check(!bus.scanout().enabled() &&
+          !ee::c_ee_hw_bus::mmio_read(
+              &bus, ee::c_ee_hw_bus::k_gs_csr, 2u, &read_value) &&
+          ee::c_ee_hw_bus::mmio_write(
+              &bus, ee::c_ee_hw_bus::k_gs_imr, 8u, &imr_write) &&
+          ee::c_ee_hw_bus::mmio_read(
+              &bus, ee::c_ee_hw_bus::k_gs_imr, 8u, &read_value) &&
+          read_value.m_lo == 0x0000ab00u &&
+          !ee::c_ee_hw_bus::mmio_write(
+              &bus, ee::c_ee_hw_bus::k_gs_imr + 2u, 2u, &invalid_write) &&
+          ee::c_ee_hw_bus::mmio_write(
+              &bus, ee::c_ee_hw_bus::k_gs_csr, 8u, &invalid_write) &&
+          bus.intc().status() == 0u &&
+          bus.scanout().fields_started() == 0u,
+          "GS MMIO registers retain masks without inventing scanout");
+
+    check(bus.set_gs_crt(1u, 2u, 0u) &&
+          bus.scanout().enabled() &&
+          bus.scanout().next_field_cycle() == 4920115ull &&
+          bus_flags.register_guest_pointers(&bus_ram, 0x100u, 0x108u) &&
+          bus_ram.read32(0x100u) == 0u &&
+          bus.scanout().fields_started() == 0u,
+          "SetGsCrt schedules a field but never produces it");
+
+    const uint64_t event_cycle = bus.scanout().next_field_cycle();
+    check(bus.scanout().advance_to(
+              event_cycle, &bus.intc(), &bus_flags, &bus_ram) &&
+          bus.scanout().fields_started() == 1u &&
+          bus_ram.read32(0x100u) == 1u &&
+          bus.intc().status() == 4u &&
+          ee::c_ee_hw_bus::mmio_read(
+              &bus, ee::c_ee_hw_bus::k_gs_csr, 8u, &read_value) &&
+          (read_value.m_lo & ee::c_ee_scanout_clock::k_csr_vsint) != 0u &&
+          (read_value.m_lo & ee::c_ee_scanout_clock::k_csr_field) != 0u,
+          "only an explicitly supplied field boundary delivers VBlank");
+
+    const ee::s_ee_u128 csr_ack{
+        ee::c_ee_scanout_clock::k_csr_vsint, 0u
+    };
+    check(ee::c_ee_hw_bus::mmio_write(
+              &bus, ee::c_ee_hw_bus::k_gs_csr, 4u, &csr_ack) &&
+          ee::c_ee_hw_bus::mmio_read(
+              &bus, ee::c_ee_hw_bus::k_gs_csr, 8u, &read_value) &&
+          (read_value.m_lo & ee::c_ee_scanout_clock::k_csr_vsint) == 0u &&
+          (read_value.m_lo & ee::c_ee_scanout_clock::k_csr_field) != 0u &&
+          bus.intc().status() == 4u,
+          "GS_CSR VSINT W1C never clears independent INTC_STAT");
+    bus.reset();
+    check(!bus.scanout().enabled() && bus.scanout().csr() == 0u &&
+          bus.gs_imr() == 0u && bus.intc().status() == 0u,
+          "hardware reset clears GS timing, CSR and interrupt state");
+
+    // CRT configuration occurs at the actual EE cycle, not at an
+    // implicit host-dispatch or boot-zero epoch once timing is available.
+    ee::c_ee_hw_bus delayed_bus{};
+    check(delayed_bus.set_gs_crt(1u, 2u, 0u, 1234567ull) &&
+          delayed_bus.scanout().next_field_cycle() == 1234567ull + 4920115ull &&
+          delayed_bus.scanout().fields_started() == 0u,
+          "late CRT configuration uses the supplied EE time origin");
+    check(delayed_bus.set_gs_crt(0u, 0x1au, 0u) &&
+          !delayed_bus.scanout().enabled() &&
+          delayed_bus.scanout().fields_started() == 0u,
+          "unsupported CRT mode cannot retain the previous scanout schedule");
+
+    ee::c_ee_scanout_clock overflow_guard{};
+    const uint64_t origin =
+        std::numeric_limits<uint64_t>::max() -
+        2u * ee::c_ee_scanout_clock::k_ee_clock_hz;
+    check(overflow_guard.configure(1u, 2u, 0u, origin) &&
+          !overflow_guard.advance_to(
+              std::numeric_limits<uint64_t>::max(),
+              &intc, &flags, &memory) &&
+          overflow_guard.fields_started() == 0u &&
+          overflow_guard.last_ee_cycle() == origin,
+          "overflowing advance is rejected without delivering a field");
+
     std::printf("ee_scanout_clock_test: %d failure(s)\n", g_failed);
     return g_failed ? 1 : 0;
 }

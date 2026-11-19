@@ -262,9 +262,61 @@ int main()
         !hardware.read(iop::c_hw::k_sio2_ctrl, 4u, &actual) ||
         actual != 0x3bcu || hardware.pending_interrupts() != 0u ||
         hardware.write(iop::c_hw::k_sio2_ctrl, 2u, 0u) ||
-        hardware.read(iop::c_hw::k_sio2_ctrl + 4u, 4u, &actual))
+        !hardware.read(iop::c_hw::k_sio2_stat, 4u, &actual) ||
+        actual != 0u)
     {
         return fail("SIO2 control register storage and width validation");
+    }
+
+    // SIO2 register family backed by guest-written state only.
+    const uint32_t send3 = iop::c_hw::k_sio2_send3_base;
+    const uint32_t port = iop::c_hw::k_sio2_port_base;
+    uint8_t transmit = 0u;
+    if (!hardware.write(send3, 4u, 0xaabbccddu) ||
+        !hardware.read(send3, 4u, &actual) ||
+        actual != 0xaabbccddu ||
+        !hardware.write(send3 + 0x3cu, 4u, 0x12345678u) ||
+        !hardware.read(send3 + 0x3cu, 4u, &actual) ||
+        actual != 0x12345678u ||
+        !hardware.write(port, 4u, 0x123u) ||
+        !hardware.write(port + 0x1cu, 4u, 0x456u) ||
+        !hardware.read(port + 0x1cu, 4u, &actual) ||
+        actual != 0x456u ||
+        hardware.read(port + 0x20u, 4u, &actual) ||
+        hardware.write(send3, 2u, 1u) ||
+        !hardware.write(iop::c_hw::k_sio2_tx_fifo, 1u, 0xabu) ||
+        !hardware.write(iop::c_hw::k_sio2_tx_fifo, 4u, 0xcdu) ||
+        hardware.read(iop::c_hw::k_sio2_rx_fifo, 4u, &actual) ||
+        hardware.read(iop::c_hw::k_sio2_rx_fifo, 1u, &actual) ||
+        hardware.sio2_pending_tx_bytes() != 2u ||
+        !hardware.sio2_tx_byte(1u, &transmit) ||
+        transmit != 0xcdu ||
+        hardware.sio2_tx_byte(2u, &transmit) ||
+        !hardware.write(iop::c_hw::k_sio2_ctrl, 4u, 1u) ||
+        !hardware.sio2_transfer_requested() ||
+        !hardware.read(iop::c_hw::k_sio2_stat, 4u, &actual) ||
+        actual != 0u ||
+        !hardware.read(iop::c_hw::k_sio2_port_status, 4u, &actual) ||
+        actual != 0x0fu ||
+        hardware.pending_interrupts() != 0u)
+    {
+        return fail("SIO2 configuration/FIFO invented device behavior");
+    }
+    if (!hardware.write(iop::c_hw::k_sio2_ctrl, 4u, 0x0cu) ||
+        hardware.sio2_pending_tx_bytes() != 0u ||
+        hardware.sio2_transfer_requested() ||
+        !hardware.read(iop::c_hw::k_sio2_aux_status, 4u, &actual) ||
+        actual != 0u)
+    {
+        return fail("SIO2 request reset did not clear queued FIFO");
+    }
+    hardware.reset();
+    if (!hardware.read(send3, 4u, &actual) || actual != 0u ||
+        !hardware.read(port, 4u, &actual) || actual != 0u ||
+        hardware.sio2_pending_tx_bytes() != 0u ||
+        hardware.sio2_transfer_requested())
+    {
+        return fail("SIO2 state leaked across IOP reset");
     }
 
     // The ROM0 entrypoint performs actual R3000 load/store operations
@@ -549,6 +601,51 @@ int main()
         ncmd_kernel.hardware().pending_interrupts() != 0u)
     {
         return fail("guest CDVD N-command/parameter created phantom completion");
+    }
+
+    // HLE IRX guest MMIO uses the physical bus, independent of ROM0.
+    iop::c_kernel hle_kernel{};
+    const uint32_t program = 0x00018000u;
+    const uint32_t code[] =
+    {
+        0x3c08bf80u, // lui t0,0xbf80
+        0x35088268u, // ori t0,t0,0x8268 (SIO2 CTRL)
+        0x24090034u, // addiu t1,zero,0x34
+        0xad090000u, // sw t1,0(t0)
+        0x8d0a0000u, // lw t2,0(t0)
+        0x0000000du  // break
+    };
+    for (uint32_t index = 0u; index < 6u; ++index)
+    {
+        if (!hle_kernel.cpu().write32(program + index * 4u, code[index]))
+        {
+            return fail("could not prepare HLE guest SIO2 MMIO fixture");
+        }
+    }
+    if (!hle_kernel.attach_hle_hardware() ||
+        hle_kernel.create_thread(program, 0u, 10u) != 1u ||
+        !hle_kernel.start_thread(1u))
+    {
+        return fail("could not schedule HLE guest SIO2 MMIO fixture");
+    }
+    const iop::s_kernel_run_result hle_run = hle_kernel.run(32u, 8u);
+    if (hle_run.m_stop != iop::e_kernel_stop::breakpoint ||
+        hle_run.m_executed != 5u ||
+        hle_kernel.cpu().state().m_gpr[10] != 0x34u ||
+        hle_kernel.cpu().last_memory_fault().m_valid ||
+        hle_kernel.hardware().pending_interrupts() != 0u)
+    {
+        return fail("HLE R3000 MMIO access failed or invented IRQ");
+    }
+    hle_kernel.reset();
+    if (hle_kernel.cpu().write32(iop::c_hw::k_sio2_ctrl, 0u) ||
+        !hle_kernel.attach_hle_hardware() ||
+        !hle_kernel.cpu().read32(iop::c_hw::k_sio2_ctrl, &actual) ||
+        actual != 0u ||
+        !hle_kernel.start_rom0_boot(rom) ||
+        hle_kernel.attach_hle_hardware())
+    {
+        return fail("HLE reboot attachment or ROM0 isolation failed");
     }
 
     // The cache-control register is address-specific. The IOP bus

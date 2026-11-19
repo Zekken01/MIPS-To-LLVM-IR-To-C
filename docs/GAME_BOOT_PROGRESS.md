@@ -1,5 +1,7 @@
 # Native game boot research — Super Dragon Ball Z (USA)
 
+> **Current M2 implementation plan:** [SDBZ runtime progression, GS/VIF/VU and EE ISA coverage](M2_SDBZ_NATIVE_RUNTIME_AND_ISA_PLAN.md). This plan supersedes earlier static-gap priority assumptions where the 2026-11-19 07:27 boot provides newer runtime evidence.
+
 This is a **bounded, experimental EE native-code runner**, not a PS2
 emulator and not yet a playable game. No copyrighted game ELF is stored here.
 
@@ -430,12 +432,12 @@ TEX0/TEX2 in the **same** event batch is visible to the palette load
 using a palette-only staged-byte overlay. A later unsupported event
 rolls back both VRAM and palette state.
 
-\`read_clut_entry(slot)\` and
-\`read_indexed_clut_value(context,x,y)\` are diagnostic read APIs,
+`read_clut_entry(slot)` and
+`read_indexed_clut_value(context,x,y)` are diagnostic read APIs,
 not a GS renderer. Indexed reads support PSMT8, PSMT4, PSMT8H, PSMT4HL and
 PSMT4HH, returning loaded raw palette words; all 4-bit modes
 apply the TEX0.CSA bank selection. The indexed palette storage modes and load semantics here
-follow \`ps2-web-recomp/runtime/src/gs/gs.cpp::load_clut()\`.
+follow `ps2-web-recomp/runtime/src/gs/gs.cpp::load_clut()`.
 Explicitly unsupported CPSM values and formats with unknown CLUT
 semantics reject CLD-triggered loads instead of inventing colors.
 Real SDBZ/PCSX2 differential validation and full GS rasterization,
@@ -1693,3 +1695,205 @@ but still no general TLB, BIOS, other DMA channels,
 device scheduling, or full interrupt emulation. The syscall handling is deliberately
 opt-in, experimental, and incomplete. Reaching the PCs above is not evidence
 of full console initialization, correct kernel behaviour or graphical output.
+
+## M2 implementation checkpoint — 2026-11-19 (after 07:27 matched batch)
+
+- **M2.0 instrumentation implemented (F for tooling, not a game fix):** native runner exports bounded host-dispatch PC/edge frequency and observed COP0/INTC/DMAC/GS/thread/RPC state deltas inside `first-boot.json.m2_runtime`. These are `native_dispatch_boundary` observations, not individual guest instruction counts or validated R5900 cycles. Saturation is explicit rather than silently claiming full coverage.
+- **M2.0 ISA inventory implemented (S and sampled R, not semantics T):** `ee_recomp` exports a bounded, unique-CFG-PC decoder/lifter inventory in `ee_coverage.json.m2_instruction_inventory`. Opt-in `--trace-instructions` now also emits `<trace-path>.isa.json`, classifying actual recorded words (kind 0=native reached, 2=RAM interpreter committed) separately from excluded annulled branch-likely slots (kind 1) and HLE boundaries (kind 3). Both artifacts explicitly qualify coverage and cannot imply architectural correctness.
+- **M2.1 offline analysis tooling implemented (R observation, predicate unproven):** `tools/analyze_m2_dispatch_trace.py` consumes an existing `--trace` log and its *matching final report*, pins input SHA-256 digests, deduplicates repeated dispatch indices caused by yield handoffs, and exports hot PC/transition counts, temporal windows and concrete logged interrupt/DMAC/RPC observations. It does not modify guest state.
+- **07:27 runtime findings (R, from the matched log):** 13 committed SIF RPCs complete by approximately dispatch 6,941, including the one successful SIO2MAN start; 15 logged DMAC channel-5 IRQs; 195 logged INTC callback entries, last near dispatch 12,359, though the final clock reports 230 GS fields. The late update sequence is dominated by `0x00173250 ↔ 0x001734e4`, with recurrent `0x00172e20 → 0x00172a90 → 0x00172e3c → 0x00172998 → 0x00172e48`. Both are native host-dispatch sequences, **not decoded guest wait predicates**. The loop's health and first unmet producer remain unknown.
+- **Acceptance boundary:** M2.0 artifacts and regression tests exist. M2.1 is **not gated complete** until disassembly/live guest-state identifies PC→predicate→producer, and any defect receives an architectural regression. No extra interrupt/IRQ, DMA, RPC, or draw was fabricated. Existing 07:27 CPU images remain black and WebGPU run provenance remains unverified.
+
+To reproduce *offline* without another guest boot:
+
+```sh
+python tools/analyze_m2_dispatch_trace.py \\
+  --boot-log "boot(20261119-072747).log" \\
+  --report "first-boot(20261119-072746).json" \\
+  --output "m2-dispatch-analysis.json"
+```
+
+CI is checked per exact branch HEAD (do not infer the result of a newer commit from a prior green run). PR #142 remains draft and unmerged.
+
+### Provenance and bounds follow-up
+
+The offline M2 analyzer accepts optional `--catalog <matching-iop-disc-catalog.json>` and `--revision <verified-commit-sha>`; absent explicit revision is reported as unknown rather than inferred from a subsequent checkout. It hashes the supplied catalog and reports the catalog's ELF SHA-256 as *catalog-supplied*, not an independent ELF rehash. It also captures the **actual native runner invocation** found in the log and separately reports whether `--gs-webgpu-snapshot` was passed; no PPM file alone establishes this. The max-record safety cap now uses a constant-size overflow flag rather than storing every dropped index. These remain host diagnostic observations and do not change guest execution.
+
+### M2.1 verified-USA-ELF correction
+
+The USA SLUS_214.42 ELF SHA-256 matches the 07:27 catalog. See [M2.1 physical GIF DMA and VU predicate map](M2_SDBZ_0727_ELF_GS_DEPENDENCIES.md). The apparent `0x00173250 ↔ 0x001734e4` hot loop is a finite VU/COP2 register-save helper, **not** the game idle predicate. The exact DMA predicates include GIF CHCR STR at `0x1000a000` (ELF `0x00102814`) and the mode-1 check through `0x001730c0` from `0x00105020`. New bounded read-only GIF state counters observe channel 2 CHCR/MADR/QWC/TADR and GIF write/rejection sequence. A missing producer is **not yet proven**; no synthetic completion was added.
+
+### M2.3 — Correct cumulative GIF/GS traffic diagnostics
+
+The 07:27 report's two `m_vertex_count` writes describe only the **current primitive**: `PRIM` resets that counter. Its `m_image_qwc=16384` also resets on each `TRXDIR=0`. Therefore neither is a valid lifetime numerator/denominator for accepted 4,584 PATH3 tags. The native GS consumer now tracks lifetime committed PRIM/XYZ2/XYZ3, ADC versus kick, PACKED/REGLIST/IMAGE/IMAGE2 tag formats, A+D register addresses and total IMAGE QWC, exported under `m2_gif_gs` (JSON schema `ee-m2-gif-gs-v1`) as well as a concise console line. Tests exercise multiple PRIM/TRXDIR resets, IMAGE2, and atomic rejection; guest-visible GS/DMAC semantics are unchanged. See [the M2.3 traffic interpretation](M2_3_GIF_GS_COMMITTED_TRAFFIC.md). A new matching boot is required before concluding whether SDBZ lacks drawing traffic, has VIF/VU1 paths, or the WebGPU bridge misses actual committed draws.
+
+## M2.3 real SDBZ replay — 2026-11-19 09:09 matched batch
+
+Validated the same final boot's `boot(20261119-090909).log`,
+`first-boot(20261119-090907).json`, catalog, cache and three PPMs.
+The *final* native runner command included
+`--gs-webgpu-snapshot=...`; WebGPU reported successful init and a
+`512x448` GPU readback with `draws=2275`. This is confirmed
+**GPU compute raster work**, not scanout or a successful menu frame.
+
+- PATH3: 4,584 committed tags/batches, 4,568 PACKED tags and
+  16 IMAGE tags; no REGLIST/IMAGE2.
+- Exactly 2,275 PRIM writes, all `PRIM & 7 == 6` (**sprites**);
+  4,550 XYZ2/XYZF2 vertex kicks, zero ADC vertices.
+- The 29,655 PACKED events are all A+D (`reg=0xE`).
+  `RGBAQ` and `PRIM` each appear 2,275 times;
+  `XYZ2` appears 4,550 times. The only other A+D
+  writes are repeated frame/depth/offset/test setup and sixteen
+  `BITBLTBUF`/`TRXPOS`/`TRXREG`/`TRXDIR` groups.
+  Crucially, **no TEX0/TEX1 or other texture-state writes**
+  were committed. This is a **clear/setup-like sprite workload**,
+  not evidence of actual textured title/menu traffic.
+- Cumulative IMAGE QWC = **262,144** (4 MiB of accepted payload).
+  The final individual IMAGE transfer had 16,384 QWC.
+- Readback inspection: `gs-display.ppm` 512x448 entirely black;
+  `gs-upload.ppm` 1024x64 entirely black;
+  `gs-webgpu.ppm` 512x448 has 229,375 black pixels and
+  one RGB(254,0,0) pixel at (0,0). This does not establish
+  that the sprite colour/target is correct until source attributes
+  are captured and compared with display FB pointers.
+- The 100,000-dispatch budget ended at `0x00172e48` with
+  `GIF_REJECT=0`, 230 *reference-compatibility* GS fields;
+  no unsupported opcode exit. The catalog identifies 13 committed
+  SIF RPCs and one successful SIO2MAN load, but cannot
+  prove PADMAN, other modules or title application initialization.
+
+**Next discriminator, implemented read-only:** bounded first/last
+8 committed PATH3 sprite pair snapshots contain raw PRIM/effective
+PRIM, RGBAQ, XYZ pair, XYOFFSET, SCISSOR, FRAME, ZBUF, TEST and
+context selection. `sprite_pair_kicks_total`,
+`sprite_textured_kicks_total` and
+`sprite_nonblack_rgb_kicks_total` provide totals.
+The new diagnostics cannot create or reject guest DMA,
+change GS state, or synthesize a visible frame.
+A further matched native boot is needed to obtain these
+new raw attributes before implementing a speculative GS fix.
+
+**Disposition:** M2.3 proved *GPU packet delivery* and corrected
+false lifetime-vertex conclusions; visible native boot remains
+incomplete. M2.4 isolates the earliest unfulfilled game
+application/IOP producer independently of sprite clear behaviour.
+
+See [the 09:09 sprite analysis](M2_3_0909_GS_SPRITE_PROVENANCE.md).
+
+
+### M2.4 — 11:29 ELF-derived native red-screen failure and wait producer
+
+The 11:29 matching boot confirms **2,275 red untextured
+sprite pairs**, all with `RGBAQ=0x3f800000000000ff`,
+`SCISSOR_1=0`, alternating FRAME bases `0x70`/`0x00`
+and FBMSK=1. The single `RGB(254,0,0)` pixel at
+(0,0) in the WebGPU readback is therefore consistent
+with correct scissor clipping and FBMSK, not proof
+of a GPU implementation bug.
+
+Disassembly of the verified USA ELF shows the red sprite
+function `0x00102670` is invoked **only after**
+a pending command-buffer wait at `0x00102560`
+(`0x00502368 + 4*(0x005030ac ^ 1)`), 3001 polling
+iterations, EE Timer 0 COUNT comparison against 60001,
+and recovery calls `0x00173888/0x00173460`.
+The actual trace first calls the red loop at dispatch
+36,205. This is **the game's explicit timeout/recovery
+fallback**, not a menu render.
+
+A bounded, read-only RAM probe now captures the first
+wait-entry and first red-loop-entry flag/queue state
+under `m2_sdbz_dma_wait`, with a synthetic regression.
+The **original expected completion producer is still
+unproven**; do not manufacture an IRQ/DMA completion,
+override scissor or invent a menu frame. See
+[M2.4 guest failure path](M2_4_SDBZ_COMMAND_SLOT_TIMEOUT.md).
+
+M2.4 probe follow-up: `m2_sdbz_dma_wait.pending_wait` now retains the first wait entry whose **polled opposite** flag is nonzero, independent of `wait` and `red_loop`.
+
+
+## M2.4 VIF1/DMAC1 expected completion — evidence and diagnostic gate
+
+The **11:29 final boot** registers `AddDmacHandler cause=1
+handler=0x00102a60` and enables DMAC1. Its ELF handler
+decrements the selected guest command pending count at
+`0x00102b08..0x00102b10` after channel status/STR
+checks. That final trace contains **15 DMAC channel 5
+callbacks and zero channel 1 callbacks**. Consequently
+DMAC1/VIF1 completion is the strongest known candidate
+for the unretired buffer slot, not an unrendered menu frame.
+
+The current native `ee_dmac.cpp` routes VIF1 starts to
+`transfer_device_normal(1)`, which refuses source-chain
+mode; for normal VIF1 outbound data it uses a sink currently
+bound to a GIF PATH3 parser accepting only channel 2. This
+**does not establish that the guest's stalled transfer was a
+chain**: only the actual CHCR/MADR/QWC/TADR at the failure
+boundary can settle that. Compared with
+`twist84/ps2-web-recomp:SDBZ`,
+`runtime/src/dmac.cpp::run_chain` and
+`runtime/src/vif.cpp::transfer`, an actual implementation
+will need genuine VIF1 payload parsing/state effects and
+proper producer-driven DMA completion, not an IRQ shortcut.
+
+The bounded `m2_sdbz_dma_wait` probe now additionally
+reads **physical VIF1 channel 1 state** through a new
+host-only `c_ee_dmac::vif1_channel_state()` accessor:
+`CHCR`, `MADR`, `QWC`, `TADR` and `D_STAT`
+status/pending. These are attached to `wait`,
+`pending_wait` and `red_loop` snapshots.
+No guest MMIO read, DMA scheduling, timer update, CPU
+write, IRQ or other guest-visible action is performed.
+The test explicitly starts an **unsupported synthetic
+VIF1 chain (CHCR=0x105)** and verifies it remains
+unretired while the probe captures its immutable channel
+state and does not fabricate a completion interrupt.
+
+**Next decision:** Confirm which VIF1 mode, address and
+QWC the guest actually reached, and whether STR remains set,
+then implement the necessary real VIF1 delivery and
+channel-1 completion semantics in a batch of independently
+verified tests. Never clear STR or pending flags merely to
+avoid the red fallback loop.
+
+
+### M2.5 — 13:53 VIF1 source-chain blocker (observed, then bounded implementation)
+
+Verified USA ELF: first wait dispatch 10,411 had opposite slot flag 0
+and VIF1 CHCR=0. First **pending** wait dispatch 10,495 had opposite
+slot flag 1, physical VIF1 CHCR=`0x1c5` (DIR/chain/TTE/TIE/STR),
+TADR=`0x00771400`, QWC=0, D_STAT channel-1 pending=0.
+At first red fallback dispatch 36,205 the state is **identical**.
+The 100,000-dispatch result still produces only the 2,275 red
+fallback sprites. This proves a started, unsupported VIF1 source
+chain, not a graphics display problem.
+
+This batch provides a bounded transactional VIF1 chain walker
+with TTE/TIE and real sink acceptance, source-span validation
+and explicit rejection reasons; it also captures the first
+64 bytes at the true DMA tag pointer in native wait snapshots.
+The production runner still lacks a real VIF1/VU1/GIF PATH2
+consumer. Until that consumer accepts the actual stream,
+channel 1 deliberately stays active and raises no interrupt.
+See [M2.5 VIF1 chain](M2_5_VIF1_SOURCE_CHAIN.md).
+
+
+## M2.6 — Native VIF1, VU1 memory and GIF PATH2 first implementation (19 November 2026)
+
+Following M2.5's valid source-chain transport but missing device sink, the native runtime now routes channel 1 to `c_ee_vif1`, channel 2 to the existing independent PATH3 parser, and VIF DIRECT/DIRECTHL GIF packets through a separate PATH2 parser into the same actual GS/WebGPU consumer. The decoder/state machine is adapted from `twist84/ps2-web-recomp:SDBZ/runtime/src/vif.cpp` under the MIT license, reformatted for the local `c_`/`s_`/`m_`, snake_case and Allman conventions.
+
+The transactional parser handles split 32-bit VIF commands, V4/V3/V2/V1 UNPACK with cycle fill/skip/mask/row/col, VU1 16 KiB code/data memory, MPG uploads, STCYCL/MODE/BASE/OFFSET/ITOP and physical VU1 memory windows. VIF FBRST preserves resident code/data as the primary reference does. It refuses unimplemented MSCAL/MSCALF/MSCNT, MSKPATH3 and unhandled VIF IRQ stalls without falsely retiring DMA. Rejected packets preserve channel-1 STR, source addresses and D_STAT; successful complete original chains still must pass DMAC source validation and device consumption to raise the guest's genuine channel-1 status.
+
+New `ee_vif1_device` regression exercises packet continuation, UNPACK, masking, micro uploads, physical apertures, PATH2 events and a real bounded synthetic source chain with TTE/TIE. **A synthetic DMA completion is not proof of native SDBZ boot.** The source bytes at `0x00771400` were not captured by the 13:53 user-owned boot, because it predates M2.5's raw source-prefix probe. VU1 micro execution and XGKICK/PATH1 require their own implementation and tests when actual commands are observed.
+
+See [M2.6 Native VIF1 Consumer](M2_6_NATIVE_VIF1_CONSUMER.md). Keep the existing branch/PR #142 draft and unmerged; revalidate exact-commit CI, and use only a new matched Windows boot batch for game progression claims.
+
+
+## M2.7 — Bounded VU1 interpreter and genuine GIF PATH1 (19 November 2026; partial)
+
+Implemented a **strict subset** of VU1 micro execution from the primary ps2-web-recomp reference: MPG-resident microcode, MSCAL/MSCNT, E-bit delay slot, floating-point VF operations, VI branch view, memory operations and genuine XGKICK into PATH1. Unsupported opcodes, flag/Q/P pipelines, MSCALF, mixed-path arbitration and IRQs **fail closed**: no DMA completion or fabricated rendering. The new test exercises MPG → original VU1 microinstructions → GIF PATH1 tag/body, opcode rejection and arithmetic. See [M2.7 VU1 first batch](M2_7_VU1_NATIVE_FIRST_BATCH.md). The 13:53 USA game logs predate the VIF source prefix; do not assert native boot progression. PR #142 remains draft, unmerged.
+
+
+### M2.7 Batch B — Reference FMAC/flags and XGKICK fixture (19 November 2026)
+
+Ported ps2-web-recomp PS2 floating-point bit arithmetic to C++17 and expanded VU1 ACC, MADD/MSUB, FTOI/ITOF, CLIP, MAC/status/clip flags and a four-issued-pair flag delay buffer. Added lower flag opcodes and focused arithmetic/CLIP regressions. Fixed synthetic GIFtag NREG to one. Q/P latency, precise VF/VI stalls, lower special opcodes, MSCALF, GIF arbitration and VIF IRQ remain unsupported and fail closed. Native USA boot advancement remains unverified. PR #142 stays draft/unmerged.

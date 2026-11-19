@@ -1,5 +1,7 @@
 #include "iop_sifcmd_bridge.h"
 
+#include <utility>
+
 namespace iop
 {
 namespace
@@ -42,13 +44,59 @@ bool c_sifcmd_bridge::install()
         return false;
     }
 
-    return create_stub(
+    m_installed = create_stub(
         m_kernel.cpu(), k_init_cmd_stub, k_init_cmd_syscall
     ) && create_stub(
         m_kernel.cpu(), k_get_sreg_stub, k_get_sreg_syscall
     ) && create_stub(
         m_kernel.cpu(), k_set_sreg_stub, k_set_sreg_syscall
     );
+    return m_installed;
+}
+
+bool c_sifcmd_bridge::initialize_hle_bootstrap()
+{
+    if (!m_installed || m_initialized || m_hle_bootstrapped)
+    {
+        return false;
+    }
+
+    // SIF_STAT_CMDINIT | SIF_STAT_BOOTEND. The user's ps2-web-recomp
+    // SDBZ HLE IOP kernel publishes precisely 0x60000 at boot, as its
+    // IOP services are host-backed. This is deliberately NOT a guest
+    // R3000 signal, real ROM0 readiness, or an RPC completion. Only the
+    // explicit HLE runtime initializer may establish this service state.
+    m_initialized = true;
+    m_hle_bootstrapped = true;
+    m_sif.publish_iop_subaddr(k_command_buffer);
+    m_sif.publish_iop_smflag(0x00060000u);
+    return true;
+}
+
+bool c_sifcmd_bridge::take_reboot_request(std::string* argument)
+{
+    if (!m_reboot_pending || argument == nullptr)
+    {
+        return false;
+    }
+    *argument = m_reboot_argument;
+    m_reboot_argument.clear();
+    m_reboot_pending = false;
+    return true;
+}
+
+void c_sifcmd_bridge::reset_for_reboot()
+{
+    for (uint32_t& value : m_sregs)
+    {
+        value = 0u;
+    }
+    m_ee_receive_address = 0u;
+    m_initialized = false;
+    m_installed = false;
+    m_hle_bootstrapped = false;
+    m_reboot_pending = false;
+    m_reboot_argument.clear();
 }
 
 bool c_sifcmd_bridge::handle_syscall(
@@ -105,29 +153,91 @@ bool c_sifcmd_bridge::prepare_command(
     s_command* command
 ) const
 {
+    // The EE initialization and CHANGE_SADDR commands carry one word
+    // after the 16-byte SIFCMD header; SET_SREG carries two words.
+    // DMA transfers round to 16 bytes, but the header records the
+    // original 20/24-byte packet size.
     if (!m_initialized || command == nullptr ||
-        size != 24u || words.size() < 6u ||
-        (words[0] & 0xffu) != 24u ||
+        (size != 16u && size != 20u && size != 24u &&
+         size != 104u) ||
+        words.size() < size / 4u ||
+        (words[0] & 0xffu) != size ||
         words[1] != 0u)
     {
         return false;
     }
 
-    // The IOP consumes these SIF command packet headers directly;
-    // no host-synthesized command, readiness or return packet exists.
-    // CID 0x80000001 carries an SREG index/value.
-    // CID 0x80000002 publishes the EE command receive buffer (opt=0).
     const uint32_t cid = words[2];
-    const uint32_t opt = words[3];
+
+    // SIF_CMD_RESET_CMD is a distinct system command. It is NOT a
+    // normal RPC or an acknowledgement that ROM0/UDNL has booted.
+    // PS2SDK's 104-byte reset packet contains arglen at +16, mode
+    // at +20, and 80 argument bytes at +24, which need not have a
+    // terminating NUL. Only the supported mode is accepted.
+    if (cid == 0x80000003u && size == 104u)
+    {
+        if (words[3] != 0u || words[4] > 80u ||
+            words[5] != 0u || m_reboot_pending)
+        {
+            return false;
+        }
+        s_command reboot{};
+        reboot.m_cid = cid;
+        reboot.m_reboot_request = true;
+        for (uint32_t byte = 0u; byte < words[4]; ++byte)
+        {
+            const uint8_t character = static_cast<uint8_t>(
+                words[6u + byte / 4u] >> (8u * (byte % 4u))
+            );
+            if (character < 0x20u || character > 0x7eu)
+            {
+                return false;
+            }
+            reboot.m_reboot_argument.push_back(
+                static_cast<char>(character)
+            );
+        }
+        *command = std::move(reboot);
+        return true;
+    }
+
+    // EE's 16-byte INIT_CMD with opt=1 requests an IOP->EE
+    // SET_SREG command (SREG[0] = 1). ps2-web-recomp/SDBZ
+    // sends that packet to the EE through the SIF0 command receiver.
+    // This is not the 20-byte receive-address publication, and it
+    // must never update an EE SREG without an actual reply packet.
+    if (cid == 0x80000002u && size == 16u &&
+        words[3] == 1u)
+    {
+        *command = {cid, 0u, 0u, true};
+        return true;
+    }
+
+    // Every remaining command needs at least the fifth word.
+    // Only the explicitly handled opt=1 handshake is 16 bytes.
+    if (size == 16u || words[3] != 0u)
+    {
+        return false;
+    }
+
+    // The IOP consumes only validated command packets. Neither a
+    // published address nor a DMA flag synthesizes an RPC reply.
     const uint32_t index_or_address = words[4];
-    if (cid == 0x80000001u && opt == 0u &&
+    if (cid == 0x80000001u && size == 24u &&
         index_or_address < 32u)
     {
         *command = {cid, index_or_address, words[5]};
         return true;
     }
 
-    if (cid == 0x80000002u && opt == 0u &&
+    // 0x80000000 = CHANGE_SADDR, 0x80000002 = INIT_CMD.
+    // Keep the already-tested 24-byte INIT_CMD variant only when
+    // its extra word is zero, while accepting the real 20-byte form.
+    const bool receive_command =
+        (cid == 0x80000000u && size == 20u) ||
+        (cid == 0x80000002u &&
+         (size == 20u || (size == 24u && words[5] == 0u)));
+    if (receive_command &&
         index_or_address != 0u &&
         (index_or_address & 0x0fu) == 0u &&
         index_or_address < 0x02000000u)
@@ -143,11 +253,19 @@ bool c_sifcmd_bridge::prepare_command(
 
 void c_sifcmd_bridge::commit_command(const s_command& command)
 {
-    if (command.m_cid == 0x80000001u)
+    if (command.m_reboot_request &&
+        command.m_cid == 0x80000003u)
+    {
+        m_reboot_argument = command.m_reboot_argument;
+        m_reboot_pending = true;
+    }
+    else if (command.m_cid == 0x80000001u)
     {
         m_sregs[command.m_index] = command.m_value;
     }
-    else if (command.m_cid == 0x80000002u)
+    else if ((command.m_cid == 0x80000000u ||
+              command.m_cid == 0x80000002u) &&
+             !command.m_request_sreg_reply)
     {
         m_ee_receive_address = command.m_value;
     }

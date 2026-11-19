@@ -84,28 +84,22 @@ void module_builder::declare_memory_helpers()
     m_out += "declare float @llvm.fabs.f32(float)\n";
     m_out += "declare i32 @ee_raise_exception(ptr, ptr, i32, i32, i32, i32)\n";
     m_out += "declare i32 @ee_exception_return(ptr)\n";
+    m_out += "declare void @ee_cop0_write(ptr, i32, i32)\n";
     m_out += "declare i32 @ee_vu0_qmfc2(ptr, ptr, i32, i32, i32, i32)\n";
     m_out += "declare i32 @ee_vu0_qmtc2(ptr, ptr, i32, i32, i32, i32)\n";
     m_out += "declare i32 @ee_vu0_cfc2(ptr, ptr, i32, i32, i32, i32)\n";
     m_out += "declare i32 @ee_vu0_ctc2(ptr, ptr, i32, i32, i32, i32)\n";
     m_out += "declare i32 @ee_vu0_macro_fmac(ptr, ptr, i32, i32)\n";
+    m_out += "declare i32 @ee_vu0_macro_indexed_memory(ptr, ptr, i32, i32)\n";
     m_out += "declare i32 @ee_vu0_get_branch_condition(ptr)\n";
     m_out += "\n";
 
-    // Private helper avoids unresolved external symbols in MCJIT fixtures.
-    // Count executed VALID guest instructions, not host dispatches/loops.
-    // This is NOT an EE cycle counter and must not drive GS scanout.
-    m_out += "define internal void @ee_count_guest_instruction(ptr %rt, i32 %pc, i32 %opcode) {\n";
+    // The trace is a bounded, host-only stream for reference timing
+    // calibration. Sequence numbers are reference instruction *slots*,
+    // not validated R5900 cycles. Native reached instructions, annulled
+    // branch-likely slots and RAM-interpreted commits use one schema.
+    m_out += "define internal void @ee_trace_instruction_observation(ptr %rt, i32 %pc, i32 %opcode, i32 %kind, i64 %attempt, i64 %reference_slot) {\n";
     m_out += "entry:\n";
-    m_out += "  %valid_rt = icmp ne ptr %rt, null\n";
-    m_out += "  br i1 %valid_rt, label %count, label %done\n";
-    m_out += "count:\n";
-    m_out += "  %counter_ptr = getelementptr i8, ptr %rt, i64 " +
-             std::to_string(offsetof(ee::s_ee_runtime, m_guest_instruction_attempts)) +
-             "\n";
-    m_out += "  %old_count = load i64, ptr %counter_ptr\n";
-    m_out += "  %new_count = add i64 %old_count, 1\n";
-    m_out += "  store i64 %new_count, ptr %counter_ptr\n";
     m_out += "  %trace_ptr_field = getelementptr i8, ptr %rt, i64 " +
              std::to_string(offsetof(ee::s_ee_runtime, m_instruction_trace)) + "\n";
     m_out += "  %trace_ptr = load ptr, ptr %trace_ptr_field\n";
@@ -136,13 +130,22 @@ void module_builder::declare_memory_helpers()
     m_out += "  %offset = mul i64 %index, " +
              std::to_string(sizeof(ee::s_ee_instruction_trace_entry)) + "\n";
     m_out += "  %slot = getelementptr i8, ptr %trace_ptr, i64 %offset\n";
-    m_out += "  store i64 %new_count, ptr %slot\n";
+    m_out += "  store i64 %attempt, ptr %slot\n";
     m_out += "  %slot_pc = getelementptr i8, ptr %slot, i64 " +
              std::to_string(offsetof(ee::s_ee_instruction_trace_entry, m_pc)) + "\n";
     m_out += "  %slot_op = getelementptr i8, ptr %slot, i64 " +
              std::to_string(offsetof(ee::s_ee_instruction_trace_entry, m_opcode_word)) + "\n";
     m_out += "  store i32 %pc, ptr %slot_pc\n";
     m_out += "  store i32 %opcode, ptr %slot_op\n";
+    m_out += "  %slot_kind = getelementptr i8, ptr %slot, i64 " +
+             std::to_string(offsetof(ee::s_ee_instruction_trace_entry, m_kind)) + "\n";
+    m_out += "  store i32 %kind, ptr %slot_kind\n";
+    m_out += "  %slot_reference = getelementptr i8, ptr %slot, i64 " +
+             std::to_string(offsetof(ee::s_ee_instruction_trace_entry, m_reference_slot)) + "\n";
+    m_out += "  store i64 %reference_slot, ptr %slot_reference\n";
+    m_out += "  %slot_hle = getelementptr i8, ptr %slot, i64 " +
+             std::to_string(offsetof(ee::s_ee_instruction_trace_entry, m_hle_service)) + "\n";
+    m_out += "  store i32 0, ptr %slot_hle\n";
     m_out += "  %next_used = add i32 %used, 1\n";
     m_out += "  store i32 %next_used, ptr %count_field\n";
     m_out += "  br label %done\n";
@@ -150,6 +153,94 @@ void module_builder::declare_memory_helpers()
     m_out += "  %overflow_field = getelementptr i8, ptr %rt, i64 " +
              std::to_string(offsetof(ee::s_ee_runtime, m_instruction_trace_overflow)) + "\n";
     m_out += "  store i32 1, ptr %overflow_field\n";
+    m_out += "  br label %done\n";
+    m_out += "done:\n";
+    m_out += "  ret void\n";
+    m_out += "}\n\n";
+
+    // Optional native issue-timing observation, with no host symbol
+    // dependency. The callback is explicitly installed by the host and
+    // may reject an event; a rejection is latched, never converted into
+    // guessed cycles or a guest-visible interrupt.
+    m_out += "define internal void @ee_observe_timing_event(ptr %rt, i32 %pc, i32 %opcode, i32 %kind, i64 %attempt, i64 %reference_slot) {\n";
+    m_out += "entry:\n";
+    m_out += "  %null = icmp eq ptr %rt, null\n";
+    m_out += "  br i1 %null, label %done, label %check\n";
+    m_out += "check:\n";
+    m_out += "  %failed_ptr = getelementptr i8, ptr %rt, i64 " +
+             std::to_string(offsetof(ee::s_ee_runtime, m_timing_observer_failed)) + "\n";
+    m_out += "  %failed = load i32, ptr %failed_ptr\n";
+    m_out += "  %already_failed = icmp ne i32 %failed, 0\n";
+    m_out += "  br i1 %already_failed, label %done, label %check_callback\n";
+    m_out += "check_callback:\n";
+    m_out += "  %cb_ptr = getelementptr i8, ptr %rt, i64 " +
+             std::to_string(offsetof(ee::s_ee_runtime, m_timing_observer)) + "\n";
+    m_out += "  %callback = load ptr, ptr %cb_ptr\n";
+    m_out += "  %enabled = icmp ne ptr %callback, null\n";
+    m_out += "  br i1 %enabled, label %invoke, label %done\n";
+    m_out += "invoke:\n";
+    m_out += "  %user_ptr = getelementptr i8, ptr %rt, i64 " +
+             std::to_string(offsetof(ee::s_ee_runtime, m_timing_observer_user)) + "\n";
+    m_out += "  %user = load ptr, ptr %user_ptr\n";
+    m_out += "  %ok = call i1 %callback(ptr %user, i32 %pc, i32 %opcode, i32 %kind, i32 0, i64 %attempt, i64 %reference_slot)\n";
+    m_out += "  br i1 %ok, label %done, label %reject\n";
+    m_out += "reject:\n";
+    m_out += "  store i32 1, ptr %failed_ptr\n";
+    m_out += "  br label %done\n";
+    m_out += "done:\n";
+    m_out += "  ret void\n";
+    m_out += "}\n\n";
+
+    // Private helper avoids unresolved external symbols in MCJIT fixtures.
+    // Count executed VALID guest instructions, not host dispatches/loops.
+    // This is NOT an EE cycle counter and must not drive GS scanout.
+    m_out += "define internal void @ee_count_guest_instruction(ptr %rt, i32 %pc, i32 %opcode) {\n";
+    m_out += "entry:\n";
+    m_out += "  %valid_rt = icmp ne ptr %rt, null\n";
+    m_out += "  br i1 %valid_rt, label %count, label %done\n";
+    m_out += "count:\n";
+    m_out += "  %counter_ptr = getelementptr i8, ptr %rt, i64 " +
+             std::to_string(offsetof(ee::s_ee_runtime, m_guest_instruction_attempts)) +
+             "\n";
+    m_out += "  %old_count = load i64, ptr %counter_ptr\n";
+    m_out += "  %new_count = add i64 %old_count, 1\n";
+    m_out += "  store i64 %new_count, ptr %counter_ptr\n";
+    // Reference interpreter slot accounting is distinct from reached
+    // instructions: a not-taken branch-likely reserves its annulled slot.
+    // It is explicitly NOT an R5900 cycle clock or a scanout source.
+    m_out += "  %ref_counter_ptr = getelementptr i8, ptr %rt, i64 " +
+             std::to_string(offsetof(ee::s_ee_runtime,
+                                     m_reference_instruction_slots)) + "\n";
+    m_out += "  %ref_old = load i64, ptr %ref_counter_ptr\n";
+    m_out += "  %ref_new = add i64 %ref_old, 1\n";
+    m_out += "  store i64 %ref_new, ptr %ref_counter_ptr\n";
+    m_out += "  call void @ee_observe_timing_event(ptr %rt, i32 %pc, i32 %opcode, i32 0, i64 %new_count, i64 %ref_new)\n";
+    m_out += "  call void @ee_trace_instruction_observation(ptr %rt, i32 %pc, i32 %opcode, i32 0, i64 %new_count, i64 %ref_new)\n";
+    m_out += "  br label %done\n";
+    m_out += "done:\n";
+    m_out += "  ret void\n";
+    m_out += "}\n\n";
+
+    // The ps2-web-recomp reference interpreter charges two instruction
+    // slots for a branch, including when branch-likely annuls its delay
+    // instruction. This helper never increments the actual executed
+    // instruction counter or touches the guest's architectural state.
+    m_out += "define internal void @ee_count_reference_annulled_slot(ptr %rt, i32 %pc, i32 %opcode) {\n";
+    m_out += "entry:\n";
+    m_out += "  %is_null = icmp eq ptr %rt, null\n";
+    m_out += "  br i1 %is_null, label %done, label %count\n";
+    m_out += "count:\n";
+    m_out += "  %ref_ptr = getelementptr i8, ptr %rt, i64 " +
+             std::to_string(offsetof(ee::s_ee_runtime,
+                                     m_reference_instruction_slots)) + "\n";
+    m_out += "  %old = load i64, ptr %ref_ptr\n";
+    m_out += "  %new = add i64 %old, 1\n";
+    m_out += "  store i64 %new, ptr %ref_ptr\n";
+    m_out += "  %attempt_ptr = getelementptr i8, ptr %rt, i64 " +
+             std::to_string(offsetof(ee::s_ee_runtime, m_guest_instruction_attempts)) + "\n";
+    m_out += "  %attempt = load i64, ptr %attempt_ptr\n";
+    m_out += "  call void @ee_observe_timing_event(ptr %rt, i32 %pc, i32 %opcode, i32 1, i64 %attempt, i64 %new)\n";
+    m_out += "  call void @ee_trace_instruction_observation(ptr %rt, i32 %pc, i32 %opcode, i32 1, i64 %attempt, i64 %new)\n";
     m_out += "  br label %done\n";
     m_out += "done:\n";
     m_out += "  ret void\n";
@@ -774,6 +865,35 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
     if (fallthrough_pc == 0)
         fallthrough_pc = ins.pc + 8;
 
+    // VU User's Manual v6.0, LQC2/SQC2: a misaligned 128-bit
+    // effective address traps with AdEL/AdES before any VF or memory
+    // modification. Flush earlier SSA GPR writes on either branch so
+    // guest exception handlers observe the committed program state.
+    const auto guard_vu0_quad_alignment =
+        [&](const std::string& address, uint32_t excode)
+    {
+        const std::string bits = newtemp();
+        const std::string misaligned = newtemp();
+        const std::string suffix = std::to_string(m_temp_counter++);
+        const std::string fault = "vu0_quad_fault_" + suffix;
+        const std::string aligned = "vu0_quad_aligned_" + suffix;
+        m_out += "  " + bits + " = and i32 " + address + ", 15\n";
+        m_out += "  " + misaligned + " = icmp ne i32 " + bits + ", 0\n";
+        std::set<uint8_t> dirty(m_dirty_regs.begin(), m_dirty_regs.end());
+        store_dirty_regs(dirty);
+        reset_tracking();
+        m_out += "  br i1 " + misaligned + ", label %" + fault +
+                 ", label %" + aligned + "\n";
+        m_out += fault + ":\n";
+        m_out += "  call i32 @ee_raise_exception(ptr %cpu, ptr %rt, i32 " +
+                 std::to_string(excode) + ", i32 " +
+                 std::to_string(ins.pc) + ", i32 " +
+                 std::to_string(in_delay_slot ? 1u : 0u) + ", i32 " +
+                 address + ")\n";
+        m_out += "  ret i32 1\n"; // EE_EXIT_EXCEPTION
+        m_out += aligned + ":\n";
+    };
+
     switch (ins.opcode)
     {
     case ee::e_ee_opcode::OP_ADDIU:
@@ -1023,11 +1143,17 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
         std::string vhi = newtemp();
         m_out += "  " + sum + " = add i64 " + src_lo(ins.rs) + ", " + imm + "\n";
         m_out += "  " + addr + " = trunc i64 " + sum + " to i32\n";
+        guard_vu0_quad_alignment(addr, 4u); // EX_AdEL
         m_out += "  " + addr8 + " = add i32 " + addr + ", 8\n";
         m_out += "  " + vlo + " = call i64 @ee_mem_read64(ptr %rt, i32 " + addr + ")\n";
         m_out += "  " + vhi + " = call i64 @ee_mem_read64(ptr %rt, i32 " + addr8 + ")\n";
-        m_out += "  store i64 " + vlo + ", ptr " + vu0_lo_ptr(ins.rt) + "\n";
-        m_out += "  store i64 " + vhi + ", ptr " + vu0_hi_ptr(ins.rt) + "\n";
+        // VF00 is hardwired to (0,0,0,1). The access may still trap
+        // or read mapped memory, but it may not mutate the VF0 slot.
+        if (ins.rt != 0u)
+        {
+            m_out += "  store i64 " + vlo + ", ptr " + vu0_lo_ptr(ins.rt) + "\n";
+            m_out += "  store i64 " + vhi + ", ptr " + vu0_hi_ptr(ins.rt) + "\n";
+        }
         break;
     }
     case ee::e_ee_opcode::OP_SQC2:
@@ -1041,9 +1167,20 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
         std::string vhi = newtemp();
         m_out += "  " + sum + " = add i64 " + src_lo(ins.rs) + ", " + imm + "\n";
         m_out += "  " + addr + " = trunc i64 " + sum + " to i32\n";
+        guard_vu0_quad_alignment(addr, 5u); // EX_AdES
         m_out += "  " + addr8 + " = add i32 " + addr + ", 8\n";
-        m_out += "  " + vlo + " = load i64, ptr " + vu0_lo_ptr(ins.rt) + "\n";
-        m_out += "  " + vhi + " = load i64, ptr " + vu0_hi_ptr(ins.rt) + "\n";
+        // SQC2 VF00 always stores (0,0,0,1), even if the host backing
+        // VF0 bytes are stale. Only VF1..31 are backed by storage.
+        if (ins.rt == 0u)
+        {
+            m_out += "  " + vlo + " = add i64 0, 0\n";
+            m_out += "  " + vhi + " = add i64 4575657221408423936, 0\n";
+        }
+        else
+        {
+            m_out += "  " + vlo + " = load i64, ptr " + vu0_lo_ptr(ins.rt) + "\n";
+            m_out += "  " + vhi + " = load i64, ptr " + vu0_hi_ptr(ins.rt) + "\n";
+        }
         emit_guest_store_trace(ins, addr, addr, 8u, vlo, 0u);
         m_out += "  call void @ee_mem_write64(ptr %rt, i32 " + addr + ", i64 " + vlo + ")\n";
         emit_guest_store_trace(ins, addr8, addr8, 8u, vhi, 1u);
@@ -1604,12 +1741,12 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
         }
         else if (fmt == static_cast<uint8_t>(ee::e_ee_opcode::COP0_MTC0))
         {
-            // COP0[rd] = low32(GPR.rt)
-            std::string p = newtemp();
-            std::string v32 = newtemp();
+            // Guest MTC0 side effects are owned by the runtime (not a raw
+            // store into m_cop0). In particular Compare writes clear IP7.
+            const std::string v32 = newtemp();
             m_out += "  " + v32 + " = trunc i64 " + src_lo(gpr) + " to i32\n";
-            m_out += "  " + p + " = " + cop0_ptr(cp0_reg) + "\n";
-            m_out += "  store i32 " + v32 + ", ptr " + p + "\n";
+            m_out += "  call void @ee_cop0_write(ptr %cpu, i32 " +
+                     std::to_string(cp0_reg) + ", i32 " + v32 + ")\n";
         }
         else if (fmt == static_cast<uint8_t>(ee::e_ee_opcode::COP0_BC0))
         {
@@ -2343,8 +2480,8 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
             break;
         }
 
-        const bool matrix_macro = ins.rs >= 0x10u;
-        if (!helper && !matrix_macro)
+        const bool vu0_macro = ins.rs >= 0x10u;
+        if (!helper && !vu0_macro)
         {
             // BC2 is emitted separately as a control-flow predicate.
             m_out += "  ; COP2 operation has no runtime lowering\n";
@@ -2360,15 +2497,27 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
         store_dirty_regs(dirty);
         reset_tracking();
 
-        // PCSX2's delay-slot policy differs for reads and writes: reads finish
-        // the active microprogram to E, while writes wait for E or M.
-        const uint32_t sync_mode = !in_delay_slot
-            ? 0u
-            : (reads_vu0 ? 1u : 2u);
+        // VU User's Manual v6.0, chapter 6: transfer bit 0 selects
+        // the interlock with an active micro-subroutine. Non-interlocked
+        // transfers may catch up to the current EE cycle but do not wait
+        // for VCALLMS completion; .I reads wait for E, writes for E/M.
+        // This choice is encoded in the guest instruction, not inferred
+        // from whether the transfer occupies a branch delay slot.
+        const bool interlock = (ins.opcode_word & 1u) != 0u;
+        const uint32_t sync_mode = interlock
+            ? (reads_vu0 ? 1u : 2u) : 0u;
         const std::string result = newtemp();
-        if (matrix_macro)
+        if (vu0_macro)
         {
-            m_out += "  " + result + " = call i32 @ee_vu0_macro_fmac"
+            const uint32_t special2 =
+                (ins.opcode_word & 3u) | ((ins.opcode_word >> 4u) & 0x7cu);
+            const bool indexed_memory =
+                (ins.opcode_word & 0x3cu) == 0x3cu &&
+                special2 >= 0x34u && special2 <= 0x37u;
+            m_out += "  " + result + " = call i32 @" +
+                     std::string(indexed_memory
+                         ? "ee_vu0_macro_indexed_memory"
+                         : "ee_vu0_macro_fmac") +
                      "(ptr %cpu, ptr %rt, i32 " +
                      std::to_string(ins.opcode_word) + ", i32 " +
                      std::to_string(ins.pc) + ")\n";
@@ -2663,6 +2812,9 @@ void module_builder::emit_block(const std::vector<ee::s_ee_instruction>& block,
             // --- not-taken path: delay slot annulled, state already flushed ---
             m_out += nottaken_buf;
             m_out += ":\n";
+            m_out += "  call void @ee_count_reference_annulled_slot(ptr %rt, i32 " +
+                         std::to_string(block[delay_idx].pc) + ", i32 " +
+                         std::to_string(block[delay_idx].opcode_word) + ")\n";
             m_out += "  br label %" + block_label(ft) + "\n";
         } else if (delay_idx >= 0) {
             // Ordinary conditional branches sample their condition before the

@@ -44,6 +44,32 @@ def make_test_elf(paths):
     return image
 
 
+def rpc_commit(sequence, *, cid=0x8000000A, server=0x80000006,
+               method=0, path="(none)", load=2, link=1,
+               module=0, thread=0, started=0):
+    return (
+        f"IOP HLE RPC committed: seq={sequence} cid=0x{cid:08x} "
+        f"server=0x{server:08x} method=0x{method:08x} "
+        f"client=0x00564d40 send=512 recv=8 result=0x00000000 "
+        f"path={path} load_status={load} link_status={link} "
+        f"module={module} thread={thread} started={started} "
+        f"irx_entry=00000634 irx_gp=00008fb0 irx_image=00000ff0 "
+        f"unresolved=(none)#0"
+    )
+
+
+def sample_commits():
+    return "\n".join([
+        rpc_commit(1, cid=0x80000009, method=0),
+        rpc_commit(2, method=0xff),
+        rpc_commit(3, path=r"cdrom0:\PADMAN.IRX;1", load=0,
+                   link=0, module=1, thread=1, started=1),
+        rpc_commit(4, server=0x80000593, method=0x22),
+        rpc_commit(5, path=r"cdrom0:\MISSING.IRX;1", load=2,
+                   link=1, module=0, thread=0, started=0),
+    ]) + "\n"
+
+
 def expect_error(callback, fragment):
     try:
         callback()
@@ -92,6 +118,39 @@ def main():
         ], result
         assert result["resolved_count"] == 2
         assert result["runtime_load_count"] == 0
+        assert result["runtime_evidence_source"] == "static-only"
+        original_paths = [item["guest_path"] for item in result["candidates"]]
+        updated = MODULE.reconcile_runtime_loadfile(result, sample_commits())
+        assert updated["runtime_rpc_commit_count"] == 5
+        assert updated["runtime_load_attempt_count"] == 2
+        assert updated["runtime_load_count"] == 1
+        assert updated["runtime_evidence_source"] == (
+            "final-replay-committed-sifrpc"
+        )
+        assert updated["runtime_load_events"][0]["success"]
+        assert updated["runtime_load_events"][0]["module_id"] == 1
+        assert not updated["runtime_load_events"][1]["success"]
+        assert [item["guest_path"] for item in updated["candidates"]] == (
+            original_paths
+        )
+        before_rejection = json.dumps(updated, sort_keys=True)
+        expect_error(
+            lambda: MODULE.reconcile_runtime_loadfile(
+                updated, sample_commits() + "IOP HLE RPC committed: bad\n"
+            ), "unparseable"
+        )
+        assert json.dumps(updated, sort_keys=True) == before_rejection
+        expect_error(
+            lambda: MODULE.reconcile_runtime_loadfile(
+                updated, rpc_commit(2) + "\n" + rpc_commit(1)
+            ), "non-monotonic"
+        )
+        expect_error(
+            lambda: MODULE.reconcile_runtime_loadfile(
+                updated, rpc_commit(1) + "\n" + rpc_commit(3)
+            ), "gapped"
+        )
+        assert json.dumps(updated, sort_keys=True) == before_rejection
         assert result["candidates"][0]["host_path"] == str(
             disc / "padman.irx"
         )
@@ -129,9 +188,12 @@ def main():
                     "exit_reason": 4,
                 }), encoding="utf-8"
             )
+            output = "EE stopped\n"
+            if "--trace" in command:
+                output += sample_commits()
             with log_path.open("a" if append else "w") as log:
-                log.write("EE stopped\\n")
-            return 0, "EE stopped\\n", 0.001
+                log.write(output)
+            return 0, output, 0.001
 
         session.run_session = fake_run
         result_code = session.main([
@@ -147,7 +209,12 @@ def main():
         saved = json.loads(
             (work / "iop-disc-catalog.json").read_text(encoding="utf-8")
         )
-        assert saved["runtime_load_count"] == 0, saved
+        assert saved["runtime_load_count"] == 1, saved
+        assert saved["runtime_load_attempt_count"] == 2, saved
+        assert saved["runtime_rpc_commit_count"] == 5, saved
+        assert saved["runtime_evidence_source"] == (
+            "final-replay-committed-sifrpc"
+        )
 
         # Case-insensitive ambiguity is an error even on Linux.
         write_mips_elf(disc / "PADMAN.IRX;1")

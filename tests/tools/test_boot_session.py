@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Unit tests for bounded, cache-preserving native EE boot sessions."""
 import importlib.util
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -18,13 +19,22 @@ SESSION = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(SESSION)
 
 
-def run_case(passes, initial_reuse=False, diagnostics=False):
+def run_case(passes, initial_reuse=False, diagnostics=False,
+             initial_function_count=None, expansion_per_pass=2,
+             snapshots=False):
     with tempfile.TemporaryDirectory(prefix="ee-boot-session-") as temp:
         work = Path(temp) / "work"
         report = work / "first-boot.json"
         elf = Path(temp) / "synthetic.elf"
         elf.write_bytes(b"synthetic test input, never executed")
         calls = []
+        metadata = work / "ir" / "ee_functions.json"
+        if initial_function_count is not None:
+            metadata.parent.mkdir(parents=True, exist_ok=True)
+            metadata.write_text(
+                json.dumps({"function_count": initial_function_count}),
+                encoding="utf-8",
+            )
 
         def fake_run(command, **kwargs):
             assert kwargs["check"] is False
@@ -43,11 +53,22 @@ def run_case(passes, initial_reuse=False, diagnostics=False):
                 "final_pc": 0x004E2640 + 16 * index,
             }
             report.write_text(json.dumps(state), encoding="utf-8")
+            if "function_count" in item:
+                metadata.parent.mkdir(parents=True, exist_ok=True)
+                metadata.write_text(
+                    json.dumps({"function_count": item["function_count"]}),
+                    encoding="utf-8",
+                )
             replay = item.get("replay")
             output = (
                 f"== Executing translated EE code (replay {replay}) ==\\n"
                 if replay is not None else ""
             ) + item.get("message", "EE stopped")
+            if "initial_link" in item:
+                output = (
+                    f"link_native_objects: PASS ({item['initial_link']} functions, "
+                    "fixture)\\n" + output
+                )
             return SimpleNamespace(
                 returncode=item.get("code", 3),
                 stdout=output + "\\n",
@@ -55,12 +76,23 @@ def run_case(passes, initial_reuse=False, diagnostics=False):
 
         argv = [
             str(elf), "--work-dir", str(work), "--report", str(report),
-            "--expansion-passes=2", "--expansion-per-pass=2",
+            "--expansion-passes=2",
+            f"--expansion-per-pass={expansion_per_pass}",
             "--driver", str(ROOT / "tools" / "run_game.py"),
             "--hle-startup", "--kseg-ram", "--max-dispatches=1000",
         ]
         if initial_reuse:
             argv.append("--no-recompile")
+        if snapshots:
+            work.mkdir(parents=True, exist_ok=True)
+            display = work / "gs-display.ppm"
+            upload = work / "gs-upload.ppm"
+            display.write_bytes(b"stale display")
+            upload.write_bytes(b"stale upload")
+            argv.extend((
+                "--gs-snapshot", str(display),
+                "--gs-upload-snapshot", str(upload),
+            ))
         if diagnostics:
             argv.extend((
                 "--trace-entry=0x0018cf68",
@@ -76,6 +108,17 @@ def run_case(passes, initial_reuse=False, diagnostics=False):
             assert "--trace" in calls[-1], calls
         if initial_reuse:
             assert "--no-recompile" in calls[0], calls
+        if snapshots:
+            # Temporary expansion passes must not emit image artifacts;
+            # the final replay is the only one with the two options.
+            assert all(
+                not any(arg.startswith("--gs-") for arg in call)
+                for call in calls[:-1]
+            ), calls
+            assert f"--gs-snapshot={display.resolve()}" in calls[-1]
+            assert f"--gs-upload-snapshot={upload.resolve()}" in calls[-1]
+            # No emulated images were produced: old files were removed.
+            assert not display.exists() and not upload.exists()
         if diagnostics:
             assert all(
                 "--trace-entry=0x0018cf68" in call and
@@ -95,7 +138,76 @@ def run_case(passes, initial_reuse=False, diagnostics=False):
         return code, calls, (work / "expansion.log").read_text(), (work / "boot.log").read_text()
 
 
+def test_ll_counter():
+    # The progress bar belongs only to a real console and never writes
+    # thousands of persistent log lines. Repeated polls have no output.
+    class c_fake_terminal(io.StringIO):
+        def isatty(self):
+            return True
+
+    with tempfile.TemporaryDirectory(prefix="ee-ll-progress-") as temp:
+        ir_dir = Path(temp) / "ir"
+        ir_dir.mkdir()
+        terminal = c_fake_terminal()
+        progress = SESSION.c_ll_file_progress(temp, stream=terminal)
+        assert progress.m_enabled
+        progress.refresh()  # No guessed or hardcoded denominator.
+        assert terminal.getvalue() == ""
+
+        (ir_dir / "ee_expected_ll_count.txt").write_text(
+            "7550\n", encoding="ascii"
+        )
+        progress.refresh()
+        progress.refresh()
+        (ir_dir / "first.ll").write_text("define void @first() {}\n")
+        progress.refresh()
+        progress.refresh()
+        (ir_dir / "second.ll").write_text("define void @second() {}\n")
+        progress.refresh()
+        before_done = terminal.getvalue()
+        assert before_done.count("\r") == 3, repr(before_done)
+        assert "\n" not in before_done, repr(before_done)
+        assert "LLVM IR [0/7550]" in before_done
+        assert "LLVM IR [1/7550]" in before_done
+        assert "LLVM IR [2/7550]" in before_done
+        progress.finish_line()
+        assert terminal.getvalue().endswith("\n")
+        progress.refresh()  # Preserve last display across sessions.
+        assert terminal.getvalue().count("\r") == 3
+
+        # In a pipe/CI log, no carriage returns or per-file updates.
+        piped = io.StringIO()
+        quiet = SESSION.c_ll_file_progress(temp, stream=piped)
+        quiet.refresh()
+        quiet.finish_line()
+        assert piped.getvalue() == ""
+
+        # If an old discovery marker is absent, use actual persisted
+        # function-count metadata (cached --no-recompile sessions).
+        (ir_dir / "ee_expected_ll_count.txt").unlink()
+        (ir_dir / "ee_functions.json").write_text(
+            json.dumps({"functions_discovered": 5}), encoding="utf-8"
+        )
+        alt = c_fake_terminal()
+        cached = SESSION.c_ll_file_progress(temp, stream=alt)
+        cached.refresh()
+        assert "LLVM IR [2/5]" in alt.getvalue()
+        cached.finish_line()
+
+        # Dynamic functions beyond the original static discovery total
+        # must never create an impossible [current > expected] ratio.
+        (ir_dir / "ee_functions.json").write_text(
+            json.dumps({"functions_discovered": 1}), encoding="utf-8"
+        )
+        dynamic = c_fake_terminal()
+        updated = SESSION.c_ll_file_progress(temp, stream=dynamic)
+        updated.refresh()
+        assert "LLVM IR [2/2]" in dynamic.getvalue()
+        updated.finish_line()
+
+
 def main():
+    test_ll_counter()
     # First pass consumes its expansion cap; the second finds a real
     # non-DISPATCH blocker and the final run emits the useful trace.
     code, calls, expansion, boot = run_case([
@@ -108,6 +220,40 @@ def main():
     assert "TRACE FINAL" not in expansion
     assert "TRACE FINAL" in boot
     assert "--no-recompile" not in calls[0]
+
+    # Regression from the first PS2_GAME boot: 128 functions were added
+    # in only 76 replays because jump-table siblings are batched.
+    code, calls, expansion, boot = run_case([
+        {"trace": False, "replay": 76, "initial_link": 1,
+         "function_count": 129},
+        {"trace": False, "replay": 4, "function_count": 138,
+         "exit_reason": 1, "message": "REAL BLOCKER"},
+        {"trace": True, "replay": 0, "exit_reason": 1,
+         "message": "FINAL TRACE"},
+    ], expansion_per_pass=128)
+    assert code == 3 and len(calls) == 3
+    assert "new_functions=128" in expansion
+    assert "new_functions=9" in expansion
+    assert "--no-recompile" in calls[1]
+    assert "FINAL TRACE" in boot
+
+    # Cached passes measure relative to their existing function count.
+    code, calls, expansion, boot = run_case([
+        {"trace": False, "replay": 12, "function_count": 257},
+        {"trace": False, "replay": 1, "function_count": 258,
+         "exit_reason": 1},
+        {"trace": True, "replay": 0, "exit_reason": 1},
+    ], initial_reuse=True, initial_function_count=129,
+       expansion_per_pass=128)
+    assert len(calls) == 3 and "new_functions=128" in expansion
+
+    # Never retry unless the actual number of added functions hit cap.
+    code, calls, expansion, boot = run_case([
+        {"trace": False, "replay": 76, "initial_link": 1,
+         "function_count": 100},
+        {"trace": True, "replay": 0},
+    ], expansion_per_pass=128)
+    assert len(calls) == 2 and "new_functions=99" in expansion
 
     # The SDBZ launcher forwards its diagnostic addresses through this
     # wrapper on both the expansion pass and the final traced replay.
@@ -122,6 +268,15 @@ def main():
     assert "--trace-entry=0x0018cf68" in boot
     assert "--trace-store=0x01ffec14" in boot
     assert "--trace-v0=0x00194478:0x00194794" in boot
+
+    # Final-only GS diagnostics must not leak into 128-function
+    # expansion passes, nor preserve previous session's misleading PPMs.
+    code, calls, expansion, boot = run_case([
+        {"trace": False, "replay": 1, "exit_reason": 5},
+        {"trace": True, "replay": 0, "exit_reason": 5},
+    ], initial_reuse=True, snapshots=True)
+    assert code == 3 and "gs-snapshot" in boot
+    assert "gs-snapshot" not in expansion
 
     # Even if the second pass also hits its cap, stop at the session
     # budget and preserve the translated DLL for next local invocation.

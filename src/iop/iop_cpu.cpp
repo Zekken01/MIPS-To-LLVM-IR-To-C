@@ -243,6 +243,22 @@ bool c_cpu::write(uint32_t address, uint32_t width, uint32_t value)
     return true;
 }
 
+bool c_cpu::read8(uint32_t address, uint8_t* value) const
+{
+    uint32_t raw = 0u;
+    if (value == nullptr || !read(address, 1u, &raw))
+    {
+        return false;
+    }
+    *value = static_cast<uint8_t>(raw);
+    return true;
+}
+
+bool c_cpu::write8(uint32_t address, uint8_t value)
+{
+    return write(address, 1u, value);
+}
+
 bool c_cpu::read32(uint32_t address, uint32_t* value) const
 {
     return read(address, 4u, value);

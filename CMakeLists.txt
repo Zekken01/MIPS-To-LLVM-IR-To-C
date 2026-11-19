@@ -41,11 +41,15 @@ add_library(ee_core STATIC
     src/runtime/ee_intc.cpp
     src/runtime/ee_dmac.cpp
     src/runtime/ee_gif.cpp
+    src/runtime/ee_vif1.cpp
+    src/runtime/ee_vu1.cpp
     src/runtime/ee_gs.cpp
+    src/runtime/ee_gs_display.cpp
     src/runtime/ee_exceptions.cpp
     src/runtime/ee_vu0.cpp
     src/runtime/ee_vsync_flags.cpp
     src/runtime/ee_scanout_clock.cpp
+    src/runtime/ee_cycle_scheduler.cpp
 )
 
 # Standalone IOP R3000A interpreter, initially isolated from the EE
@@ -55,6 +59,7 @@ add_library(iop_cpu STATIC
     src/iop/iop_hw.cpp
     src/iop/irx_loader.cpp
     src/iop/iop_kernel.cpp
+    src/iop/iop_kernel_hle_bridge.cpp
     src/iop/iop_sifman_bridge.cpp
     src/iop/iop_sif1_bridge.cpp
     src/iop/iop_sif1_dma_transport.cpp
@@ -62,6 +67,8 @@ add_library(iop_cpu STATIC
     src/iop/iop_sifcmd_bridge.cpp
     src/iop/iop_disc_loader.cpp
     src/iop/iop_cdvd.cpp
+    src/iop/iop_folder_sector_source.cpp
+    src/iop/iop_cdvdman_bridge.cpp
     src/iop/iop_sif_rpc_bridge.cpp
 )
 target_include_directories(iop_cpu PUBLIC ${CMAKE_SOURCE_DIR}/src/iop)
@@ -105,6 +112,8 @@ add_executable(iop_irx_loader_test tests/smoke/iop_irx_loader_test.cpp)
 target_link_libraries(iop_irx_loader_test PRIVATE iop_cpu)
 add_executable(iop_irx_export_link_test tests/smoke/iop_irx_export_link_test.cpp)
 target_link_libraries(iop_irx_export_link_test PRIVATE iop_cpu)
+add_executable(iop_kernel_hle_bridge_test tests/smoke/iop_kernel_hle_bridge_test.cpp)
+target_link_libraries(iop_kernel_hle_bridge_test PRIVATE iop_cpu)
 add_executable(iop_kernel_test tests/smoke/iop_kernel_test.cpp)
 target_link_libraries(iop_kernel_test PRIVATE iop_cpu)
 add_executable(iop_sifman_bridge_test tests/smoke/iop_sifman_bridge_test.cpp)
@@ -119,6 +128,10 @@ add_executable(iop_disc_loader_test tests/smoke/iop_disc_loader_test.cpp)
 target_link_libraries(iop_disc_loader_test PRIVATE iop_cpu)
 add_executable(iop_cdvd_test tests/smoke/iop_cdvd_test.cpp)
 target_link_libraries(iop_cdvd_test PRIVATE iop_cpu)
+add_executable(iop_folder_sector_source_test tests/smoke/iop_folder_sector_source_test.cpp)
+target_link_libraries(iop_folder_sector_source_test PRIVATE iop_cpu)
+add_executable(iop_cdvdman_bridge_test tests/smoke/iop_cdvdman_bridge_test.cpp)
+target_link_libraries(iop_cdvdman_bridge_test PRIVATE iop_cpu)
 add_executable(iop_sif_rpc_bridge_test tests/smoke/iop_sif_rpc_bridge_test.cpp)
 target_link_libraries(iop_sif_rpc_bridge_test PRIVATE iop_cpu ee_core)
 
@@ -164,6 +177,8 @@ target_link_libraries(ee_dispatcher_test PRIVATE ee_core)
 
 add_executable(ee_dispatch_interrupt_test tests/smoke/ee_dispatch_interrupt_test.cpp)
 target_link_libraries(ee_dispatch_interrupt_test PRIVATE ee_core)
+add_executable(ee_cop0_write_test tests/smoke/ee_cop0_write_test.cpp)
+target_link_libraries(ee_cop0_write_test PRIVATE ee_core)
 
 # VU0 transfer scheduler contract and architectural state regression tests.
 add_executable(ee_vu0_runtime_test tests/smoke/vu0_runtime_test.cpp)
@@ -173,12 +188,29 @@ target_link_libraries(ee_vu0_runtime_test PRIVATE ee_core)
 add_executable(ee_vu0_macro_fmac_test tests/smoke/vu0_macro_fmac_test.cpp)
 target_link_libraries(ee_vu0_macro_fmac_test PRIVATE ee_core)
 
+# Native-lowered VU0 indexed memory macros and fail-closed edge cases.
+add_executable(ee_vu0_indexed_macro_test tests/smoke/ee_vu0_indexed_macro_test.cpp)
+target_link_libraries(ee_vu0_indexed_macro_test PRIVATE ee_core)
+
 add_executable(ee_vsync_flag_test tests/smoke/ee_vsync_flag_test.cpp)
 target_link_libraries(ee_vsync_flag_test PRIVATE ee_core)
 
 # Cycle-driven GS field events, without a synthetic runtime VBlank producer.
 add_executable(ee_scanout_clock_test tests/smoke/ee_scanout_clock_test.cpp)
 target_link_libraries(ee_scanout_clock_test PRIVATE ee_core)
+
+# Isolated, uncalibrated R5900 issue-timing probe; never drives GS events.
+add_executable(ee_issue_timing_probe_test tests/smoke/ee_issue_timing_probe_test.cpp)
+target_link_libraries(ee_issue_timing_probe_test PRIVATE ee_core)
+
+add_executable(ee_cycle_scheduler_test tests/smoke/ee_cycle_scheduler_test.cpp)
+target_link_libraries(ee_cycle_scheduler_test PRIVATE ee_core)
+
+add_executable(ee_issue_trace_replay_test tests/smoke/ee_issue_trace_replay_test.cpp)
+target_link_libraries(ee_issue_trace_replay_test PRIVATE ee_core)
+
+add_executable(ee_issue_trace_candidate src/tools/ee_issue_trace_candidate_main.cpp)
+target_link_libraries(ee_issue_trace_candidate PRIVATE ee_core)
 
 # Emit a deterministic per-pair VU0 trace from the in-tree candidate runtime.
 add_executable(ee_vu0_trace_candidate tests/tools/vu0_trace_candidate.cpp)
@@ -188,6 +220,11 @@ target_link_libraries(ee_vu0_trace_candidate PRIVATE ee_core)
 # MCJIT regression can resolve the helper calls exactly as generated.
 add_library(ee_vu0_jit_helpers SHARED src/runtime/ee_vu0.cpp)
 set_target_properties(ee_vu0_jit_helpers PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+
+# Expose the same runtime COP0 side-effect helper to the emitted LLVM JIT
+# regression; this is real C++ guest state behavior, not a Python mock.
+add_library(ee_cop0_jit_helpers SHARED src/runtime/ee_exceptions.cpp)
+set_target_properties(ee_cop0_jit_helpers PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
 
 add_executable(ee_vu0_transfer_ir_fixture
     tests/smoke/vu0_transfer_ir_fixture.cpp
@@ -209,8 +246,114 @@ target_link_libraries(ee_recomp PRIVATE ee_core)
 
 # Standalone host for translated EE functions and optional, explicit
 # IOP IRX execution at SIF polling rendezvous points.
+add_executable(ee_hot_loop_diagnostics_test tests/smoke/ee_hot_loop_diagnostics_test.cpp)
+add_test(NAME ee_hot_loop_diagnostics COMMAND ee_hot_loop_diagnostics_test)
+
+add_executable(ee_isa_inventory_test tests/smoke/ee_isa_inventory_test.cpp)
+target_link_libraries(ee_isa_inventory_test PRIVATE ee_core)
+add_test(NAME ee_isa_inventory COMMAND ee_isa_inventory_test)
+
+add_executable(ee_reached_isa_inventory_test
+    tests/smoke/ee_reached_isa_inventory_test.cpp)
+target_link_libraries(ee_reached_isa_inventory_test PRIVATE ee_core)
+add_test(NAME ee_reached_isa_inventory COMMAND ee_reached_isa_inventory_test)
+
 add_executable(ee_game_runner src/tools/ee_game_runner_main.cpp)
 target_link_libraries(ee_game_runner PRIVATE ee_core iop_cpu ${CMAKE_DL_LIBS})
+
+# Original native WebGPU compute renderer, extracted from ps2-web-recomp:SDBZ.
+# No Emscripten, browser host, game code, or SDL; headless builds unchanged.
+option(EE_ENABLE_WEBGPU "Enable native wgpu-native GS rendering" OFF)
+# Keep the SDK under the CMake build tree, never in the source checkout.
+# The usual Windows launcher uses build/_deps/wgpu-native.
+set(EE_WEBGPU_ROOT "${CMAKE_BINARY_DIR}/_deps/wgpu-native" CACHE PATH
+    "wgpu-native SDK root (include/ and lib/); defaults to build/_deps")
+# Migrate the old empty cached default without overriding a custom SDK root.
+if("${EE_WEBGPU_ROOT}" STREQUAL "")
+    set(EE_WEBGPU_ROOT "${CMAKE_BINARY_DIR}/_deps/wgpu-native"
+        CACHE PATH "wgpu-native SDK root (include/ and lib/)" FORCE)
+endif()
+if(EE_ENABLE_WEBGPU)
+    if(WIN32)
+        # A direct CMake configure (not only run_ps2_game.bat) must also
+        # provision the pinned SDK. Existing complete installs are reused.
+        find_package(Python3 COMPONENTS Interpreter REQUIRED)
+        execute_process(
+            COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_SOURCE_DIR}/tools/ensure_wgpu_native.py"
+                    --root "${EE_WEBGPU_ROOT}"
+            RESULT_VARIABLE EE_WEBGPU_BOOTSTRAP_RESULT
+            OUTPUT_VARIABLE EE_WEBGPU_BOOTSTRAP_OUTPUT
+            ERROR_VARIABLE EE_WEBGPU_BOOTSTRAP_ERROR)
+        if(NOT EE_WEBGPU_BOOTSTRAP_RESULT EQUAL 0)
+            message(FATAL_ERROR
+                "wgpu-native SDK bootstrap failed for ${EE_WEBGPU_ROOT}:\n"
+                "${EE_WEBGPU_BOOTSTRAP_OUTPUT}${EE_WEBGPU_BOOTSTRAP_ERROR}")
+        endif()
+        string(STRIP "${EE_WEBGPU_BOOTSTRAP_OUTPUT}"
+            EE_WEBGPU_BOOTSTRAP_MESSAGE)
+        if(EE_WEBGPU_BOOTSTRAP_MESSAGE)
+            message(STATUS "${EE_WEBGPU_BOOTSTRAP_MESSAGE}")
+        endif()
+    endif()
+    # Do not reuse cached paths from a previous SDK root (e.g. third_party).
+    # All three dependencies must come from the selected build/_deps tree.
+    unset(EE_WEBGPU_INCLUDE_DIR CACHE)
+    unset(EE_WGPU_EXTRAS_INCLUDE_DIR CACHE)
+    unset(EE_WGPU_NATIVE_LIBRARY CACHE)
+    unset(EE_WGPU_NATIVE_DLL CACHE)
+    find_path(EE_WEBGPU_INCLUDE_DIR NAMES webgpu/webgpu.h
+        HINTS "${EE_WEBGPU_ROOT}/include" NO_DEFAULT_PATH REQUIRED)
+    find_path(EE_WGPU_EXTRAS_INCLUDE_DIR NAMES webgpu/wgpu.h
+        HINTS "${EE_WEBGPU_ROOT}/include" NO_DEFAULT_PATH REQUIRED)
+    find_library(EE_WGPU_NATIVE_LIBRARY NAMES wgpu_native
+        HINTS "${EE_WEBGPU_ROOT}/lib" NO_DEFAULT_PATH REQUIRED)
+    set(EE_NATIVE_WGSL_ROOT
+        "${CMAKE_SOURCE_DIR}/src/runtime/ps2_webgpu/gs/gpu")
+    foreach(shader IN ITEMS gs blit)
+        set(out "${CMAKE_CURRENT_BINARY_DIR}/ee_webgpu_${shader}_wgsl.cpp")
+        set(path "${EE_NATIVE_WGSL_ROOT}/${shader}.wgsl")
+        if(shader STREQUAL "gs")
+            set(symbol "kGsShader")
+        else()
+            set(symbol "kBlitShader")
+        endif()
+        add_custom_command(OUTPUT "${out}"
+            COMMAND "${CMAKE_COMMAND}"
+                "-DSRC=${path}" "-DOUT=${out}" "-DNAME=${symbol}"
+                -P "${CMAKE_SOURCE_DIR}/cmake/embed_native_wgsl.cmake"
+            DEPENDS "${path}" "${CMAKE_SOURCE_DIR}/cmake/embed_native_wgsl.cmake"
+            VERBATIM)
+        list(APPEND EE_NATIVE_WGSL_SOURCES "${out}")
+    endforeach()
+    add_library(ee_webgpu_native STATIC
+        src/runtime/ps2_webgpu/gs/gpu/gpu.cpp
+        src/runtime/ps2_webgpu/gs/swizzle.cpp
+        src/runtime/ee_webgpu_bridge.cpp
+        ${EE_NATIVE_WGSL_SOURCES})
+    target_compile_features(ee_webgpu_native PRIVATE cxx_std_20)
+    target_include_directories(ee_webgpu_native PRIVATE
+        "${EE_WEBGPU_INCLUDE_DIR}"
+        "${EE_WGPU_EXTRAS_INCLUDE_DIR}"
+        "${CMAKE_SOURCE_DIR}/src/runtime")
+    target_link_libraries(ee_webgpu_native PUBLIC "${EE_WGPU_NATIVE_LIBRARY}")
+    if(UNIX AND NOT APPLE)
+        target_link_libraries(ee_webgpu_native PUBLIC ${CMAKE_DL_LIBS} pthread m)
+    endif()
+    target_compile_definitions(ee_game_runner PRIVATE EE_ENABLE_WEBGPU=1)
+    target_link_libraries(ee_game_runner PRIVATE ee_webgpu_native)
+    if(WIN32)
+        find_file(EE_WGPU_NATIVE_DLL NAMES wgpu_native.dll
+            HINTS "${EE_WEBGPU_ROOT}/lib" "${EE_WEBGPU_ROOT}/bin")
+        if(EE_WGPU_NATIVE_DLL)
+            add_custom_command(TARGET ee_game_runner POST_BUILD
+                COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                    "${EE_WGPU_NATIVE_DLL}" "$<TARGET_FILE_DIR:ee_game_runner>"
+                VERBATIM)
+        endif()
+    endif()
+endif()
+
 if(MSVC)
     # This diagnostic runner has a large monolithic dispatch frame. Keep its
     # host stack reserve explicit instead of depending on the 1 MiB PE default.
@@ -228,6 +371,10 @@ target_link_libraries(ee_physical_bus_test PRIVATE ee_core)
 
 add_executable(ee_intc_test tests/smoke/ee_intc_test.cpp)
 target_link_libraries(ee_intc_test PRIVATE ee_core)
+
+add_executable(ee_dmac_gif_observer_test tests/smoke/ee_dmac_gif_observer_test.cpp)
+target_link_libraries(ee_dmac_gif_observer_test PRIVATE ee_core)
+add_test(NAME ee_dmac_gif_observer COMMAND ee_dmac_gif_observer_test)
 
 add_executable(ee_dmac_test tests/smoke/ee_dmac_test.cpp)
 target_link_libraries(ee_dmac_test PRIVATE ee_core)
@@ -250,8 +397,34 @@ target_link_libraries(ee_device_dma_test PRIVATE ee_core)
 add_executable(ee_gif_path3_test tests/smoke/ee_gif_path3_test.cpp)
 target_link_libraries(ee_gif_path3_test PRIVATE ee_core)
 
+add_executable(ee_vif1_chain_test tests/smoke/ee_vif1_chain_test.cpp)
+target_link_libraries(ee_vif1_chain_test PRIVATE ee_core)
+add_test(NAME ee_vif1_chain COMMAND ee_vif1_chain_test)
+
+add_executable(ee_vif1_device_test tests/smoke/ee_vif1_device_test.cpp)
+target_link_libraries(ee_vif1_device_test PRIVATE ee_core)
+add_test(NAME ee_vif1_device COMMAND ee_vif1_device_test)
+
+add_executable(ee_sdbz_dma_wait_probe_test tests/smoke/ee_sdbz_dma_wait_probe_test.cpp)
+target_link_libraries(ee_sdbz_dma_wait_probe_test PRIVATE ee_core)
+add_test(NAME ee_sdbz_dma_wait_probe COMMAND ee_sdbz_dma_wait_probe_test)
+
+add_executable(ee_gs_gif_diagnostics_test tests/smoke/ee_gs_gif_diagnostics_test.cpp)
+target_link_libraries(ee_gs_gif_diagnostics_test PRIVATE ee_core)
+add_test(NAME ee_gs_gif_diagnostics COMMAND ee_gs_gif_diagnostics_test)
+
 add_executable(ee_gs_state_test tests/smoke/ee_gs_state_test.cpp)
 target_link_libraries(ee_gs_state_test PRIVATE ee_core)
+
+# Compile the native GS event bridge with a fake GPU for CI,
+# without an adapter or wgpu-native.
+add_executable(ee_webgpu_bridge_test
+    tests/smoke/ee_webgpu_bridge_test.cpp
+    src/runtime/ee_webgpu_bridge.cpp)
+target_link_libraries(ee_webgpu_bridge_test PRIVATE ee_core)
+
+add_executable(ee_gs_display_test tests/smoke/ee_gs_display_test.cpp)
+target_link_libraries(ee_gs_display_test PRIVATE ee_core)
 
 add_executable(ee_gs_vram_test tests/smoke/ee_gs_vram_test.cpp)
 target_link_libraries(ee_gs_vram_test PRIVATE ee_core)
@@ -333,6 +506,9 @@ target_link_libraries(ee_control_flow_ir_fixture PRIVATE ee_core)
 add_executable(ee_compare_ir_fixture tests/smoke/compare_ir_fixture.cpp)
 target_link_libraries(ee_compare_ir_fixture PRIVATE ee_core)
 
+add_executable(ee_cop0_write_ir_fixture tests/smoke/cop0_write_ir_fixture.cpp)
+target_link_libraries(ee_cop0_write_ir_fixture PRIVATE ee_core)
+
 # R5900 single-precision FCC0 comparison normalization regression.
 add_executable(ee_fpu_compare_ir_fixture tests/smoke/fpu_compare_ir_fixture.cpp)
 target_link_libraries(ee_fpu_compare_ir_fixture PRIVATE ee_core)
@@ -351,13 +527,46 @@ if(Python3_Interpreter_FOUND)
 endif()
 
 enable_testing()
+
+# Offline synthetic bootstrap test: verifies pin, ZIP layout, cache reuse
+# and path safety; CI never downloads the SDK during this test.
 if(Python3_Interpreter_FOUND)
+    add_test(NAME ee_m2_dispatch_trace_analysis
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/tools/test_analyze_m2_dispatch_trace.py)
+    add_test(NAME ee_wgpu_native_sdk_bootstrap
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/tools/test_ensure_wgpu_native.py)
+endif()
+
+# Real wgpu-native compute execution, independent of browser or window.
+if(EE_ENABLE_WEBGPU)
+    add_executable(ee_webgpu_native_smoke
+        tests/smoke/ee_webgpu_native_smoke.cpp)
+    target_link_libraries(ee_webgpu_native_smoke PRIVATE ee_webgpu_native)
+    add_test(NAME ee_webgpu_native_smoke COMMAND ee_webgpu_native_smoke)
+    set_tests_properties(ee_webgpu_native_smoke
+        PROPERTIES SKIP_RETURN_CODE 77)
+endif()
+
+if(Python3_Interpreter_FOUND)
+    add_test(NAME ee_timing_differential
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/tools/test_ee_timing_differential.py)
+    add_test(NAME ee_issue_trace_export
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/tools/test_ee_issue_trace_export.py
+                $<TARGET_FILE:ee_issue_trace_candidate>
+                ${CMAKE_SOURCE_DIR}/tests/fixtures/ee_issue_trace_candidate.csv)
     add_test(NAME iop_module_path_discovery
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_iop_module_paths.py)
     add_test(NAME iop_disc_catalog
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_iop_disc_catalog.py)
+    add_test(NAME ps2_system_cnf_boot
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/tools/test_ps2_boot_elf.py)
     add_test(NAME boot_session_orchestration
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_boot_session.py)
@@ -422,16 +631,20 @@ add_test(NAME iop_sif_mmio_link COMMAND iop_sif_mmio_link_test)
 add_test(NAME iop_irx_loader COMMAND iop_irx_loader_test)
 add_test(NAME iop_irx_export_link COMMAND iop_irx_export_link_test)
 add_test(NAME iop_kernel COMMAND iop_kernel_test)
+add_test(NAME iop_kernel_hle_bridge COMMAND iop_kernel_hle_bridge_test)
 add_test(NAME iop_sifman_bridge COMMAND iop_sifman_bridge_test)
 add_test(NAME iop_sif_dma COMMAND iop_sif_dma_test)
 add_test(NAME iop_sif1_bridge COMMAND iop_sif1_bridge_test)
 add_test(NAME iop_sifcmd_bridge COMMAND iop_sifcmd_bridge_test)
 add_test(NAME iop_disc_loader COMMAND iop_disc_loader_test)
 add_test(NAME iop_cdvd COMMAND iop_cdvd_test)
+add_test(NAME iop_folder_sector_source COMMAND iop_folder_sector_source_test)
+add_test(NAME iop_cdvdman_bridge COMMAND iop_cdvdman_bridge_test)
 add_test(NAME iop_sif_rpc_bridge COMMAND iop_sif_rpc_bridge_test)
 add_test(NAME decoder COMMAND ee_decoder_test)
 add_test(NAME dispatcher COMMAND ee_dispatcher_test)
 add_test(NAME ee_dispatch_interrupt COMMAND ee_dispatch_interrupt_test)
+add_test(NAME ee_cop0_write COMMAND ee_cop0_write_test)
 add_test(NAME ee_memory_alias COMMAND ee_memory_alias_test)
 add_test(NAME ee_physical_bus COMMAND ee_physical_bus_test)
 add_test(NAME ee_intc COMMAND ee_intc_test)
@@ -443,6 +656,8 @@ add_test(NAME ee_tospr_chain COMMAND ee_tospr_chain_test)
 add_test(NAME ee_device_dma COMMAND ee_device_dma_test)
 add_test(NAME ee_gif_path3 COMMAND ee_gif_path3_test)
 add_test(NAME ee_gs_state COMMAND ee_gs_state_test)
+add_test(NAME ee_webgpu_bridge COMMAND ee_webgpu_bridge_test)
+add_test(NAME ee_gs_display COMMAND ee_gs_display_test)
 add_test(NAME ee_gs_vram COMMAND ee_gs_vram_test)
 add_test(NAME ee_gs_psmct24 COMMAND ee_gs_psmct24_test)
 add_test(NAME ee_gs_psmct16 COMMAND ee_gs_psmct16_test)
@@ -463,8 +678,14 @@ add_test(NAME ee_vu0_memory_map COMMAND ee_vu0_memory_map_test)
 add_test(NAME ee_unaligned_memory COMMAND ee_unaligned_memory_test)
 add_test(NAME vu0_runtime COMMAND ee_vu0_runtime_test)
 add_test(NAME vu0_macro_fmac COMMAND ee_vu0_macro_fmac_test)
+add_test(NAME ee_vu0_indexed_macro COMMAND ee_vu0_indexed_macro_test)
 add_test(NAME ee_vsync_flag COMMAND ee_vsync_flag_test)
 add_test(NAME ee_scanout_clock COMMAND ee_scanout_clock_test)
+add_test(NAME ee_issue_timing_probe COMMAND ee_issue_timing_probe_test)
+add_test(NAME ee_cycle_scheduler COMMAND ee_cycle_scheduler_test)
+add_test(NAME ee_issue_trace_replay COMMAND ee_issue_trace_replay_test)
+add_test(NAME ee_issue_trace_candidate COMMAND ee_issue_trace_candidate ${CMAKE_SOURCE_DIR}/tests/fixtures/ee_issue_trace_candidate.csv 1 3)
+set_tests_properties(ee_issue_trace_candidate PROPERTIES PASS_REGULAR_EXPRESSION "candidate_issue_cycles=8")
 add_test(NAME multi_function COMMAND ee_multi_test)
 add_test(NAME function_discovery COMMAND ee_function_discovery_test)
 add_test(NAME smoke COMMAND ee_smoke_test)
@@ -479,10 +700,20 @@ if(EE_HAVE_LLVM_JIT_TEST)
                 ${CMAKE_SOURCE_DIR}/tests/smoke/test_vu0_transfer_ir_runtime.py
                 $<TARGET_FILE:ee_vu0_transfer_ir_fixture>
                 $<TARGET_FILE:ee_vu0_jit_helpers>)
+    add_test(NAME vu0_quadword_ir_runtime
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/smoke/test_vu0_quadword_ir_runtime.py
+                $<TARGET_FILE:ee_vu0_transfer_ir_fixture>
+                $<TARGET_FILE:ee_cop0_jit_helpers>)
     add_test(NAME compare_ir_runtime
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/smoke/test_compare_ir_runtime.py
                 $<TARGET_FILE:ee_compare_ir_fixture>)
+    add_test(NAME cop0_write_ir_runtime
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/smoke/test_cop0_write_ir_runtime.py
+                $<TARGET_FILE:ee_cop0_write_ir_fixture>
+                $<TARGET_FILE:ee_cop0_jit_helpers>)
     add_test(NAME object_emission_and_dispatch
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_object_emission.py
@@ -490,6 +721,10 @@ if(EE_HAVE_LLVM_JIT_TEST)
                 ${CMAKE_SOURCE_DIR}/tools/verify_ir.py
                 ${CMAKE_SOURCE_DIR}/tools/link_native_objects.py
                 ${CMAKE_SOURCE_DIR})
+    add_test(NAME ee_timing_observer_ir_runtime
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/smoke/test_ee_timing_observer_ir_runtime.py
+                $<TARGET_FILE:ee_control_flow_ir_fixture>)
     add_test(NAME game_runner_end_to_end
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_game_runner.py

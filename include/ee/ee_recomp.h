@@ -74,6 +74,10 @@ struct s_recomp_options
     // If non-zero, emit only the function at this guest VA (ignores max_functions
     // for other entries; still discovers all entries for CFG bounds).
     uint32_t only_function = 0;
+    // Explicit batch of executable guest entry addresses. Loads ELF/discovery
+    // once and emits each requested entry to a separate IR module.
+    // Mutually exclusive with only_function and max_functions.
+    std::vector<uint32_t> only_functions;
     // LLVM optimisation level hint (0-3); currently logged only.
     int opt_level = 0;
     // Reuse a verified full-ELF discovery snapshot when emitting one function.

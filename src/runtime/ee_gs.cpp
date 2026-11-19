@@ -245,6 +245,13 @@ uint32_t c_ee_gs_state::psmt4_nibble_address(
     );
 }
 
+void c_ee_gs_state::bind_committed_event_observer(
+    void* user, t_committed_event_callback callback)
+{
+    m_committed_user = user;
+    m_committed_callback = callback;
+}
+
 const std::vector<uint8_t>& c_ee_gs_state::vram() const
 {
     return m_vram;
@@ -280,6 +287,36 @@ bool c_ee_gs_state::read_vram32(uint32_t offset, uint32_t& value) const
         return false;
     }
     value = read_le32(m_vram.data() + offset);
+    return true;
+}
+
+bool c_ee_gs_state::read_color_pixel(
+    uint32_t psm, uint32_t base, uint32_t fbw,
+    uint32_t x, uint32_t y, uint32_t& rgba
+) const
+{
+    // The GS display circuit uses color formats only. Refuse indexed and
+    // depth VRAM so a texture upload is never mislabelled a framebuffer.
+    if (fbw > 63u || base > 0x3fffu ||
+        x >= 2048u || y >= 2048u ||
+        (psm != 0u && psm != 1u && psm != 2u && psm != 0x0au))
+    {
+        return false;
+    }
+    // Match ps2-web-recomp's page_address(): a zero FBW has a minimum
+    // page stride of one, not an invalid read. SDBZ writes FBW=0 to
+    // DISPFB1/2 before its first VBlank. Preserve the actual register;
+    // normalize only the swizzled VRAM addressing used for readback.
+    const uint32_t stride = std::max(1u, fbw);
+    const uint32_t raw = read_pixel(m_vram, psm, base, stride, x, y);
+    uint32_t rgb = raw & 0x00ffffffu;
+    if (psm == 2u || psm == 0x0au)
+    {
+        rgb = ((raw & 0x001fu) << 3u) |
+              ((raw & 0x03e0u) << 6u) |
+              ((raw & 0x7c00u) << 9u);
+    }
+    rgba = rgb | 0xff000000u;
     return true;
 }
 
@@ -988,6 +1025,50 @@ bool c_ee_gs_state::stage_host_upload(
     return true;
 }
 
+void record_sprite_pair(s_ee_gs_state& state, uint64_t xyz1)
+{
+    const uint64_t prim = state.m_registers[0x00u];
+    // PRMODECONT selects whether the primitive's own flags or PRMODE's
+    // flags control rendering. The primitive type always comes from PRIM.
+    const uint64_t effective =
+        (state.m_registers[0x1au] & 1u) != 0u ? prim :
+        (prim & 7u) | (state.m_registers[0x1bu] & ~7ull);
+    const uint32_t context = static_cast<uint32_t>((effective >> 9u) & 1u);
+    s_ee_gs_sprite_sample sample{};
+    sample.m_index = ++state.m_total_sprite_pair_kicks;
+    sample.m_prim = prim;
+    sample.m_effective_prim = effective;
+    sample.m_rgbaq = state.m_registers[0x01u];
+    sample.m_xyz0 = state.m_pending_sprite_xyz0;
+    sample.m_xyz1 = xyz1;
+    sample.m_context = context;
+    sample.m_xyoffset = state.m_registers[0x18u + context];
+    sample.m_scissor = state.m_registers[0x40u + context];
+    sample.m_frame = state.m_registers[0x4cu + context];
+    sample.m_zbuf = state.m_registers[0x4eu + context];
+    sample.m_test = state.m_registers[0x47u + context];
+    if ((effective & (1u << 4u)) != 0u)
+    {
+        ++state.m_total_sprite_textured_kicks;
+    }
+    if ((sample.m_rgbaq & 0xffffffu) != 0u)
+    {
+        ++state.m_total_sprite_nonblack_rgb_kicks;
+    }
+
+    // Keep the beginning and trailing window, without allocation or
+    // scanning the unbounded guest stream. consume() copies the entire
+    // state transactionally; rejected DMA never commits either sample.
+    const size_t last = static_cast<size_t>(
+        (sample.m_index - 1u) % s_ee_gs_state::k_sprite_sample_capacity
+    );
+    state.m_recent_sprite_samples[last] = sample;
+    if (sample.m_index <= s_ee_gs_state::k_sprite_sample_capacity)
+    {
+        state.m_first_sprite_samples[last] = sample;
+    }
+}
+
 bool c_ee_gs_state::write_register(
     s_ee_gs_state& state, uint32_t reg, uint64_t value)
 {
@@ -1002,12 +1083,37 @@ bool c_ee_gs_state::write_register(
     {
     case 0x00u: // PRIM
         state.m_vertex_count = 0u;
+        state.m_pending_sprite_xyz0 = 0u;
+        ++state.m_total_prim_writes;
+        ++state.m_prim_type_counts[value & 7u];
         break;
     case 0x04u: // XYZF2
     case 0x05u: // XYZ2
+        ++state.m_vertex_count;
+        ++state.m_total_vertex_writes;
+        ++state.m_total_vertex_kicks;
+        if ((state.m_registers[0x00u] & 7u) == 6u)
+        {
+            if ((state.m_vertex_count & 1u) != 0u)
+            {
+                state.m_pending_sprite_xyz0 = value;
+            }
+            else
+            {
+                record_sprite_pair(state, value);
+            }
+        }
+        break;
     case 0x0cu: // XYZF3 (ADC)
     case 0x0du: // XYZ3 (ADC)
         ++state.m_vertex_count;
+        ++state.m_total_vertex_writes;
+        ++state.m_total_adc_vertices;
+        if ((state.m_registers[0x00u] & 7u) == 6u &&
+            (state.m_vertex_count & 1u) != 0u)
+        {
+            state.m_pending_sprite_xyz0 = value;
+        }
         break;
     case 0x01u: // RGBAQ
     case 0x02u: // ST
@@ -1300,6 +1406,7 @@ bool c_ee_gs_state::consume(
             }
             next.m_q_bits = 0x3f800000u;
             ++next.m_tag_count;
+            ++next.m_tag_format_counts[(e.m_word0 >> 58u) & 3u];
             break;
         case e_ee_gif_event_type::primitive:
             if ((offset & 15u) != 0u ||
@@ -1332,6 +1439,17 @@ bool c_ee_gs_state::consume(
             {
                 return false;
             }
+            ++next.m_total_packed_events;
+            ++next.m_packed_register_counts[e.m_register];
+            if (e.m_register == 0x0eu)
+            {
+                ++next.m_total_ad_events;
+                const uint32_t reg = static_cast<uint32_t>(e.m_word1 & 0xffu);
+                if (reg < next.m_ad_register_counts.size())
+                {
+                    ++next.m_ad_register_counts[reg];
+                }
+            }
             break;
         case e_ee_gif_event_type::reglist:
             if ((offset & 7u) != 0u ||
@@ -1342,6 +1460,7 @@ bool c_ee_gs_state::consume(
             {
                 return false;
             }
+            ++next.m_total_reglist_events;
             break;
         case e_ee_gif_event_type::image:
         {
@@ -1369,6 +1488,8 @@ bool c_ee_gs_state::consume(
                 data + static_cast<size_t>(offset + length)
             );
             next.m_image_qwc += e.m_qwc;
+            ++next.m_total_image_events;
+            next.m_total_image_qwc += e.m_qwc;
 
             if (!stage_host_upload(
                     next, writes, data + static_cast<size_t>(offset),
@@ -1391,7 +1512,18 @@ bool c_ee_gs_state::consume(
     {
         apply_vram_write(m_vram, write);
     }
+    if (count != 0u)
+    {
+        ++next.m_committed_gif_batches;
+    }
     m_state = std::move(next);
+    if (m_committed_callback != nullptr)
+    {
+        // Observer receives the already validated guest event stream.
+        // It has no success/failure return into the GIF or DMAC.
+        m_committed_callback(
+            m_committed_user, events, count, data, qwc);
+    }
     return true;
 }
 

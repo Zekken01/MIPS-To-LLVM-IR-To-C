@@ -12,9 +12,22 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 
-from iop_disc_catalog import build_catalog
+from iop_disc_catalog import build_catalog, reconcile_runtime_loadfile
+
+
+LINKED_COUNT_PATTERN = re.compile(
+    r"link_native_objects: PASS \((\d+) functions?,"
+)
+
+
+def read_function_count(path):
+    """Read how many guest functions were actually committed."""
+    report = read_report(path)
+    count = report.get("function_count")
+    return count if type(count) is int and count >= 0 else None
 
 
 REPLAY_PATTERN = re.compile(r"== Executing translated EE code \(replay (\d+)\) ==")
@@ -27,16 +40,92 @@ def read_report(path):
         return {}
 
 
-def run_session(command, log_path, append=False):
+class c_ll_file_progress:
+    """One in-place console counter; never emits progress into boot logs."""
+
+    def __init__(self, work, stream=None):
+        self.m_ir = Path(work) / "ir"
+        self.m_stream = sys.stdout if stream is None else stream
+        self.m_enabled = bool(getattr(self.m_stream, "isatty", lambda: False)())
+        self.m_last = None
+        self.m_visible = False
+        self.m_line_width = 0
+
+    def refresh(self):
+        if not self.m_enabled:
+            return
+        marker = self.m_ir / "ee_expected_ll_count.txt"
+        total = None
+        try:
+            if marker.is_file():
+                value = marker.read_text(encoding="ascii").strip()
+                if value.isdecimal():
+                    total = int(value)
+            if total is None or total <= 0:
+                report = read_report(self.m_ir / "ee_functions.json")
+                value = report.get("functions_discovered")
+                if type(value) is int and value > 0:
+                    total = value
+            if total is None or total <= 0:
+                return
+            current = sum(1 for _ in self.m_ir.glob("*.ll"))
+        except OSError:
+            return
+
+        # New runtime-discovered entries can extend the original static
+        # discovery total. Never display impossible progress (N > total).
+        total = max(total, current)
+        status = (current, total)
+        if status == self.m_last:
+            return
+        line = f"LLVM IR [{current}/{total}]"
+        self.m_stream.write("\r" + line +
+                            " " * max(0, self.m_line_width - len(line)))
+        self.m_stream.flush()
+        self.m_line_width = len(line)
+        self.m_visible = True
+        self.m_last = status
+
+    def finish_line(self):
+        if self.m_visible:
+            self.m_stream.write("\n")
+            self.m_stream.flush()
+            self.m_visible = False
+            self.m_line_width = 0
+
+
+def watch_ll_files(progress, stopped):
+    # At most four terminal updates per second. Filesystem scanning does
+    # not hash or open individual IR files; only completed .ll filenames
+    # are counted. All compiler output stays in the diagnostic log.
+    while not stopped.wait(0.25):
+        progress.refresh()
+
+
+def run_session(command, log_path, append=False, progress=None):
     started = time.monotonic()
-    result = subprocess.run(
-        [str(item) for item in command],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        errors="replace",
-        check=False,
-    )
+    stopped = threading.Event()
+    worker = None
+    if progress is not None and progress.m_enabled:
+        worker = threading.Thread(
+            target=watch_ll_files, args=(progress, stopped), daemon=True
+        )
+        worker.start()
+    try:
+        result = subprocess.run(
+            [str(item) for item in command],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors="replace",
+            check=False,
+        )
+    finally:
+        if worker is not None:
+            stopped.set()
+            worker.join()
+            progress.refresh()
+            progress.finish_line()
     output = result.stdout or ""
     with log_path.open("a" if append else "w", encoding="utf-8") as log:
         log.write("+ " + subprocess.list2cmdline([str(item) for item in command]) + "\n")
@@ -49,9 +138,25 @@ def main(argv=None):
     parser.add_argument("elf", type=Path)
     parser.add_argument("--work-dir", required=True, type=Path)
     parser.add_argument("--report", required=True, type=Path)
+    parser.add_argument(
+        "--gs-snapshot", type=Path,
+        help="Capture the final trace's real guest display buffer, if configured",
+    )
+    parser.add_argument(
+        "--gs-upload-snapshot", type=Path,
+        help="Capture final trace's completed GS upload, not a frame",
+    )
+    parser.add_argument(
+        "--gs-webgpu-snapshot", type=Path,
+        help="Capture final trace's native WebGPU raster (requires wgpu-native)",
+    )
     parser.add_argument("--expansion-passes", type=int, default=2)
     parser.add_argument("--expansion-per-pass", type=int, default=128)
     parser.add_argument("--no-recompile", action="store_true")
+    parser.add_argument(
+        "--ll-progress", action="store_true",
+        help="Show live in-place [completed/expected] .ll file count on a terminal",
+    )
     parser.add_argument(
         "--disc-root", type=Path,
         help="Extracted CD-ROM root (default: directory containing the ELF)",
@@ -140,8 +245,26 @@ def main(argv=None):
             flush=True,
         )
 
+    progress = c_ll_file_progress(work) if args.ll_progress else None
+    # Keep legacy run_session calls unchanged unless the console progress
+    # feature was explicitly requested. Diagnostic tools and tests use the
+    # existing three-argument interface without a progress keyword.
+    progress_kwargs = {"progress": progress} if progress is not None else {}
     expansion_log = work / "expansion.log"
     boot_log = work / "boot.log"
+    metadata_path = work / "ir" / "ee_functions.json"
+    snapshots = [
+        ("--gs-snapshot", args.gs_snapshot),
+        ("--gs-upload-snapshot", args.gs_upload_snapshot),
+        ("--gs-webgpu-snapshot", args.gs_webgpu_snapshot),
+    ]
+    requested_paths = [
+        path.resolve() for _, path in snapshots if path is not None
+    ]
+    if len(requested_paths) != len(set(requested_paths)) or any(
+            path in (report, expansion_log, boot_log, catalog_path)
+            for path in requested_paths):
+        parser.error("GS snapshot paths must be distinct from diagnostic outputs")
     expansion_log.write_text("", encoding="utf-8")
     base = [
         sys.executable, str(args.driver.resolve()), str(args.elf.resolve()),
@@ -158,18 +281,42 @@ def main(argv=None):
             f"(up to {args.expansion_per_pass} new functions) ===",
             flush=True,
         )
-        code, output, elapsed = run_session(command, expansion_log, append=True)
+        # Cache mode starts from a persisted count. Fresh translation
+        # creates its initial linked baseline before replay zero.
+        # A jump-table relink can compile many functions in one replay.
+        prior_count = read_function_count(metadata_path) if reuse else None
+        code, output, elapsed = run_session(
+            command, expansion_log, append=True, **progress_kwargs
+        )
         state = read_report(report)
         replays = REPLAY_PATTERN.findall(output)
         last_replay = int(replays[-1]) if replays else -1
         final_pc = state.get("final_pc")
         pc_text = f"0x{final_pc:08x}" if isinstance(final_pc, int) else "unknown"
-        print(
-            f"pass {index + 1}: replay={last_replay} "
-            f"dispatches={state.get('dispatches', '?')} "
-            f"stop={pc_text} exit={code} elapsed={elapsed:.2f}s",
-            flush=True,
+        if not reuse:
+            initial_links = LINKED_COUNT_PATTERN.findall(
+                output.split("== Executing translated EE code (replay ", 1)[0]
+            )
+            prior_count = int(initial_links[-1]) if initial_links else None
+        current_count = read_function_count(metadata_path)
+        added = (
+            current_count - prior_count
+            if prior_count is not None and current_count is not None and
+               current_count >= prior_count
+            else None
         )
+        added_text = str(added) if added is not None else "unknown"
+        summary = (
+            f"pass {index + 1}: replay={last_replay} "
+            f"new_functions={added_text} "
+            f"dispatches={state.get('dispatches', '?')} "
+            f"stop={pc_text} exit={code} elapsed={elapsed:.2f}s"
+        )
+        print(summary, flush=True)
+        # Preserve the cap decision in the uploaded expansion log too.
+        # stdout alone is not retained by the local launcher.
+        with expansion_log.open("a", encoding="utf-8") as log:
+            log.write("# " + summary + "\n")
 
         if code not in (0, 3, 4):
             shutil.copyfile(expansion_log, boot_log)
@@ -179,12 +326,16 @@ def main(argv=None):
             )
             return code
 
-        # A missing compiled guest function at the *last allowed replay*
-        # means the driver hit its bound before it could append that PC.
-        # Other failures (syscalls, non-executable PCs, timeouts or budget
-        # exhaustion) must not be blindly retried.
+        # The expansion cap counts newly emitted FUNCTIONS, not replays.
+        # Prefer the metadata delta; use the legacy replay sentinel only
+        # when the driver supplies no usable function-count metadata.
+        # Unknown guest stops must not trigger an unbounded retry.
+        hit_cap = (
+            added >= args.expansion_per_pass
+            if added is not None else last_replay == args.expansion_per_pass
+        )
         exhausted = (
-            code == 3 and last_replay == args.expansion_per_pass and
+            code == 3 and hit_cap and
             state.get("exit_reason") == 3 and
             state.get("dispatch_status") == 0 and
             isinstance(final_pc, int) and final_pc != 0
@@ -207,10 +358,37 @@ def main(argv=None):
     # repetitive dispatch logs, but the final snapshot must stay useful
     # for diagnosing the next kernel service or translation failure.
     print(f"=== Final traced replay: {boot_log} ===", flush=True)
-    code, _, elapsed = run_session(
-        [*base, "--no-recompile", "--auto-expand=0", "--trace"],
-        boot_log,
+    # Request images only for the FINAL traced boot, never for temporary
+    # auto-expansion replays. A missing image must not be a stale file from
+    # a previous local invocation.
+    final_command = [*base, "--no-recompile", "--auto-expand=0", "--trace"]
+    for option, path in snapshots:
+        if path is not None:
+            target = path.resolve()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.unlink(missing_ok=True)
+            final_command.append(f"{option}={target}")
+    code, final_output, elapsed = run_session(
+        final_command, boot_log, **progress_kwargs
     )
+    if catalog is not None:
+        try:
+            reconcile_runtime_loadfile(catalog, final_output)
+            catalog_path.write_text(
+                json.dumps(catalog, indent=2) + "\n", encoding="utf-8"
+            )
+            print(
+                f"IOP committed LOADFILE requests: "
+                f"{catalog['runtime_load_attempt_count']} attempts, "
+                f"{catalog['runtime_load_count']} successful module starts "
+                f"({catalog_path})",
+                flush=True,
+            )
+        except (ValueError, OSError) as exc:
+            # The original static catalog remains explicitly unobserved.
+            # Diagnostic parsing must not invent loads or abort EE boot.
+            print(f"IOP committed LOADFILE evidence unavailable: {exc}",
+                  file=sys.stderr, flush=True)
     state = read_report(report)
     final_pc = state.get("final_pc")
     pc_text = f"0x{final_pc:08x}" if isinstance(final_pc, int) else "unknown"

@@ -27,6 +27,12 @@ def run_case(fixture, temp_path, target, mode, initial_v0, expected):
     )
     assert match is not None, "native IR is missing its internal counter"
     offset = int(match.group(1))
+    reference_match = re.search(
+        r"%ref_counter_ptr = getelementptr i8, ptr %rt, i64 (\d+)", source
+    )
+    assert reference_match is not None, "missing reference interpreter slot counter"
+    reference_offset = int(reference_match.group(1))
+    assert reference_offset > offset, "reference counter must preserve existing ABI"
 
     module = llvm.parse_assembly(source)
     module.verify()
@@ -55,14 +61,22 @@ def run_case(fixture, temp_path, target, mode, initial_v0, expected):
     state.gpr[2].lo = initial_v0 & 0xffffffffffffffff
     if mode == "jr":
         state.gpr[2].lo = 0x00200000
-    runtime = ctypes.create_string_buffer(offset + 16)
+    runtime = ctypes.create_string_buffer(max(offset + 16, reference_offset + 8))
     issued = ctypes.c_uint64.from_buffer(runtime, offset)
+    reference_slots = ctypes.c_uint64.from_buffer(runtime, reference_offset)
     issued.value = 9
+    reference_slots.value = 7
     result = guest_fn(ctypes.pointer(state), ctypes.cast(runtime, ctypes.c_void_p))
     assert result == 3, f"{mode}: unexpected exit {result}"
     assert issued.value == expected + 9, (
         f"{mode}: expected {expected} attempted instructions, "
         f"observed {issued.value - 9}"
+    )
+    # The reference interpreter charges branch + reserved delay slot
+    # even when branch-likely annuls execution of the actual slot.
+    assert reference_slots.value == 9, (
+        f"{mode}: expected 2 reference interpreter slots, "
+        f"observed {reference_slots.value - 7}"
     )
 
     # The helper must also tolerate null runtime in existing JIT users.

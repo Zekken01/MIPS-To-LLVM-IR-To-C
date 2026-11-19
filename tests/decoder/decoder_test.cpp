@@ -33,6 +33,21 @@ int main()
            "slti", V);
     expect("sltiu", (0x0bu << 26) | (4u << 21) | (6u << 16) | 0xffffu,
            "sltiu", V);
+    // The R5900 standard table has LD at primary 0x37 only.
+    // In particular 0x38, though SC on some MIPS variants, is not
+    // a second LD encoding on PS2. Unknown selectors fail closed.
+    expect("ld primary", R(0x37, 4, 5, 0, 0, 0), "ld", V);
+    // SC is a defined MIPS opcode but deliberately unavailable on EE.
+    expect("0x38 EE-unsupported SC", R(0x38, 4, 5, 0, 0, 0), "sc", X);
+    expect("0x30 reserved", R(0x30, 4, 5, 0, 0, 0), "unknown", X);
+    expect("0x35 reserved", R(0x35, 4, 5, 0, 0, 0), "unknown", X);
+    expect("0x3d reserved", R(0x3d, 4, 5, 0, 0, 0), "unknown", X);
+    // SPECIAL 0x28/0x29 are real R5900 SA transfers, not UNKNOWN
+    // and not yet implemented; other reserved functs are INVALID.
+    expect("mfsa", R(0x00, 0, 0, 6, 0, 0x28), "mfsa", U);
+    expect("mtsa", R(0x00, 4, 0, 0, 0, 0x29), "mtsa", U);
+    expect("special reserved", R(0x00, 4, 5, 6, 0, 0x01),
+           "special_rsvd", X);
     // MMI groups: funct 0x08=MMI0, 0x28=MMI1, 0x09=MMI2, 0x29=MMI3; sub-op in sa.
     expect("paddw",   R(0x1c,4,5,6,0x00,0x08), "paddw",  V);
     expect("psubh",   R(0x1c,4,5,6,0x05,0x08), "psubh",  V);
@@ -45,6 +60,45 @@ int main()
     expect("pcpyud",  R(0x1c,4,5,6,0x0e,0x29), "pcpyud", V);
     // Verified from the US SDBZ ELF: PC 0x0018E154.
     expect("pcpyud SDBZ", 0x70491ba9u, "pcpyud", V);
+    {
+        // This exact SDBZ instruction was decoded VALID but lift() used
+        // to return LOP_UNSUPPORTED, producing a false coverage gap.
+        const auto ins = decode(0x0018e154u, 0x70491ba9u);
+        const bool ok = ins.valid == V &&
+                        lift(ins).kind == LOP_MMI_COPY_UPPER_D;
+        ok ? ++g_pass : ++g_fail;
+        if (!ok)
+        {
+            std::printf("FAIL SDBZ PCPYUD decode/lift/emitter classification\n");
+        }
+    }
+    // Every MMI encoding declared VALID must have a non-unsupported
+    // lifter kind; the LLVM emitter dispatches MMI using raw opcodes.
+    // Test both unary (rs=0) and binary (rs=4) forms exhaustively,
+    // including selector sub-opcodes that otherwise receive no unit test.
+    for (uint32_t funct = 0u; funct < 64u; ++funct)
+    {
+        for (uint32_t sa = 0u; sa < 32u; ++sa)
+        {
+            for (uint32_t rs : {0u, 4u})
+            {
+                const uint32_t word = R(0x1cu, rs, 5u, 6u, sa, funct);
+                const auto ins = decode(0x0018e154u, word);
+                if (ins.valid != V)
+                {
+                    continue;
+                }
+                const bool ok = lift(ins).kind != LOP_UNSUPPORTED;
+                ok ? ++g_pass : ++g_fail;
+                if (!ok)
+                {
+                    std::printf("FAIL VALID MMI unsupported by lifter: word=%08x "
+                                "funct=%02x sa=%02x rs=%u\n",
+                                word, funct, sa, rs);
+                }
+            }
+        }
+    }
     expect("mfhi1",   R(0x1c,0,0,6,0,0x10),    "mfhi1",  V);
     expect("mtlo1",   R(0x1c,4,0,0,0,0x13),    "mtlo1",  V);
     // Real ops that are NOT lowered exactly must never be VALID (previously a
@@ -155,16 +209,71 @@ int main()
     expect("cfc2",    R(0x12,2,4,6,0,0), "cfc2", V);
     expect("qmtc2",   R(0x12,5,4,6,0,0), "qmtc2", V);
     expect("ctc2",    R(0x12,6,4,6,0,0), "ctc2", V);
+
+    // Bit 0 is the actual VU0 transfer interlock, NOT a reserved bit.
+    for (uint32_t selector : {1u, 2u, 5u, 6u})
+    {
+        const char* names[4] = {"qmfc2.i", "cfc2.i", "qmtc2.i", "ctc2.i"};
+        const uint32_t index = selector == 1u ? 0u :
+            selector == 2u ? 1u : selector == 5u ? 2u : 3u;
+        const uint32_t word = R(0x12, selector, 4, 6, 0, 1);
+        const auto ins = decode(0x00173258, word);
+        const auto lifted = lift(ins);
+        const auto want = (selector == 1u || selector == 2u)
+            ? LOP_MFC2 : LOP_MTC2;
+        const bool ok = ins.valid == V &&
+            std::strcmp(ins.mnemonic, names[index]) == 0 &&
+            lifted.kind == want;
+        ok ? ++g_pass : ++g_fail;
+        if (!ok)
+        {
+            std::printf("FAIL COP2 .I transfer selector=%u word=%08x\n",
+                        selector, word);
+        }
+        // Other low bits remain reserved even if the interlock bit is set.
+        const char* base_names[4] = {"qmfc2", "cfc2", "qmtc2", "ctc2"};
+        expect("cop2 bit1 reserved",
+               R(0x12, selector, 4, 6, 0, 3), base_names[index], X);
+    }
+
+    // Cover all actual COP2 transfer opcodes reached by the SDBZ startup.
+    // The native emitter already runs these helpers; lifter coverage must
+    // agree rather than counting successful execution as UNSUPPORTED.
+    {
+        const uint32_t words[] =
+        {
+            0x48460800u, 0x48230800u, 0x48c50800u,
+            0x48220800u, 0x48c60800u, 0x48a30800u
+        };
+        const e_lift_op_kind expected[] =
+        {
+            LOP_MFC2, LOP_MFC2, LOP_MTC2,
+            LOP_MFC2, LOP_MTC2, LOP_MTC2
+        };
+        for (uint32_t i = 0u; i < 6u; ++i)
+        {
+            const auto inst = decode(0x00173258u + 4u * i, words[i]);
+            const bool ok = inst.valid == V &&
+                lift(inst).kind == expected[i];
+            ok ? ++g_pass : ++g_fail;
+            if (!ok)
+            {
+                std::printf("FAIL SDBZ COP2 transfer %u: %08x kind=%d\n",
+                            i, words[i], static_cast<int>(lift(inst).kind));
+            }
+        }
+    }
+
     // All four transfer forms reserve sa/funct. Do not classify malformed
     // words as merely unsupported valid instructions.
     expect("qmfc2 bad sa",   R(0x12,1,4,6,1,0), "qmfc2", X);
-    expect("qmfc2 bad funct",R(0x12,1,4,6,0,1), "qmfc2", X);
+    expect("qmfc2 bad funct",R(0x12,1,4,6,0,2), "qmfc2", X);
     expect("cfc2 bad sa",    R(0x12,2,4,6,1,0), "cfc2", X);
-    expect("cfc2 bad funct", R(0x12,2,4,6,0,1), "cfc2", X);
+    expect("cfc2 bad funct", R(0x12,2,4,6,0,2), "cfc2", X);
     expect("qmtc2 bad sa",   R(0x12,5,4,6,1,0), "qmtc2", X);
-    expect("qmtc2 bad funct",R(0x12,5,4,6,0,1), "qmtc2", X);
+    expect("qmtc2 bad funct",R(0x12,5,4,6,0,2), "qmtc2", X);
     expect("ctc2 bad sa",    R(0x12,6,4,6,1,0), "ctc2", X);
-    expect("ctc2 bad funct", R(0x12,6,4,6,0,1), "ctc2", X);
+    expect("ctc2 bad funct", R(0x12,6,4,6,0,2), "ctc2", X);
     expect("vadd",    R(0x12,0x10,4,5,0,0x28), "vu0_macro", U);
     expect("vadda",   R(0x12,0x10,4,5,0,0x3c), "vu0_macro", U); // SPECIAL2 index 0
 
@@ -196,6 +305,28 @@ int main()
             {
                 std::printf("FAIL SDBZ VU0 matrix macro %u: %08x -> %s/%d\\n",
                             index, matrix_words[index], inst.mnemonic, (int)inst.valid);
+            }
+        }
+    }
+
+    // The retail SDBZ COP2 opcode which blocked boot, followed by its
+    // three adjacent legal indexed VU0 memory variants.
+    {
+        const uint32_t words[] = {
+            0x4be10b7cu, 0x4be10b7du, 0x4be10b7eu, 0x4be10b7fu
+        };
+        const char* names[] = {"vlqi", "vsqi", "vlqd", "vsqd"};
+        for (uint32_t i = 0u; i < 4u; ++i)
+        {
+            const auto inst = decode(0x00173264u + i * 4u, words[i]);
+            const bool ok = inst.valid == V &&
+                std::strcmp(inst.mnemonic, names[i]) == 0 &&
+                lift(inst).kind == LOP_VU0_MACRO;
+            ok ? ++g_pass : ++g_fail;
+            if (!ok)
+            {
+                std::printf("FAIL SDBZ VU0 indexed macro %u: %08x -> %s/%d\n",
+                            i, words[i], inst.mnemonic, (int)inst.valid);
             }
         }
     }
@@ -264,7 +395,8 @@ int main()
         const uint32_t sa = index >> 2;
         const auto ins = decode(0x100000, R(0x12,0x10,0,0,sa,funct));
         const auto want = !defined ? X :
-            (index == 0x09u || index == 0x0au || index == 0x18u ? V : U);
+            (index == 0x09u || index == 0x0au || index == 0x18u ||
+             (index >= 0x34u && index <= 0x37u) ? V : U);
         const bool ok = ins.valid == want;
         ok ? ++g_pass : ++g_fail;
         if (!ok) std::printf("FAIL COP2 SPECIAL2 index=%02x valid=%u want=%u\n",
@@ -281,9 +413,9 @@ int main()
     }
     {
         const auto m = decode(0x100000, R(0x12,1,4,6,0,0));
-        const bool ok = lift(m).kind == LOP_UNSUPPORTED;
+        const bool ok = lift(m).kind == LOP_MFC2;
         ok ? ++g_pass : ++g_fail;
-        if (!ok) std::printf("FAIL qmfc2 must not silently lower to MFC2\n");
+        if (!ok) std::printf("FAIL qmfc2 must lift to existing transfer helper\n");
     }
 
     // COP1/COP0 validity is an emitter contract, not a claim that every
@@ -306,6 +438,7 @@ int main()
     expect("c.lt.fcc1", R(0x11,0x10,5,6,1,0x34), "cop1_s", U);
     expect("cvt.w.s", R(0x11,0x10,5,6,7,0x24), "cop1_s", V);
     expect("unknown.s", R(0x11,0x10,5,6,7,0x08), "cop1_reserved", X);
+    expect("unknown.s 0x1b", R(0x11,0x10,5,6,7,0x1b), "cop1_reserved", X);
     expect("cvt.s.w", R(0x11,0x14,0,6,7,0x20), "cvt_s_w", V);
     expect("bad.w", R(0x11,0x14,0,6,7,0x21), "cop1_reserved", X);
     expect("fmt.d", R(0x11,0x11,5,6,7,0x00), "cop1_reserved", X);

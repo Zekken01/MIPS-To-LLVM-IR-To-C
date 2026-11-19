@@ -139,8 +139,9 @@ enum class e_ee_opcode : uint16_t
     FUNCT_CVT_D_S   = 0x20,
 
     // COP2 VU0 primary rs-field selectors, cross-checked against the
-    // R5900 interpreter opcode table. QMFC2/QMTC2 move 128-bit values and are
-    // deliberately UNSUPPORTED until their full register semantics are lifted.
+    // R5900 interpreter opcode table. QMFC2/QMTC2 move 128-bit values and
+    // have native runtime helper lowering; other macro selectors are gated
+    // by the decoder's exact SPECIAL1/SPECIAL2 support table.
     COP2_QMFC2 = 0x01,
     COP2_CFC2  = 0x02,
     COP2_QMTC2 = 0x05,
@@ -201,6 +202,8 @@ enum class e_ee_opcode : uint16_t
     FUNCT_OR       = 0x25,
     FUNCT_XOR      = 0x26,
     FUNCT_NOR      = 0x27,
+    FUNCT_MFSA     = 0x28, // read R5900 shift amount register
+    FUNCT_MTSA     = 0x29, // write R5900 shift amount register
     FUNCT_SLT      = 0x2a,
     FUNCT_SLTU     = 0x2b,
     FUNCT_DADD     = 0x2c,

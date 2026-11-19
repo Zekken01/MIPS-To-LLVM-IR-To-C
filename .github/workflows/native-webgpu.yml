@@ -1,0 +1,76 @@
+name: Native WebGPU build
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-webgpu-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download pinned native WebGPU SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/_deps/wgpu-native
+          curl --fail --location --retry 3 https://github.com/gfx-rs/wgpu-native/releases/download/v29.0.1.1/wgpu-linux-x86_64-release.zip -o "$RUNNER_TEMP/wgpu-native.zip"
+          echo "95a4d90c071005a98d03eab348beaa6b07e16eb00d1dcdb9f8348f75eb97ec5a  $RUNNER_TEMP/wgpu-native.zip" | sha256sum --check
+          unzip -q "$RUNNER_TEMP/wgpu-native.zip" -d build/_deps/wgpu-native
+      - name: Configure native-only WebGPU
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DEE_ENABLE_WEBGPU=ON
+      - name: Assert native SDK lives under build/_deps
+        run: |
+          test -f build/_deps/wgpu-native/include/webgpu/webgpu.h
+          test -f build/_deps/wgpu-native/include/webgpu/wgpu.h
+          test -f build/_deps/wgpu-native/lib/libwgpu_native.a -o -f build/_deps/wgpu-native/lib/libwgpu_native.so -o -f build/_deps/wgpu-native/lib/libwgpu_native.so.0
+      - name: Install software Vulkan adapter
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq mesa-vulkan-drivers libvulkan1
+      - name: Compile native WebGPU renderer and smoke test
+        run: cmake --build build --target ee_game_runner ee_webgpu_native_smoke --parallel 2
+      - name: Run real native WebGPU compute readback
+        shell: bash
+        run: |
+          set -euo pipefail
+          icd=$(find /usr/share/vulkan/icd.d -name '*lvp*.json' -print -quit)
+          if [ -z "$icd" ]; then
+            echo "Mesa lavapipe Vulkan ICD is unavailable" >&2
+            exit 1
+          fi
+          export VK_ICD_FILENAMES="$icd"
+          export EE_WEBGPU_REQUIRE_ADAPTER=1
+          ctest --test-dir build -R ee_webgpu_native_smoke --output-on-failure
+
+  native-webgpu-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      # CMake configures the pinned SDK into build/_deps/wgpu-native.
+      # Deliberately exercise the same automatic provisioning as users.
+      - name: Activate installed MSVC toolchain
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Configure native MSVC WebGPU
+        shell: pwsh
+        run: cmake -S . -B build -G Ninja -DEE_ENABLE_WEBGPU=ON
+      - name: Assert native SDK lives under build/_deps
+        shell: pwsh
+        run: |
+          $root = 'build/_deps/wgpu-native'
+          foreach ($file in @('include/webgpu/webgpu.h', 'include/webgpu/wgpu.h', 'lib/wgpu_native.lib')) {
+            if (!(Test-Path (Join-Path $root $file))) {
+              throw "Missing build/_deps WebGPU dependency: $file"
+            }
+          }
+          if (!(Test-Path (Join-Path $root 'lib/wgpu_native.dll')) -and
+              !(Test-Path (Join-Path $root 'bin/wgpu_native.dll'))) {
+            throw 'Missing build/_deps WebGPU runtime DLL'
+          }
+      - name: Compile runner and native GPU smoke test
+        shell: pwsh
+        run: cmake --build build --target ee_game_runner ee_webgpu_native_smoke --config Release --parallel 2

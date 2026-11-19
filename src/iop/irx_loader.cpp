@@ -223,7 +223,8 @@ e_irx_load_result relocate(
 e_irx_load_result resolve_imports(
     std::vector<uint8_t>& staged,
     uint32_t base,
-    const t_irx_import_resolver& resolver
+    const t_irx_import_resolver& resolver,
+    s_irx_link_diagnostic* diagnostic
 )
 {
     for (size_t offset = 0u; offset + 20u <= staged.size();
@@ -259,6 +260,13 @@ e_irx_load_result resolve_imports(
             uint32_t target = 0u;
             if (!resolver || !resolver(library, ordinal, &target))
             {
+                if (diagnostic != nullptr)
+                {
+                    diagnostic->m_unresolved_library = library;
+                    diagnostic->m_unresolved_ordinal = ordinal;
+                    diagnostic->m_result =
+                        e_irx_load_result::unresolved_import;
+                }
                 return e_irx_load_result::unresolved_import;
             }
 
@@ -328,8 +336,26 @@ e_irx_load_result collect_exports(
             const uint32_t entry = read32(staged, at);
             if (entry == 0u)
             {
-                terminated = true;
-                break;
+                // Retail SDBZ exports have holes in the ordinal table:
+                // sio2man has unused #4/#27 but valid #5..#63.
+                // A zero is a hole only when the next word is another
+                // in-image callable pointer. Otherwise the table ends.
+                const size_t following = at + 4u;
+                uint32_t next = 0u;
+                if (valid_word(staged, following))
+                {
+                    next = read32(staged, following);
+                }
+                const uint32_t physical_next = next & 0x1fffffffu;
+                if (next == 0u || (next & 3u) != 0u ||
+                    physical_next < base ||
+                    static_cast<uint64_t>(physical_next) >=
+                        static_cast<uint64_t>(base) + staged.size())
+                {
+                    terminated = true;
+                    break;
+                }
+                continue;
             }
             const uint32_t physical = entry & 0x1fffffffu;
             if ((entry & 3u) != 0u ||
@@ -360,9 +386,14 @@ e_irx_load_result load_irx(
     uint32_t base,
     s_irx_module* module,
     const t_irx_import_resolver& resolver,
-    const t_irx_export_validator& validate_exports
+    const t_irx_export_validator& validate_exports,
+    s_irx_link_diagnostic* diagnostic
 )
 {
+    if (diagnostic != nullptr)
+    {
+        *diagnostic = {};
+    }
     if (module == nullptr)
     {
         return e_irx_load_result::invalid_module;
@@ -445,8 +476,18 @@ e_irx_load_result load_irx(
     {
         return e_irx_load_result::insufficient_ram;
     }
+    // Sony IOP IRX GP is an anchor for signed small-data offsets,
+    // not necessarily an address inside PT_LOAD. Retail SDBZ:
+    // SIO2MAN GP=0x8FB0, image=0x0FF0; PADMAN GP=0x10030,
+    // image=0x9C20. Check the translated address is addressable.
+    if (diagnostic != nullptr)
+    {
+        diagnostic->m_entry_offset = entry_offset;
+        diagnostic->m_gp_offset = gp_offset;
+        diagnostic->m_image_size = static_cast<uint32_t>(aligned);
+    }
     if (entry_offset >= total || (entry_offset & 3u) != 0u ||
-        gp_offset >= total)
+        static_cast<uint64_t>(base) + gp_offset >= c_cpu::k_ram_size)
     {
         return e_irx_load_result::invalid_module;
     }
@@ -467,7 +508,7 @@ e_irx_load_result load_irx(
         return result;
     }
 
-    result = resolve_imports(staged, base, resolver);
+    result = resolve_imports(staged, base, resolver, diagnostic);
     if (result != e_irx_load_result::success)
     {
         return result;
@@ -517,6 +558,10 @@ e_irx_load_result load_irx(
     module->m_entry = base + entry_offset;
     module->m_gp = base + gp_offset;
     module->m_exports = std::move(exports);
+    if (diagnostic != nullptr)
+    {
+        diagnostic->m_result = e_irx_load_result::success;
+    }
     return e_irx_load_result::success;
 }
 } // namespace iop

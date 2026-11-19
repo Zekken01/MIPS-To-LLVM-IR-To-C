@@ -3,23 +3,35 @@
 #include "ee_memory.h"
 #include "ee_ram_interpreter.h"
 #include "ee_hw_bus.h"
+#include "ee_host_timers.h"
+#include "ee_hot_loop_diagnostics.h"
+#include "ee_reached_isa_inventory.h"
 #include "ee_vsync_flags.h"
+#include "ee_sdbz_dma_wait_probe.h"
 #include "ee_gif.h"
 #include "ee_gs.h"
+#include "ee_gs_display.h"
+#ifdef EE_ENABLE_WEBGPU
+#include "ee_webgpu_bridge.h"
+#endif
 #include "elf_loader.h"
 #include "iop_kernel.h"
 #include "iop_cdvd.h"
+#include "iop_folder_sector_source.h"
+#include "iop_cdvdman_bridge.h"
 #include "iop_sifman_bridge.h"
 #include "iop_sif1_bridge.h"
 #include "iop_sif1_dma_transport.h"
 #include "iop_sif0_dma_transport.h"
 #include "iop_sifcmd_bridge.h"
+#include "iop_kernel_hle_bridge.h"
 #include "iop_disc_loader.h"
 #include "iop_sif_rpc_bridge.h"
 #include "iop_sif_mmio_link.h"
 
 #include <algorithm>
 #include <cerrno>
+#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -30,6 +42,7 @@
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -58,7 +71,66 @@ constexpr uint32_t k_instruction_trace_limit = 65536u;
 constexpr uint32_t k_kernel_syscall_table_base = 0x00001800u;
 constexpr uint32_t k_kernel_syscall_table_entries = 0x100u;
 
+// HLE IOP reboot may select an IOPRP ROMDIR image from the extracted
+// disc. Only actual mounted files are eligible; unknown ROM0 programs
+// or inaccessible images are not reported as successfully booted.
+bool validate_hle_iop_reboot(
+    const std::string& command_line,
+    const iop::c_folder_sector_source& sectors,
+    std::string* reason
+)
+{
+    if (reason == nullptr)
+    {
+        return false;
+    }
+    if (command_line.empty())
+    {
+        return true; // SifIopReset("", 0): default HLE kernel bootstrap.
+    }
+
+    std::istringstream arguments(command_line);
+    std::string loader;
+    arguments >> loader;
+    std::transform(
+        loader.begin(), loader.end(), loader.begin(),
+        [](unsigned char ch)
+        {
+            return static_cast<char>(std::tolower(ch));
+        }
+    );
+    if (loader != "rom0:udnl")
+    {
+        *reason = "unsupported IOP reset loader (expected rom0:UDNL)";
+        return false;
+    }
+
+    std::string path;
+    while (arguments >> path)
+    {
+        if (path == "-v")
+        {
+            continue;
+        }
+        const auto device_end = path.find(':');
+        if (device_end == std::string::npos ||
+            path.substr(0u, device_end) != "cdrom0")
+        {
+            *reason = "unsupported IOP reboot image device: " + path;
+            return false;
+        }
+        iop::s_folder_file_info image{};
+        if (!sectors.find_file(path, &image) || image.m_size == 0u)
+        {
+            *reason = "missing or invalid IOP reboot image: " + path;
+            return false;
+        }
+    }
+    return true;
+}
+
 using t_game_run = uint32_t (*)(
+
     ee::s_ee_cpu_state*,
     ee::s_ee_runtime*,
     uint32_t,
@@ -195,6 +267,49 @@ uint32_t runner_vu0_control(
     return static_cast<uint32_t>(ee::e_ee_vu0_sync_result::COMPLETE);
 }
 
+
+bool write_gs_ppm(
+    const char* path, const std::vector<uint32_t>& pixels,
+    uint32_t width, uint32_t height
+)
+{
+    if (path == nullptr || width == 0u || height == 0u ||
+        static_cast<uint64_t>(width) * height != pixels.size())
+    {
+        return false;
+    }
+    FILE* output = std::fopen(path, "wb");
+    if (output == nullptr)
+    {
+        return false;
+    }
+    bool success = std::fprintf(
+        output, "P6\n%u %u\n255\n", width, height) > 0;
+    for (uint32_t color : pixels)
+    {
+        const uint8_t rgb[3] =
+        {
+            static_cast<uint8_t>(color),
+            static_cast<uint8_t>(color >> 8u),
+            static_cast<uint8_t>(color >> 16u)
+        };
+        if (!success || std::fwrite(rgb, 1u, 3u, output) != 3u)
+        {
+            success = false;
+            break;
+        }
+    }
+    if (std::fclose(output) != 0)
+    {
+        success = false;
+    }
+    if (!success)
+    {
+        std::remove(path);
+    }
+    return success;
+}
+
 void usage(const char* program)
 {
     std::printf(
@@ -204,13 +319,18 @@ void usage(const char* program)
         "  --stack=0xADDR       Initial EE stack pointer (default 0x01fff000)\n"
         "  --loop-budget=N       Stop at a guest CFG loop after N header entries (0=off)\n"
         "  --loop-yield-resumes=N  Resume at most N host yields; requires loop-budget\n"
+        "  --ee-clock=off|reference-compat  HLE compatibility clock (default: reference-compat)\n"
         "  --sif-poll-limit=N    Diagnose N repeated IOP SMFLAG zero reads (0=off)\n"
         "  --iop-irx=FILE       Repeat in dependency order; last IRX starts by default\n"
         "  --iop-rom0=FILE      Boot caller-supplied 4 MiB PS2 BIOS ROM at BFC00000\n"
         "                        Also accepts SDBZ_IOP_ROM0 environment variable\n"
-        "  --disc-image=FILE    Attach a raw 2048-byte-sector ISO to CDVD\n"
+        "  --disc-image=FILE    Attach a raw 2048-byte-sector ISO to ROM0 CDVD\n"
+        "  --disc-folder=DIR    Mount extracted files for HLE IOP LOADFILE (no ISO)\n"
         "  --iop-start-all      Start all loaded IOP modules (default: last only)\n"
         "  --iop-quantum=N      Max R3000 instructions per SIF poll (default 256)\n"
+        "  --gs-snapshot=FILE   Read-only displayed GS VRAM PPM (not a frame)\n"
+        "  --gs-upload-snapshot=FILE  Preview completed GIF upload VRAM PPM (not a frame)\n"
+        "  --gs-webgpu-snapshot=FILE  Render actual native WebGPU GS raster to PPM (opt-in)\n"
         "  --trace              Print guest PC, reason and dispatch count per step\n"
         "  --trace-entry=0xPC   Print arguments and pointed-to words at a guest entry\n"
         "  --watch-word=0xADDR  Report guest word changes between native dispatches\n"
@@ -255,7 +375,7 @@ struct s_kernel_interrupt_handler
 
 struct s_cdvd_context
 {
-    std::unique_ptr<iop::c_iso_sector_source> m_source;
+    std::unique_ptr<iop::c_sector_source> m_source;
     std::unique_ptr<iop::c_cdvd_dma_transport> m_transport;
 };
 
@@ -344,6 +464,139 @@ struct s_dispatch_sample
     uint32_t m_status = 0;
 };
 
+const char* ee_cycle_source_name(ee::e_ee_cycle_source source)
+{
+    switch (source)
+    {
+    case ee::e_ee_cycle_source::VALIDATED_R5900:
+        return "validated_r5900";
+    case ee::e_ee_cycle_source::REFERENCE_COMPATIBILITY:
+        return "reference_compatibility";
+    default:
+        return "unavailable";
+    }
+}
+
+// This is a read-only summary of committed GIF PATH2/PATH3 work. It never
+// treats the current primitive's vertex count as an entire-boot total.
+void write_gs_sprite_sample_json(
+    FILE* output, const ee::s_ee_gs_sprite_sample& sample)
+{
+    std::fprintf(output,
+        "{\"index\": %llu, \"context\": %u, "
+        "\"prim\": \"0x%016llx\", \"effective_prim\": \"0x%016llx\", "
+        "\"rgbaq\": \"0x%016llx\", "
+        "\"xyz0\": \"0x%016llx\", \"xyz1\": \"0x%016llx\", "
+        "\"xyoffset\": \"0x%016llx\", \"scissor\": \"0x%016llx\", "
+        "\"frame\": \"0x%016llx\", \"zbuf\": \"0x%016llx\", "
+        "\"test\": \"0x%016llx\"}",
+        static_cast<unsigned long long>(sample.m_index),
+        sample.m_context,
+        static_cast<unsigned long long>(sample.m_prim),
+        static_cast<unsigned long long>(sample.m_effective_prim),
+        static_cast<unsigned long long>(sample.m_rgbaq),
+        static_cast<unsigned long long>(sample.m_xyz0),
+        static_cast<unsigned long long>(sample.m_xyz1),
+        static_cast<unsigned long long>(sample.m_xyoffset),
+        static_cast<unsigned long long>(sample.m_scissor),
+        static_cast<unsigned long long>(sample.m_frame),
+        static_cast<unsigned long long>(sample.m_zbuf),
+        static_cast<unsigned long long>(sample.m_test));
+}
+
+void write_gs_diagnostics_json(FILE* output, const ee::s_ee_gs_state& gs)
+{
+    std::fprintf(output,
+        "{\n    \"schema\": \"ee-m2-gif-gs-v1\","
+        "\n    \"scope\": \"committed_gif_paths_2_and_3\","
+        "\n    \"accepted_batches\": %llu,"
+        "\n    \"accepted_tags\": %llu,"
+        "\n    \"prim_writes_total\": %llu,"
+        "\n    \"vertex_writes_total\": %llu,"
+        "\n    \"vertex_kicks_total\": %llu,"
+        "\n    \"adc_vertices_total\": %llu,"
+        "\n    \"current_primitive_vertex_writes\": %llu,"
+        "\n    \"packed_events_total\": %llu,"
+        "\n    \"reglist_events_total\": %llu,"
+        "\n    \"ad_events_total\": %llu,"
+        "\n    \"image_events_total\": %llu,"
+        "\n    \"image_qwc_total\": %llu,"
+        "\n    \"image_qwc_current_transfer\": %u,"
+        "\n    \"pixels_current_transfer\": %u,"
+        "\n    \"tag_formats\": [",
+        static_cast<unsigned long long>(gs.m_committed_gif_batches),
+        static_cast<unsigned long long>(gs.m_tag_count),
+        static_cast<unsigned long long>(gs.m_total_prim_writes),
+        static_cast<unsigned long long>(gs.m_total_vertex_writes),
+        static_cast<unsigned long long>(gs.m_total_vertex_kicks),
+        static_cast<unsigned long long>(gs.m_total_adc_vertices),
+        static_cast<unsigned long long>(gs.m_vertex_count),
+        static_cast<unsigned long long>(gs.m_total_packed_events),
+        static_cast<unsigned long long>(gs.m_total_reglist_events),
+        static_cast<unsigned long long>(gs.m_total_ad_events),
+        static_cast<unsigned long long>(gs.m_total_image_events),
+        static_cast<unsigned long long>(gs.m_total_image_qwc),
+        gs.m_image_qwc, gs.m_transfer_pixels_written);
+    for (size_t i = 0u; i < gs.m_tag_format_counts.size(); ++i)
+    {
+        std::fprintf(output, "%s%llu", i ? ", " : "",
+            static_cast<unsigned long long>(gs.m_tag_format_counts[i]));
+    }
+    std::fputs("],\n    \"primitive_types\": [", output);
+    for (size_t i = 0u; i < gs.m_prim_type_counts.size(); ++i)
+    {
+        std::fprintf(output, "%s%llu", i ? ", " : "",
+            static_cast<unsigned long long>(gs.m_prim_type_counts[i]));
+    }
+    std::fputs("],\n    \"packed_registers\": [", output);
+    for (size_t i = 0u; i < gs.m_packed_register_counts.size(); ++i)
+    {
+        std::fprintf(output, "%s%llu", i ? ", " : "",
+            static_cast<unsigned long long>(gs.m_packed_register_counts[i]));
+    }
+    std::fputs("],\n    \"ad_registers\": [", output);
+    for (size_t i = 0u; i < gs.m_ad_register_counts.size(); ++i)
+    {
+        std::fprintf(output, "%s%llu", i ? ", " : "",
+            static_cast<unsigned long long>(gs.m_ad_register_counts[i]));
+    }
+    std::fprintf(output,
+        "],\n    \"sprite_pair_kicks_total\": %llu,"
+        "\n    \"sprite_textured_kicks_total\": %llu,"
+        "\n    \"sprite_nonblack_rgb_kicks_total\": %llu,"
+        "\n    \"sprite_samples_first\": [",
+        static_cast<unsigned long long>(gs.m_total_sprite_pair_kicks),
+        static_cast<unsigned long long>(gs.m_total_sprite_textured_kicks),
+        static_cast<unsigned long long>(gs.m_total_sprite_nonblack_rgb_kicks));
+    const uint64_t cap = ee::s_ee_gs_state::k_sprite_sample_capacity;
+    const size_t count = static_cast<size_t>(
+        gs.m_total_sprite_pair_kicks < cap ? gs.m_total_sprite_pair_kicks : cap
+    );
+    for (size_t i = 0u; i < count; ++i)
+    {
+        std::fputs(i == 0u ? "\n      " : ",\n      ", output);
+        write_gs_sprite_sample_json(output, gs.m_first_sprite_samples[i]);
+    }
+    std::fputs(count ? "\n    ],\n    \"sprite_samples_last\": [" :
+        "],\n    \"sprite_samples_last\": [", output);
+    const uint64_t first = gs.m_total_sprite_pair_kicks - count;
+    for (size_t i = 0u; i < count; ++i)
+    {
+        const uint64_t index = first + i;
+        std::fputs(i == 0u ? "\n      " : ",\n      ", output);
+        write_gs_sprite_sample_json(output,
+            gs.m_recent_sprite_samples[index % cap]);
+    }
+    std::fputs(count ? "\n    ],\n    \"limitations\": [" :
+        "],\n    \"limitations\": [", output);
+    std::fputs(
+        "\"does_not_include_unexecuted_vu1_path1_xgkick\", "
+        "\"does_not_imply_rasterization_or_present\", "
+        "\"samples_are_bounded_committed_path2_and_path3_sprite_pairs\", "
+        "\"coordinates_and_registers_are_uninterpreted_raw_gs_values\", "
+        "\"current_primitive_and_transfer_counters_reset\"]\n  }", output);
+}
+
 bool write_report(
     const char* path,
     const ee::elf_loader& image,
@@ -351,10 +604,16 @@ bool write_report(
     uint32_t entry,
     uint64_t dispatched,
     uint64_t instruction_attempts,
+    const ee::s_ee_runtime& runtime,
+    ee::c_ee_hw_bus& hardware,
+    const ee::c_ee_vsync_flags& vsync_flags,
     uint32_t reason,
     uint32_t status,
     const std::vector<s_dispatch_sample>& history,
     const std::vector<s_syscall_sample>& syscall_history,
+    const ee::s_ee_gs_state& gs,
+    const ee::c_ee_sdbz_dma_wait_probe& dma_wait_probe,
+    const ee::c_ee_dispatch_hotspots& hotspots,
     bool in_progress
 )
 {
@@ -391,6 +650,30 @@ bool write_report(
     }
     std::fprintf(output, ",\n  \"guest_instruction_attempts\": %llu",
                  static_cast<unsigned long long>(instruction_attempts));
+    // A zero clock is not proof of calibrated R5900 execution.
+    std::fprintf(output,
+        ",\n  \"ee_cycle_source\": \"%s\""
+        ",\n  \"ee_cycles\": %llu"
+        ",\n  \"reference_instruction_slots\": %llu"
+        ",\n  \"hle_timing_boundaries\": %llu"
+        ",\n  \"timing_observer_failed\": %s"
+        ",\n  \"scheduler_yields\": %llu"
+        ",\n  \"next_gs_field_cycle\": %llu"
+        ",\n  \"gs_fields_started\": %llu"
+        ",\n  \"gs_csr\": %llu"
+        ",\n  \"intc_stat\": %u, \"intc_mask\": %u"
+        ",\n  \"vsync_flag_address\": %u, \"vsync_csr_address\": %u",
+        ee_cycle_source_name(runtime.m_ee_cycle_scheduler.source()),
+        static_cast<unsigned long long>(runtime.m_ee_cycle_scheduler.current_cycle()),
+        static_cast<unsigned long long>(runtime.m_reference_instruction_slots),
+        static_cast<unsigned long long>(runtime.m_hle_timing_boundaries),
+        runtime.m_timing_observer_failed != 0u ? "true" : "false",
+        static_cast<unsigned long long>(runtime.m_ee_cycle_scheduler.scheduler_yields()),
+        static_cast<unsigned long long>(hardware.scanout().next_field_cycle()),
+        static_cast<unsigned long long>(hardware.scanout().fields_started()),
+        static_cast<unsigned long long>(hardware.scanout().csr()),
+        hardware.intc().status(), hardware.intc().mask(),
+        vsync_flags.flag_address(), vsync_flags.csr_address());
     std::fputs(",\n  \"gpr_lo\": [", output);
     for (uint32_t i = 0; i < 32; ++i)
     {
@@ -422,7 +705,14 @@ bool write_report(
             item.m_a0, item.m_a1, item.m_a2, item.m_a3,
             item.m_v0, item.m_returned ? "true" : "false");
     }
-    std::fputs(syscall_history.empty() ? "]\n}\n" : "\n  ]\n}\n", output);
+    std::fputs(syscall_history.empty() ? "]," : "\n  ],", output);
+    std::fputs("\n  \"m2_runtime\": ", output);
+    hotspots.write_json(output);
+    std::fputs(",\n  \"m2_gif_gs\": ", output);
+    write_gs_diagnostics_json(output, gs);
+    std::fputs(",\n  \"m2_sdbz_dma_wait\": ", output);
+    dma_wait_probe.write_json(output);
+    std::fputs("\n}\n", output);
     const bool no_write_error = std::ferror(output) == 0;
     const bool closed = std::fclose(output) == 0;
     const bool ok = no_write_error && closed;
@@ -535,9 +825,13 @@ int main(int argc, char** argv)
     const char* library_path = nullptr;
     bool trace = false;
     bool hle_startup = false;
+    bool compatibility_clock = true;
     bool kseg_ram = false;
     const char* kernel_ram_path = nullptr;
     const char* report_path = nullptr;
+    const char* gs_snapshot_path = nullptr;
+    const char* gs_upload_snapshot_path = nullptr;
+    const char* gs_webgpu_snapshot_path = nullptr;
     const char* instruction_trace_path = nullptr;
     uint32_t instruction_trace_first_pc = 0u;
     uint32_t instruction_trace_last_pc = 0xffffffffu;
@@ -545,6 +839,7 @@ int main(int argc, char** argv)
     std::vector<std::string> iop_irx_paths;
     const char* iop_rom0_path = nullptr;
     const char* disc_image_path = nullptr;
+    const char* disc_folder_path = nullptr;
     bool iop_start_all = false;
     uint32_t budget = k_default_dispatch_budget;
     uint32_t loop_budget = 0u;
@@ -608,6 +903,48 @@ int main(int argc, char** argv)
             trace = true;
             continue;
         }
+        if (argument.compare(0, 14, "--gs-snapshot=") == 0)
+        {
+            if (argument.size() == 14u || gs_snapshot_path != nullptr)
+            {
+                std::fprintf(stderr, "invalid or duplicate GS snapshot path\n");
+                return 2;
+            }
+            gs_snapshot_path = argv[i] + 14;
+            continue;
+        }
+        if (argument.compare(0, 21, "--gs-upload-snapshot=") == 0)
+        {
+            if (argument.size() == 21u || gs_upload_snapshot_path != nullptr)
+            {
+                std::fprintf(stderr,
+                    "invalid or duplicate GS upload snapshot path\n");
+                return 2;
+            }
+            gs_upload_snapshot_path = argv[i] + 21;
+            continue;
+        }
+        {
+            constexpr const char* k_prefix = "--gs-webgpu-snapshot=";
+            constexpr size_t k_prefix_len = sizeof("--gs-webgpu-snapshot=") - 1u;
+            if (argument.compare(0u, k_prefix_len, k_prefix) == 0)
+            {
+                if (argument.size() == k_prefix_len ||
+                    gs_webgpu_snapshot_path != nullptr)
+                {
+                    std::fprintf(stderr, "invalid or duplicate WebGPU snapshot path\n");
+                    return 2;
+                }
+#ifndef EE_ENABLE_WEBGPU
+                std::fprintf(stderr,
+                    "--gs-webgpu-snapshot requires -DEE_ENABLE_WEBGPU=ON "
+                    "and native wgpu-native\n");
+                return 2;
+#endif
+                gs_webgpu_snapshot_path = argv[i] + k_prefix_len;
+                continue;
+            }
+        }
         if (argument.compare(0, 9, "--report=") == 0)
         {
             if (argument.size() == 9)
@@ -636,6 +973,16 @@ int main(int argc, char** argv)
         if (argument == "--hle-startup")
         {
             hle_startup = true;
+            continue;
+        }
+        if (argument == "--ee-clock=off")
+        {
+            compatibility_clock = false;
+            continue;
+        }
+        if (argument == "--ee-clock=reference-compat")
+        {
+            compatibility_clock = true;
             continue;
         }
         if (argument.compare(0, 10, "--iop-irx=") == 0)
@@ -667,6 +1014,16 @@ int main(int argc, char** argv)
                 return 2;
             }
             disc_image_path = argv[i] + 13;
+            continue;
+        }
+        if (argument.compare(0, 14, "--disc-folder=") == 0)
+        {
+            if (argument.size() == 14u || disc_folder_path != nullptr)
+            {
+                std::fprintf(stderr, "invalid or duplicate disc folder path\n");
+                return 2;
+            }
+            disc_folder_path = argv[i] + 14;
             continue;
         }
         if (argument == "--iop-start-all")
@@ -800,8 +1157,10 @@ int main(int argc, char** argv)
         return 2;
     }
 
-    if (iop_rom0_path == nullptr)
+    if (iop_rom0_path == nullptr && disc_folder_path == nullptr)
     {
+        // The explicit folder HLE mode takes precedence over the legacy
+        // SDBZ_IOP_ROM0 environment. No BIOS file is required for the folder.
         // Host-only boot configuration: run_game.py can pass this
         // through unchanged without invalidating the existing EE
         // translation provenance / --no-recompile cache.
@@ -835,6 +1194,8 @@ int main(int argc, char** argv)
         (iop_start_all && iop_irx_paths.empty()) ||
         (iop_rom0_path != nullptr && !iop_irx_paths.empty()) ||
         (disc_image_path != nullptr && iop_rom0_path == nullptr) ||
+        (disc_folder_path != nullptr &&
+         (disc_image_path != nullptr || iop_rom0_path != nullptr)) ||
         stack >= k_ee_ram_size ||
         (has_trace_entry && (trace_entry & 3u) != 0u) ||
         (has_watch_word && (watch_word & 3u) != 0u) ||
@@ -842,6 +1203,23 @@ int main(int argc, char** argv)
     {
         usage(argv[0]);
         return 2;
+    }
+
+    if (disc_folder_path != nullptr)
+    {
+        std::error_code folder_error;
+        const std::filesystem::path folder(disc_folder_path);
+        if (!std::filesystem::is_directory(folder, folder_error) ||
+            folder_error ||
+            std::filesystem::is_symlink(
+                std::filesystem::symlink_status(folder, folder_error)) ||
+            folder_error)
+        {
+            std::fprintf(stderr,
+                "disc folder must be an existing, non-symlink directory: %s\n",
+                disc_folder_path);
+            return 2;
+        }
     }
 
     if (trace)
@@ -915,14 +1293,75 @@ int main(int argc, char** argv)
     ee::c_ee_hw_bus hardware;
     hardware.bind_cpu(&cpu);
     hardware.bind_memory(memory.get());
-    // Feed actual EE GIF DMA channel 2 payloads through the existing
-    // stateful PATH3 parser and GS register/VRAM consumer. DMA completion
-    // remains conditional on accepting the *real* transferred packet.
+    // Real channel-1 VIF packets and channel-2 GIF PATH3 DMA share
+    // the existing DMAC sink contract, but have different consumers.
+    // Both GIF paths deliver original GS events to the same state.
     ee::c_ee_gif_path3 gif_path3{};
+    ee::c_ee_gif_path3 gif_path2{};
+    ee::c_ee_gif_path3 gif_path1{};
+    ee::c_ee_vif1 vif1{};
     ee::c_ee_gs_state gs_state{};
     gif_path3.bind_event_sink(&gs_state, &ee::c_ee_gs_state::gif_events);
-    hardware.bind_device_transfer(&gif_path3, &ee::c_ee_gif_path3::dma_transfer);
+    gif_path2.bind_event_sink(&gs_state, &ee::c_ee_gs_state::gif_events);
+    gif_path1.bind_event_sink(&gs_state, &ee::c_ee_gs_state::gif_events);
+    vif1.bind_path2(&gif_path2);
+    vif1.bind_path1(&gif_path1);
+    hardware.bind_vif1(&vif1);
+
+    struct s_graphics_dma_routes
+    {
+        ee::c_ee_vif1* m_vif1 = nullptr;
+        ee::c_ee_gif_path3* m_path3 = nullptr;
+        bool m_rejection_logged = false;
+    };
+    s_graphics_dma_routes graphics_dma{&vif1, &gif_path3, false};
+    hardware.bind_device_transfer(
+        &graphics_dma,
+        [](void* user, uint32_t channel, const uint8_t* data,
+           uint32_t qwc) -> bool
+        {
+            s_graphics_dma_routes* routes =
+                static_cast<s_graphics_dma_routes*>(user);
+            bool accepted = false;
+            if (channel == 1u)
+            {
+                accepted = routes->m_vif1->consume(data, qwc);
+                if (!accepted && !routes->m_rejection_logged)
+                {
+                    const auto& diagnostic = routes->m_vif1->diagnostic();
+                    std::fprintf(stderr,
+                        "VIF1 native reject: reason=%u code=0x%08x "
+                        "pending_words=%u vu_pc=%04x vu_lo=%08x vu_hi=%08x\n",
+                        static_cast<uint32_t>(diagnostic.m_reason),
+                        diagnostic.m_code, diagnostic.m_pending_words,
+                        diagnostic.m_vu_pc, diagnostic.m_vu_lower,
+                        diagnostic.m_vu_upper);
+                    routes->m_rejection_logged = true;
+                }
+            }
+            else if (channel == 2u)
+            {
+                accepted = routes->m_path3->consume(data, qwc);
+            }
+            return accepted;
+        });
     hardware.bind_device_download(&gs_state, &ee::c_ee_gs_state::dma_download);
+
+#ifdef EE_ENABLE_WEBGPU
+    ee::c_ee_webgpu_bridge webgpu_bridge{};
+    if (gs_webgpu_snapshot_path != nullptr)
+    {
+        if (!webgpu_bridge.init())
+        {
+            std::fprintf(stderr,
+                "native WebGPU adapter or shader initialization failed\n");
+            return 2;
+        }
+        gs_state.bind_committed_event_observer(
+            &webgpu_bridge, &ee::c_ee_webgpu_bridge::committed_gif_events);
+        std::printf("GS native WebGPU: enabled, offscreen readback requested\n");
+    }
+#endif
 
     // Optional real guest IOP execution. This is a deterministic polling
     // rendezvous, NOT EE/IOP hardware cycle synchronization: the native
@@ -935,8 +1374,20 @@ int main(int argc, char** argv)
     std::unique_ptr<iop::c_sifcmd_bridge> iop_sifcmd;
     std::unique_ptr<iop::c_disc_loader> iop_disc;
     std::unique_ptr<iop::c_sif_rpc_bridge> iop_rpc;
+    std::unique_ptr<iop::c_kernel_hle_bridge> iop_hle;
+    uint64_t last_iop_rpc_sequence = 0u;
+    uint64_t observed_iop_rpc_calls = 0u;
+    uint32_t last_iop_rpc_server = 0u;
+    uint32_t last_iop_rpc_method = 0u;
+    uint32_t last_iop_rpc_result = 0u;
+    std::string last_iop_rpc_path;
     std::unique_ptr<s_cdvd_context> cdvd;
-    if (!iop_irx_paths.empty() || iop_rom0_path != nullptr)
+    std::unique_ptr<iop::c_cdvdman_bridge> iop_cdvdman;
+    const iop::c_folder_sector_source* folder_disc_source = nullptr;
+    bool hle_iop_reboot_bootstrap_pending = false;
+    bool hle_iop_reboot_ee_reset_seen = false;
+    if (!iop_irx_paths.empty() || iop_rom0_path != nullptr ||
+        disc_folder_path != nullptr)
     {
         iop_kernel = std::make_unique<iop::c_kernel>();
         if (iop_rom0_path != nullptr)
@@ -987,11 +1438,11 @@ int main(int argc, char** argv)
             if (disc_image_path != nullptr)
             {
                 cdvd = std::make_unique<s_cdvd_context>();
-                cdvd->m_source =
+                auto iso_source =
                     std::make_unique<iop::c_iso_sector_source>(
                     std::filesystem::path(disc_image_path)
                 );
-                if (!cdvd->m_source->valid())
+                if (!iso_source->valid())
                 {
                     std::fprintf(
                         stderr, "CDVD ISO must be readable and aligned to "
@@ -999,6 +1450,7 @@ int main(int argc, char** argv)
                     );
                     return 1;
                 }
+                cdvd->m_source = std::move(iso_source);
                 cdvd->m_transport =
                     std::make_unique<iop::c_cdvd_dma_transport>(
                         iop_kernel->cpu(), iop_kernel->hardware(),
@@ -1029,6 +1481,19 @@ int main(int argc, char** argv)
         // overwrite firmware-owned memory and create competing services.
         if (iop_rom0_path == nullptr)
         {
+            if (!iop_kernel->attach_hle_hardware())
+            {
+                std::fprintf(stderr, "IOP HLE MMIO attachment failed\n");
+                return 1;
+            }
+            iop_hle = std::make_unique<iop::c_kernel_hle_bridge>(
+                *iop_kernel);
+            if (!iop_hle->install())
+            {
+                std::fprintf(stderr,
+                             "IOP HLE kernel imports installation failed\n");
+                return 1;
+            }
             iop_sifcmd = std::make_unique<iop::c_sifcmd_bridge>(
                 *iop_kernel, hardware.sif()
             );
@@ -1040,11 +1505,57 @@ int main(int argc, char** argv)
             // LOADFILE is backed by actual game disc files, but nothing
             // is loaded until a guest-initialized IOP endpoint receives
             // a valid EE RPC packet through SIF1.
+            const std::filesystem::path disc_root =
+                disc_folder_path != nullptr
+                    ? std::filesystem::path(disc_folder_path)
+                    : std::filesystem::path(elf_path).parent_path();
             iop_disc = std::make_unique<iop::c_disc_loader>(
-                *iop_kernel, std::filesystem::path(elf_path).parent_path()
+                *iop_kernel, disc_root
             );
+            if (disc_folder_path != nullptr)
+            {
+                auto folder_source =
+                    std::make_unique<iop::c_folder_sector_source>(disc_root);
+                if (!folder_source->valid())
+                {
+                    std::fprintf(
+                        stderr, "[disc] invalid extracted media: %s\n",
+                        folder_source->error().c_str()
+                    );
+                    return 1;
+                }
+                // Only this explicit no-ROM0 folder mode publishes
+                // cdvdman HLE. Raw ISO firmware retains its own library.
+                iop_cdvdman = std::make_unique<iop::c_cdvdman_bridge>(
+                    *iop_kernel, *folder_source
+                );
+                if (!iop_cdvdman->install())
+                {
+                    std::fprintf(
+                        stderr, "IOP cdvdman search service install failed\n"
+                    );
+                    return 1;
+                }
+                folder_disc_source = folder_source.get();
+                cdvd = std::make_unique<s_cdvd_context>();
+                cdvd->m_source = std::move(folder_source);
+                cdvd->m_transport =
+                    std::make_unique<iop::c_cdvd_dma_transport>(
+                        iop_kernel->cpu(), iop_kernel->hardware(),
+                        *cdvd->m_source
+                    );
+                std::printf(
+                    "[disc] HLE folder mounted: %s "
+                    "(virtual ISO9660 sectors=%llu; direct LOADFILE paths)\n",
+                    disc_root.string().c_str(),
+                    static_cast<unsigned long long>(
+                        cdvd->m_source->sector_count())
+                );
+            }
             iop_rpc = std::make_unique<iop::c_sif_rpc_bridge>(
-                *iop_disc, *iop_sifcmd, *memory, hardware.dmac()
+                *iop_disc, *iop_kernel, *iop_sifcmd,
+                *memory, hardware.dmac(),
+                cdvd != nullptr ? cdvd->m_source.get() : nullptr
             );
             iop_sif1 = std::make_unique<iop::c_sif1_bridge>(
                 *memory, iop_kernel->cpu(), hardware.dmac(),
@@ -1059,10 +1570,33 @@ int main(int argc, char** argv)
                 std::fprintf(stderr, "IOP sifman service installation failed\n");
                 return 1;
             }
+            if (disc_folder_path != nullptr)
+            {
+                // HLE-first firmware replacement: the model starts its
+                // installed IOP kernel/SIFCMD services ready, matching
+                // ps2-web-recomp's SDBZ HLE bootstrap. This is not a
+                // guest-produced SMFLAG, IOP module load, or RPC reply.
+                if (!iop_sifcmd->initialize_hle_bootstrap())
+                {
+                    std::fprintf(
+                        stderr, "IOP HLE SIFCMD bootstrap failed\n"
+                    );
+                    return 1;
+                }
+                std::printf(
+                    "[iop] HLE bootstrap: sifcmd=ready "
+                    "subaddr=0x%08x smflag=0x00060000 "
+                    "(modeled HLE services; no IOP modules started)\n",
+                    iop::c_sifcmd_bridge::k_command_buffer
+                );
+            }
             iop_kernel->bind_syscall([&](iop::c_kernel& active, uint32_t service)
             {
-                return iop_sifman->handle_syscall(active, service) ||
-                       iop_sifcmd->handle_syscall(active, service);
+                return iop_hle->handle_syscall(active, service) ||
+                       iop_sifman->handle_syscall(active, service) ||
+                       iop_sifcmd->handle_syscall(active, service) ||
+                       (iop_cdvdman != nullptr &&
+                        iop_cdvdman->handle_syscall(active, service));
             });
         }
 
@@ -1158,13 +1692,33 @@ int main(int argc, char** argv)
         instruction_trace.resize(k_instruction_trace_limit);
     }
     ee::s_ee_runtime runtime{};
+    if (hle_startup && compatibility_clock)
+    {
+        if (!runtime.m_ee_cycle_scheduler.install_reference_compatibility_source())
+        {
+            std::fprintf(stderr, "EE compatibility clock installation failed\n");
+            return 1;
+        }
+        // ps2-web-recomp runs guest execution against an event budget.
+        // Preserve real safepoints for due GS fields; do not derive time
+        // from host dispatches, loop visits, or wall-clock duration.
+        if (loop_budget != 0u && loop_yield_resumes == 0u)
+        {
+            loop_yield_resumes = 256u;
+        }
+        std::printf("EE clock: reference-compatible guest-execution budget "
+                    "(approximate, not R5900 calibrated)\n");
+    }
     runtime.m_user = memory.get();
     runtime.m_vu0_state = &vu0;
     runtime.m_vu0_sync = runner_vu0_sync;
     runtime.m_vu0_control = runner_vu0_control;
-    runtime.m_mmio_user = &hardware;
-    runtime.m_mmio_read = &ee::c_ee_hw_bus::mmio_read;
-    runtime.m_mmio_write = &ee::c_ee_hw_bus::mmio_write;
+    // The timers share the hardware MMIO bus but own their clocked state
+    // in this host runner, leaving cached translated IR unchanged.
+    ee::c_ee_host_timers host_timers(&runtime, &hardware);
+    runtime.m_mmio_user = &host_timers;
+    runtime.m_mmio_read = &ee::c_ee_host_timers::mmio_read;
+    runtime.m_mmio_write = &ee::c_ee_host_timers::mmio_write;
     runtime.m_loop_safepoint_limit = loop_budget;
     runtime.m_loop_safepoint_remaining = loop_budget;
     runtime.m_loop_safepoint_yield_enabled = loop_yield_resumes != 0u ? 1u : 0u;
@@ -1254,6 +1808,11 @@ int main(int argc, char** argv)
     // Guest-visible 0x73 SetVSyncFlag pointer registration. Event delivery
     // is not implied; this runner has no real GS vertical-blank producer yet.
     ee::c_ee_vsync_flags vsync_flags{};
+
+    // The ELF-derived red-clear loop is a *failure* path entered after
+    // waiting for two command-buffer flags. Record one before/after state
+    // pair without reading MMIO, changing RAM, or issuing any completion.
+    ee::c_ee_sdbz_dma_wait_probe dma_wait_probe{};
 
     struct s_kernel_thread
     {
@@ -1366,21 +1925,22 @@ int main(int argc, char** argv)
     uint32_t callback_resume_pc = 0u;
     ee::s_ee_u128 callback_saved_ra{};
 
-    // The HLE EE kernel dispatches *registered guest* DMAC callbacks at
-    // native safepoints. DMA5's pending level originates only from the
-    // hardware-backed IOP DMA9 -> FIFO -> EE DMA5 transport; the host
-    // does not fabricate any completion, response or guest memory flag.
-    bool dmac_callback_active = false;
-    uint32_t dmac_callback_channel = 0u;
-    size_t dmac_callback_index = 0u;
-    std::vector<s_kernel_interrupt_handler> dmac_callback_handlers;
-    ee::s_ee_cpu_state dmac_interrupted_cpu{};
-    ee::s_ee_vu0_state dmac_interrupted_vu0{};
-    constexpr uint32_t k_dmac_kernel_stack = 0x8007fff0u;
-    const auto enter_dmac_callback = [&](const s_kernel_interrupt_handler& handler)
+    // HLE EE kernel dispatches registered guest INTC/DMAC callbacks at
+    // native safepoints. DMA5 pending comes from real IOP DMA transport;
+    // INTC pending comes from masked hardware status, including scanout.
+    // Neither path fabricates callbacks, completion or guest flags.
+    bool irq_callback_active = false;
+    bool irq_callback_is_intc = false;
+    uint32_t irq_callback_cause = 0u;
+    size_t irq_callback_index = 0u;
+    std::vector<s_kernel_interrupt_handler> irq_callback_handlers;
+    ee::s_ee_cpu_state irq_interrupted_cpu{};
+    ee::s_ee_vu0_state irq_interrupted_vu0{};
+    constexpr uint32_t k_irq_kernel_stack = 0x8007fff0u;
+    const auto enter_irq_callback = [&](const s_kernel_interrupt_handler& handler)
     {
-        cpu.m_cop0[12] = (dmac_interrupted_cpu.m_cop0[12] & ~0x10001u) | 2u;
-        cpu.m_gpr[4] = {dmac_callback_channel, 0u};
+        cpu.m_cop0[12] = (irq_interrupted_cpu.m_cop0[12] & ~0x10001u) | 2u;
+        cpu.m_gpr[4] = {irq_callback_cause, 0u};
         cpu.m_gpr[5] = {handler.m_arg, 0u};
         cpu.m_gpr[6] = {0u, 0u};
         cpu.m_gpr[7] = {0u, 0u};
@@ -1390,7 +1950,7 @@ int main(int argc, char** argv)
         }
         cpu.m_gpr[29] = {
             static_cast<uint64_t>(static_cast<int64_t>(
-                static_cast<int32_t>(k_dmac_kernel_stack))), 0u
+                static_cast<int32_t>(k_irq_kernel_stack))), 0u
         };
         cpu.m_gpr[31] = {static_cast<uint64_t>(-16ll), 0u};
         cpu.m_pc = handler.m_address;
@@ -1398,10 +1958,21 @@ int main(int argc, char** argv)
             ee::e_ee_exit_reason::EE_EXIT_DISPATCH);
         if (trace)
         {
-            std::printf("HLE DMAC callback enter: channel=%u "
-                        "handler=0x%08x arg=0x%08x gp=0x%08x\n",
-                        dmac_callback_channel, handler.m_address,
-                        handler.m_arg, handler.m_gp);
+            if (irq_callback_is_intc)
+            {
+                std::printf("HLE INTC callback enter: cause=%u "
+                            "handler=0x%08x arg=0x%08x gp=0x%08x\n",
+                            irq_callback_cause, handler.m_address,
+                            handler.m_arg, handler.m_gp);
+            }
+            else
+            {
+                // Keep the established ROM0/DMA5 diagnostic contract.
+                std::printf("HLE DMAC callback enter: channel=%u "
+                            "handler=0x%08x arg=0x%08x gp=0x%08x\n",
+                            irq_callback_cause, handler.m_address,
+                            handler.m_arg, handler.m_gp);
+            }
         }
     };
     std::vector<s_syscall_sample> syscall_history;
@@ -1424,6 +1995,7 @@ int main(int argc, char** argv)
     // diagnostic/scheduling guard, never a synthetic signal.
     uint32_t iop_semaphore_wait_turns = 0u;
     uint64_t iop_semaphore_wait_last_sif0 = 0u;
+    ee::c_ee_dispatch_hotspots hotspots;
     std::vector<s_dispatch_sample> history;
     if (report_path != nullptr)
     {
@@ -1470,6 +2042,16 @@ int main(int argc, char** argv)
     uint32_t slowest_native_pc = 0u;
     while (remaining != 0)
     {
+        // This catches HLE handoffs and interpreter observations that
+        // returned via a host continuation rather than native dispatch.
+        if (runtime.m_timing_observer_failed != 0u)
+        {
+            std::fprintf(stderr,
+                "EE timing observer refused an event "
+                "(guest execution halted, no hardware timing inferred)\n");
+            return 1;
+        }
+
         // Kernel HLE services completed device interrupts before handing
         // control back to its main thread. There is no synthetic DMA
         // status: only actual masked D_STAT completion bits can enter here.
@@ -1477,7 +2059,7 @@ int main(int argc, char** argv)
         // Its syscall exception keeps EXL set, but the kernel must still
         // enter the registered DMA callback that supplies iSignalSema.
         const bool external_iop_wait = iop_semaphore_wait_turns != 0u;
-        if (hle_startup && !dmac_callback_active && !callback_active &&
+        if (hle_startup && !irq_callback_active && !callback_active &&
             (ee::ee_interrupts_enabled(&cpu) || external_iop_wait) &&
             hardware.dmac().pending() != 0u)
         {
@@ -1494,25 +2076,25 @@ int main(int argc, char** argv)
                 status = 0u;
                 break;
             }
-            dmac_callback_handlers.clear();
+            irq_callback_handlers.clear();
             for (const s_kernel_interrupt_handler& handler : dmac_handlers)
             {
                 if (handler.m_cause == channel)
                 {
-                    dmac_callback_handlers.push_back(handler);
+                    irq_callback_handlers.push_back(handler);
                 }
             }
             if (trace)
             {
                 std::printf("HLE DMAC IRQ: channel=%u pending=0x%08x "
                             "handlers=%zu\n", channel, pending,
-                            dmac_callback_handlers.size());
+                            irq_callback_handlers.size());
             }
-            if (dmac_callback_handlers.empty())
+            if (irq_callback_handlers.empty())
             {
                 continue;
             }
-            if (!memory->contains(k_dmac_kernel_stack - 0x1000u, 0x1000u))
+            if (!memory->contains(k_irq_kernel_stack - 0x1000u, 0x1000u))
             {
                 std::fprintf(stderr,
                     "HLE DMAC callback refused unmapped kernel stack\n");
@@ -1521,12 +2103,13 @@ int main(int argc, char** argv)
                 status = 0u;
                 break;
             }
-            dmac_interrupted_cpu = cpu;
-            dmac_interrupted_vu0 = vu0;
-            dmac_callback_channel = channel;
-            dmac_callback_index = 0u;
-            dmac_callback_active = true;
-            enter_dmac_callback(dmac_callback_handlers[dmac_callback_index++]);
+            irq_interrupted_cpu = cpu;
+            irq_interrupted_vu0 = vu0;
+            irq_callback_is_intc = false;
+            irq_callback_cause = channel;
+            irq_callback_index = 0u;
+            irq_callback_active = true;
+            enter_irq_callback(irq_callback_handlers[irq_callback_index++]);
             continue;
         }
         if (report_path != nullptr &&
@@ -1547,7 +2130,9 @@ int main(int argc, char** argv)
             const bool report_ok = write_report(
                 report_path, image, cpu, entry, dispatched,
                 runtime.m_guest_instruction_attempts,
-                reason, status, history, syscall_history, true
+                runtime, hardware, vsync_flags,
+                reason, status, history, syscall_history, gs_state.state(),
+                dma_wait_probe, hotspots, true
             );
             report_time_ms += std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - report_start
@@ -1572,7 +2157,8 @@ int main(int argc, char** argv)
             const ee::s_ee_ram_execution result =
                 ee::ee_execute_ram_callback(
                     &cpu, memory.get(), ram_entry,
-                    k_callback_return_pc, k_ram_instruction_budget
+                    k_callback_return_pc, k_ram_instruction_budget,
+                    &runtime
                 );
             if (result.m_result != ee::e_ee_ram_result::RETURNED)
             {
@@ -1620,6 +2206,33 @@ int main(int argc, char** argv)
         }
 
         const uint32_t from_pc = cpu.m_pc;
+        if (report_path != nullptr &&
+            dma_wait_probe.observe(
+                from_pc, dispatched + 1u, current_thread_id,
+                memory.get(), &hardware.dmac()))
+        {
+            const bool newly_pending =
+                from_pc == ee::c_ee_sdbz_dma_wait_probe::k_wait_pc &&
+                dma_wait_probe.pending_wait().m_observed &&
+                dma_wait_probe.pending_wait().m_dispatch == dispatched + 1u;
+            const auto& sample = newly_pending ?
+                dma_wait_probe.pending_wait() :
+                from_pc == ee::c_ee_sdbz_dma_wait_probe::k_wait_pc ?
+                dma_wait_probe.wait() : dma_wait_probe.red_loop();
+            std::printf(
+                "EE SDBZ command wait snapshot: dispatch=%llu pc=0x%08x "
+                "slot=%u flags=[0x%08x,0x%08x] "
+                "vif1=[chcr=%08x madr=%08x qwc=%u tadr=%08x] "
+                "dstat=%08x pending=%08x "
+                "(read-only; completion producer unproven)\n",
+                static_cast<unsigned long long>(sample.m_dispatch),
+                sample.m_pc, sample.selected_slot(),
+                sample.flag0(), sample.flag1(),
+                sample.m_vif1_chcr, sample.m_vif1_madr,
+                sample.m_vif1_qwc, sample.m_vif1_tadr,
+                sample.m_dmac_status, sample.m_dmac_pending
+            );
+        }
         if (has_trace_entry && from_pc == trace_entry)
         {
             const uint32_t a0 = static_cast<uint32_t>(cpu.m_gpr[4].m_lo);
@@ -1716,6 +2329,13 @@ int main(int argc, char** argv)
         // with LOOP_BUDGET if this count is exhausted.
         runtime.m_loop_safepoint_remaining = runtime.m_loop_safepoint_limit;
         reason = native_run(&cpu, &runtime, slice, &count, &out_pc, &status);
+        if (runtime.m_timing_observer_failed != 0u)
+        {
+            std::fprintf(stderr,
+                "EE timing observation producer rejected native instruction "
+                "(no hardware event published)\n");
+            return 1;
+        }
         if (report_path != nullptr)
         {
             const double duration_ms = std::chrono::duration<double, std::milli>(
@@ -1737,6 +2357,30 @@ int main(int argc, char** argv)
 
         dispatched += count;
         remaining -= count;
+        // Model ps2-web-recomp's execution-budget/event architecture using
+        // reached guest instructions as approximate budget units. This is
+        // deliberately not a pipeline, cache, or HLE timing calibration.
+        if (runtime.m_ee_cycle_scheduler.source() ==
+            ee::e_ee_cycle_source::REFERENCE_COMPATIBILITY &&
+            !runtime.m_ee_cycle_scheduler.publish_cycle(
+                runtime.m_guest_instruction_attempts))
+        {
+            std::fprintf(stderr, "EE compatibility cycle publication rejected\n");
+            return 1;
+        }
+        // Service guest-programmed timer compare/overflow events against
+        // the same reached-instruction compatibility clock as scanout.
+        // Timer COUNT reads inside a long native loop sample the live
+        // instruction budget rather than this after-dispatch checkpoint.
+        host_timers.service();
+        const auto scanout_result = runtime.m_ee_cycle_scheduler.service_scanout(
+            hardware, vsync_flags, *memory);
+        if (scanout_result == ee::e_ee_scheduled_event_result::INVALID_TIMESTAMP_OR_DELIVERY)
+        {
+            std::fprintf(stderr, "EE scheduler rejected scanout delivery at cycle=%llu\n",
+                static_cast<unsigned long long>(runtime.m_ee_cycle_scheduler.current_cycle()));
+            return 1;
+        }
         if (has_watch_word && count != 0u)
         {
             const uint32_t watched_after = memory->read32(watch_word);
@@ -1781,6 +2425,21 @@ int main(int argc, char** argv)
                 history.erase(history.begin());
             }
             history.push_back({dispatched, from_pc, out_pc, reason, status});
+            // Host read-only observations, not synthetic guest events.
+            const auto gif_channel = hardware.dmac().gif_channel_state();
+            const ee::s_ee_hot_loop_state state{
+                current_thread_id,
+                cpu.m_cop0[12], cpu.m_cop0[13],
+                hardware.intc().status(), hardware.intc().mask(),
+                hardware.dmac().status(), hardware.dmac().pending(),
+                gif_channel.m_chcr, gif_channel.m_madr,
+                gif_channel.m_qwc, gif_channel.m_tadr,
+                hardware.dmac().gif_trace_count(),
+                static_cast<uint32_t>(hardware.dmac().gif_last_reject()),
+                hardware.scanout().fields_started(), hardware.scanout().csr(),
+                last_iop_rpc_sequence
+            };
+            hotspots.record(dispatched, from_pc, out_pc, state);
         }
 
         if (report_path != nullptr &&
@@ -1823,6 +2482,7 @@ int main(int argc, char** argv)
                 break;
             }
             ++completed_loop_yields;
+            runtime.m_ee_cycle_scheduler.record_scheduler_yield();
             if (trace)
             {
                 std::printf("EE host loop resume: count=%u/%u pc=0x%08x "
@@ -1837,7 +2497,7 @@ int main(int argc, char** argv)
 
         // A bounded one-dispatch slice reports DISPATCH_LIMIT even when
         // the translated callback just returned to the synthetic sentinel.
-        if (dmac_callback_active &&
+        if (irq_callback_active &&
             count != 0u &&
             cpu.m_pc == k_callback_return_pc &&
             status != 2u &&
@@ -1845,18 +2505,18 @@ int main(int argc, char** argv)
              reason == static_cast<uint32_t>(ee::e_ee_exit_reason::EE_EXIT_DISPATCH)))
         {
             const int32_t result = static_cast<int32_t>(cpu.m_gpr[2].m_lo);
-            if (result >= 0 && dmac_callback_index < dmac_callback_handlers.size())
+            if (result >= 0 && irq_callback_index < irq_callback_handlers.size())
             {
-                enter_dmac_callback(dmac_callback_handlers[dmac_callback_index++]);
+                enter_irq_callback(irq_callback_handlers[irq_callback_index++]);
                 continue;
             }
-            cpu = dmac_interrupted_cpu;
-            vu0 = dmac_interrupted_vu0;
+            cpu = irq_interrupted_cpu;
+            vu0 = irq_interrupted_vu0;
             hardware.intc().bind_cpu(&cpu);
             hardware.dmac().bind_cpu(&cpu);
-            dmac_callback_active = false;
-            dmac_callback_handlers.clear();
-            if (iop_semaphore_wait_turns != 0u)
+            irq_callback_active = false;
+            irq_callback_handlers.clear();
+            if (!irq_callback_is_intc && iop_semaphore_wait_turns != 0u)
             {
                 // The interrupted EE context is a WaitSema syscall trap,
                 // so its architectural PC is the exception vector. Replay
@@ -1869,9 +2529,18 @@ int main(int argc, char** argv)
                 ee::e_ee_exit_reason::EE_EXIT_DISPATCH);
             if (trace)
             {
-                std::printf("HLE DMAC callback returned: channel=%u "
-                            "v0=%d resume=0x%08x\n",
-                            dmac_callback_channel, result, cpu.m_pc);
+                if (irq_callback_is_intc)
+                {
+                    std::printf("HLE INTC callback returned: cause=%u "
+                                "v0=%d resume=0x%08x\n",
+                                irq_callback_cause, result, cpu.m_pc);
+                }
+                else
+                {
+                    std::printf("HLE DMAC callback returned: channel=%u "
+                                "v0=%d resume=0x%08x\n",
+                                irq_callback_cause, result, cpu.m_pc);
+                }
             }
             // A genuine interrupt-safe SignalSema may have promoted an EE
             // waiter to READY. The kernel must finish restoring interrupted
@@ -1916,7 +2585,7 @@ int main(int argc, char** argv)
 
         // Returning from a worker's entry makes it dormant.
         if (count != 0u && cpu.m_pc == k_thread_return_pc &&
-            current_thread_id > 1u && !dmac_callback_active &&
+            current_thread_id > 1u && !irq_callback_active &&
             !callback_active)
         {
             s_kernel_thread& finished = threads[current_thread_id];
@@ -1943,6 +2612,102 @@ int main(int argc, char** argv)
             break;
         }
 
+        // ps2-web-recomp/kernel.cpp::run_intc acknowledges the actual
+        // masked INTC cause and runs the registered guest callbacks, then
+        // restores the interrupted EE thread. The ROM0 exception vector
+        // is not executable in HLE-first mode, so bridge only an observed,
+        // architecturally taken INTC exception; all other exceptions
+        // remain unsupported. Never manufacture a VBlank or interrupt.
+        if (hle_startup && !irq_callback_active && !callback_active &&
+            reason == static_cast<uint32_t>(
+                ee::e_ee_exit_reason::EE_EXIT_EXCEPTION) &&
+            ((cpu.m_cop0[13] >> 2u) & 31u) == ee::EX_Int &&
+            cpu.m_pc == ee::ee_exception_vector(
+                cpu.m_cop0[12] & ~ee::STATUS_EXL, ee::EX_Int) &&
+            (cpu.m_cop0[12] & (ee::STATUS_EXL | ee::STATUS_IE |
+                                 ee::STATUS_EIE)) ==
+                (ee::STATUS_EXL | ee::STATUS_IE | ee::STATUS_EIE) &&
+            (cpu.m_cop0[12] & ee::STATUS_ERL) == 0u &&
+            (cpu.m_cop0[13] & ee::CAUSE_BD) == 0u &&
+            (ee::ee_pending_interrupts(&cpu) &
+                (1u << (ee::CAUSE_IP_SHIFT + ee::INT_INTC))) != 0u &&
+            hardware.intc().pending() != 0u)
+        {
+            const uint32_t pending = hardware.intc().pending();
+            uint32_t cause = 0u;
+            while (cause < 32u && (pending & (1u << cause)) == 0u)
+            {
+                ++cause;
+            }
+            if (cause >= 32u)
+            {
+                reason = static_cast<uint32_t>(
+                    ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED);
+                status = 0u;
+                break;
+            }
+
+            irq_callback_handlers.clear();
+            for (const s_kernel_interrupt_handler& handler : intc_handlers)
+            {
+                if (handler.m_cause == cause)
+                {
+                    irq_callback_handlers.push_back(handler);
+                }
+            }
+            if (!irq_callback_handlers.empty() &&
+                !memory->contains(k_irq_kernel_stack - 0x1000u, 0x1000u))
+            {
+                std::fprintf(stderr,
+                    "HLE INTC callback refused unmapped kernel stack\n");
+                reason = static_cast<uint32_t>(
+                    ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED);
+                status = 0u;
+                break;
+            }
+
+            const ee::s_ee_u128 acknowledge{1u << cause, 0u};
+            if (!ee::c_ee_intc::mmio_write(
+                    &hardware.intc(), ee::c_ee_intc::k_stat_address,
+                    4u, &acknowledge))
+            {
+                std::fprintf(stderr, "HLE INTC acknowledgement failed\n");
+                reason = static_cast<uint32_t>(
+                    ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED);
+                status = 0u;
+                break;
+            }
+            // Resume at EPC, not EPC+4. The interrupted instruction did
+            // not execute, and a branch-delay interrupt is excluded above.
+            ee::s_ee_cpu_state resume_cpu = cpu;
+            resume_cpu.m_pc = cpu.m_cop0[14];
+            resume_cpu.m_cop0[12] &= ~ee::STATUS_EXL;
+            resume_cpu.m_exit_reason = static_cast<uint32_t>(
+                ee::e_ee_exit_reason::EE_EXIT_DISPATCH);
+            if (trace)
+            {
+                std::printf("HLE INTC IRQ: cause=%u pending=0x%08x "
+                            "handlers=%zu epc=0x%08x\n",
+                            cause, pending, irq_callback_handlers.size(),
+                            resume_cpu.m_pc);
+            }
+            if (irq_callback_handlers.empty())
+            {
+                cpu = resume_cpu;
+                hardware.intc().bind_cpu(&cpu);
+                hardware.dmac().bind_cpu(&cpu);
+                continue;
+            }
+            irq_interrupted_cpu = resume_cpu;
+            irq_interrupted_vu0 = vu0;
+            irq_callback_is_intc = true;
+            irq_callback_cause = cause;
+            irq_callback_index = 0u;
+            irq_callback_active = true;
+            enter_irq_callback(irq_callback_handlers[irq_callback_index++]);
+            continue;
+        }
+
         // Experimental PS2 EE startup HLE. Handle only explicitly
         // recognized syscalls; unknown services still stop at the exception.
         if (hle_startup &&
@@ -1952,19 +2717,22 @@ int main(int argc, char** argv)
         {
             const int32_t signed_service =
                 static_cast<int32_t>(cpu.m_gpr[3].m_lo);
-            // The EE kernel exposes interrupt-context SIF variants with
-            // negative syscall numbers. Only map the genuine DMA/SIF
-            // services when invoked from a registered guest DMAC callback;
-            // keep unknown negative syscalls unsupported.
-            const bool interrupt_sif_service = dmac_callback_active &&
+            // ps2-web-recomp's kernel maps negative EE syscall numbers
+            // to their interrupt-safe variants. In our HLE-first runner,
+            // allow only explicitly modeled variants while a registered
+            // guest INTC/DMAC callback owns the kernel interrupt context.
+            // Never turn an unknown negative service into a successful HLE.
+            const bool interrupt_sif_service = irq_callback_active &&
                 (signed_service == -0x76 || signed_service == -0x77 ||
                  signed_service == -0x78);
-            // Genuine EE DMA5 SIFCMD handlers signal semaphores via the
-            // kernel's negative interrupt-context iSignalSema number.
-            const bool interrupt_semaphore_service = dmac_callback_active &&
+            // Genuine guest interrupt handlers signal semaphores through
+            // iSignalSema; SDBZ's VBlank callback also calls iFlushCache.
+            const bool interrupt_semaphore_service = irq_callback_active &&
                 signed_service == -0x43;
+            const bool interrupt_cache_service = irq_callback_active &&
+                signed_service == -0x68;
             const bool interrupt_safe_service = interrupt_sif_service ||
-                interrupt_semaphore_service;
+                interrupt_semaphore_service || interrupt_cache_service;
             const uint32_t service = interrupt_safe_service
                 ? static_cast<uint32_t>(-signed_service)
                 : static_cast<uint32_t>(signed_service);
@@ -1975,7 +2743,7 @@ int main(int argc, char** argv)
                 // In interrupt context R5900 EPC still refers to the
                 // interrupted thread, not the nested syscall. The runtime
                 // separately records the actual trap instruction PC.
-                const uint32_t epc = dmac_callback_active
+                const uint32_t epc = irq_callback_active
                     ? cpu.m_pad : cpu.m_cop0[14];
                 const uint32_t handler = installed_syscall_handlers[service];
                 uint32_t opcode = 0;
@@ -1999,6 +2767,9 @@ int main(int argc, char** argv)
                         service, handler);
                     break;
                 }
+                // The guest handler runs natively, but handing control to
+                // it through host syscall dispatch has an uncalibrated cost.
+                ee::ee_record_hle_timing_boundary(runtime, epc, opcode, service);
                 callback_saved_ra = cpu.m_gpr[31];
                 callback_resume_pc = epc + 4u;
                 if (report_path != nullptr)
@@ -2052,7 +2823,7 @@ int main(int argc, char** argv)
                 // In interrupt context R5900 EPC still refers to the
                 // interrupted thread, not the nested syscall. The runtime
                 // separately records the actual trap instruction PC.
-                const uint32_t epc = dmac_callback_active
+                const uint32_t epc = irq_callback_active
                     ? cpu.m_pad : cpu.m_cop0[14];
                 uint32_t opcode = 0;
                 if (!image.read32_at(epc, &opcode) ||
@@ -2064,6 +2835,10 @@ int main(int argc, char** argv)
                     std::fprintf(stderr, "startup HLE refused invalid syscall context\n");
                     break;
                 }
+
+                // Explicitly mark entry to modeled host kernel services.
+                // Never convert this boundary into an invented EE delay.
+                ee::ee_record_hle_timing_boundary(runtime, epc, opcode, service);
 
                 if (interrupt_sif_service && trace)
                 {
@@ -2085,7 +2860,9 @@ int main(int argc, char** argv)
                         static_cast<uint32_t>(cpu.m_gpr[5].m_lo);
                     const uint32_t ffmd =
                         static_cast<uint32_t>(cpu.m_gpr[6].m_lo);
-                    if (!hardware.set_gs_crt(interlace, mode, ffmd))
+                    if (!hardware.set_gs_crt(
+                            interlace, mode, ffmd,
+                            runtime.m_ee_cycle_scheduler.current_cycle()))
                     {
                         std::fprintf(stderr,
                             "SetGsCrt HLE refused invalid configuration "
@@ -2828,10 +3605,10 @@ int main(int argc, char** argv)
                                 }
                             }
                             if (!other_ready || callback_active ||
-                                dmac_callback_active)
+                                irq_callback_active)
                             {
                                 if (!other_ready && !callback_active &&
-                                    !dmac_callback_active &&
+                                    !irq_callback_active &&
                                     iop_rom0_path != nullptr &&
                                     iop_kernel != nullptr &&
                                     iop_sif0_transport != nullptr)
@@ -3313,12 +4090,16 @@ int main(int argc, char** argv)
                     const uint32_t count =
                         static_cast<uint32_t>(cpu.m_gpr[5].m_lo);
                     uint32_t dma_id = 0u;
+                    iop::s_sif1_dma_diagnostic dma_diagnostic{};
                     const bool transferred = iop_rom0_path != nullptr
                         ? iop_sif1_transport != nullptr &&
                           iop_sif1_transport->set_dma(
                               descriptors, count, &dma_id)
                         : iop_sif1 != nullptr &&
-                          iop_sif1->set_dma(descriptors, count, &dma_id);
+                          iop_sif1->set_dma(
+                              descriptors, count, &dma_id,
+                              &dma_diagnostic
+                          );
                     if (!transferred)
                     {
                         std::fprintf(
@@ -3327,6 +4108,62 @@ int main(int argc, char** argv)
                             "IOP transfer: descriptors=0x%08x count=%u\n",
                             descriptors, count
                         );
+                        if (iop_rom0_path == nullptr)
+                        {
+                            std::fprintf(
+                                stderr,
+                                "IOP HLE SIF1 DMA rejection: reason=%s "
+                                "index=%u src=0x%08x dst=0x%08x "
+                                "bytes=%u attrs=0x%08x "
+                                "packet_size=0x%08x packet_cid=0x%08x "
+                                "packet_dest=0x%08x packet_opt=0x%08x "
+                                "packet_arg=0x%08x rpc_server=0x%08x "
+                                "rpc_client=0x%08x rpc_rejection=%s sifcmd_initialized=%u\n",
+                                iop::c_sif1_bridge::failure_name(
+                                    dma_diagnostic.m_failure
+                                ),
+                                dma_diagnostic.m_descriptor_index,
+                                dma_diagnostic.m_source,
+                                dma_diagnostic.m_destination,
+                                dma_diagnostic.m_size,
+                                dma_diagnostic.m_attributes,
+                                dma_diagnostic.m_packet_size,
+                                dma_diagnostic.m_packet_cid,
+                                dma_diagnostic.m_packet_dest,
+                                dma_diagnostic.m_packet_opt,
+                                dma_diagnostic.m_packet_arg,
+                                dma_diagnostic.m_rpc_server,
+                                dma_diagnostic.m_rpc_client,
+                                iop::c_sif_rpc_bridge::rejection_name(
+                                    dma_diagnostic.m_rpc_rejection
+                                ),
+                                iop_sifcmd != nullptr &&
+                                    iop_sifcmd->initialized() ? 1u : 0u
+                            );
+                        }
+                        if (iop_rom0_path == nullptr &&
+                            dma_diagnostic.m_rpc_packet_word_count != 0u)
+                        {
+                            std::fprintf(
+                                stderr,
+                                "IOP HLE rejected RPC payload: "
+                                "source=0x%08x bytes=%u header_words=%u\n",
+                                dma_diagnostic.m_rpc_payload_source,
+                                dma_diagnostic.m_rpc_payload_length,
+                                dma_diagnostic.m_rpc_packet_word_count
+                            );
+                            std::fprintf(stderr, "IOP HLE rejected RPC words:");
+                            for (uint32_t word = 0u;
+                                 word < dma_diagnostic.m_rpc_packet_word_count;
+                                 ++word)
+                            {
+                                std::fprintf(
+                                    stderr, " %08x",
+                                    dma_diagnostic.m_rpc_packet_words[word]
+                                );
+                            }
+                            std::fprintf(stderr, "\n");
+                        }
                         if (iop_rom0_path != nullptr && count != 0u &&
                             memory->contains(descriptors, 16u))
                         {
@@ -3353,6 +4190,229 @@ int main(int argc, char** argv)
                             );
                         }
                         break;
+                    }
+                    if (disc_folder_path != nullptr &&
+                        iop_sifcmd != nullptr)
+                    {
+                        std::string reboot_argument;
+                        if (iop_sifcmd->take_reboot_request(&reboot_argument))
+                        {
+                            std::string reboot_error;
+                            if (folder_disc_source == nullptr ||
+                                !validate_hle_iop_reboot(
+                                    reboot_argument, *folder_disc_source,
+                                    &reboot_error))
+                            {
+                                std::fprintf(
+                                    stderr, "IOP HLE reboot cannot start: %s "
+                                    "(request=%s)\n",
+                                    reboot_error.c_str(),
+                                    reboot_argument.c_str()
+                                );
+                                break;
+                            }
+
+                            // Only the already-validated SIFCMD packet
+                            // requests this reset. It destroys previous IOP
+                            // IRX/module/thread/RPC state, then installs
+                            // actual host-backed HLE services anew.
+                            // Detach CDVD transport before resetting
+                            // its IOP MMIO registers. Rebind to the same
+                            // mounted sector source after the kernel reset.
+                            if (cdvd != nullptr)
+                            {
+                                cdvd->m_transport.reset();
+                            }
+                            iop_kernel->reset();
+                            if (!iop_kernel->attach_hle_hardware())
+                            {
+                                std::fprintf(stderr,
+                                    "[iop] HLE MMIO reattachment failed\n");
+                                break;
+                            }
+                            if (cdvd != nullptr && cdvd->m_source != nullptr)
+                            {
+                                cdvd->m_transport =
+                                    std::make_unique<iop::c_cdvd_dma_transport>(
+                                        iop_kernel->cpu(),
+                                        iop_kernel->hardware(),
+                                        *cdvd->m_source
+                                    );
+                            }
+                            iop_sifcmd->reset_for_reboot();
+                            iop_hle->reset_for_reboot();
+                            iop_rpc->reset_for_reboot();
+                            // Metadata is read from the real mounted IOPRP,
+                            // never inferred from its name or the ELF catalog.
+                            if (!iop_rpc->configure_reboot_image_version(
+                                    reboot_argument))
+                            {
+                                std::fprintf(
+                                    stderr,
+                                    "[iop] IOPRP lacks a verified LOADFILE "
+                                    "version; version RPC unsupported\n");
+                            }
+                            hardware.sif().begin_iop_reboot();
+
+                            if (!iop_hle->install() ||
+                                !iop_sifcmd->install() ||
+                                !iop_sifman->install() ||
+                                (iop_cdvdman != nullptr &&
+                                 !iop_cdvdman->install()))
+                            {
+                                std::fprintf(
+                                    stderr,
+                                    "IOP HLE reboot failed service reinstall\n"
+                                );
+                                break;
+                            }
+                            iop_kernel->bind_syscall(
+                                [&](iop::c_kernel& active, uint32_t service)
+                                {
+                                    return iop_hle->handle_syscall(active, service) ||
+                                           iop_sifman->handle_syscall(active, service) ||
+                                           iop_sifcmd->handle_syscall(active, service) ||
+                                           (iop_cdvdman != nullptr &&
+                                            iop_cdvdman->handle_syscall(active, service));
+                                }
+                            );
+                            // Defer publication to the EE's subsequent
+                            // boot-status poll, not the SIF1 DMA itself.
+                            // ROM0 boot remains a separate guest-code path.
+                            hle_iop_reboot_bootstrap_pending = true;
+                            hle_iop_reboot_ee_reset_seen = false;
+                            std::printf(
+                                "[iop] HLE reboot requested: %s "
+                                "(services reinstalled; boot flags pending)\n",
+                                reboot_argument.c_str()
+                            );
+                        }
+                    }
+                    // Expose accepted RPC identity and actual backend
+                    // result, not only unsupported packet diagnostics.
+                    // Collapse repeated calls in normal logs; trace mode
+                    // intentionally retains every committed observation.
+                    if (iop_rom0_path == nullptr && iop_rpc != nullptr)
+                    {
+                        const auto& event = iop_rpc->last_observation();
+                        if (event.m_sequence != 0u &&
+                            event.m_sequence != last_iop_rpc_sequence)
+                        {
+                            last_iop_rpc_sequence = event.m_sequence;
+                            ++observed_iop_rpc_calls;
+                            const bool changed =
+                                event.m_server_id != last_iop_rpc_server ||
+                                event.m_method != last_iop_rpc_method ||
+                                event.m_return_word != last_iop_rpc_result ||
+                                event.m_guest_path != last_iop_rpc_path;
+                            if (trace || observed_iop_rpc_calls <= 24u ||
+                                changed || observed_iop_rpc_calls % 128u == 0u)
+                            {
+                                std::printf(
+                                    "IOP HLE RPC committed: seq=%llu "
+                                    "cid=0x%08x server=0x%08x "
+                                    "method=0x%08x client=0x%08x "
+                                    "send=%u recv=%u result=0x%08x "
+                                    "path=%s load_status=%u link_status=%u "
+                                    "module=%u thread=%u started=%u "
+                                    "irx_entry=%08x irx_gp=%08x "
+                                    "irx_image=%08x unresolved=%s#%u\n",
+                                    static_cast<unsigned long long>(
+                                        event.m_sequence),
+                                    event.m_cid, event.m_server_id,
+                                    event.m_method, event.m_client,
+                                    event.m_send_size, event.m_recv_size,
+                                    event.m_return_word,
+                                    event.m_guest_path.empty() ? "(none)"
+                                        : event.m_guest_path.c_str(),
+                                    static_cast<uint32_t>(
+                                        event.m_load_status),
+                                    static_cast<uint32_t>(
+                                        event.m_link_status),
+                                    event.m_module_id, event.m_thread_id,
+                                    event.m_module_started ? 1u : 0u,
+                                    event.m_irx_entry_offset,
+                                    event.m_irx_gp_offset,
+                                    event.m_irx_image_size,
+                                    event.m_unresolved_library.empty()
+                                        ? "(none)"
+                                        : event.m_unresolved_library.c_str(),
+                                    event.m_unresolved_ordinal);
+                            }
+                            last_iop_rpc_server = event.m_server_id;
+                            last_iop_rpc_method = event.m_method;
+                            last_iop_rpc_result = event.m_return_word;
+                            last_iop_rpc_path = event.m_guest_path;
+
+                            // Once a real LOADFILE module is ready, it
+                            // must continue to run on later EE/IOP
+                            // transport turns too. A single load-time
+                            // quantum is insufficient for genuine IRX code
+                            // and EE WaitSema may never block at all.
+                            // This is a bounded guest R3000 slice, not
+                            // a synthetic IRX completion or IOP clock.
+                            if (iop_kernel->has_guest_work())
+                            {
+                                const iop::s_kernel_run_result progressed =
+                                    iop_kernel->run(iop_quantum, 128u);
+                                if (progressed.m_stop !=
+                                        iop::e_kernel_stop::budget_exhausted &&
+                                    progressed.m_stop !=
+                                        iop::e_kernel_stop::idle)
+                                {
+                                    std::fprintf(
+                                        stderr,
+                                        "IOP HLE guest service stopped: "
+                                        "rpc_server=0x%08x rpc_method=0x%08x "
+                                        "module=%u thread=%u reason=%u "
+                                        "pc=0x%08x opcode=0x%08x "
+                                        "executed=%llu\n",
+                                        event.m_server_id, event.m_method,
+                                        event.m_module_id,
+                                        progressed.m_thread_id,
+                                        static_cast<uint32_t>(
+                                            progressed.m_stop),
+                                        progressed.m_guest_pc,
+                                        progressed.m_opcode,
+                                        static_cast<unsigned long long>(
+                                            progressed.m_executed));
+                                     if (progressed.m_stop ==
+                                         iop::e_kernel_stop::memory_fault)
+                                     {
+                                         const iop::s_memory_fault& fault =
+                                             iop_kernel->cpu().last_memory_fault();
+                                         const iop::s_cpu_state& state =
+                                             iop_kernel->cpu().state();
+                                         std::fprintf(stderr,
+                                             "IOP HLE guest memory fault: "
+                                             "address=0x%08x width=%u write=%u "
+                                             "valid=%u v0=0x%08x a0=0x%08x "
+                                             "gp=0x%08x sp=0x%08x ra=0x%08x\n",
+                                             fault.m_address, fault.m_width,
+                                             fault.m_write ? 1u : 0u,
+                                             fault.m_valid ? 1u : 0u,
+                                             state.m_gpr[2], state.m_gpr[4],
+                                             state.m_gpr[28], state.m_gpr[29],
+                                             state.m_gpr[31]);
+                                     }
+                                    break;
+                                }
+                                if (trace && progressed.m_executed != 0u)
+                                {
+                                    std::printf(
+                                        "IOP HLE guest service turn: "
+                                        "rpc_server=0x%08x method=0x%08x "
+                                        "thread=%u instructions=%llu "
+                                        "stop=%u\n",
+                                        event.m_server_id, event.m_method,
+                                        progressed.m_thread_id,
+                                        static_cast<unsigned long long>(
+                                            progressed.m_executed),
+                                        static_cast<uint32_t>(
+                                            progressed.m_stop));
+                                }
+                            }
+                        }
                     }
                     cpu.m_gpr[2].m_lo = dma_id;
                     cpu.m_gpr[2].m_hi = 0u;
@@ -3477,6 +4537,15 @@ int main(int argc, char** argv)
                             break;
                         }
 
+                        // The EE explicitly tears down its previous
+                        // SIF SYSREG after a reset request. Only after
+                        // this handshake can the new IOP HLE bootstrap
+                        // publish its replacement readiness flags.
+                        if (hle_iop_reboot_bootstrap_pending &&
+                            id == 0x80000002u && value == 0u)
+                        {
+                            hle_iop_reboot_ee_reset_seen = true;
+                        }
                         cpu.m_gpr[2].m_lo = 0u;
                         cpu.m_gpr[2].m_hi = 0u;
                         if (trace)
@@ -3490,6 +4559,32 @@ int main(int argc, char** argv)
                     }
                     else
                     {
+                        // The HLE reboot has rebuilt and installed its
+                        // real host-backed IOP services. Publish modeled
+                        // readiness only when the EE subsequently polls
+                        // the boot flag, never from receipt of DMA itself.
+                        if (id == 4u &&
+                            hle_iop_reboot_bootstrap_pending &&
+                            hle_iop_reboot_ee_reset_seen)
+                        {
+                            if (iop_sifcmd == nullptr ||
+                                !iop_sifcmd->initialize_hle_bootstrap())
+                            {
+                                std::fprintf(
+                                    stderr,
+                                    "IOP HLE reboot could not initialize "
+                                    "its SIFCMD services\n"
+                                );
+                                break;
+                            }
+                            hle_iop_reboot_bootstrap_pending = false;
+                            std::printf(
+                                "[iop] HLE reboot bootstrap complete: "
+                                "subaddr=0x%08x smflag=0x00060000 "
+                                "(modeled services, not ROM0 or IRX execution)\n",
+                                iop::c_sifcmd_bridge::k_command_buffer
+                            );
+                        }
                         uint32_t value = 0u;
                         if (!hardware.sif().get_reg(id, &value))
                         {
@@ -3921,7 +5016,7 @@ int main(int argc, char** argv)
                 // Do not clear EXL for an interrupt-safe SIF syscall:
                 // the registered DMA5 callback still owns its kernel
                 // context until it returns via the callback sentinel.
-                if (!dmac_callback_active)
+                if (!irq_callback_active)
                 {
                     cpu.m_cop0[12] &= ~2u;
                 }
@@ -3929,7 +5024,7 @@ int main(int argc, char** argv)
                 cpu.m_exit_reason = static_cast<uint32_t>(
                     ee::e_ee_exit_reason::EE_EXIT_DISPATCH
                 );
-                if (reschedule_requested && !dmac_callback_active &&
+                if (reschedule_requested && !irq_callback_active &&
                     !callback_active && !schedule_threads())
                 {
                     reason = static_cast<uint32_t>(
@@ -3938,6 +5033,17 @@ int main(int argc, char** argv)
                     break;
                 }
                 continue;
+            }
+            if (irq_callback_active)
+            {
+                // Architectural EPC still belongs to the interrupted EE
+                // thread. m_pad records this nested syscall's actual PC.
+                // Preserve the exception and fail closed; report the
+                // callback PC so the next unmodeled HLE service is visible.
+                std::fprintf(stderr,
+                    "HLE IRQ callback syscall unsupported: signed=%d "
+                    "actual_pc=0x%08x architectural_epc=0x%08x\n",
+                    signed_service, cpu.m_pad, cpu.m_cop0[14]);
             }
         }
 
@@ -3970,13 +5076,13 @@ int main(int argc, char** argv)
             cpu.m_pc, callback_resume_pc);
     }
 
-    // Only accepted GIF PATH3 batches contribute to these counters.
+    // Only accepted GIF PATH2/PATH3 batches contribute to these counters.
     // This does not imply scanout or rasterized presentation.
     if (gs_state.state().m_tag_count != 0u)
     {
         std::printf(
-            "GS PATH3 accepted: tags=%llu vertices=%llu image_qwc=%u "
-            "transfer_pixels=%u\n",
+            "GS PATH2/PATH3 accepted: tags=%llu current_primitive_vertices=%llu "
+            "current_transfer_image_qwc=%u transfer_pixels=%u\n",
             static_cast<unsigned long long>(gs_state.state().m_tag_count),
             static_cast<unsigned long long>(gs_state.state().m_vertex_count),
             gs_state.state().m_image_qwc,
@@ -3984,11 +5090,187 @@ int main(int argc, char** argv)
         );
     }
 
+    if (gs_state.state().m_tag_count != 0u)
+    {
+        const auto& gs = gs_state.state();
+        std::printf(
+            "GS PATH2/PATH3 cumulative: batches=%llu prim_writes=%llu "
+            "vertex_writes=%llu kicks=%llu adc=%llu "
+            "packed=%llu reglist=%llu ad=%llu image_events=%llu "
+            "image_qwc=%llu tags_by_flg=[%llu,%llu,%llu,%llu]\n",
+            static_cast<unsigned long long>(gs.m_committed_gif_batches),
+            static_cast<unsigned long long>(gs.m_total_prim_writes),
+            static_cast<unsigned long long>(gs.m_total_vertex_writes),
+            static_cast<unsigned long long>(gs.m_total_vertex_kicks),
+            static_cast<unsigned long long>(gs.m_total_adc_vertices),
+            static_cast<unsigned long long>(gs.m_total_packed_events),
+            static_cast<unsigned long long>(gs.m_total_reglist_events),
+            static_cast<unsigned long long>(gs.m_total_ad_events),
+            static_cast<unsigned long long>(gs.m_total_image_events),
+            static_cast<unsigned long long>(gs.m_total_image_qwc),
+            static_cast<unsigned long long>(gs.m_tag_format_counts[0]),
+            static_cast<unsigned long long>(gs.m_tag_format_counts[1]),
+            static_cast<unsigned long long>(gs.m_tag_format_counts[2]),
+            static_cast<unsigned long long>(gs.m_tag_format_counts[3]));
+        std::printf(
+            "GS PATH2/PATH3 sprite provenance: pairs=%llu textured=%llu "
+            "nonblack_rgb=%llu samples=first_and_last_%zu\n",
+            static_cast<unsigned long long>(gs.m_total_sprite_pair_kicks),
+            static_cast<unsigned long long>(gs.m_total_sprite_textured_kicks),
+            static_cast<unsigned long long>(gs.m_total_sprite_nonblack_rgb_kicks),
+            gs.m_total_sprite_pair_kicks < gs.k_sprite_sample_capacity ?
+            static_cast<size_t>(gs.m_total_sprite_pair_kicks) :
+            gs.k_sprite_sample_capacity);
+    }
+
+    if (gs_snapshot_path != nullptr || gs_upload_snapshot_path != nullptr)
+    {
+        const auto& display = hardware.gs_display_registers();
+        std::printf(
+            "GS privileged display: PMODE=0x%016llx SMODE2=0x%016llx "
+            "DISPFB1=0x%016llx DISPLAY1=0x%016llx "
+            "DISPFB2=0x%016llx DISPLAY2=0x%016llx CRT_mode=%u "
+            "(register values only; no present event)\n",
+            static_cast<unsigned long long>(display.m_pmode),
+            static_cast<unsigned long long>(display.m_smode2),
+            static_cast<unsigned long long>(display.m_dispfb[0]),
+            static_cast<unsigned long long>(display.m_display[0]),
+            static_cast<unsigned long long>(display.m_dispfb[1]),
+            static_cast<unsigned long long>(display.m_display[1]),
+            hardware.gs_crt_mode()
+        );
+        const uint32_t circuit = (display.m_pmode & 2u) != 0u ? 1u : 0u;
+        const uint64_t fb = display.m_dispfb[circuit];
+        const uint64_t disp = display.m_display[circuit];
+        const uint32_t fbp = static_cast<uint32_t>(fb & 0x1ffu);
+        const uint32_t fbw = static_cast<uint32_t>((fb >> 9u) & 0x3fu);
+        const uint32_t psm = static_cast<uint32_t>((fb >> 15u) & 0x1fu);
+        const uint32_t magh = static_cast<uint32_t>((disp >> 23u) & 15u) + 1u;
+        const uint32_t dw = static_cast<uint32_t>((disp >> 32u) & 0xfffu) + 1u;
+        std::printf(
+            "GS display source: circuit=%u FBP=%u FBW=%u PSM=%u "
+            "DW=%u MAGH=%u (FBW=0 uses reference one-page stride; "
+            "no rasterization or VBlank inferred)\n",
+            circuit + 1u, fbp, fbw, psm, dw, magh);
+    }
+
+    if (gs_snapshot_path != nullptr)
+    {
+        std::vector<uint32_t> pixels;
+        uint32_t width = 0u;
+        uint32_t height = 0u;
+        std::remove(gs_snapshot_path);
+        if (ee::c_ee_gs_display::readback(
+                gs_state, hardware.gs_display_registers(),
+                hardware.gs_crt_mode(), pixels, width, height))
+        {
+            if (write_gs_ppm(gs_snapshot_path, pixels, width, height))
+            {
+                std::printf(
+                    "GS diagnostic display VRAM: %ux%u path=%s "
+                    "(not a rendered frame; no VBlank generated)\n",
+                    width, height, gs_snapshot_path
+                );
+            }
+            else
+            {
+                std::fprintf(stderr,
+                    "GS display snapshot write failed: %s\n",
+                    gs_snapshot_path);
+            }
+        }
+        else
+        {
+            std::printf(
+                "GS display snapshot unavailable: no supported "
+                "guest-configured display circuit\n");
+        }
+    }
+
+#ifdef EE_ENABLE_WEBGPU
+    if (gs_webgpu_snapshot_path != nullptr)
+    {
+        std::vector<uint32_t> pixels;
+        uint32_t width = 0u;
+        uint32_t height = 0u;
+        std::remove(gs_webgpu_snapshot_path);
+        if (webgpu_bridge.readback(
+                hardware.gs_display_registers(), hardware.gs_crt_mode(),
+                pixels, width, height) &&
+            write_gs_ppm(gs_webgpu_snapshot_path, pixels, width, height))
+        {
+            std::printf(
+                "GS native WebGPU raster readback: %ux%u path=%s "
+                "draws=%llu (GPU-processed GS VRAM; not a present event)\n",
+                width, height, gs_webgpu_snapshot_path,
+                static_cast<unsigned long long>(
+                    webgpu_bridge.rendered_primitives()));
+        }
+        else
+        {
+            std::fprintf(stderr,
+                "GS WebGPU snapshot unavailable: failed render/readback "
+                "or unsupported guest display circuit\n");
+        }
+    }
+#endif
+
+    if (gs_upload_snapshot_path != nullptr)
+    {
+        std::vector<uint32_t> pixels;
+        uint32_t width = 0u;
+        uint32_t height = 0u;
+        std::remove(gs_upload_snapshot_path);
+        if (ee::c_ee_gs_display::readback_upload(
+                gs_state, pixels, width, height))
+        {
+            if (write_gs_ppm(gs_upload_snapshot_path, pixels, width, height))
+            {
+                std::printf(
+                    "GS diagnostic completed upload VRAM: %ux%u path=%s "
+                    "(texture transfer, NOT a rendered frame)\n",
+                    width, height, gs_upload_snapshot_path);
+            }
+            else
+            {
+                std::fprintf(stderr,
+                    "GS upload snapshot write failed: %s\n",
+                    gs_upload_snapshot_path);
+            }
+        }
+        else
+        {
+            std::printf(
+                "GS upload snapshot unavailable: no completed supported "
+                "host-to-local transfer\n");
+        }
+    }
+
+    std::printf(
+        "EE timing: source=%s current_cycles=%llu scheduler_yields=%llu next_gs_field=%llu fields=%llu\n",
+        ee_cycle_source_name(runtime.m_ee_cycle_scheduler.source()),
+        static_cast<unsigned long long>(runtime.m_ee_cycle_scheduler.current_cycle()),
+        static_cast<unsigned long long>(runtime.m_ee_cycle_scheduler.scheduler_yields()),
+        static_cast<unsigned long long>(hardware.scanout().next_field_cycle()),
+        static_cast<unsigned long long>(hardware.scanout().fields_started()));
+    std::printf(
+        "EE reference-interpreter instruction slots: %llu "
+        "(not R5900 cycles)\n",
+        static_cast<unsigned long long>(
+            runtime.m_reference_instruction_slots)
+    );
     std::printf(
         "EE diagnostic guest-instruction attempts: %llu (NOT EE cycles)\n",
         static_cast<unsigned long long>(
             runtime.m_guest_instruction_attempts)
     );
+    std::printf(
+        "EE observed HLE timing boundaries: %llu "
+        "(latencies not calibrated; no EE time charged)\n",
+        static_cast<unsigned long long>(runtime.m_hle_timing_boundaries)
+    );
+    std::printf("EE timing observer: %s (stock runner does not install one)\n",
+                runtime.m_timing_observer_failed ? "rejected" : "not validated");
     std::printf(
         "EE stopped: dispatched=%llu pc=0x%08x reason=%s(%u) status=%u\n",
         static_cast<unsigned long long>(dispatched), cpu.m_pc,
@@ -4037,7 +5319,9 @@ int main(int argc, char** argv)
     if (report_path != nullptr &&
         !write_report(report_path, image, cpu, entry, dispatched,
                       runtime.m_guest_instruction_attempts,
-                      reason, status, history, syscall_history, false))
+                      runtime, hardware, vsync_flags,
+                      reason, status, history, syscall_history, gs_state.state(),
+                       dma_wait_probe, hotspots, false))
     {
         return 1;
     }
@@ -4050,13 +5334,15 @@ int main(int argc, char** argv)
                          instruction_trace_path);
             return 1;
         }
-        std::fprintf(output, "attempt,pc,opcode_word\n");
+        std::fprintf(output, "attempt,pc,opcode_word,kind,reference_slot,hle_service\n");
         for (uint32_t index = 0u; index < runtime.m_instruction_trace_count; ++index)
         {
             const auto& item = instruction_trace[index];
-            std::fprintf(output, "%llu,0x%08x,0x%08x\n",
+            std::fprintf(output, "%llu,0x%08x,0x%08x,%u,%llu,%u\n",
                          static_cast<unsigned long long>(item.m_attempt),
-                         item.m_pc, item.m_opcode_word);
+                         item.m_pc, item.m_opcode_word, item.m_kind,
+                         static_cast<unsigned long long>(item.m_reference_slot),
+                         item.m_hle_service);
         }
         std::fprintf(output, "# truncated=%s range=0x%08x:0x%08x\n",
                      runtime.m_instruction_trace_overflow ? "true" : "false",
@@ -4072,6 +5358,44 @@ int main(int argc, char** argv)
                     runtime.m_instruction_trace_count,
                     runtime.m_instruction_trace_overflow,
                     instruction_trace_path);
+
+        // M2.0: classify reached words from the actual bounded recorded
+        // stream. Kind=1 branch annulment and kind=3 HLE boundaries must
+        // never be counted as an executed native instruction.
+        ee::c_ee_reached_isa_inventory reached_inventory;
+        for (uint32_t index = 0u;
+             index < runtime.m_instruction_trace_count; ++index)
+        {
+            reached_inventory.record(instruction_trace[index]);
+        }
+        const std::string isa_path =
+            std::string(instruction_trace_path) + ".isa.json";
+        std::ofstream isa_output(isa_path, std::ios::binary | std::ios::trunc);
+        if (!isa_output)
+        {
+            std::fprintf(stderr,
+                         "failed to create reached ISA inventory: %s\n",
+                         isa_path.c_str());
+            return 1;
+        }
+        reached_inventory.write_json(
+            isa_output, instruction_trace_first_pc,
+            instruction_trace_last_pc, runtime.m_instruction_trace_overflow != 0u);
+        isa_output.close();
+        if (!isa_output)
+        {
+            std::fprintf(stderr,
+                         "failed to write reached ISA inventory: %s\n",
+                         isa_path.c_str());
+            return 1;
+        }
+        std::printf("EE reached ISA sample: events=%llu native_reached=%llu "
+                    "unique_pc_opcode=%llu path=%s (bounded, not full coverage)\n",
+                    static_cast<unsigned long long>(reached_inventory.events()),
+                    static_cast<unsigned long long>(reached_inventory.native_reached()),
+                    static_cast<unsigned long long>(
+                        reached_inventory.totals().m_total),
+                    isa_path.c_str());
     }
     if (status == 1u && remaining == 0)
     {
@@ -4094,12 +5418,245 @@ int main(int argc, char** argv)
     {
         std::fprintf(stderr,
             "guest host loop yield cap reached: pc=0x%08x "
-            "resumes=%u cap=%u (NO GS VBlank or EE cycles invented)\n",
-            cpu.m_pc, completed_loop_yields, loop_yield_resumes);
+            "resumes=%u cap=%u (clock=%s)\n",
+            cpu.m_pc, completed_loop_yields, loop_yield_resumes,
+            ee_cycle_source_name(runtime.m_ee_cycle_scheduler.source()));
+        // A repeated guest loop may be waiting for DMA, an IOP response,
+        // an MMIO bit, or an ordinary RAM flag. More time or extra VBlank
+        // fields must not be assumed to satisfy it. Record bounded,
+        // read-only diagnostics from the original guest ELF and live CPU
+        // state so the actual poll can be identified without a full
+        // instruction trace or resetting the translated-function cache.
+        std::fprintf(stderr,
+            "EE host loop state: pc=0x%08x cause=0x%08x "
+            "status=0x%08x epc=0x%08x intc_stat=0x%08x "
+            "intc_mask=0x%08x fields=%llu ee_cycles=%llu\n",
+            cpu.m_pc, cpu.m_cop0[13], cpu.m_cop0[12],
+            cpu.m_cop0[14], hardware.intc().status(),
+            hardware.intc().mask(),
+            static_cast<unsigned long long>(hardware.scanout().fields_started()),
+            static_cast<unsigned long long>(
+                runtime.m_ee_cycle_scheduler.current_cycle()));
+        // Capture the genuine DMA2 channel state at a host-yield stop.
+        // This only reads the DMAC's host-owned registers and validated
+        // guest RAM; it neither retries nor completes a DMA transfer.
+        const auto gif_register = [&](uint32_t offset) -> uint32_t
+        {
+            ee::s_ee_u128 value{};
+            if (!ee::c_ee_dmac::mmio_read(
+                    &hardware.dmac(),
+                    ee::c_ee_dmac::k_gif_base + offset, 4u, &value))
+            {
+                return 0u;
+            }
+            return static_cast<uint32_t>(value.m_lo);
+        };
+        const uint32_t gif_chcr = gif_register(0u);
+        const uint32_t gif_madr = gif_register(0x10u);
+        const uint32_t gif_qwc = gif_register(0x20u);
+        const uint32_t gif_tadr = gif_register(0x30u);
+        std::fprintf(stderr,
+            "EE host GIF DMA: CHCR=0x%08x MADR=0x%08x "
+            "QWC=0x%04x TADR=0x%08x D_STAT=0x%08x\n",
+            gif_chcr, gif_madr, gif_qwc, gif_tadr,
+            hardware.dmac().status());
+        const uint32_t gif_tag_mapped =
+            (gif_tadr & 0x80000000u) != 0u
+                ? ee::ee_memory::k_scratchpad_base +
+                    (gif_tadr & static_cast<uint32_t>(
+                        ee::ee_memory::k_scratchpad_size - 1u))
+                : gif_tadr;
+        if ((gif_chcr & ee::c_ee_dmac::k_chcr_str) != 0u &&
+            ((gif_chcr >> 2u) & 3u) == 1u &&
+            (gif_tadr & 15u) == 0u &&
+            ((gif_tadr & 0x80000000u) != 0u ||
+             gif_tadr < 0x02000000u) &&
+            memory->contains(gif_tag_mapped, 16u))
+        {
+            const uint64_t tag = memory->read64(gif_tag_mapped);
+            std::fprintf(stderr,
+                "EE host GIF tag: TADR=0x%08x mapped=0x%08x "
+                "raw=0x%016llx ID=%u QWC=%u ADDR=0x%08x "
+                "IRQ=%u TTE=%u TIE=%u\n",
+                gif_tadr, gif_tag_mapped,
+                static_cast<unsigned long long>(tag),
+                static_cast<uint32_t>((tag >> 28u) & 7u),
+                static_cast<uint32_t>(tag & 0xffffu),
+                static_cast<uint32_t>(tag >> 32u),
+                (tag & 0x80000000ull) != 0u ? 1u : 0u,
+                (gif_chcr & 0x40u) != 0u ? 1u : 0u,
+                (gif_chcr & 0x80u) != 0u ? 1u : 0u);
+        }
+        else if ((gif_chcr & ee::c_ee_dmac::k_chcr_str) != 0u &&
+                 ((gif_chcr >> 2u) & 3u) == 1u)
+        {
+            std::fprintf(stderr,
+                "EE host GIF tag: unavailable (invalid or unbacked TADR)\n");
+        }
+        // These are diagnostic observations of already committed guest
+        // MMIO writes. They must not retry a DMA or mutate guest memory.
+        const auto gif_reject_name =
+            [](ee::c_ee_dmac::e_gif_dma_reject reason) -> const char*
+        {
+            using e_reject = ee::c_ee_dmac::e_gif_dma_reject;
+            switch (reason)
+            {
+            case e_reject::none: return "none";
+            case e_reject::missing_memory_or_sink: return "missing_memory_or_sink";
+            case e_reject::invalid_start_state: return "invalid_start_state";
+            case e_reject::invalid_tag_address: return "invalid_tag_address";
+            case e_reject::unsupported_tag: return "unsupported_tag";
+            case e_reject::invalid_payload_span: return "invalid_payload_span";
+            case e_reject::chain_qwc_limit: return "chain_qwc_limit";
+            case e_reject::chain_tag_limit: return "chain_tag_limit";
+            case e_reject::rejected_by_sink: return "rejected_by_sink";
+            }
+            return "unknown";
+        };
+        const auto& gif_dma = hardware.dmac();
+        const uint64_t gif_write_count = gif_dma.gif_trace_count();
+        std::fprintf(stderr,
+            "EE host GIF history: writes=%llu last_reject=%s\n",
+            static_cast<unsigned long long>(gif_write_count),
+            gif_reject_name(gif_dma.gif_last_reject()));
+        const uint32_t gif_recent = static_cast<uint32_t>(
+            gif_write_count < ee::c_ee_dmac::k_gif_trace_capacity
+                ? gif_write_count : ee::c_ee_dmac::k_gif_trace_capacity);
+        for (uint32_t index = gif_recent; index > 0u; --index)
+        {
+            ee::c_ee_dmac::s_gif_dma_write event{};
+            if (!gif_dma.gif_trace_newest(index - 1u, &event))
+            {
+                break;
+            }
+            std::fprintf(stderr,
+                "EE host GIF write: seq=%llu offset=0x%02x value=0x%08x "
+                "previous=0x%08x CHCR=0x%08x MADR=0x%08x "
+                "QWC=0x%04x TADR=0x%08x reject=%s\n",
+                static_cast<unsigned long long>(event.m_sequence),
+                event.m_offset, event.m_value, event.m_previous,
+                event.m_chcr, event.m_madr, event.m_qwc, event.m_tadr,
+                gif_reject_name(event.m_reject));
+        }
+        // A nearby RAM word can help distinguish a tag *value* from
+        // the actual tag *address*. This is explicitly not a tag decode.
+        if (gif_madr >= 16u && (gif_madr & 15u) == 0u &&
+            memory->contains(gif_madr - 16u, 16u))
+        {
+            std::fprintf(stderr,
+                "EE host GIF nearby RAM: address=0x%08x raw_lo=0x%016llx "
+                "(candidate bytes only, not a validated DMA tag)\n",
+                gif_madr - 16u,
+                static_cast<unsigned long long>(
+                    memory->read64(gif_madr - 16u)));
+        }
+        // If RA still references a JAL callsite, inspect the original
+        // ELF callee bytes without executing or modifying guest code.
+        // This is context for an investigation, NOT proof that the
+        // identified callee wrote the current DMA registers.
+        const uint32_t return_address =
+            static_cast<uint32_t>(cpu.m_gpr[31].m_lo);
+        if (return_address >= 8u)
+        {
+            const uint32_t callsite = return_address - 8u;
+            uint32_t call_word = 0u;
+            if (image.read32_at(callsite, &call_word) &&
+                (call_word >> 26u) == 3u)
+            {
+                const uint32_t callee =
+                    ((callsite + 4u) & 0xf0000000u) |
+                    ((call_word & 0x03ffffffu) << 2u);
+                std::fprintf(stderr,
+                    "EE host last JAL: RA=0x%08x callsite=0x%08x "
+                    "target=0x%08x (context only)\n",
+                    return_address, callsite, callee);
+                for (uint32_t index = 0u; index < 48u; ++index)
+                {
+                    const uint64_t address =
+                        static_cast<uint64_t>(callee) + index * 4u;
+                    uint32_t instruction = 0u;
+                    if (address > 0xffffffffull ||
+                        !image.read32_at(
+                            static_cast<uint32_t>(address),
+                            &instruction))
+                    {
+                        break;
+                    }
+                    std::fprintf(stderr,
+                        "EE host last JAL ELF: 0x%08x opcode=0x%08x\n",
+                        static_cast<uint32_t>(address), instruction);
+                }
+            }
+        }
+        for (uint32_t timer_index = 0u; timer_index < 4u; ++timer_index)
+        {
+            std::fprintf(stderr,
+                "EE host timer: index=%u COUNT=0x%04x MODE=0x%04x\n",
+                timer_index, host_timers.current_count(timer_index),
+                host_timers.current_mode(timer_index));
+        }
+        for (uint32_t index = 0u; index < 32u; index += 4u)
+        {
+            std::fprintf(stderr,
+                "EE host loop GPR: r%02u=0x%016llx r%02u=0x%016llx "
+                "r%02u=0x%016llx r%02u=0x%016llx\n",
+                index, static_cast<unsigned long long>(cpu.m_gpr[index].m_lo),
+                index + 1u,
+                static_cast<unsigned long long>(cpu.m_gpr[index + 1u].m_lo),
+                index + 2u,
+                static_cast<unsigned long long>(cpu.m_gpr[index + 2u].m_lo),
+                index + 3u,
+                static_cast<unsigned long long>(cpu.m_gpr[index + 3u].m_lo));
+        }
+        // Only examine a small static window around the exact yielded
+        // loop header. This is not a guest execution trace: dynamic RAM
+        // writes and MMIO reads are never performed to collect it.
+        for (int32_t relative = -64; relative <= 64; relative += 4)
+        {
+            const int64_t address =
+                static_cast<int64_t>(cpu.m_pc) + relative;
+            if (address < 0 || address > 0xffffffffll)
+            {
+                continue;
+            }
+            uint32_t instruction = 0u;
+            if (image.read32_at(static_cast<uint32_t>(address),
+                                &instruction))
+            {
+                std::fprintf(stderr,
+                    "EE host loop ELF: %c 0x%08x opcode=0x%08x\n",
+                    relative == 0 ? '>' : ' ',
+                    static_cast<uint32_t>(address), instruction);
+            }
+        }
         return 3;
     }
     if (reason == static_cast<uint32_t>(ee::e_ee_exit_reason::EE_EXIT_LOOP_BUDGET))
     {
+        if (vsync_flags.flag_address() != 0u)
+        {
+            const uint32_t flag_address = vsync_flags.flag_address();
+            const uint32_t csr_address = vsync_flags.csr_address();
+            const uint32_t flag_value = memory->contains(flag_address, 4u)
+                ? memory->read32(flag_address) : 0u;
+            const uint64_t csr_value =
+                csr_address != 0u && memory->contains(csr_address, 8u)
+                    ? memory->read64(csr_address) : 0u;
+            std::fprintf(stderr,
+                "EE VBlank wait: INTC_STAT=0x%08x INTC_MASK=0x%08x "
+                "flag=0x%08x value=0x%08x csr_dst=0x%08x "
+                "csr_dst_value=0x%016llx GS_CSR=0x%016llx "
+                "CRT_configured=%u fields=%llu "
+                "cycle_source=%s\n",
+                hardware.intc().status(), hardware.intc().mask(),
+                flag_address, flag_value, csr_address,
+                static_cast<unsigned long long>(csr_value),
+                static_cast<unsigned long long>(hardware.scanout().csr()),
+                hardware.scanout().enabled() ? 1u : 0u,
+                static_cast<unsigned long long>(
+                    hardware.scanout().fields_started()),
+                ee_cycle_source_name(runtime.m_ee_cycle_scheduler.source()));
+        }
         std::fprintf(
             stderr,
             "guest loop budget exhausted: next_pc=0x%08x budget=%u; "
@@ -4109,8 +5666,71 @@ int main(int argc, char** argv)
         );
         return 3;
     }
-    if (reason == static_cast<uint32_t>(ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED) ||
-        reason == static_cast<uint32_t>(ee::e_ee_exit_reason::EE_EXIT_EXCEPTION) ||
+    if (reason == static_cast<uint32_t>(ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED))
+    {
+        // Fail closed, but preserve the actual guest opcode as evidence.
+        // COP0 EPC is not the failing instruction for a native unsupported
+        // exit; cpu.m_pc is the address emitted by the translated code.
+        // Compare the original ELF with live guest RAM to distinguish
+        // an unimplemented static opcode from self-modifying guest code.
+        const uint32_t failed_pc = cpu.m_pc;
+        uint32_t elf_word = 0u;
+        const bool has_elf_word = image.read32_at(failed_pc, &elf_word);
+        const bool has_ram_word = memory->contains(failed_pc, 4u);
+        const uint32_t ram_word = has_ram_word
+            ? memory->read32(failed_pc) : 0u;
+        std::fprintf(stderr,
+            "EE unsupported guest PC: pc=0x%08x "
+            "elf=%s0x%08x ram=%s0x%08x "
+            "COP0_status=0x%08x COP0_cause=0x%08x COP0_epc=0x%08x\n",
+            failed_pc, has_elf_word ? "" : "unmapped:",
+            elf_word, has_ram_word ? "" : "unmapped:", ram_word,
+            cpu.m_cop0[12], cpu.m_cop0[13], cpu.m_cop0[14]);
+        for (int32_t relative = -32; relative <= 64; relative += 4)
+        {
+            const int64_t address =
+                static_cast<int64_t>(failed_pc) + relative;
+            if (address < 0 || address > 0xfffffffcll)
+            {
+                continue;
+            }
+            const uint32_t guest_address = static_cast<uint32_t>(address);
+            uint32_t original = 0u;
+            const bool original_valid =
+                image.read32_at(guest_address, &original);
+            const bool live_valid = memory->contains(guest_address, 4u);
+            if (!original_valid && !live_valid)
+            {
+                continue;
+            }
+            const uint32_t live = live_valid
+                ? memory->read32(guest_address) : 0u;
+            std::fprintf(stderr,
+                "EE unsupported code: %c pc=0x%08x "
+                "ELF=%s0x%08x RAM=%s0x%08x\n",
+                relative == 0 ? '>' : ' ', guest_address,
+                original_valid ? "" : "unmapped:", original,
+                live_valid ? "" : "unmapped:", live);
+        }
+        for (uint32_t index = 0u; index < 32u; index += 4u)
+        {
+            std::fprintf(stderr,
+                "EE unsupported GPR: r%02u=0x%016llx "
+                "r%02u=0x%016llx r%02u=0x%016llx "
+                "r%02u=0x%016llx\n",
+                index, static_cast<unsigned long long>(cpu.m_gpr[index].m_lo),
+                index + 1u,
+                static_cast<unsigned long long>(cpu.m_gpr[index + 1u].m_lo),
+                index + 2u,
+                static_cast<unsigned long long>(cpu.m_gpr[index + 2u].m_lo),
+                index + 3u,
+                static_cast<unsigned long long>(cpu.m_gpr[index + 3u].m_lo));
+        }
+        std::fprintf(stderr,
+            "guest blocked by an unsupported operation or host service\n");
+        return 3;
+    }
+    if (reason == static_cast<uint32_t>(ee::e_ee_exit_reason::EE_EXIT_EXCEPTION) ||
         reason == static_cast<uint32_t>(ee::e_ee_exit_reason::EE_EXIT_EXTERNAL_CALL))
     {
         std::fprintf(stderr, "guest blocked by an unsupported operation or host service\n");

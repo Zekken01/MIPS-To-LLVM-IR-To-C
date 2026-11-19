@@ -1164,6 +1164,66 @@ def make_counting_loop_elf(path):
     path.write_bytes(image)
 
 
+def make_unsupported_instruction_elf(path):
+    """An invalid COP3 opcode must fail closed with its exact guest bytes."""
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    struct.pack_into("<I", image, 0x108, 0x4c000000)  # COP3 is not on R5900
+    struct.pack_into("<I", image, 0x10c, 0x03e00008)  # jr ra (unreached)
+    path.write_bytes(image)
+
+
+def make_vu0_indexed_native_elf(path):
+    """Exercise real COP2 transfer and indexed quadword macros in one CFG."""
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    program = [
+        0x3c081234,  # lui t0,0x1234
+        0x35085678,  # ori t0,t0,0x5678
+        0x48a81800,  # qmtc2 t0,vf3
+        0x24090000,  # addiu t1,zero,0
+        0x48c90800,  # ctc2 t1,vi1
+        0x4b011b7d,  # vsqi.x vf3,(vi1++)
+        0x48c91000,  # ctc2 t1,vi2
+        0x4b02137c,  # vlqi.x vf2,(vi2++)
+        0x482a1000,  # qmfc2 t2,vf2
+        0x484b0800,  # cfc2 t3,vi1
+        0x484c1000,  # cfc2 t4,vi2
+        0x0000000d,  # break after all guest side effects
+    ]
+    for index, word in enumerate(program):
+        struct.pack_into("<I", image, 0x108 + 4 * index, word)
+    path.write_bytes(image)
+
+
+def make_ee_timer_poll_elf(path):
+    """Exercise guest-programmed Timer 0 COUNT advancing inside native CFG."""
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    # 0x10000010 = T0_MODE; 0x10000000 = T0_COUNT.
+    # Enable bus-clock counting, then poll >= 32 entirely within a
+    # translated native function. A post-dispatch-only clock cannot pass.
+    program = [
+        0x3c081000,  # lui t0,0x1000
+        0x24090080,  # addiu t1,zero,0x80 (CUE enable)
+        0xad090010,  # sw t1,0x10(t0)
+        0x8d0a0000,  # lw t2,0(t0)
+        0x240b0000,  # addiu t3,zero,0
+        0x256b0001,  # poll: addiu t3,t3,1
+        0x8d0a0000,  # lw t2,0(t0)
+        0x29410020,  # slti at,t2,32
+        0x1420fffc,  # bne at,zero,poll
+        0x00000000,  # delay slot
+        0xad000010,  # sw zero,0x10(t0): freeze counter
+        0x8d100000,  # lw s0,0(t0): first frozen reading
+        0x8d110000,  # lw s1,0(t0): second frozen reading
+        0x0000000d,  # BREAK: expected terminal trap
+    ]
+    for index, word in enumerate(program):
+        struct.pack_into("<I", image, 0x108 + index * 4, word)
+    path.write_bytes(image)
+
+
 def make_spin_elf(path):
     make_elf(path)
     image = bytearray(path.read_bytes())
@@ -1340,12 +1400,13 @@ def main():
         assert "NO cycle timestamps" in trace_result.stdout, trace_result.stdout
         trace_lines = trace_path.read_text(encoding="utf-8").splitlines()
         assert trace_lines == [
-            "attempt,pc,opcode_word",
-            "1,0x00100008,0x24080001",
-            "2,0x0010000c,0x51000001",
-            "3,0x00100014,0x24020009",
-            "4,0x00100018,0x03e00008",
-            "5,0x0010001c,0x00000000",
+            "attempt,pc,opcode_word,kind,reference_slot,hle_service",
+            "1,0x00100008,0x24080001,0,1,0",
+            "2,0x0010000c,0x51000001,0,2,0",
+            "2,0x00100010,0x24090005,1,3,0",
+            "3,0x00100014,0x24020009,0,4,0",
+            "4,0x00100018,0x03e00008,0,5,0",
+            "5,0x0010001c,0x00000000,0,6,0",
             "# truncated=false range=0x00100008:0x0010001c",
         ], trace_lines
         traced_state = json.loads(trace_report_path.read_text(encoding="utf-8"))
@@ -1395,8 +1456,8 @@ def main():
         )
         loop_lines = loop_trace_path.read_text(encoding="utf-8").splitlines()
         assert len(loop_lines) == 65538, len(loop_lines)
-        assert loop_lines[1] == "1,0x00100008,0x1000ffff", loop_lines[1]
-        assert loop_lines[-2] == "65536,0x0010000c,0x25080001", loop_lines[-2]
+        assert loop_lines[1] == "1,0x00100008,0x1000ffff,0,1,0", loop_lines[1]
+        assert loop_lines[-2] == "65536,0x0010000c,0x25080001,0,65536,0", loop_lines[-2]
         assert loop_lines[-1] == (
             "# truncated=true range=0x00100008:0x0010000c"
         ), loop_lines[-1]
@@ -1609,6 +1670,68 @@ def main():
             "libgame-translated.so"
         )
         library = root / "out" / library_name
+
+        # A folder-backed HLE IOP backend must not require an ISO or ROM0,
+        # even when the legacy ROM0 environment variable is present.
+        disc_folder = root / "extracted-disc"
+        disc_folder.mkdir()
+        (disc_folder / "SYSTEM.CNF").write_text(
+            "BOOT2 = cdrom0:\\MINIMAL-MIPS.ELF;1\n", encoding="ascii"
+        )
+        hle_environment = dict(os.environ)
+        hle_environment["SDBZ_IOP_ROM0"] = str(root / "absent-rom0.bin")
+        folder_command = [
+            str(runner), str(elf), str(library),
+            "--max-dispatches=8", f"--disc-folder={disc_folder}",
+        ]
+        folder_result = subprocess.run(
+            folder_command, capture_output=True, text=True, check=False,
+            env=hle_environment,
+        )
+        assert "[disc] HLE folder mounted:" in folder_result.stdout, (
+            folder_result.stdout + folder_result.stderr
+        )
+        assert "virtual ISO9660 sectors=" in folder_result.stdout, (
+            folder_result.stdout + folder_result.stderr
+        )
+        assert "IOP cdvdman search service install failed" not in (
+            folder_result.stdout + folder_result.stderr
+        )
+        assert "IOP ROM0 reset:" not in folder_result.stdout, folder_result.stdout
+        assert "EE stopped:" in folder_result.stdout, folder_result.stdout
+
+        wrapper_folder = subprocess.run(
+            [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf), "--build-dir", str(build),
+                "--work-dir", str(root / "out"), "--no-recompile",
+                "--max-dispatches=8", "--disc-folder", str(disc_folder),
+            ],
+            capture_output=True, text=True, check=False,
+            env=hle_environment,
+        )
+        assert "[disc] HLE folder mounted:" in wrapper_folder.stdout, (
+            wrapper_folder.stdout + wrapper_folder.stderr
+        )
+        assert "EE stopped:" in wrapper_folder.stdout, wrapper_folder.stdout
+
+        invalid_folder = subprocess.run(
+            folder_command[:-1] +
+            [f"--disc-folder={root / 'missing-disc-folder'}"],
+            capture_output=True, text=True, check=False,
+            env=hle_environment,
+        )
+        assert invalid_folder.returncode == 2, invalid_folder
+        assert "disc folder must be an existing" in invalid_folder.stderr
+
+        conflicting_sources = subprocess.run(
+            folder_command + ["--disc-image=dummy.iso"],
+            capture_output=True, text=True, check=False,
+            env=hle_environment,
+        )
+        assert conflicting_sources.returncode == 2, conflicting_sources
+        assert "usage:" in conflicting_sources.stdout, conflicting_sources.stdout
+
         original_library = library.read_bytes()
         altered_library = bytearray(original_library)
         altered_library[-1] ^= 1
@@ -1729,12 +1852,68 @@ def main():
         assert "EE stopped: dispatched=" in resumed.stdout, (
             resumed.stdout + resumed.stderr
         )
-        assert "ee_recomp: loading" in resumed.stdout, resumed.stdout
+        assert resumed.stdout.count("ee_recomp: loading") == 1, resumed.stdout
+        assert "verify_ir: append-only preserved 1 cached object(s) without rehash" in resumed.stdout, (
+            resumed.stdout + resumed.stderr
+        )
         assert "link_native_objects: reused 6 cached runtime objects" in resumed.stdout, (
             resumed.stdout + resumed.stderr
         )
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         assert metadata["function_count"] == 2, metadata
+
+    # Batch two related explicit function entries from one cache reload,
+    # then publish one merged metadata file. Existing IR stays untouched.
+    with tempfile.TemporaryDirectory(prefix="ee-native-batch-append-") as tmp:
+        root = Path(tmp)
+        elf = root / "overlap-batch.elf"
+        make_overlapping_entry_elf(elf)
+        result = subprocess.run(
+            [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf), "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--max-dispatches=64", "--hle-startup", "--trace",
+                "--extra-functions=0x00100050,0x00100054",
+            ],
+            capture_output=True, text=True, check=False,
+        )
+        assert "ee_recomp: loading" in result.stdout, result.stdout + result.stderr
+        assert result.stdout.count("ee_recomp: loading") == 2, (
+            result.stdout + result.stderr
+        )  # ELF entry translation + ONE --functions batch
+        assert "auto-expand: appended 2 function(s) in one discovery" in result.stdout, (
+            result.stdout + result.stderr
+        )
+        assert "functions=2" in result.stdout, result.stdout
+        metadata = json.loads(
+            (root / "out" / "ir" / "ee_functions.json").read_text(encoding="utf-8")
+        )
+        owners = [
+            int(pc, 0) for fn in metadata["functions"]
+            for pc in fn["block_pcs"]
+        ]
+        assert metadata["function_count"] == 3, metadata
+        assert len(set(owners)) == len(owners), metadata
+        assert 0x00100050 in owners and 0x00100054 in owners
+        assert "HLE FlushCache:" in result.stdout, result.stdout + result.stderr
+
+        # Reject malformed target lists instead of silently truncating,
+        # misparsing or compiling the wrong guest address.
+        recomp = driver.native_executable(build, "ee_recomp")
+        for invalid_list in (
+            "0x00100050,0x00100050",  # duplicate
+            "0x00100050,0x00100051",  # unaligned
+            "0x00100050,,0x00100054",  # malformed
+            "0x00100050,not_hex",  # invalid
+        ):
+            invalid = subprocess.run([
+                str(recomp), str(elf), str(root / "invalid"),
+                "--functions=" + invalid_list,
+            ], capture_output=True, text=True, check=False)
+            assert invalid.returncode != 0, (
+                invalid_list, invalid.stdout, invalid.stderr
+            )
 
     for invalid_set in (False, True):
         with tempfile.TemporaryDirectory(prefix="ee-native-osd-config-") as tmp:
@@ -1931,6 +2110,42 @@ def main():
         assert bounded_state["exit_name"] == "UNSUPPORTED", bounded_state
         assert "SIF SMFLAG polling stalled:" in bounded.stderr, bounded.stderr
         assert "guest_epc=0x00100010 register=4 value=0 reads=6" in bounded.stderr, bounded.stderr
+
+    # HLE-only extracted-disc mode models the already-bootstrapped IOP
+    # service baseline, matching ps2-web-recomp's SDBZ HLE model. It must
+    # not require ROM0 or pretend a guest IRX published that SMFLAG.
+    with tempfile.TemporaryDirectory(prefix="ee-native-hle-disc-sif-") as tmp:
+        root = Path(tmp)
+        elf = root / "ee-sif-wait.elf"
+        disc = root / "PS2_GAME"
+        disc.mkdir()
+        (disc / "SYSTEM.CNF").write_text(
+            "BOOT2 = cdrom0:\\\\SLUS_214.42;1\\n", encoding="ascii"
+        )
+        make_sif_handshake_elf(elf)
+        report_path = root / "hle-sif.json"
+        command = [
+            sys.executable, str(source / "tools" / "run_game.py"),
+            str(elf), "--build-dir", str(build),
+            "--work-dir", str(root / "out"),
+            "--max-dispatches=48", "--hle-startup", "--trace",
+            "--sif-poll-limit=6", "--report", str(report_path),
+            "--disc-folder", str(disc),
+        ]
+        run = subprocess.run(command, capture_output=True,
+                             text=True, check=False)
+        state = json.loads(report_path.read_text(encoding="utf-8"))
+        assert "[iop] HLE bootstrap: sifcmd=ready" in run.stdout, (
+            run.stdout + run.stderr
+        )
+        assert "HLE SifGetReg: register=0x00000004 result=0x00060000" in (
+            run.stdout
+        ), run.stdout
+        assert state["gpr_lo"][16] == 0x60000, state
+        assert state["dispatches"] < 48, state
+        assert "SIF SMFLAG polling stalled" not in run.stderr, run.stderr
+        assert "IOP guest loaded:" not in run.stdout, run.stdout
+        assert "IOP guest published SMFLAG:" not in run.stdout, run.stdout
 
     # End-to-end integration: EE polls SMFLAG, *actual* IOP R3000 guest
     # instructions invoke sifman via IRX imports, and the EE then exits
@@ -3062,6 +3277,15 @@ def main():
         assert "guest host loop yield cap reached:" in result.stderr, (
             result.stdout, result.stderr
         )
+        assert "EE host loop state: pc=0x00100008" in result.stderr, (
+            result.stdout, result.stderr
+        )
+        assert "EE host loop ELF: > 0x00100008 opcode=0x25080001" in result.stderr, (
+            result.stdout, result.stderr
+        )
+        assert "r08=0x000000000000000c" in result.stderr, (
+            result.stdout, result.stderr
+        )
         state = json.loads(report_path.read_text(encoding="utf-8"))
         assert state["snapshot_kind"] == "stopped", state
         assert state["exit_reason"] == 6, state
@@ -3071,6 +3295,116 @@ def main():
         assert state["gpr_lo"][8] == 12, state
         assert state["guest_instruction_attempts"] >= 24, state
         assert (state["cop0_cause"] & 0x7c) == 0, state
+
+    # Unknown native guest opcodes stop without silently doing nothing.
+    # The final diagnostics must report the actual PC, the ELF word,
+    # the live RAM word and the nearby original instruction stream.
+    with tempfile.TemporaryDirectory(prefix="ee-native-unsupported-pc-") as tmp:
+        root = Path(tmp)
+        elf = root / "unsupported.elf"
+        make_unsupported_instruction_elf(elf)
+        report_path = root / "unsupported.json"
+        result = subprocess.run(
+            [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf), "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--functions=entry",
+                "--max-dispatches=8",
+                "--report", str(report_path),
+                "--timeout-seconds=10",
+            ],
+            capture_output=True, text=True, check=False, timeout=40,
+        )
+        assert result.returncode == 3, result.stdout + result.stderr
+        snapshot = json.loads(report_path.read_text(encoding="utf-8"))
+        assert snapshot["exit_name"] == "UNSUPPORTED", snapshot
+        assert snapshot["final_pc"] == 0x00100008, snapshot
+        # Static expansion identifies the actual unsupported/invalid guest
+        # instruction, even when execution later exits on the same word.
+        assert ("not-lowered pc=0x00100008 opcode=0x4c000000 "
+                "mnemonic=unknown classification=invalid" in
+                (result.stdout + result.stderr)), (result.stdout, result.stderr)
+        assert ("EE unsupported guest PC: pc=0x00100008 "
+                "elf=0x4c000000 ram=0x4c000000") in result.stderr, (
+            result.stdout, result.stderr
+        )
+        assert ("EE unsupported code: > pc=0x00100008 "
+                "ELF=0x4c000000 RAM=0x4c000000") in result.stderr, (
+            result.stdout, result.stderr
+        )
+
+    # Both real VU0 data memory macros and COP2 register transfers must
+    # execute in a single emitted native block, not through a host fallback.
+    with tempfile.TemporaryDirectory(prefix="ee-native-vu0-indexed-") as tmp:
+        root = Path(tmp)
+        elf = root / "vu0-indexed.elf"
+        make_vu0_indexed_native_elf(elf)
+        report_path = root / "vu0-indexed.json"
+        result = subprocess.run(
+            [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf), "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--functions=entry",
+                "--max-dispatches=16",
+                "--hle-startup", "--kseg-ram",
+                "--report", str(report_path),
+                "--timeout-seconds=10",
+            ],
+            capture_output=True, text=True, check=False, timeout=40,
+        )
+        assert result.returncode == 3, (result.stdout, result.stderr)
+        snapshot = json.loads(report_path.read_text(encoding="utf-8"))
+        assert snapshot["exit_name"] == "EXCEPTION", (
+            snapshot, result.stdout, result.stderr
+        )
+        assert (snapshot["cop0_cause"] >> 2) & 31 == 9, snapshot
+        assert snapshot["gpr_lo"][10] & 0xffffffff == 0x12345678, snapshot
+        assert snapshot["gpr_lo"][11] == 1, snapshot
+        assert snapshot["gpr_lo"][12] == 1, snapshot
+        assert "EE unsupported guest PC:" not in result.stderr, (
+            result.stdout, result.stderr
+        )
+
+    # A real guest Timer0 COUNT poll must finish *inside* its native CFG.
+    # Both the clock source and the device must advance; simply resuming
+    # a HOST_YIELD would conceal a missing MMIO timer.
+    with tempfile.TemporaryDirectory(prefix="ee-native-timer0-poll-") as tmp:
+        root = Path(tmp)
+        elf = root / "timer0-poll.elf"
+        make_ee_timer_poll_elf(elf)
+        report_path = root / "timer0-poll.json"
+        result = subprocess.run(
+            [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf), "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--functions=entry",
+                "--max-dispatches=16",
+                "--loop-budget=5000",
+                "--loop-yield-resumes=1",
+                "--hle-startup", "--kseg-ram",
+                "--ee-clock=reference-compat",
+                "--report", str(report_path),
+                "--timeout-seconds=10",
+            ],
+            capture_output=True, text=True, check=False, timeout=40,
+        )
+        assert result.returncode == 0 or result.returncode == 3, (
+            result.stdout, result.stderr
+        )
+        snapshot = json.loads(report_path.read_text(encoding="utf-8"))
+        assert snapshot["exit_name"] == "EXCEPTION", (
+            snapshot, result.stdout, result.stderr
+        )
+        assert snapshot["cop0_cause"] & 0x7c == 0x24, snapshot
+        assert 32 <= snapshot["gpr_lo"][10] <= 0xffff, snapshot
+        assert snapshot["gpr_lo"][16] == snapshot["gpr_lo"][17], snapshot
+        assert 1 <= snapshot["gpr_lo"][11] < 1000, snapshot
+        assert "guest host loop yield cap reached" not in result.stderr, (
+            result.stdout, result.stderr
+        )
 
     # Resuming without a bounded guest-loop watchdog would spin forever;
     # reject an invalid command before loading or mutating guest state.

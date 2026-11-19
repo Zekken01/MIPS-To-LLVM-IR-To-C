@@ -105,10 +105,13 @@ def make_guest_dma5_callback_elf(path):
 
     # The genuine DMA5 callback must rearm SIF0 through the EE kernel's
     # interrupt-safe syscall -0x78 before it sets the completion flag.
+    # Check interrupt-context iFlushCache while EXL is still set, so the
+    # architectural EPC points at the interrupted main thread.
     # It then captures a0/a1, changes s3 as a context-isolation probe,
     # and returns V0=0.
     handler = [
         addiu(3, 0, -0x78), 0x0000000c,  # iSifSetDChain
+        addiu(3, 0, -0x68), 0x0000000c,  # iFlushCache
         lui(8, 0x0010), ori(8, 8, 0x0480),
         addiu(9, 0, 1), sw(9, 0, 8),
         sw(4, 8, 8), sw(5, 12, 8),
@@ -180,6 +183,7 @@ def main():
     )
     assert ("HLE iSifSetDChain: channel=5 qwc=0 "
             "chcr=0x00000184 result=void") in result.stdout
+    assert "HLE iFlushCache: mode=0x00000005 result=0" in result.stdout
     assert result.stdout.count("HLE DMAC IRQ: channel=5 pending=") == 1
     assert "HLE iSignalSema: id=1 old_count=0 new_count=1 result=1" in result.stdout
     assert "HLE DMAC callback returned: channel=5 v0=0" in result.stdout

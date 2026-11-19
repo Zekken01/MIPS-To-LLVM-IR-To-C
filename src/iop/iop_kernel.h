@@ -64,6 +64,7 @@ struct s_module_load_result
 {
     e_irx_load_result m_status = e_irx_load_result::invalid_module;
     uint32_t m_id = 0u;
+    s_irx_link_diagnostic m_link_diagnostic{};
 };
 
 // Called after the R3000 encounters a syscall. The callback may update
@@ -87,6 +88,8 @@ public:
     // ROM0 image at BFC00000, not as a fabricated kernel thread.
     // This must occur before any IRX imports or modules are installed.
     bool start_rom0_boot(const std::vector<uint8_t>& image);
+    // Attach the real physical IOP bus for HLE-first IRX execution.
+    bool attach_hle_hardware();
     bool rom0_boot_active() const;
     c_hw& hardware();
     const c_hw& hardware() const;
@@ -97,6 +100,10 @@ public:
     uint32_t current_thread_id() const;
 
     // Actual IOP library exports supply concrete executable targets.
+    bool lookup_library(
+        const std::string& name, uint16_t ordinal,
+        uint32_t* entry
+    ) const;
     bool register_library(
         const std::string& name, uint16_t ordinal, uint32_t entry
     );
@@ -104,6 +111,16 @@ public:
         const std::vector<uint8_t>& bytes
     );
     const s_kernel_module* module(uint32_t id) const;
+
+    // HLE IOPHEAP shares the same first-fit IOP RAM address space
+    // as linked IRX modules and guest thread stacks. Only addresses
+    // allocated by this API can be freed through IOPHEAP.
+    uint32_t allocate_heap(uint32_t size);
+    bool free_heap(uint32_t address);
+    // Enforce ownership for guest-requested file copies into IOP RAM.
+    bool owns_heap_span(uint32_t address, uint32_t size) const;
+    uint32_t heap_max_free() const;
+    uint32_t heap_total_free() const;
 
     // Create an initially dormant R3000 thread. Priority 0 is highest.
     // A kernel will eventually publish proper thread APIs to IRX imports.
@@ -117,10 +134,15 @@ public:
         uint32_t stack_size = 0x4000u
     );
     bool start_thread(uint32_t id);
+    bool start_thread_with_argument(uint32_t id, uint32_t argument);
     bool wake_thread(uint32_t id);
     bool stop_thread(uint32_t id);
     bool sleep_current(uint64_t delay_cycles);
+    bool block_current();
     const s_kernel_thread* thread(uint32_t id) const;
+    // Only scheduled guest work permits an HLE transport-triggered
+    // IOP execution turn; absent modules cannot advance IOP time.
+    bool has_guest_work() const;
 
     void bind_syscall(t_kernel_syscall handler);
     // Explicit IOP cycle budget. The EE must eventually provide this from
@@ -140,6 +162,7 @@ private:
     c_cpu m_cpu{};
     c_hw m_hardware{};
     std::map<uint32_t, uint32_t> m_allocations;
+    std::map<uint32_t, uint32_t> m_heap_allocations;
     std::map<std::string, std::map<uint16_t, uint32_t>> m_libraries;
     std::map<uint32_t, s_kernel_module> m_modules;
     std::map<uint32_t, s_kernel_thread> m_threads;

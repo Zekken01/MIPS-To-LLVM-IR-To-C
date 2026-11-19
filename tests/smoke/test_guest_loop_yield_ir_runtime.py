@@ -42,14 +42,14 @@ def main():
             capture_output=True, text=True, check=True,
         )
         match = re.search(
-            r"LOOP_RUNTIME_OFFSETS ([0-9]+) ([0-9]+) ([0-9]+) ([0-9]+)",
+            r"LOOP_RUNTIME_OFFSETS ([0-9]+) ([0-9]+) ([0-9]+) ([0-9]+) ([0-9]+)",
             proc.stdout,
         )
         require(match is not None, "fixture did not report native ABI offsets")
-        limit_offset, remaining_offset, attempt_offset, yield_offset = (
+        limit_offset, remaining_offset, attempt_offset, yield_offset, slot_offset = (
             int(value) for value in match.groups()
         )
-        require(limit_offset < remaining_offset < attempt_offset < yield_offset,
+        require(limit_offset < remaining_offset < attempt_offset < yield_offset < slot_offset,
                 "unexpected reordered C++ safepoint runtime ABI")
 
         ir = ir_path.read_text(encoding="utf-8")
@@ -76,12 +76,13 @@ def main():
         state.pc = ENTRY_PC
         state.gpr[8].lo = 41
         state.gpr[8].hi = 0x1122334455667788
-        runtime = ctypes.create_string_buffer(yield_offset + 16)
+        runtime = ctypes.create_string_buffer(max(yield_offset + 16, slot_offset + 8))
         runtime_ptr = ctypes.c_void_p(ctypes.addressof(runtime))
         limit = ctypes.c_uint32.from_buffer(runtime, limit_offset)
         remaining = ctypes.c_uint32.from_buffer(runtime, remaining_offset)
         attempts = ctypes.c_uint64.from_buffer(runtime, attempt_offset)
         yield_enabled = ctypes.c_uint32.from_buffer(runtime, yield_offset)
+        reference_slots = ctypes.c_uint64.from_buffer(runtime, slot_offset)
 
         def run_slice(count, cooperative, expected_result, expected_lo,
                       expected_attempts):
@@ -99,6 +100,8 @@ def main():
                     "guest GPR128 upper half was not preserved")
             require(attempts.value == expected_attempts,
                     f"counter mismatch: expected {expected_attempts}, got {attempts.value}")
+            require(reference_slots.value == expected_attempts,
+                    "straight-line and taken branch slot accounting diverged")
             require(remaining.value == 0, "loop budget not exhausted exactly")
 
         # Three executed BEQ/delay pairs, followed by an exact yield before

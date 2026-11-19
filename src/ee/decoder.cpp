@@ -85,7 +85,8 @@ bool cop2_special2_defined(uint32_t index)
 bool cop1_s_defined(uint32_t funct)
 {
     return funct <= 7 || funct == 0x16 ||
-           (funct >= 0x18 && funct <= 0x1f) ||
+           (funct >= 0x18 && funct <= 0x1a) ||
+           (funct >= 0x1c && funct <= 0x1f) ||
            funct == 0x24 || funct == 0x28 || funct == 0x29 ||
            funct == 0x30 || funct == 0x32 || funct == 0x34 || funct == 0x36;
 }
@@ -271,9 +272,17 @@ s_ee_instruction decode(uint32_t pc, uint32_t word)
             insn.valid = e_ee_valid::UNSUPPORTED;
             set_mnemonic(insn, "trap");
             break;
-        default:
+        case e_ee_opcode::FUNCT_MFSA:
+        case e_ee_opcode::FUNCT_MTSA:
+            // R5900 scalar shift-amount register transfers are genuine
+            // instructions, but have no complete native lowering yet.
             insn.valid = e_ee_valid::UNSUPPORTED;
-            set_mnemonic(insn, "special");
+            set_mnemonic(insn, insn.funct == static_cast<uint8_t>(e_ee_opcode::FUNCT_MFSA)
+                ? "mfsa" : "mtsa");
+            break;
+        default:
+            insn.valid = e_ee_valid::INVALID;
+            set_mnemonic(insn, "special_rsvd");
             break;
         }
         break;
@@ -645,8 +654,7 @@ s_ee_instruction decode(uint32_t pc, uint32_t word)
         set_mnemonic(insn, "sqc2");
         break;
 
-    case 0x37: // LD (R5900)
-    case 0x38: // legacy alias some tools use for LD
+    case 0x37: // LD (R5900); 0x38 is not a valid EE LD alias
         insn.type = e_ee_op_type::OP_TYPE_ITYPE;
         insn.opcode = e_ee_opcode::OP_LD;
         insn.flow = e_ee_flow::FLOW_NONE;
@@ -882,9 +890,9 @@ s_ee_instruction decode(uint32_t pc, uint32_t word)
         insn.flow = e_ee_flow::FLOW_NONE;
         switch (insn.rs)
         {
-        // Transfer encodings use rd as the VU register index. The low
-        // eleven bits (sa/funct) are reserved and must be zero. These four
-        // forms now lower through synchronized runtime helpers.
+        // Transfers use rd as the VU register index. Bits 10..1 are
+        // reserved, but bit 0 is the architectural I (interlock) bit.
+        // .NI (0) and .I (1) share the same register transfer helper.
         case 0x01: // QMFC2: GPR rt <- VU0 VF[rd]
         case 0x02: // CFC2: GPR rt <- VU0 VI[rd]
         case 0x05: // QMTC2: VU0 VF[rd] <- GPR rt
@@ -895,9 +903,20 @@ s_ee_instruction decode(uint32_t pc, uint32_t word)
                 "qmtc2", "ctc2"
             };
             const uint32_t selector = insn.rs;
-            insn.valid = (insn.sa == 0 && insn.funct == 0)
+            insn.valid = (insn.sa == 0 && insn.funct <= 1u)
                 ? e_ee_valid::VALID : e_ee_valid::INVALID;
-            set_mnemonic(insn, names[selector - 1]);
+            // Preserve the interlock variant in diagnostic output.
+            if (insn.funct == 1u)
+            {
+                char mnemonic[16]{};
+                std::snprintf(mnemonic, sizeof(mnemonic),
+                              "%s.i", names[selector - 1]);
+                set_mnemonic(insn, mnemonic);
+            }
+            else
+            {
+                set_mnemonic(insn, names[selector - 1]);
+            }
             break;
         }
         case 0x08: // BC2F/T/FL/TL; the full rt field selects the table entry
@@ -953,19 +972,25 @@ s_ee_instruction decode(uint32_t pc, uint32_t word)
                     case 0x18: name = "vmulax"; break;
                     case 0x09: name = "vmadday"; break;
                     case 0x0a: name = "vmaddaz"; break;
+                    case 0x34: name = "vlqi"; break;
+                    case 0x35: name = "vsqi"; break;
+                    case 0x36: name = "vlqd"; break;
+                    case 0x37: name = "vsqd"; break;
                     default: break;
                     }
                 }
-                // Exactly the four matrix FMAC operations have a native
-                // runtime implementation; all other defined COP2 macros
-                // remain intentionally UNSUPPORTED.
+                // Four matrix FMAC and four indexed VU0 vector memory macros have
+                // native runtime implementations; all other defined COP2
+                // operations remain UNSUPPORTED.
                 const uint32_t special2_index =
                     (word & 0x3u) | ((word >> 4) & 0x7cu);
                 if (defined && (funct == 0x0bu ||
                     (funct >= 0x3cu &&
                      (special2_index == 0x18u ||
                       special2_index == 0x09u ||
-                      special2_index == 0x0au))))
+                      special2_index == 0x0au ||
+                       (special2_index >= 0x34u &&
+                        special2_index <= 0x37u)))))
                 {
                     insn.valid = e_ee_valid::VALID;
                 }
@@ -1073,10 +1098,23 @@ s_ee_instruction decode(uint32_t pc, uint32_t word)
         set_mnemonic(insn, "sq");
         break;
 
+    case 0x38: // SC (MIPS III), explicitly unsupported by EE hardware
+        // Sony's instruction manual labels this opcode 'unsupported':
+        // executing it generates the undefined-instruction exception.
+        // Our UNSUPPORTED enum instead means a legal EE instruction
+        // awaiting native lowering, so this is INVALID on the EE.
+        insn.opcode = e_ee_opcode::OP_INVALID;
+        insn.flow = e_ee_flow::FLOW_NONE;
+        insn.valid = e_ee_valid::INVALID;
+        set_mnemonic(insn, "sc");
+        break;
+
     default:
         insn.opcode = e_ee_opcode::OP_INVALID;
         insn.flow = e_ee_flow::FLOW_NONE;
-        insn.valid = e_ee_valid::UNSUPPORTED;
+        // Unassigned primary R5900 selector, not an implemented ISA
+        // instruction awaiting lowering. Preserve the original word.
+        insn.valid = e_ee_valid::INVALID;
         set_mnemonic(insn, "unknown");
         break;
     }
