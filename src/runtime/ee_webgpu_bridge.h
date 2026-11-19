@@ -32,6 +32,11 @@ public:
         const uint8_t* data, uint32_t qwc
     );
 
+    // Present only when the host observes a genuine guest scanout field.
+    // An invalid GS display configuration cannot trigger a presentation.
+    bool present(const s_ee_gs_display_registers& registers,
+        uint32_t crt_mode);
+
     // GPU raster + GS display compute pass; no browser or window required.
     // A successful readback is a GPU-processed GS VRAM image, NOT proof
     // of a guest presentation/VBlank event.
