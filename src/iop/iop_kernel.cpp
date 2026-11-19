@@ -661,6 +661,9 @@ uint32_t c_kernel::create_thread(
     s_kernel_thread thread{};
     thread.m_id = m_next_thread_id++;
     thread.m_priority = priority;
+    thread.m_initial_priority = priority;
+    thread.m_entry = entry;
+    thread.m_gp = gp;
     thread.m_stack_base = stack_base;
     thread.m_stack_size = allocated_size;
     thread.m_cpu.m_pc = entry;
@@ -827,6 +830,7 @@ bool c_kernel::wake_thread(uint32_t id)
     }
     found->second.m_status = e_thread_status::ready;
     found->second.m_wake_cycle = 0u;
+    found->second.m_wait_type = 0u;
     return true;
 }
 
@@ -853,7 +857,111 @@ bool c_kernel::stop_thread(uint32_t id)
     return true;
 }
 
-bool c_kernel::block_current()
+bool c_kernel::delete_thread(uint32_t id)
+{
+    const auto found = m_threads.find(id);
+    if (found == m_threads.end() ||
+        found->second.m_status != e_thread_status::dormant ||
+        found->second.m_alarm_id != 0u ||
+        m_allocations.find(found->second.m_stack_base) ==
+            m_allocations.end())
+    {
+        return false;
+    }
+    m_allocations.erase(found->second.m_stack_base);
+    m_threads.erase(found);
+    return true;
+}
+
+bool c_kernel::exit_current_thread()
+{
+    const auto found = m_threads.find(m_current_thread_id);
+    if (found == m_threads.end() ||
+        found->second.m_status != e_thread_status::running)
+    {
+        return false;
+    }
+    found->second.m_status = e_thread_status::dormant;
+    found->second.m_wake_cycle = 0u;
+    found->second.m_wait_type = 0u;
+    return true;
+}
+
+bool c_kernel::change_thread_priority(
+    uint32_t id, uint32_t priority
+)
+{
+    if (id == 0u)
+    {
+        id = m_current_thread_id;
+    }
+    const auto found = m_threads.find(id);
+    if (found == m_threads.end())
+    {
+        return false;
+    }
+    const uint32_t new_priority =
+        priority == 0u ? found->second.m_initial_priority : priority;
+    if (new_priority < 1u || new_priority > 126u)
+    {
+        return false;
+    }
+    found->second.m_priority = new_priority;
+    return true;
+}
+
+bool c_kernel::sleep_thread()
+{
+    const auto found = m_threads.find(m_current_thread_id);
+    if (found == m_threads.end() ||
+        found->second.m_status != e_thread_status::running)
+    {
+        return false;
+    }
+    if (found->second.m_wakeup_count != 0u)
+    {
+        --found->second.m_wakeup_count;
+        return true;
+    }
+    return block_current(1u);
+}
+
+bool c_kernel::wakeup_thread(uint32_t id)
+{
+    const auto found = m_threads.find(id);
+    if (found == m_threads.end())
+    {
+        return false;
+    }
+    if (found->second.m_status == e_thread_status::blocked &&
+        found->second.m_wait_type == 1u)
+    {
+        return wake_thread(id);
+    }
+    if (found->second.m_wakeup_count ==
+        std::numeric_limits<uint32_t>::max())
+    {
+        return false;
+    }
+    ++found->second.m_wakeup_count;
+    return true;
+}
+
+bool c_kernel::cancel_wakeup_thread(
+    uint32_t id, uint32_t* previous
+)
+{
+    const auto found = m_threads.find(id);
+    if (found == m_threads.end() || previous == nullptr)
+    {
+        return false;
+    }
+    *previous = found->second.m_wakeup_count;
+    found->second.m_wakeup_count = 0u;
+    return true;
+}
+
+bool c_kernel::block_current(uint32_t wait_type)
 {
     const auto found = m_threads.find(m_current_thread_id);
     if (found == m_threads.end() ||
@@ -863,6 +971,7 @@ bool c_kernel::block_current()
     }
     found->second.m_status = e_thread_status::blocked;
     found->second.m_wake_cycle = 0u;
+    found->second.m_wait_type = wait_type;
     return true;
 }
 
@@ -879,6 +988,7 @@ bool c_kernel::sleep_current(uint64_t delay_cycles)
     }
     found->second.m_status = e_thread_status::blocked;
     found->second.m_wake_cycle = m_cycles + delay_cycles;
+    found->second.m_wait_type = 2u;
     return true;
 }
 
@@ -958,6 +1068,7 @@ void c_kernel::wake_due()
         {
             thread.m_status = e_thread_status::ready;
             thread.m_wake_cycle = 0u;
+            thread.m_wait_type = 0u;
         }
     }
 }
