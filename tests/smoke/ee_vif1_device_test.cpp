@@ -325,7 +325,7 @@ int main()
 
     // Unknown upper operation must fail before emitting or retiring DMA.
     // An invalid MPG pair is visible in the actual VU code aperture.
-    const ee::s_ee_u128 unsupported_pair{nop_lower, 0x000002feu};
+    const ee::s_ee_u128 unsupported_pair{nop_lower, 0x01e00031u};
     const uint32_t after_kick = capture.m_calls;
     if (!check(ee::c_ee_vif1::mmio_write(
                    &vif1, ee::c_ee_vif1::k_vu1_code_base,
@@ -335,7 +335,7 @@ int main()
                vif1.diagnostic().m_reason ==
                    ee::c_ee_vif1::e_reject::unsupported_vu_execution &&
                vif1.diagnostic().m_vu_pc == 0u &&
-               vif1.diagnostic().m_vu_upper == 0x000002feu &&
+               vif1.diagnostic().m_vu_upper == 0x01e00031u &&
                capture.m_calls == after_kick,
                "unsupported VU opcode fabricated DMA/GIF completion"))
     {
