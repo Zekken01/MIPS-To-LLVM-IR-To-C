@@ -33,6 +33,20 @@ int main()
            "slti", V);
     expect("sltiu", (0x0bu << 26) | (4u << 21) | (6u << 16) | 0xffffu,
            "sltiu", V);
+    // The R5900 standard table has LD at primary 0x37 only.
+    // In particular 0x38, though SC on some MIPS variants, is not
+    // a second LD encoding on PS2. Unknown selectors fail closed.
+    expect("ld primary", R(0x37, 4, 5, 0, 0, 0), "ld", V);
+    expect("0x38 reserved", R(0x38, 4, 5, 0, 0, 0), "unknown", X);
+    expect("0x30 reserved", R(0x30, 4, 5, 0, 0, 0), "unknown", X);
+    expect("0x35 reserved", R(0x35, 4, 5, 0, 0, 0), "unknown", X);
+    expect("0x3d reserved", R(0x3d, 4, 5, 0, 0, 0), "unknown", X);
+    // SPECIAL 0x28/0x29 are real R5900 SA transfers, not UNKNOWN
+    // and not yet implemented; other reserved functs are INVALID.
+    expect("mfsa", R(0x00, 0, 0, 6, 0, 0x28), "mfsa", U);
+    expect("mtsa", R(0x00, 4, 0, 0, 0, 0x29), "mtsa", U);
+    expect("special reserved", R(0x00, 4, 5, 6, 0, 0x01),
+           "special_reserved", X);
     // MMI groups: funct 0x08=MMI0, 0x28=MMI1, 0x09=MMI2, 0x29=MMI3; sub-op in sa.
     expect("paddw",   R(0x1c,4,5,6,0x00,0x08), "paddw",  V);
     expect("psubh",   R(0x1c,4,5,6,0x05,0x08), "psubh",  V);
@@ -396,6 +410,7 @@ int main()
     expect("c.lt.fcc1", R(0x11,0x10,5,6,1,0x34), "cop1_s", U);
     expect("cvt.w.s", R(0x11,0x10,5,6,7,0x24), "cop1_s", V);
     expect("unknown.s", R(0x11,0x10,5,6,7,0x08), "cop1_reserved", X);
+    expect("unknown.s 0x1b", R(0x11,0x10,5,6,7,0x1b), "cop1_reserved", X);
     expect("cvt.s.w", R(0x11,0x14,0,6,7,0x20), "cvt_s_w", V);
     expect("bad.w", R(0x11,0x14,0,6,7,0x21), "cop1_reserved", X);
     expect("fmt.d", R(0x11,0x11,5,6,7,0x00), "cop1_reserved", X);
