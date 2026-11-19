@@ -5172,6 +5172,44 @@ int main(int argc, char** argv)
                 static_cast<unsigned long long>(
                     memory->read64(gif_madr - 16u)));
         }
+        // If RA still references a JAL callsite, inspect the original
+        // ELF callee bytes without executing or modifying guest code.
+        // This is context for an investigation, NOT proof that the
+        // identified callee wrote the current DMA registers.
+        const uint32_t return_address =
+            static_cast<uint32_t>(cpu.m_gpr[31].m_lo);
+        if (return_address >= 8u)
+        {
+            const uint32_t callsite = return_address - 8u;
+            uint32_t call_word = 0u;
+            if (image.read32_at(callsite, &call_word) &&
+                (call_word >> 26u) == 3u)
+            {
+                const uint32_t callee =
+                    ((callsite + 4u) & 0xf0000000u) |
+                    ((call_word & 0x03ffffffu) << 2u);
+                std::fprintf(stderr,
+                    "EE host last JAL: RA=0x%08x callsite=0x%08x "
+                    "target=0x%08x (context only)\n",
+                    return_address, callsite, callee);
+                for (uint32_t index = 0u; index < 48u; ++index)
+                {
+                    const uint64_t address =
+                        static_cast<uint64_t>(callee) + index * 4u;
+                    uint32_t instruction = 0u;
+                    if (address > 0xffffffffull ||
+                        !image.read32_at(
+                            static_cast<uint32_t>(address),
+                            &instruction))
+                    {
+                        break;
+                    }
+                    std::fprintf(stderr,
+                        "EE host last JAL ELF: 0x%08x opcode=0x%08x\n",
+                        static_cast<uint32_t>(address), instruction);
+                }
+            }
+        }
         for (uint32_t timer_index = 0u; timer_index < 4u; ++timer_index)
         {
             std::fprintf(stderr,
