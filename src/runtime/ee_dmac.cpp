@@ -469,69 +469,128 @@ bool c_ee_dmac::transfer_device_normal(uint32_t channel_index)
     return raise(channel_index);
 }
 
-// The initial observed SDBZ GIF chain has one END source tag and nine
-// inline PATH3 quadwords. Deliver the actual bytes before completing DMAC.
-bool c_ee_dmac::transfer_gif_chain_end()
+// Walk a complete GIF PATH3 source chain before consuming any bytes.
+// Supported: REFE, CNT, NEXT, REF and END, including TIE/IRQ termination.
+// TTE, REFS stall semantics, CALL/RET stacks, scratchpad tags and MFIFO
+// remain fail-closed until their full hardware behavior is implemented.
+bool c_ee_dmac::transfer_gif_source_chain()
 {
     s_spr_channel& channel = m_device_channels[2u];
     if (m_memory == nullptr || m_device_transfer == nullptr ||
         (channel.m_chcr & k_chcr_str) == 0u ||
         ((channel.m_chcr >> 2u) & 3u) != 1u ||
         (channel.m_chcr & 1u) == 0u ||
+        (channel.m_chcr & 0x40u) != 0u ||
         channel.m_qwc != 0u)
     {
         return false;
     }
 
-    const uint64_t tag_address = channel.m_tadr;
-    if ((tag_address & 15u) != 0u ||
-        tag_address >= 0x02000000ull ||
-        tag_address + 16u > 0x02000000ull ||
-        !m_memory->contains(static_cast<uint32_t>(tag_address), 16u))
-    {
-        return false;
-    }
+    constexpr uint32_t k_max_chain_tags = 1024u;
+    constexpr size_t k_max_chain_qwc = 0xffffu;
+    uint64_t tag_address = channel.m_tadr;
+    uint32_t final_tag = 0u;
+    uint32_t final_madr = channel.m_madr;
+    std::vector<uint8_t> packet;
+    bool completed = false;
 
-    const uint32_t tag = static_cast<uint32_t>(
-        m_memory->read64(static_cast<uint32_t>(tag_address)));
-    const uint32_t tag_id = (tag >> 28u) & 7u;
-    const uint32_t qwc = tag & 0xffffu;
-    const uint64_t data_address = tag_address + 16u;
-    const uint64_t end_address = data_address + uint64_t(qwc) * 16u;
-    if (tag_id != 7u ||
-        end_address > 0x02000000ull ||
-        !m_memory->contains(
-            static_cast<uint32_t>(data_address),
-            static_cast<size_t>(qwc) * 16u))
+    for (uint32_t tag_index = 0u;
+         tag_index < k_max_chain_tags && !completed; ++tag_index)
     {
-        return false;
-    }
-
-    // The GIF sink must accept the complete stream atomically. No DMA
-    // state changes or completion IRQ are reported on rejection.
-    std::vector<uint8_t> packet(static_cast<size_t>(qwc) * 16u);
-    for (uint32_t i = 0u; i < qwc; ++i)
-    {
-        s_ee_u128 quad{};
-        m_memory->read128(static_cast<uint32_t>(data_address) + i * 16u, &quad);
-        for (uint32_t lane = 0u; lane < 8u; ++lane)
+        if ((tag_address & 15u) != 0u ||
+            tag_address >= 0x02000000ull ||
+            tag_address + 16u > 0x02000000ull ||
+            !m_memory->contains(static_cast<uint32_t>(tag_address), 16u))
         {
-            packet[static_cast<size_t>(i) * 16u + lane] =
-                static_cast<uint8_t>(quad.m_lo >> (lane * 8u));
-            packet[static_cast<size_t>(i) * 16u + lane + 8u] =
-                static_cast<uint8_t>(quad.m_hi >> (lane * 8u));
+            return false;
         }
+
+        const uint64_t tag = m_memory->read64(
+            static_cast<uint32_t>(tag_address));
+        const uint32_t tag_id = static_cast<uint32_t>(
+            (tag >> 28u) & 7u);
+        const uint32_t qwc = static_cast<uint32_t>(tag & 0xffffu);
+        const uint64_t tag_data_address = tag >> 32u;
+        const uint64_t inline_data_address = tag_address + 16u;
+        uint64_t data_address = inline_data_address;
+        uint64_t next_tag_address = inline_data_address +
+            static_cast<uint64_t>(qwc) * 16u;
+        bool terminal = false;
+
+        switch (tag_id)
+        {
+        case 0u: // REFE: external payload, terminate
+            terminal = true;
+            [[fallthrough]];
+        case 3u: // REF: external payload, continue at the next tag
+            data_address = tag_data_address;
+            next_tag_address = inline_data_address;
+            break;
+        case 1u: // CNT: inline payload, sequential next tag
+            break;
+        case 2u: // NEXT: inline payload, jump to ADDR
+            next_tag_address = tag_data_address;
+            break;
+        case 7u: // END: inline payload, terminate
+            terminal = true;
+            break;
+        default:
+            // REFS, CALL and RET require additional state and cannot
+            // be treated as CNT, REF or a silently completed chain.
+            return false;
+        }
+
+        const uint64_t byte_count = static_cast<uint64_t>(qwc) * 16u;
+        if ((data_address & 15u) != 0u ||
+            data_address >= 0x02000000ull ||
+            data_address + byte_count > 0x02000000ull ||
+            !m_memory->contains(
+                static_cast<uint32_t>(data_address),
+                static_cast<size_t>(byte_count)) ||
+            static_cast<size_t>(qwc) >
+                k_max_chain_qwc - packet.size() / 16u)
+        {
+            return false;
+        }
+
+        const size_t previous_size = packet.size();
+        packet.resize(previous_size + static_cast<size_t>(byte_count));
+        for (uint32_t i = 0u; i < qwc; ++i)
+        {
+            s_ee_u128 quad{};
+            m_memory->read128(
+                static_cast<uint32_t>(data_address) + i * 16u, &quad);
+            for (uint32_t lane = 0u; lane < 8u; ++lane)
+            {
+                packet[previous_size + static_cast<size_t>(i) * 16u + lane] =
+                    static_cast<uint8_t>(quad.m_lo >> (lane * 8u));
+                packet[previous_size + static_cast<size_t>(i) * 16u + 8u + lane] =
+                    static_cast<uint8_t>(quad.m_hi >> (lane * 8u));
+            }
+        }
+
+        final_tag = static_cast<uint32_t>(tag);
+        final_madr = static_cast<uint32_t>(data_address + byte_count);
+        tag_address = next_tag_address;
+        completed = terminal ||
+            ((channel.m_chcr & 0x80u) != 0u &&
+             (tag & 0x80000000ull) != 0u);
     }
-    if (qwc != 0u &&
-        !m_device_transfer(m_device_user, 2u, packet.data(), qwc))
+
+    if (!completed ||
+        (!packet.empty() && !m_device_transfer(
+            m_device_user, 2u, packet.data(),
+            static_cast<uint32_t>(packet.size() / 16u))))
     {
         return false;
     }
 
+    // The entire source chain and PATH3 sink committed successfully.
+    // Only now publish registers and genuine channel-2 completion.
     channel.m_chcr = ((channel.m_chcr & 0x0000ffffu) |
-                       (tag & 0xffff0000u)) & ~k_chcr_str;
-    channel.m_madr = static_cast<uint32_t>(end_address);
-    channel.m_tadr = static_cast<uint32_t>(end_address);
+                       (final_tag & 0xffff0000u)) & ~k_chcr_str;
+    channel.m_madr = final_madr;
+    channel.m_tadr = static_cast<uint32_t>(tag_address);
     channel.m_qwc = 0u;
     return raise(2u);
 }
@@ -1087,7 +1146,7 @@ bool c_ee_dmac::write_spr_channel(uint32_t address, uint32_t value)
             {
                 if (channel_index == 2u && mode == 1u)
                 {
-                    (void)transfer_gif_chain_end();
+                    (void)transfer_gif_source_chain();
                 }
                 else
                 {
