@@ -1391,6 +1391,32 @@ bool c_kernel_hle_bridge::handle_thbase(uint32_t ordinal)
             waiters.erase(std::remove(
                 waiters.begin(), waiters.end(), id), waiters.end());
         }
+        for (auto& item : m_mailboxes)
+        {
+            auto& waiters = item.second.m_waiters;
+            waiters.erase(std::remove_if(
+                waiters.begin(), waiters.end(),
+                [id](const s_mailbox_waiter& waiter)
+                {
+                    return waiter.m_thread == id;
+                }), waiters.end());
+        }
+        for (auto& item : m_fixed_pools)
+        {
+            auto& waiters = item.second.m_waiters;
+            waiters.erase(std::remove(
+                waiters.begin(), waiters.end(), id), waiters.end());
+        }
+        for (auto& item : m_variable_pools)
+        {
+            auto& waiters = item.second.m_waiters;
+            waiters.erase(std::remove_if(
+                waiters.begin(), waiters.end(),
+                [id](const s_variable_pool_waiter& waiter)
+                {
+                    return waiter.m_thread == id;
+                }), waiters.end());
+        }
         if (!m_kernel.stop_thread(id))
         {
             return false;
