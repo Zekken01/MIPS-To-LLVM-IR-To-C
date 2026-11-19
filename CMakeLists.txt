@@ -287,6 +287,9 @@ if(EE_ENABLE_WEBGPU)
         "${EE_WGPU_EXTRAS_INCLUDE_DIR}"
         "${CMAKE_SOURCE_DIR}/src/runtime")
     target_link_libraries(ee_webgpu_native PUBLIC "${EE_WGPU_NATIVE_LIBRARY}")
+    if(UNIX AND NOT APPLE)
+        target_link_libraries(ee_webgpu_native PUBLIC ${CMAKE_DL_LIBS} pthread m)
+    endif()
     target_compile_definitions(ee_game_runner PRIVATE EE_ENABLE_WEBGPU=1)
     target_link_libraries(ee_game_runner PRIVATE ee_webgpu_native)
     if(WIN32)
@@ -342,6 +345,13 @@ target_link_libraries(ee_gif_path3_test PRIVATE ee_core)
 
 add_executable(ee_gs_state_test tests/smoke/ee_gs_state_test.cpp)
 target_link_libraries(ee_gs_state_test PRIVATE ee_core)
+
+# Compile the native GS event bridge with a fake GPU for CI,
+# without an adapter or wgpu-native.
+add_executable(ee_webgpu_bridge_test
+    tests/smoke/ee_webgpu_bridge_test.cpp
+    src/runtime/ee_webgpu_bridge.cpp)
+target_link_libraries(ee_webgpu_bridge_test PRIVATE ee_core)
 
 add_executable(ee_gs_display_test tests/smoke/ee_gs_display_test.cpp)
 target_link_libraries(ee_gs_display_test PRIVATE ee_core)
@@ -554,6 +564,7 @@ add_test(NAME ee_tospr_chain COMMAND ee_tospr_chain_test)
 add_test(NAME ee_device_dma COMMAND ee_device_dma_test)
 add_test(NAME ee_gif_path3 COMMAND ee_gif_path3_test)
 add_test(NAME ee_gs_state COMMAND ee_gs_state_test)
+add_test(NAME ee_webgpu_bridge COMMAND ee_webgpu_bridge_test)
 add_test(NAME ee_gs_display COMMAND ee_gs_display_test)
 add_test(NAME ee_gs_vram COMMAND ee_gs_vram_test)
 add_test(NAME ee_gs_psmct24 COMMAND ee_gs_psmct24_test)
