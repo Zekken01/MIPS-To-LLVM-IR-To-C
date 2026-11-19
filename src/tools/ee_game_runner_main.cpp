@@ -1293,13 +1293,53 @@ int main(int argc, char** argv)
     ee::c_ee_hw_bus hardware;
     hardware.bind_cpu(&cpu);
     hardware.bind_memory(memory.get());
-    // Feed actual EE GIF DMA channel 2 payloads through the existing
-    // stateful PATH3 parser and GS register/VRAM consumer. DMA completion
-    // remains conditional on accepting the *real* transferred packet.
+    // Real channel-1 VIF packets and channel-2 GIF PATH3 DMA share
+    // the existing DMAC sink contract, but have different consumers.
+    // Both GIF paths deliver original GS events to the same state.
     ee::c_ee_gif_path3 gif_path3{};
+    ee::c_ee_gif_path3 gif_path2{};
+    ee::c_ee_vif1 vif1{};
     ee::c_ee_gs_state gs_state{};
     gif_path3.bind_event_sink(&gs_state, &ee::c_ee_gs_state::gif_events);
-    hardware.bind_device_transfer(&gif_path3, &ee::c_ee_gif_path3::dma_transfer);
+    gif_path2.bind_event_sink(&gs_state, &ee::c_ee_gs_state::gif_events);
+    vif1.bind_path2(&gif_path2);
+    hardware.bind_vif1(&vif1);
+
+    struct s_graphics_dma_routes
+    {
+        ee::c_ee_vif1* m_vif1 = nullptr;
+        ee::c_ee_gif_path3* m_path3 = nullptr;
+        bool m_rejection_logged = false;
+    };
+    s_graphics_dma_routes graphics_dma{&vif1, &gif_path3, false};
+    hardware.bind_device_transfer(
+        &graphics_dma,
+        [](void* user, uint32_t channel, const uint8_t* data,
+           uint32_t qwc) -> bool
+        {
+            s_graphics_dma_routes* routes =
+                static_cast<s_graphics_dma_routes*>(user);
+            bool accepted = false;
+            if (channel == 1u)
+            {
+                accepted = routes->m_vif1->consume(data, qwc);
+                if (!accepted && !routes->m_rejection_logged)
+                {
+                    const auto& diagnostic = routes->m_vif1->diagnostic();
+                    std::fprintf(stderr,
+                        "VIF1 native reject: reason=%u code=0x%08x "
+                        "pending_words=%u\n",
+                        static_cast<uint32_t>(diagnostic.m_reason),
+                        diagnostic.m_code, diagnostic.m_pending_words);
+                    routes->m_rejection_logged = true;
+                }
+            }
+            else if (channel == 2u)
+            {
+                accepted = routes->m_path3->consume(data, qwc);
+            }
+            return accepted;
+        });
     hardware.bind_device_download(&gs_state, &ee::c_ee_gs_state::dma_download);
 
 #ifdef EE_ENABLE_WEBGPU
