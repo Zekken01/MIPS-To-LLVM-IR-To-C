@@ -6,7 +6,7 @@ Main architectural reference: [twist84/ps2-web-recomp, `SDBZ` branch](https://gi
 
 Current native LLVM-IR implementation: [`src/iop/iop_kernel_hle_bridge.cpp`](../src/iop/iop_kernel_hle_bridge.cpp), audited blob `623875f9bacb21633a539ce2529570b81132c474`.
 
-The reference file defines **172 explicitly named `def("library", ordinal, ...)` handlers**. Our bridge registers **135 actual guest-callable HLE ordinals**; **130 match explicitly named reference definitions**. Counts include no claim about full behavioral equivalence. The reference also uses loops/dynamic registrations (e.g. `secrman#4/#5`) and separate IOP modules (`io.cpp`, `sif.cpp`, `cdvd.cpp`, `spu2.cpp`) and EE kernel syscalls. The full reference runtime is larger than these 172 direct definitions.
+The reference file defines **172 explicitly named `def("library", ordinal, ...)` handlers**. Our bridge registers **146 actual guest-callable HLE ordinals**; **131 match explicitly named reference definitions**. Counts include no claim about full behavioral equivalence. The reference also uses loops/dynamic registrations (e.g. `secrman#4/#5`) and separate IOP modules (`io.cpp`, `sif.cpp`, `cdvd.cpp`, `spu2.cpp`) and EE kernel syscalls. The full reference runtime is larger than these 172 direct definitions.
 
 Never bulk-register an unimplemented opcode. Each `k_exports` entry installs a **real executable import stub**, so an unimplemented handler must remain unresolved instead of returning fabricated success.
 
@@ -30,7 +30,7 @@ Never bulk-register an unimplemented opcode. Each `k_exports` entry installs a *
 | `timrman` | 0/13 | `4 AllocHardTimer`, `5 ReferHardTimer`, `6 FreeHardTimer`, `7 SetTimerMode`, `8 GetTimerStatus`, `9 SetTimerCounter`, `10 GetTimerCounter`, `11 SetTimerCompare`, `16 GetHardTimerIntrCode`, `20 SetTimerHandler`, `22 SetupHardTimer`, `23 StartHardTimer`, `24 StopHardTimer` |
 | `dmacman` | 5/7 | `16 dmac_set_dpcr2`, `17 dmac_get_dpcr2` |
 | `heaplib` | 4/4 | — |
-| `secrman` | 0/1 | `6 SecrAuthCard` |
+| `secrman` | 1/1 | — (explicit `#4/#5` loop definitions are safe failures) |
 
 ## Implemented this Windows-log-driven batch
 
@@ -91,3 +91,45 @@ The preceding 48 explicit reference gaps are reduced to **42**
 by adding six implementations. The new Windows boot must validate
 `MCMAN.IRX` and any subsequent imports; static/cached IRX data
 are not proof of successful module execution.
+
+## 2026-11-19 23:41 — IOMAN CD-ROM + device/security boundary batch
+
+The matched ZIP contains five artifacts and three black PPM captures.
+Final replay is **14,385 dispatches**, with zero newly discovered IR
+functions. `SIO2MAN.IRX` started; `MCMAN.IRX` failed on
+`ioman#20` (the preceding `modload#13` dependency cleared).
+The source ELF SHA-256 and disc root match the previous run.
+
+Using `ps2-web-recomp/runtime/src/iop/io.cpp` and the PS2SDK
+`ioman.h` ABI, the native bridge now provides a read-only
+`c_folder_sector_source`-backed `ioman` subset:
+
+- `#4 open`, `#5 close`, `#6 read`, `#8 lseek`:
+  per-fd position/ownership, sector-aligned reads, bounded IOP RAM,
+  correct failure on invalid fds and unsupported writes.
+- `#7 write`: only TTY stdout/stderr via the existing debug console;
+  CD-ROM writes and unknown devices are rejected.
+- `#16 getstat`: actual on-disc file mode/size in the bounded
+  40-byte guest structure.
+- `#20 AddDrv`, `#21 DelDrv`: **documented failed HLE boundary**.
+  The reference itself returns `-1` for these operations, and
+  the native runtime does not synchronously execute guest
+  device-init/deinit callbacks. Driver registration or memory-card
+  readiness is never fabricated.
+- `secrman#4/#5/#6`: explicitly *unsuccessful* security boundaries;
+  SecrAuthCard returns false instead of pretending a card was authenticated.
+
+Only these 11 new ordinals were registered. Other unsupported IOMAN
+operations remain unresolved. The real CD-ROM source is attached only
+for the existing validated extracted-disc boot mode, and all
+IO descriptors reset on IOP reboot. Guest R3000 tests exercise file
+open/read/seek/stat/close, invalid operations, rejected driver
+registration and denied security calls.
+
+The explicit `libs.cpp` count becomes **131/172**, with **41**
+remaining gaps; the `ioman` reference lives in `io.cpp` and is not
+part of the 172 explicitly named `libs.cpp` handlers.
+
+**Next Windows validation:** MCMAN link/start outcome, subsequent
+imports, EE dispatches beyond 14,385, and authentic GS framebuffer.
+CI passing alone does not establish this.
