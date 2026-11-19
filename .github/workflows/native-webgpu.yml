@@ -42,9 +42,13 @@ jobs:
             throw 'wgpu-native binary archive checksum mismatch'
           }
           Expand-Archive -Path $archive -DestinationPath third_party/wgpu-native
+      - name: Activate latest installed MSVC toolchain
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
       - name: Configure native-only MSVC WebGPU
         shell: pwsh
-        run: cmake -S . -B build/webgpu -G "Visual Studio 17 2022" -A x64 -DEE_ENABLE_WEBGPU=ON "-DEE_WEBGPU_ROOT=$env:GITHUB_WORKSPACE/third_party/wgpu-native"
+        run: cmake -S . -B build/webgpu -G Ninja -DEE_ENABLE_WEBGPU=ON "-DEE_WEBGPU_ROOT=$env:GITHUB_WORKSPACE/third_party/wgpu-native"
       - name: Compile native runner and WebGPU pipelines
         shell: pwsh
         run: cmake --build build/webgpu --target ee_game_runner --config Release --parallel 2
