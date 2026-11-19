@@ -16,6 +16,8 @@ struct s_ee_vu1_state
     std::array<uint32_t, 4> m_acc{};
     uint32_t m_i = 0u;
     uint32_t m_q = 0u;
+    uint32_t m_p = 0u;
+    uint32_t m_r = 0u;
     uint32_t m_mac = 0u;
     uint32_t m_status = 0u;
     uint32_t m_clip = 0u;
@@ -29,6 +31,7 @@ struct s_ee_vu1_issue
     uint32_t m_lower = 0u;
     uint32_t m_upper = 0u;
     uint32_t m_steps = 0u;
+    uint32_t m_cycles = 0u;
 };
 
 // Deliberately a strict subset, NOT a general-purpose VU1 interpreter.
