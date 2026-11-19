@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <deque>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -58,6 +59,20 @@ private:
         std::vector<s_event_waiter> m_waiters;
     };
 
+    struct s_mailbox_waiter
+    {
+        uint32_t m_thread = 0u;
+        uint32_t m_output = 0u;
+    };
+
+    struct s_mailbox
+    {
+        uint32_t m_attr = 0u;
+        uint32_t m_option = 0u;
+        std::deque<uint32_t> m_messages;
+        std::deque<s_mailbox_waiter> m_waiters;
+    };
+
     bool read_string(uint32_t pointer, uint32_t maximum,
                      std::string* output) const;
     bool read_argument(uint32_t index, uint32_t* value) const;
@@ -67,6 +82,8 @@ private:
                      uint32_t mode) const;
     bool take_event(s_event& event, uint32_t bits, uint32_t mode,
                     uint32_t output);
+    bool handle_heaplib(uint32_t ordinal);
+    bool handle_thmsgbx(uint32_t ordinal);
     bool handle_sysmem(uint32_t ordinal);
     bool handle_loadcore(uint32_t ordinal);
     bool handle_intrman(uint32_t ordinal);
@@ -81,6 +98,8 @@ private:
     std::map<uint32_t, s_interrupt> m_interrupts;
     std::map<uint32_t, s_semaphore> m_semaphores;
     std::map<uint32_t, s_event> m_events;
+    std::map<uint32_t, s_mailbox> m_mailboxes;
+    std::map<uint32_t, std::set<uint32_t>> m_heaps;
     uint32_t m_dma_direction[16]{};
     uint32_t m_next_object = 1u;
     bool m_cpu_interrupts_suspended = false;
