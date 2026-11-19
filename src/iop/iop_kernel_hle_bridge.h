@@ -27,7 +27,7 @@ public:
     bool install();
     void reset_for_reboot();
     bool handle_syscall(c_kernel& kernel, uint32_t service);
-    void attach_disc_source(const c_folder_sector_source* source);
+    void attach_disc_source(c_folder_sector_source* source);
 
 private:
     struct s_interrupt
@@ -139,7 +139,7 @@ private:
     };
 
     c_kernel& m_kernel;
-    const c_folder_sector_source* m_disc_source = nullptr;
+    c_folder_sector_source* m_disc_source = nullptr;
     std::map<uint32_t, s_ioman_file> m_ioman_files;
     std::map<uint32_t, s_interrupt> m_interrupts;
     std::map<uint32_t, s_semaphore> m_semaphores;
