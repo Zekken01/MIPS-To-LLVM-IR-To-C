@@ -74,7 +74,12 @@ constexpr s_export k_exports[] = {
     {"sysclib", 34u, 8u}, {"sysclib", 36u, 8u},
     {"sysmem", 4u, 9u}, {"sysmem", 5u, 9u},
     {"sysmem", 6u, 9u}, {"sysmem", 7u, 9u},
-    {"sysmem", 8u, 9u}, {"sysmem", 14u, 9u}
+    {"sysmem", 8u, 9u}, {"sysmem", 14u, 9u},
+    {"thmsgbx", 4u, 10u}, {"thmsgbx", 5u, 10u},
+    {"thmsgbx", 6u, 10u}, {"thmsgbx", 7u, 10u},
+    {"thmsgbx", 8u, 10u}, {"thmsgbx", 9u, 10u},
+    {"heaplib", 4u, 11u}, {"heaplib", 5u, 11u},
+    {"heaplib", 6u, 11u}, {"heaplib", 7u, 11u}
 };
 
 // SYSCLIB byte-memory functions operate on IOP RAM, including KSEG0/1
@@ -233,6 +238,8 @@ void c_kernel_hle_bridge::reset_for_reboot()
     m_interrupts.clear();
     m_semaphores.clear();
     m_events.clear();
+    m_mailboxes.clear();
+    m_heaps.clear();
     std::fill(std::begin(m_dma_direction),
               std::end(m_dma_direction), 0u);
     m_next_object = 1u;
@@ -339,6 +346,198 @@ bool c_kernel_hle_bridge::take_event(
         event.m_bits = 0u;
     }
     return true;
+}
+
+bool c_kernel_hle_bridge::handle_heaplib(uint32_t ordinal)
+{
+    s_cpu_state& cpu = m_kernel.cpu().state();
+    const uint32_t id = cpu.m_gpr[4];
+    if (ordinal == 4u)
+    {
+        const uint32_t created = m_kernel.allocate_heap(16u);
+        if (created == 0u)
+        {
+            return false;
+        }
+        m_heaps.emplace(created, std::set<uint32_t>{});
+        cpu.m_gpr[2] = created;
+        return true;
+    }
+    auto found = m_heaps.find(id);
+    if (found == m_heaps.end())
+    {
+        return false;
+    }
+    switch (ordinal)
+    {
+    case 5u:
+        for (uint32_t address : found->second)
+        {
+            if (!m_kernel.owns_heap_span(address, 1u))
+            {
+                return false;
+            }
+        }
+        for (uint32_t address : found->second)
+        {
+            if (!m_kernel.free_heap(address))
+            {
+                return false;
+            }
+        }
+        if (!m_kernel.free_heap(id))
+        {
+            return false;
+        }
+        m_heaps.erase(found);
+        cpu.m_gpr[2] = 0u;
+        return true;
+    case 6u:
+    {
+        const uint32_t address = m_kernel.allocate_heap(cpu.m_gpr[5]);
+        if (address == 0u)
+        {
+            return false;
+        }
+        found->second.insert(address);
+        cpu.m_gpr[2] = address;
+        return true;
+    }
+    case 7u:
+        if (found->second.count(cpu.m_gpr[5]) == 0u ||
+            !m_kernel.free_heap(cpu.m_gpr[5]))
+        {
+            return false;
+        }
+        found->second.erase(cpu.m_gpr[5]);
+        cpu.m_gpr[2] = 0u;
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool c_kernel_hle_bridge::handle_thmsgbx(uint32_t ordinal)
+{
+    s_cpu_state& cpu = m_kernel.cpu().state();
+    if (ordinal == 4u)
+    {
+        const uint32_t descriptor = cpu.m_gpr[4];
+        uint32_t attr = 0u;
+        uint32_t option = 0u;
+        if (!is_iop_ram_span(descriptor, 8u) ||
+            !m_kernel.cpu().read32(descriptor, &attr) ||
+            !m_kernel.cpu().read32(descriptor + 4u, &option))
+        {
+            return false;
+        }
+        const uint32_t created = m_next_object++;
+        m_mailboxes.emplace(created, s_mailbox{attr, option, {}, {}});
+        cpu.m_gpr[2] = created;
+        return true;
+    }
+    const uint32_t id = ordinal == 8u || ordinal == 9u
+        ? cpu.m_gpr[5] : cpu.m_gpr[4];
+    auto found = m_mailboxes.find(id);
+    if (found == m_mailboxes.end())
+    {
+        return false;
+    }
+    s_mailbox& mailbox = found->second;
+    switch (ordinal)
+    {
+    case 5u:
+        for (const s_mailbox_waiter& waiter : mailbox.m_waiters)
+        {
+            const s_kernel_thread* thread =
+                m_kernel.thread(waiter.m_thread);
+            if (thread == nullptr ||
+                thread->m_status != e_thread_status::blocked)
+            {
+                return false;
+            }
+        }
+        for (const s_mailbox_waiter& waiter : mailbox.m_waiters)
+        {
+            if (!m_kernel.wake_thread_with_result(
+                    waiter.m_thread, static_cast<uint32_t>(-425)))
+            {
+                return false;
+            }
+        }
+        m_mailboxes.erase(found);
+        cpu.m_gpr[2] = 0u;
+        return true;
+    case 6u:
+    case 7u:
+    {
+        const uint32_t message = cpu.m_gpr[5];
+        uint32_t header = 0u;
+        if (!is_iop_ram_span(message, 4u) ||
+            !m_kernel.cpu().read32(message, &header))
+        {
+            return false;
+        }
+        if (!mailbox.m_waiters.empty())
+        {
+            const s_mailbox_waiter& waiter = mailbox.m_waiters.front();
+            const s_kernel_thread* thread =
+                m_kernel.thread(waiter.m_thread);
+            if (thread == nullptr ||
+                thread->m_status != e_thread_status::blocked ||
+                !m_kernel.cpu().write32(waiter.m_output, message) ||
+                !m_kernel.wake_thread_with_result(
+                    waiter.m_thread, 0u))
+            {
+                return false;
+            }
+            mailbox.m_waiters.pop_front();
+        }
+        else
+        {
+            mailbox.m_messages.push_back(message);
+        }
+        cpu.m_gpr[2] = 0u;
+        return true;
+    }
+    case 8u:
+    case 9u:
+    {
+        const uint32_t output = cpu.m_gpr[4];
+        if (!is_iop_ram_span(output, 4u))
+        {
+            return false;
+        }
+        if (mailbox.m_messages.empty())
+        {
+            if (ordinal == 9u)
+            {
+                cpu.m_gpr[2] = static_cast<uint32_t>(-424);
+                return true;
+            }
+            if (!m_kernel.block_current(5u))
+            {
+                return false;
+            }
+            mailbox.m_waiters.push_back({
+                m_kernel.current_thread_id(), output
+            });
+        }
+        else
+        {
+            if (!m_kernel.cpu().write32(
+                    output, mailbox.m_messages.front()))
+            {
+                return false;
+            }
+            mailbox.m_messages.pop_front();
+        }
+        cpu.m_gpr[2] = 0u;
+        return true;
+    }
+    default:
+        return false;
+    }
 }
 
 bool c_kernel_hle_bridge::handle_sysmem(uint32_t ordinal)
@@ -1502,6 +1701,8 @@ bool c_kernel_hle_bridge::handle_syscall(
     case 7u: return handle_thsemap(ordinal);
     case 8u: return handle_sysclib(ordinal);
     case 9u: return handle_sysmem(ordinal);
+    case 10u: return handle_thmsgbx(ordinal);
+    case 11u: return handle_heaplib(ordinal);
     default: return false;
     }
 }
