@@ -23,22 +23,22 @@ jobs:
           unzip -q "$RUNNER_TEMP/wgpu-native.zip" -d third_party/wgpu-native
       - name: Configure native-only WebGPU
         run: cmake -S . -B build/webgpu -G Ninja -DCMAKE_BUILD_TYPE=Release -DEE_ENABLE_WEBGPU=ON -DEE_WEBGPU_ROOT="$GITHUB_WORKSPACE/third_party/wgpu-native"
-      - name: Install software Vulkan adapter for native GPU tests
+      - name: Install software Vulkan adapter
         run: sudo apt-get update -qq && sudo apt-get install -y -qq mesa-vulkan-drivers libvulkan1
-      - name: Compile native runner and WebGPU pipelines
+      - name: Compile native WebGPU renderer and smoke test
         run: cmake --build build/webgpu --target ee_game_runner ee_webgpu_native_smoke --parallel 2
-      - name: Execute WebGPU compute upload and scanout on software Vulkan
+      - name: Run real native WebGPU compute readback
         shell: bash
         run: |
           set -euo pipefail
           icd=$(find /usr/share/vulkan/icd.d -name '*lvp*.json' -print -quit)
           if [ -z "$icd" ]; then
-            echo "Mesa lavapipe Vulkan ICD not available" >&2
+            echo "Mesa lavapipe Vulkan ICD is unavailable" >&2
             exit 1
           fi
           export VK_ICD_FILENAMES="$icd"
           export EE_WEBGPU_REQUIRE_ADAPTER=1
-          ctest --test-dir build/webgpu -R '^ee_webgpu_native_smoke
+          ctest --test-dir build/webgpu -R ee_webgpu_native_smoke --output-on-failure
 
   native-webgpu-windows:
     runs-on: windows-latest
@@ -56,41 +56,13 @@ jobs:
             throw 'wgpu-native binary archive checksum mismatch'
           }
           Expand-Archive -Path $archive -DestinationPath third_party/wgpu-native
-      - name: Activate latest installed MSVC toolchain
+      - name: Activate installed MSVC toolchain
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
-      - name: Configure native-only MSVC WebGPU
+      - name: Configure native MSVC WebGPU
         shell: pwsh
         run: cmake -S . -B build/webgpu -G Ninja -DEE_ENABLE_WEBGPU=ON "-DEE_WEBGPU_ROOT=$env:GITHUB_WORKSPACE/third_party/wgpu-native"
-      - name: Compile native runner and WebGPU pipelines
+      - name: Compile runner and native GPU smoke test
         shell: pwsh
         run: cmake --build build/webgpu --target ee_game_runner ee_webgpu_native_smoke --config Release --parallel 2
- --output-on-failure
-
-  native-webgpu-windows:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Download pinned MSVC native WebGPU SDK
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          New-Item -ItemType Directory -Force -Path third_party/wgpu-native | Out-Null
-          $archive = Join-Path $env:RUNNER_TEMP 'wgpu-native.zip'
-          Invoke-WebRequest -Uri 'https://github.com/gfx-rs/wgpu-native/releases/download/v29.0.1.1/wgpu-windows-x86_64-msvc-release.zip' -OutFile $archive
-          $digest = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($digest -ne '7e67d7445c42aeb85e30f88930fd8d7d83ee769e3390aeb1ada75ebf3cf78132') {
-            throw 'wgpu-native binary archive checksum mismatch'
-          }
-          Expand-Archive -Path $archive -DestinationPath third_party/wgpu-native
-      - name: Activate latest installed MSVC toolchain
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-      - name: Configure native-only MSVC WebGPU
-        shell: pwsh
-        run: cmake -S . -B build/webgpu -G Ninja -DEE_ENABLE_WEBGPU=ON "-DEE_WEBGPU_ROOT=$env:GITHUB_WORKSPACE/third_party/wgpu-native"
-      - name: Compile native runner and WebGPU pipelines
-        shell: pwsh
-        run: cmake --build build/webgpu --target ee_game_runner --config Release --parallel 2
