@@ -534,81 +534,161 @@ def covered_pcs(metadata):
     }
 
 
-def append_function(recomp, elf, work, metadata_path, address):
-    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    if address in covered_pcs(metadata):
-        return False
+def batch_append_functions(recomp, elf, work, metadata_path, addresses):
+    """Translate a group of newly reachable entries in one discovery pass.
 
-    output_dir = work / "extra" / f"{address:08x}"
-    command = [recomp, elf, output_dir, f"--function=0x{address:08x}"]
+    The EE CFG emitter writes one IR/metadata result per requested function.
+    Publish a single merged metadata update only after validating all
+    translations and preserving existing guest block-PC ownership.
+    Return the exact NEW IR paths for incremental object emission.
+    """
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    owned = covered_pcs(metadata)
+    targets = [
+        address for address in dict.fromkeys(addresses)
+        if address not in owned
+    ]
+    if not targets:
+        return []
+    if len(targets) > 128:
+        raise ValueError("batched expansion exceeds the 128-entry limit")
+    if any(address == 0 or (address & 3) for address in targets):
+        raise ValueError("batched expansion contains unaligned/zero PC")
+
+    # Only guest-proven first entries are mandatory. Later speculative
+    # table siblings may be rejected, but must never block the first.
+    output_dir = work / "extra" / ("batch_" + f"{targets[0]:08x}")
+    command = [
+        recomp, elf, output_dir,
+        "--functions=" + ",".join(f"0x{pc:08x}" for pc in targets),
+    ]
     discovery_cache = work / "ir" / "ee_discovery_cache.bin"
     if discovery_cache.is_file():
         command.append(f"--discovery-cache={discovery_cache}")
     run(command)
-    extra_metadata = json.loads((output_dir / "ee_functions.json").read_text(
-        encoding="utf-8"
-    ))
-    extra_functions = extra_metadata.get("functions", [])
-    if len(extra_functions) != 1:
-        raise ValueError(f"no unique translation for 0x{address:08x}")
-
-    function = extra_functions[0]
-    new_pcs = {int(pc, 0) for pc in function["block_pcs"]}
-    if address not in new_pcs:
-        raise ValueError(f"translation does not cover 0x{address:08x}")
-    # One guest instruction can be entered through multiple native
-    # functions. In particular, a call may land on an instruction inside
-    # an existing basic block (e.g. a syscall wrapper's SYSCALL instruction).
-    # Each separately lifted function can execute its own copy of shared
-    # successor blocks, but the dispatcher must assign *one* native owner
-    # to each guest block PC. Retain ownership for previously compiled
-    # entries and publish only previously uncovered entry PCs.
-    #
-    # Never edit the generated LLVM IR or skip overlapping instructions:
-    # internal branches still execute their independently lifted blocks.
-    overlap = new_pcs & covered_pcs(metadata)
-    if overlap:
-        function["block_pcs"] = [
-            pc for pc in function["block_pcs"] if int(pc, 0) not in overlap
-        ]
-        if not function["block_pcs"] or address not in {
-            int(pc, 0) for pc in function["block_pcs"]
-        }:
-            raise ValueError(
-                f"new entry 0x{address:08x} is already owned by "
-                "an existing translated function"
-            )
-        print(
-            f"auto-expand: preserving existing ownership of "
-            f"{len(overlap)} overlapping guest block PC(s) "
-            f"while translating entry 0x{address:08x}",
-            flush=True,
-        )
-
-    destination = work / "ir" / Path(function["ir_path"]).name
-    if destination.exists():
-        raise ValueError(f"IR module filename collision: {destination}")
-    shutil.copyfile(Path(function["ir_path"]), destination)
-    function["ir_path"] = str(destination)
-    metadata["functions"].append(function)
-    metadata["function_count"] = len(metadata["functions"])
-    metadata_path.write_text(
-        json.dumps(metadata, indent=2) + "\n", encoding="utf-8"
+    extra_metadata = json.loads(
+        (output_dir / "ee_functions.json").read_text(encoding="utf-8")
     )
-    return True
+    raw_functions = extra_metadata.get("functions")
+    if not isinstance(raw_functions, list):
+        raise ValueError("batch recompiler emitted invalid function metadata")
+    generated = {}
+    for function in raw_functions:
+        address = int(function["vaddr"], 0)
+        if address not in targets or address in generated:
+            raise ValueError(f"batch recompiler emitted unexpected/duplicate entry 0x{address:08x}")
+        generated[address] = function
 
+    pending = []
+    published_owners = set(owned)
+    published_names = {Path(item["ir_path"]).name
+                       for item in metadata["functions"]}
+    for address in targets:
+        function = generated.get(address)
+        if function is None:
+            message = f"no unique translation for 0x{address:08x}"
+            if address == targets[0]:
+                raise ValueError(message)
+            print(f"auto-expand: ignoring speculative table sibling "
+                  f"0x{address:08x}: {message}", file=sys.stderr)
+            continue
+        blocks = function.get("block_pcs")
+        if not isinstance(blocks, list):
+            raise ValueError(f"function 0x{address:08x} has invalid block map")
+        new_pcs = [int(pc, 0) for pc in blocks]
+        if len(set(new_pcs)) != len(new_pcs) or address not in new_pcs:
+            message = f"translation does not uniquely cover 0x{address:08x}"
+            if address == targets[0]:
+                raise ValueError(message)
+            print(f"auto-expand: ignoring speculative table sibling "
+                  f"0x{address:08x}: {message}", file=sys.stderr)
+            continue
+        overlap = set(new_pcs) & published_owners
+        owned_blocks = [pc for pc in blocks if int(pc, 0) not in overlap]
+        if address in overlap or not owned_blocks:
+            message = f"entry 0x{address:08x} already owned by another function"
+            if address == targets[0]:
+                raise ValueError(message)
+            print(f"auto-expand: ignoring speculative table sibling "
+                  f"0x{address:08x}: {message}", file=sys.stderr)
+            continue
+        if overlap:
+            print(
+                f"auto-expand: preserving existing ownership of "
+                f"{len(overlap)} overlapping guest block PC(s) "
+                f"while translating entry 0x{address:08x}",
+                flush=True,
+            )
+        source = Path(function["ir_path"])
+        destination = work / "ir" / source.name
+        if (destination.exists() or
+            source.name in published_names):
+            raise ValueError(f"IR module filename collision: {destination}")
+        if not source.is_file():
+            raise ValueError(f"missing batched IR module: {source}")
+        function["block_pcs"] = owned_blocks
+        function["ir_path"] = str(destination)
+        pending.append((source, destination, function))
+        published_owners.update(int(pc, 0) for pc in owned_blocks)
+        published_names.add(source.name)
+
+    if not pending:
+        raise ValueError("batched expansion yielded no dispatchable entries")
+
+    # Stage all new modules before writing the authoritative function map.
+    # A partial error cannot make metadata point at missing/misnamed IR.
+    staged = []
+    committed = []
+    try:
+        for source, destination, _ in pending:
+            temporary = destination.with_name(destination.name + ".tmp")
+            shutil.copyfile(source, temporary)
+            staged.append((temporary, destination))
+        for temporary, destination in staged:
+            temporary.replace(destination)
+            committed.append(destination)
+        metadata["functions"].extend(
+            function for _, _, function in pending
+        )
+        metadata["function_count"] = len(metadata["functions"])
+        tmp_meta = metadata_path.with_name(metadata_path.name + ".tmp")
+        tmp_meta.write_text(json.dumps(metadata, indent=2) + "\n",
+                            encoding="utf-8")
+        tmp_meta.replace(metadata_path)
+    except (OSError, ValueError):
+        for temporary, _ in staged:
+            temporary.unlink(missing_ok=True)
+        for destination in committed:
+            destination.unlink(missing_ok=True)
+        raise
+
+    print(f"auto-expand: appended {len(pending)} function(s) in one "
+          f"discovery and metadata transaction", flush=True)
+    return [destination for _, destination, _ in pending]
 
 def build_linked_library(source_root, work, metadata_path, object_dir, library,
-                         emit_opt, pdb=False, reuse_objects=False, emit_jobs=2):
+                         emit_opt, pdb=False, reuse_objects=False, emit_jobs=2,
+                         appended_ir=None):
     if not reuse_objects:
-        run([
-        sys.executable, source_root / "tools" / "verify_ir.py",
-        str(work / "ir" / "*.ll"),
-        f"--emit-dir={object_dir}",
-        f"--emit-opt={emit_opt}",
-        "--incremental",
-        f"--jobs={emit_jobs}",
-        ])
+        # Full verification is mandatory on the initial build. An append
+        # pass has already validated the existing provenance and only new
+        # modules need LLVM parsing/emission. The native linker still hashes
+        # ALL cached guest objects before linking the combined DLL.
+        input_files = (list(appended_ir) if appended_ir is not None
+                       else [str(work / "ir" / "*.ll")])
+        command = [
+            sys.executable, source_root / "tools" / "verify_ir.py",
+            *input_files,
+            f"--emit-dir={object_dir}",
+            f"--emit-opt={emit_opt}",
+            "--incremental",
+            f"--jobs={emit_jobs}",
+        ]
+        if appended_ir is not None:
+            if not appended_ir:
+                raise ValueError("cannot append an empty IR batch")
+            command.append("--append-only")
+        run(command)
     command = [
         sys.executable, source_root / "tools" / "link_native_objects.py",
         metadata_path, object_dir, library,
@@ -841,8 +921,8 @@ def main(argv=None):
                     "Use --functions=entry or --functions=all."
                 )
 
-            for address in dict.fromkeys(extra):
-                append_function(recomp, elf, work, metadata_path, address)
+            if extra:
+                batch_append_functions(recomp, elf, work, metadata_path, extra)
             build_linked_library(
                 source_root, work, metadata_path, object_dir, library,
                 args.emit_opt, pdb=args.pdb, emit_jobs=args.emit_jobs
@@ -1088,10 +1168,11 @@ def main(argv=None):
                     flush=True,
                 )
             targets = [address, *siblings]
-            added = 0
+            owners = covered_pcs(
+                json.loads(metadata_path.read_text(encoding="utf-8"))
+            )
             for candidate in targets:
-                current = json.loads(metadata_path.read_text(encoding="utf-8"))
-                if candidate in covered_pcs(current):
+                if candidate in owners:
                     continue
                 if candidate == address:
                     print(
@@ -1103,25 +1184,16 @@ def main(argv=None):
                         f"auto-expand: compiling table sibling PC "
                         f"0x{candidate:08x}", flush=True,
                     )
-                try:
-                    if append_function(
-                        recomp, elf, work, metadata_path, candidate
-                    ):
-                        added += 1
-                        expanded_count += 1
-                except ValueError as error:
-                    if candidate == address:
-                        raise
-                    print(
-                        f"auto-expand: ignoring speculative table sibling "
-                        f"0x{candidate:08x}: {error}",
-                        file=sys.stderr,
-                    )
-            if added == 0:
+            new_modules = batch_append_functions(
+                recomp, elf, work, metadata_path, targets
+            )
+            if not new_modules:
                 return result.returncode
+            expanded_count += len(new_modules)
             build_linked_library(
                 source_root, work, metadata_path, object_dir, library,
-                args.emit_opt, pdb=args.pdb, emit_jobs=args.emit_jobs
+                args.emit_opt, pdb=args.pdb, emit_jobs=args.emit_jobs,
+                appended_ir=new_modules
             )
             write_translation_cache(cache_path, inputs, args.emit_opt,
                                     metadata_path, library, ir_sources)
