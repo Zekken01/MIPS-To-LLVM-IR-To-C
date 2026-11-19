@@ -155,6 +155,7 @@ public:
     bool start_thread(uint32_t id);
     bool start_thread_with_argument(uint32_t id, uint32_t argument);
     bool wake_thread(uint32_t id);
+    bool wake_thread_with_result(uint32_t id, uint32_t result);
     bool stop_thread(uint32_t id);
     bool sleep_current(uint64_t delay_cycles);
     bool block_current();
