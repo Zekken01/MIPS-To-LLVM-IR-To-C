@@ -830,6 +830,16 @@ bool c_kernel::wake_thread(uint32_t id)
     return true;
 }
 
+bool c_kernel::wake_thread_with_result(uint32_t id, uint32_t result)
+{
+    if (!wake_thread(id))
+    {
+        return false;
+    }
+    m_threads.at(id).m_cpu.m_gpr[2] = result;
+    return true;
+}
+
 bool c_kernel::stop_thread(uint32_t id)
 {
     const auto found = m_threads.find(id);
