@@ -264,6 +264,13 @@ target_link_libraries(ee_game_runner PRIVATE ee_core iop_cpu ${CMAKE_DL_LIBS})
 # Original native WebGPU compute renderer, extracted from ps2-web-recomp:SDBZ.
 # No Emscripten, browser host, game code, or SDL; headless builds unchanged.
 option(EE_ENABLE_WEBGPU "Enable native wgpu-native GS rendering" OFF)
+option(EE_ENABLE_RAYLIB_WINDOW "Use raylib window with native WebGPU GS presentation (Windows)" OFF)
+if(EE_ENABLE_RAYLIB_WINDOW AND NOT EE_ENABLE_WEBGPU)
+    message(FATAL_ERROR "EE_ENABLE_RAYLIB_WINDOW requires EE_ENABLE_WEBGPU=ON")
+endif()
+if(EE_ENABLE_RAYLIB_WINDOW AND NOT WIN32)
+    message(FATAL_ERROR "The raylib WebGPU window currently supports Win32 only")
+endif()
 # Keep the SDK under the CMake build tree, never in the source checkout.
 # The usual Windows launcher uses build/_deps/wgpu-native.
 set(EE_WEBGPU_ROOT "${CMAKE_BINARY_DIR}/_deps/wgpu-native" CACHE PATH
@@ -342,6 +349,20 @@ if(EE_ENABLE_WEBGPU)
     endif()
     target_compile_definitions(ee_game_runner PRIVATE EE_ENABLE_WEBGPU=1)
     target_link_libraries(ee_game_runner PRIVATE ee_webgpu_native)
+    if(EE_ENABLE_RAYLIB_WINDOW)
+        include(FetchContent)
+        # Pin raylib 5.5 to a specific commit under build/_deps.
+        set(BUILD_EXAMPLES OFF CACHE BOOL "Build raylib examples" FORCE)
+        FetchContent_Declare(raylib
+            GIT_REPOSITORY https://github.com/raysan5/raylib.git
+            GIT_TAG c1ab645ca298a2801097931d1079b10ff7eb9df8)
+        FetchContent_MakeAvailable(raylib)
+        target_sources(ee_game_runner PRIVATE
+            src/runtime/ee_raylib_window.cpp
+            src/runtime/ee_raylib_win32.cpp)
+        target_compile_definitions(ee_game_runner PRIVATE EE_ENABLE_RAYLIB_WINDOW=1)
+        target_link_libraries(ee_game_runner PRIVATE raylib)
+    endif()
     if(WIN32)
         find_file(EE_WGPU_NATIVE_DLL NAMES wgpu_native.dll
             HINTS "${EE_WEBGPU_ROOT}/lib" "${EE_WEBGPU_ROOT}/bin")
