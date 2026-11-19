@@ -37,11 +37,16 @@ constexpr s_export k_exports[] = {
     {"thbase", 34u, 5u}, {"thbase", 35u, 5u},
     {"thbase", 37u, 5u}, {"thbase", 39u, 5u},
     {"thbase", 40u, 5u},
-    {"thevent", 4u, 6u}, {"thevent", 6u, 6u},
-    {"thevent", 7u, 6u}, {"thevent", 8u, 6u},
-    {"thevent", 10u, 6u},
-    {"thsemap", 4u, 7u}, {"thsemap", 6u, 7u},
-    {"thsemap", 8u, 7u}, {"thsemap", 11u, 7u},
+    {"thevent", 4u, 6u}, {"thevent", 5u, 6u},
+    {"thevent", 6u, 6u}, {"thevent", 7u, 6u},
+    {"thevent", 8u, 6u}, {"thevent", 9u, 6u},
+    {"thevent", 10u, 6u}, {"thevent", 11u, 6u},
+    {"thevent", 12u, 6u}, {"thevent", 13u, 6u},
+    {"thevent", 14u, 6u},
+    {"thsemap", 4u, 7u}, {"thsemap", 5u, 7u},
+    {"thsemap", 6u, 7u}, {"thsemap", 7u, 7u},
+    {"thsemap", 8u, 7u}, {"thsemap", 9u, 7u},
+    {"thsemap", 11u, 7u}, {"thsemap", 12u, 7u},
     {"sysclib", 6u, 8u}, {"sysclib", 7u, 8u},
     {"sysclib", 8u, 8u}, {"sysclib", 9u, 8u},
     {"sysclib", 10u, 8u},
@@ -802,6 +807,31 @@ bool c_kernel_hle_bridge::handle_thevent(uint32_t ordinal)
     s_event& event = found->second;
     switch (ordinal)
     {
+    case 5u:
+    {
+        // Verify all waiters before changing the object.
+        for (const s_event_waiter& waiter : event.m_waiters)
+        {
+            const s_kernel_thread* thread =
+                m_kernel.thread(waiter.m_thread);
+            if (thread == nullptr ||
+                thread->m_status != e_thread_status::blocked)
+            {
+                return false;
+            }
+        }
+        for (const s_event_waiter& waiter : event.m_waiters)
+        {
+            if (!m_kernel.wake_thread_with_result(
+                    waiter.m_thread, static_cast<uint32_t>(-425)))
+            {
+                return false;
+            }
+        }
+        m_events.erase(found);
+        cpu.m_gpr[2] = 0u;
+        return true;
+    }
     case 6u:
     case 7u:
         event.m_bits |= cpu.m_gpr[5];
@@ -823,6 +853,7 @@ bool c_kernel_hle_bridge::handle_thevent(uint32_t ordinal)
         }
         break;
     case 8u:
+    case 9u:
         event.m_bits &= cpu.m_gpr[5];
         break;
     case 10u:
@@ -850,6 +881,48 @@ bool c_kernel_hle_bridge::handle_thevent(uint32_t ordinal)
             event.m_waiters.push_back({
                 m_kernel.current_thread_id(), bits, mode, output
             });
+        }
+        break;
+    }
+    case 11u:
+    case 12u:
+    {
+        const uint32_t bits = cpu.m_gpr[5];
+        const uint32_t mode = cpu.m_gpr[6];
+        const uint32_t output = cpu.m_gpr[7];
+        if ((mode & ~0x31u) != 0u || bits == 0u)
+        {
+            return false;
+        }
+        if (!match_event(event, bits, mode))
+        {
+            cpu.m_gpr[2] = static_cast<uint32_t>(-421);
+            return true;
+        }
+        if (!take_event(event, bits, mode, output))
+        {
+            return false;
+        }
+        break;
+    }
+    case 13u:
+    case 14u:
+    {
+        const uint32_t output = cpu.m_gpr[5];
+        if (!is_iop_ram_span(output, 20u))
+        {
+            return false;
+        }
+        const uint32_t words[5] = {
+            event.m_attr, event.m_option, 0u, event.m_bits,
+            static_cast<uint32_t>(event.m_waiters.size())
+        };
+        for (uint32_t i = 0u; i < 5u; ++i)
+        {
+            if (!m_kernel.cpu().write32(output + i * 4u, words[i]))
+            {
+                return false;
+            }
         }
         break;
     }
@@ -892,7 +965,31 @@ bool c_kernel_hle_bridge::handle_thsemap(uint32_t ordinal)
     s_semaphore& sema = found->second;
     switch (ordinal)
     {
+    case 5u:
+    {
+        for (uint32_t waiter : sema.m_waiters)
+        {
+            const s_kernel_thread* thread = m_kernel.thread(waiter);
+            if (thread == nullptr ||
+                thread->m_status != e_thread_status::blocked)
+            {
+                return false;
+            }
+        }
+        for (uint32_t waiter : sema.m_waiters)
+        {
+            if (!m_kernel.wake_thread_with_result(
+                    waiter, static_cast<uint32_t>(-425)))
+            {
+                return false;
+            }
+        }
+        m_semaphores.erase(found);
+        cpu.m_gpr[2] = 0u;
+        return true;
+    }
     case 6u:
+    case 7u:
         if (!sema.m_waiters.empty())
         {
             const uint32_t thread_id = sema.m_waiters.front();
@@ -925,9 +1022,22 @@ bool c_kernel_hle_bridge::handle_thsemap(uint32_t ordinal)
             sema.m_waiters.push_back(m_kernel.current_thread_id());
         }
         break;
+    case 9u:
+        if (sema.m_count == 0u)
+        {
+            cpu.m_gpr[2] = static_cast<uint32_t>(-419);
+            return true;
+        }
+        --sema.m_count;
+        break;
     case 11u:
+    case 12u:
     {
         const uint32_t output = cpu.m_gpr[5];
+        if (!is_iop_ram_span(output, 24u))
+        {
+            return false;
+        }
         const uint32_t words[] = {
             sema.m_attr, sema.m_option, 0u,
             sema.m_maximum, sema.m_count,
