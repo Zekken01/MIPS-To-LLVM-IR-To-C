@@ -1852,12 +1852,68 @@ def main():
         assert "EE stopped: dispatched=" in resumed.stdout, (
             resumed.stdout + resumed.stderr
         )
-        assert "ee_recomp: loading" in resumed.stdout, resumed.stdout
+        assert resumed.stdout.count("ee_recomp: loading") == 1, resumed.stdout
+        assert "verify_ir: append-only preserved 1 cached object(s) without rehash" in resumed.stdout, (
+            resumed.stdout + resumed.stderr
+        )
         assert "link_native_objects: reused 6 cached runtime objects" in resumed.stdout, (
             resumed.stdout + resumed.stderr
         )
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         assert metadata["function_count"] == 2, metadata
+
+    # Batch two related explicit function entries from one cache reload,
+    # then publish one merged metadata file. Existing IR stays untouched.
+    with tempfile.TemporaryDirectory(prefix="ee-native-batch-append-") as tmp:
+        root = Path(tmp)
+        elf = root / "overlap-batch.elf"
+        make_overlapping_entry_elf(elf)
+        result = subprocess.run(
+            [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf), "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--max-dispatches=64", "--hle-startup", "--trace",
+                "--extra-functions=0x00100050,0x00100054",
+            ],
+            capture_output=True, text=True, check=False,
+        )
+        assert "ee_recomp: loading" in result.stdout, result.stdout + result.stderr
+        assert result.stdout.count("ee_recomp: loading") == 2, (
+            result.stdout + result.stderr
+        )  # ELF entry translation + ONE --functions batch
+        assert "auto-expand: appended 2 function(s) in one discovery" in result.stdout, (
+            result.stdout + result.stderr
+        )
+        assert "functions=2" in result.stdout, result.stdout
+        metadata = json.loads(
+            (root / "out" / "ir" / "ee_functions.json").read_text(encoding="utf-8")
+        )
+        owners = [
+            int(pc, 0) for fn in metadata["functions"]
+            for pc in fn["block_pcs"]
+        ]
+        assert metadata["function_count"] == 3, metadata
+        assert len(set(owners)) == len(owners), metadata
+        assert 0x00100050 in owners and 0x00100054 in owners
+        assert "HLE FlushCache:" in result.stdout, result.stdout + result.stderr
+
+        # Reject malformed target lists instead of silently truncating,
+        # misparsing or compiling the wrong guest address.
+        recomp = driver.native_executable(build, "ee_recomp")
+        for invalid_list in (
+            "0x00100050,0x00100050",  # duplicate
+            "0x00100050,0x00100051",  # unaligned
+            "0x00100050,,0x00100054",  # malformed
+            "0x00100050,not_hex",  # invalid
+        ):
+            invalid = subprocess.run([
+                str(recomp), str(elf), str(root / "invalid"),
+                "--functions=" + invalid_list,
+            ], capture_output=True, text=True, check=False)
+            assert invalid.returncode != 0, (
+                invalid_list, invalid.stdout, invalid.stderr
+            )
 
     for invalid_set in (False, True):
         with tempfile.TemporaryDirectory(prefix="ee-native-osd-config-") as tmp:
