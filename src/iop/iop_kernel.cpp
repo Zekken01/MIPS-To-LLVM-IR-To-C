@@ -11,6 +11,8 @@ namespace iop
 {
 namespace
 {
+constexpr uint32_t k_alarm_return_pc = 0x00013ff0u;
+
 bool valid_range(size_t size, uint64_t offset, uint64_t length)
 {
     return offset <= size && length <= size - offset;
@@ -69,10 +71,12 @@ void c_kernel::reset()
     m_libraries.clear();
     m_modules.clear();
     m_threads.clear();
+    m_alarms.clear();
     m_syscall = {};
     m_cycles = 0u;
     m_next_module_id = 1u;
     m_next_thread_id = 1u;
+    m_next_alarm_id = 1u;
     m_last_scheduled_id = 0u;
     m_current_thread_id = 0u;
 }
@@ -709,6 +713,83 @@ bool c_kernel::has_guest_work() const
             return true;
         }
     }
+    return !m_alarms.empty();
+}
+
+bool c_kernel::set_alarm(
+    uint64_t ticks, uint32_t callback,
+    uint32_t argument, uint32_t gp
+)
+{
+    const uint32_t physical = callback & 0x1fffffffu;
+    uint32_t opcode = 0u;
+    if (m_rom0_boot_active || ticks == 0u ||
+        ticks > std::numeric_limits<uint64_t>::max() - m_cycles ||
+        callback == 0u || (callback & 3u) != 0u ||
+        physical >= c_cpu::k_ram_size ||
+        !m_cpu.read32(callback, &opcode))
+    {
+        return false;
+    }
+    for (const auto& item : m_alarms)
+    {
+        if (item.second.m_callback == callback &&
+            item.second.m_argument == argument)
+        {
+            return false;
+        }
+    }
+    // Reserved below the kernel HLE stubs and above their ctype table.
+    // A real guest callback returns here through $ra; the break is
+    // consumed only for a thread explicitly associated with an alarm.
+    if (!m_cpu.write32(k_alarm_return_pc, 0x0000000du))
+    {
+        return false;
+    }
+    const uint32_t id = create_thread(
+        callback, gp, 0u, 0x400u, argument);
+    if (id == 0u)
+    {
+        return false;
+    }
+    s_kernel_thread& thread = m_threads.at(id);
+    const uint32_t alarm_id = m_next_alarm_id++;
+    thread.m_alarm_id = alarm_id;
+    thread.m_cpu.m_gpr[31] = k_alarm_return_pc;
+    m_alarms.emplace(alarm_id, s_kernel_alarm{
+        alarm_id, id, callback, argument, gp, m_cycles + ticks, false
+    });
+    return true;
+}
+
+bool c_kernel::cancel_alarm(uint32_t callback, uint32_t argument)
+{
+    for (auto it = m_alarms.begin(); it != m_alarms.end(); ++it)
+    {
+        s_kernel_alarm& alarm = it->second;
+        if (alarm.m_callback != callback ||
+            alarm.m_argument != argument || alarm.m_cancelled)
+        {
+            continue;
+        }
+        auto thread = m_threads.find(alarm.m_thread_id);
+        if (thread == m_threads.end())
+        {
+            return false;
+        }
+        if (thread->second.m_status == e_thread_status::running)
+        {
+            // A callback may cancel itself. Retire it on return.
+            alarm.m_cancelled = true;
+        }
+        else
+        {
+            m_allocations.erase(thread->second.m_stack_base);
+            m_threads.erase(thread);
+            m_alarms.erase(it);
+        }
+        return true;
+    }
     return false;
 }
 
@@ -833,6 +914,31 @@ uint32_t c_kernel::next_ready() const
 
 void c_kernel::wake_due()
 {
+    for (auto& item : m_alarms)
+    {
+        s_kernel_alarm& alarm = item.second;
+        if (alarm.m_cancelled || alarm.m_deadline > m_cycles)
+        {
+            continue;
+        }
+        auto found = m_threads.find(alarm.m_thread_id);
+        if (found == m_threads.end() ||
+            found->second.m_status != e_thread_status::dormant)
+        {
+            continue;
+        }
+        s_kernel_thread& thread = found->second;
+        s_cpu_state state{};
+        state.m_pc = alarm.m_callback;
+        state.m_next_pc = alarm.m_callback + 4u;
+        state.m_gpr[4] = alarm.m_argument;
+        state.m_gpr[28] = alarm.m_gp;
+        state.m_gpr[29] =
+            thread.m_stack_base + thread.m_stack_size - 16u;
+        state.m_gpr[31] = k_alarm_return_pc;
+        thread.m_cpu = state;
+        start_thread(alarm.m_thread_id);
+    }
     for (auto& item : m_threads)
     {
         s_kernel_thread& thread = item.second;
@@ -910,6 +1016,16 @@ s_kernel_run_result c_kernel::run(
                     );
                 }
             }
+            for (const auto& item : m_alarms)
+            {
+                if (!item.second.m_cancelled &&
+                    item.second.m_deadline > m_cycles)
+                {
+                    next_wake = std::min(
+                        next_wake, item.second.m_deadline
+                    );
+                }
+            }
             if (next_wake ==
                 std::numeric_limits<uint64_t>::max())
             {
@@ -939,6 +1055,43 @@ s_kernel_run_result c_kernel::run(
         m_cycles += step_result.m_instructions;
         result.m_executed += step_result.m_instructions;
         remaining -= step_result.m_instructions;
+
+        if (step_result.m_result == e_step_result::breakpoint &&
+            step_result.m_pc == k_alarm_return_pc &&
+            thread.m_alarm_id != 0u)
+        {
+            const uint32_t alarm_id = thread.m_alarm_id;
+            const uint32_t repeat_ticks = m_cpu.state().m_gpr[2];
+            auto alarm = m_alarms.find(alarm_id);
+            if (alarm == m_alarms.end() ||
+                (repeat_ticks != 0u &&
+                 repeat_ticks >
+                     std::numeric_limits<uint64_t>::max() - m_cycles))
+            {
+                thread.m_status = e_thread_status::faulted;
+                thread.m_cpu = m_cpu.state();
+                result.m_stop = e_kernel_stop::arithmetic_overflow;
+                result.m_thread_id = id;
+                result.m_guest_pc = step_result.m_pc;
+                result.m_opcode = step_result.m_opcode;
+                m_current_thread_id = 0u;
+                return result;
+            }
+            if (repeat_ticks == 0u || alarm->second.m_cancelled)
+            {
+                m_allocations.erase(thread.m_stack_base);
+                m_threads.erase(id);
+                m_alarms.erase(alarm);
+            }
+            else
+            {
+                alarm->second.m_deadline = m_cycles + repeat_ticks;
+                thread.m_status = e_thread_status::dormant;
+                thread.m_cpu = m_cpu.state();
+            }
+            m_current_thread_id = 0u;
+            continue;
+        }
 
         if (step_result.m_result == e_step_result::syscall)
         {
