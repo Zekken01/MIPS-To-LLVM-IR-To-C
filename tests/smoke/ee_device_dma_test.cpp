@@ -453,8 +453,9 @@ int main()
     // its bytes from scratchpad and ends at the next RAM tag slot.
     hardware.reset();
     sink.m_calls = 0u;
+    // ADDR occupies bits 32..63 of the DMAtag's FIRST 64-bit word.
     const ee::s_ee_u128 scratch_ref{
-        0x00000001ull, 0xf0000010ull};
+        (0xf0000010ull << 32u) | 0x00000001ull, 0u};
     ee::ee_mem_write128(&runtime, 0x400u, &scratch_ref);
     ee::ee_mem_write32(&runtime, k_gif + 0x30u, 0x400u);
     program(&runtime, k_gif, 0u, 0u);
