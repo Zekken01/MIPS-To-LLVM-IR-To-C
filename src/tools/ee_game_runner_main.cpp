@@ -1566,6 +1566,7 @@ int main(int argc, char** argv)
                     return 1;
                 }
                 folder_disc_source = folder_source.get();
+                iop_hle->attach_disc_source(folder_disc_source);
                 cdvd = std::make_unique<s_cdvd_context>();
                 cdvd->m_source = std::move(folder_source);
                 cdvd->m_transport =
