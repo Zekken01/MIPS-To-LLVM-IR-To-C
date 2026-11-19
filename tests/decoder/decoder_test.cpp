@@ -314,7 +314,8 @@ int main()
         const uint32_t sa = index >> 2;
         const auto ins = decode(0x100000, R(0x12,0x10,0,0,sa,funct));
         const auto want = !defined ? X :
-            (index == 0x09u || index == 0x0au || index == 0x18u ? V : U);
+            (index == 0x09u || index == 0x0au || index == 0x18u ||
+             (index >= 0x34u && index <= 0x37u) ? V : U);
         const bool ok = ins.valid == want;
         ok ? ++g_pass : ++g_fail;
         if (!ok) std::printf("FAIL COP2 SPECIAL2 index=%02x valid=%u want=%u\n",
@@ -331,9 +332,9 @@ int main()
     }
     {
         const auto m = decode(0x100000, R(0x12,1,4,6,0,0));
-        const bool ok = lift(m).kind == LOP_UNSUPPORTED;
+        const bool ok = lift(m).kind == LOP_MFC2;
         ok ? ++g_pass : ++g_fail;
-        if (!ok) std::printf("FAIL qmfc2 must not silently lower to MFC2\n");
+        if (!ok) std::printf("FAIL qmfc2 must lift to existing transfer helper\n");
     }
 
     // COP1/COP0 validity is an emitter contract, not a claim that every

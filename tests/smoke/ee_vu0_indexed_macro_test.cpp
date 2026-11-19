@@ -156,7 +156,7 @@ int main()
     s_sync_result = static_cast<uint32_t>(
         ee::e_ee_vu0_sync_result::UNAVAILABLE);
     const ee::s_ee_u128 before = cpu.m_vu0[2];
-    if (check(!ee::ee_vu0_macro_indexed_memory(
+    if (check(ee::ee_vu0_macro_indexed_memory(
             &cpu, &rt, lqi, 0x00100024u) != 0u,
               "failed VU0 sync silently succeeded") ||
         check(prior_vi == ee::ee_vu0_read_vi(&vu0, 1u),
