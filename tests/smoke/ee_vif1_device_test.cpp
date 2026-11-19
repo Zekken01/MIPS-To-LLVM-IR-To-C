@@ -325,7 +325,10 @@ int main()
 
     // Unknown upper operation must fail before emitting or retiring DMA.
     // An invalid MPG pair is visible in the actual VU code aperture.
-    const ee::s_ee_u128 unsupported_pair{nop_lower, 0x01e00031u};
+    // One VU pair is two 32-bit words in the LOW 64-bit lane.
+    const ee::s_ee_u128 unsupported_pair{
+        static_cast<uint64_t>(nop_lower) |
+            (static_cast<uint64_t>(0x01e00031u) << 32u), 0u};
     const uint32_t after_kick = capture.m_calls;
     if (!check(ee::c_ee_vif1::mmio_write(
                    &vif1, ee::c_ee_vif1::k_vu1_code_base,
@@ -344,7 +347,9 @@ int main()
 
     // An unsupported arithmetic opcode with mask=0 is still invalid:
     // a zero destination mask must not turn an unknown op into NOP.
-    const ee::s_ee_u128 masked_bad_pair{nop_lower, 0x00000030u};
+    const ee::s_ee_u128 masked_bad_pair{
+        static_cast<uint64_t>(nop_lower) |
+            (static_cast<uint64_t>(0x00000030u) << 32u), 0u};
     if (!check(ee::c_ee_vif1::mmio_write(
                    &vif1, ee::c_ee_vif1::k_vu1_code_base,
                    16u, &masked_bad_pair),
