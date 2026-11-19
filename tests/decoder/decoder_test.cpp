@@ -47,7 +47,7 @@ int main()
     expect("mfsa", R(0x00, 0, 0, 6, 0, 0x28), "mfsa", U);
     expect("mtsa", R(0x00, 4, 0, 0, 0, 0x29), "mtsa", U);
     expect("special reserved", R(0x00, 4, 5, 6, 0, 0x01),
-           "special_reserved", X);
+           "special_rsvd", X);
     // MMI groups: funct 0x08=MMI0, 0x28=MMI1, 0x09=MMI2, 0x29=MMI3; sub-op in sa.
     expect("paddw",   R(0x1c,4,5,6,0x00,0x08), "paddw",  V);
     expect("psubh",   R(0x1c,4,5,6,0x05,0x08), "psubh",  V);
