@@ -2857,7 +2857,8 @@ int main(int argc, char** argv)
                 service == 0x74u ||
                 service == 0x76u || service == 0x77u ||
                 service == 0x78u || service == 0x79u ||
-                service == 0x7au || service == 0x7cu)
+                service == 0x7au || service == 0x7cu ||
+                service == 0x7fu)
             {
                 // In interrupt context R5900 EPC still refers to the
                 // interrupted thread, not the nested syscall. The runtime
@@ -4843,6 +4844,21 @@ int main(int argc, char** argv)
                         {
                             repeated_sif_smflag_reads = 0u;
                         }
+                    }
+                }
+
+                else if (service == 0x7fu)
+                {
+                    // EE GetMemorySize (0x7F) reports installed EE RDRAM
+                    // capacity in bytes, not the remaining heap capacity.
+                    // Reference: ps2-web-recomp:SDBZ/runtime/src/kernel.cpp.
+                    // This read-only service cannot create guest progress.
+                    cpu.m_gpr[2].m_lo = k_ee_ram_size;
+                    cpu.m_gpr[2].m_hi = 0u;
+                    if (trace)
+                    {
+                        std::printf("HLE GetMemorySize: bytes=0x%08x\\n",
+                                    k_ee_ram_size);
                     }
                 }
 
