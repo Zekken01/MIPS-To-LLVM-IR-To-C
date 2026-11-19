@@ -60,6 +60,7 @@ add_library(iop_cpu STATIC
     src/iop/irx_loader.cpp
     src/iop/iop_kernel.cpp
     src/iop/iop_kernel_hle_bridge.cpp
+    src/iop/iop_sysclib_strings.cpp
     src/iop/iop_sifman_bridge.cpp
     src/iop/iop_sif1_bridge.cpp
     src/iop/iop_sif1_dma_transport.cpp
@@ -114,6 +115,8 @@ add_executable(iop_irx_export_link_test tests/smoke/iop_irx_export_link_test.cpp
 target_link_libraries(iop_irx_export_link_test PRIVATE iop_cpu)
 add_executable(iop_sysclib_memory_test tests/smoke/iop_sysclib_memory_test.cpp)
 target_link_libraries(iop_sysclib_memory_test PRIVATE iop_cpu)
+add_executable(iop_sysclib_string_test tests/smoke/iop_sysclib_string_test.cpp)
+target_link_libraries(iop_sysclib_string_test PRIVATE iop_cpu)
 add_executable(iop_kernel_hle_bridge_test tests/smoke/iop_kernel_hle_bridge_test.cpp)
 target_link_libraries(iop_kernel_hle_bridge_test PRIVATE iop_cpu)
 add_executable(iop_kernel_test tests/smoke/iop_kernel_test.cpp)
@@ -660,6 +663,7 @@ add_test(NAME iop_sif_mmio_link COMMAND iop_sif_mmio_link_test)
 add_test(NAME iop_irx_loader COMMAND iop_irx_loader_test)
 add_test(NAME iop_irx_export_link COMMAND iop_irx_export_link_test)
 add_test(NAME iop_sysclib_memory COMMAND iop_sysclib_memory_test)
+add_test(NAME iop_sysclib_string COMMAND iop_sysclib_string_test)
 add_test(NAME iop_kernel COMMAND iop_kernel_test)
 add_test(NAME iop_kernel_hle_bridge COMMAND iop_kernel_hle_bridge_test)
 add_test(NAME iop_sifman_bridge COMMAND iop_sifman_bridge_test)
