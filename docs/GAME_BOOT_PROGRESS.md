@@ -1914,3 +1914,16 @@ The completed USA run still reached dispatch 10495 with pending command flag 1, 
 Same-invocation snapshots: GS display and GS upload are all black; WebGPU readback has one nonblack red pixel. Diagnostic GS counters still report 2275 nonblack untextured sprite kicks; these are not proof of correctly displayed graphics. The disc catalog records 7 static candidate IRX paths but just 1 final-replay committed runtime load (`SIO2MAN.IRX`) and 13 SIFRPC commits, not seven runtime module starts. Do not claim progress before the next post-fix run.
 
 The pre-fix batch is matched by `20261119-161404` through `20261119-161408` filenames. The translation-cache input hash includes the current VU1 code; compilation/rebuild happens through `run_ps2_game.bat`. Do not blame stale executable without evidence. Continue HLE-first, preserve transactional DMA semantics, and do not fake guest completion or graphics.
+
+
+## Windows expansion configuration (2026-11-19)
+
+`run_ps2_game.bat` accepts two independent environment variables without changing the HLE-first execution path:
+
+```bat
+set EXPANSION_PASSES=64
+set EXPANSION_PER_PASS=128
+run_ps2_game.bat
+```
+
+Defaults remain **8 passes** and **128 new functions per pass**. Valid values: `EXPANSION_PASSES=1..64`, `EXPANSION_PER_PASS=1..128`. The wrapper passes both values through as `--expansion-passes` and `--expansion-per-pass`, and reports them at boot-session start. The max pass count increases from eight to 64; the 128-per-pass safety cap in `run_game.py` is unchanged. As before, each pass stops early on genuine guest blockers or when it does not hit its budget. `LLVM IR [N/7901]` is a compilation progress indicator, not proof of native boot advancement or rendering correctness. The already-running process cannot be reconfigured until its next invocation.
