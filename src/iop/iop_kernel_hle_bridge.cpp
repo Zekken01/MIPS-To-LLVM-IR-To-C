@@ -36,11 +36,17 @@ constexpr s_export k_exports[] = {
     {"dmacman", 28u, 4u}, {"dmacman", 32u, 4u},
     {"dmacman", 33u, 4u}, {"dmacman", 34u, 4u},
     {"dmacman", 35u, 4u},
-    {"thbase", 4u, 5u}, {"thbase", 6u, 5u},
-    {"thbase", 20u, 5u}, {"thbase", 33u, 5u},
+    {"thbase", 4u, 5u}, {"thbase", 5u, 5u},
+    {"thbase", 6u, 5u}, {"thbase", 8u, 5u},
+    {"thbase", 10u, 5u}, {"thbase", 14u, 5u},
+    {"thbase", 15u, 5u}, {"thbase", 20u, 5u},
+    {"thbase", 22u, 5u}, {"thbase", 23u, 5u},
+    {"thbase", 24u, 5u}, {"thbase", 25u, 5u},
+    {"thbase", 26u, 5u}, {"thbase", 27u, 5u},
+    {"thbase", 28u, 5u}, {"thbase", 33u, 5u},
     {"thbase", 34u, 5u}, {"thbase", 35u, 5u},
     {"thbase", 37u, 5u}, {"thbase", 39u, 5u},
-    {"thbase", 40u, 5u},
+    {"thbase", 40u, 5u}, {"thbase", 43u, 5u},
     {"thevent", 4u, 6u}, {"thevent", 5u, 6u},
     {"thevent", 6u, 6u}, {"thevent", 7u, 6u},
     {"thevent", 8u, 6u}, {"thevent", 9u, 6u},
@@ -761,8 +767,63 @@ bool c_kernel_hle_bridge::handle_thbase(uint32_t ordinal)
             entry, cpu.m_gpr[28], priority, stack);
         return cpu.m_gpr[2] != 0u;
     }
+    case 5u:
+        if (!m_kernel.delete_thread(cpu.m_gpr[4]))
+        {
+            return false;
+        }
+        cpu.m_gpr[2] = 0u;
+        return true;
     case 6u:
         if (!m_kernel.start_thread_with_argument(
+                cpu.m_gpr[4], cpu.m_gpr[5]))
+        {
+            return false;
+        }
+        cpu.m_gpr[2] = 0u;
+        return true;
+    case 8u:
+        if (!m_kernel.exit_current_thread())
+        {
+            return false;
+        }
+        cpu.m_gpr[2] = 0u;
+        return true;
+    case 10u:
+    {
+        const uint32_t id = cpu.m_gpr[4];
+        if (id == m_kernel.current_thread_id() ||
+            m_kernel.thread(id) == nullptr)
+        {
+            return false;
+        }
+        // An already blocked waiter must not retain a dangling ID.
+        for (auto& item : m_events)
+        {
+            auto& waiters = item.second.m_waiters;
+            waiters.erase(std::remove_if(
+                waiters.begin(), waiters.end(),
+                [id](const s_event_waiter& waiter)
+                {
+                    return waiter.m_thread == id;
+                }), waiters.end());
+        }
+        for (auto& item : m_semaphores)
+        {
+            auto& waiters = item.second.m_waiters;
+            waiters.erase(std::remove(
+                waiters.begin(), waiters.end(), id), waiters.end());
+        }
+        if (!m_kernel.stop_thread(id))
+        {
+            return false;
+        }
+        cpu.m_gpr[2] = 0u;
+        return true;
+    }
+    case 14u:
+    case 15u:
+        if (!m_kernel.change_thread_priority(
                 cpu.m_gpr[4], cpu.m_gpr[5]))
         {
             return false;
@@ -772,6 +833,72 @@ bool c_kernel_hle_bridge::handle_thbase(uint32_t ordinal)
     case 20u:
         cpu.m_gpr[2] = m_kernel.current_thread_id();
         return true;
+    case 22u:
+    case 23u:
+    {
+        const uint32_t id = cpu.m_gpr[4] != 0u
+            ? cpu.m_gpr[4] : m_kernel.current_thread_id();
+        const s_kernel_thread* thread = m_kernel.thread(id);
+        const uint32_t output = cpu.m_gpr[5];
+        if (thread == nullptr ||
+            thread->m_status == e_thread_status::faulted ||
+            !is_iop_ram_span(output, 80u))
+        {
+            return false;
+        }
+        uint32_t status = 0u;
+        switch (thread->m_status)
+        {
+        case e_thread_status::running: status = 1u; break;
+        case e_thread_status::ready: status = 2u; break;
+        case e_thread_status::blocked: status = 4u; break;
+        case e_thread_status::dormant: status = 16u; break;
+        default: return false;
+        }
+        const uint32_t words[20] = {
+            0u, 0u, status, thread->m_entry, thread->m_stack_base,
+            thread->m_stack_size, thread->m_gp,
+            thread->m_initial_priority, thread->m_priority,
+            thread->m_wait_type, 0u, thread->m_wakeup_count,
+            0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u
+        };
+        for (uint32_t i = 0u; i < 20u; ++i)
+        {
+            if (!m_kernel.cpu().write32(output + i * 4u, words[i]))
+            {
+                return false;
+            }
+        }
+        cpu.m_gpr[2] = 0u;
+        return true;
+    }
+    case 24u:
+        if (!m_kernel.sleep_thread())
+        {
+            return false;
+        }
+        cpu.m_gpr[2] = 0u;
+        return true;
+    case 25u:
+    case 26u:
+        if (!m_kernel.wakeup_thread(cpu.m_gpr[4]))
+        {
+            return false;
+        }
+        cpu.m_gpr[2] = 0u;
+        return true;
+    case 27u:
+    case 28u:
+    {
+        uint32_t previous = 0u;
+        if (!m_kernel.cancel_wakeup_thread(
+                cpu.m_gpr[4], &previous))
+        {
+            return false;
+        }
+        cpu.m_gpr[2] = previous;
+        return true;
+    }
     case 33u:
     {
         // PS2SDK threadman: 0x1200 / 125 system-clock ticks per
@@ -878,6 +1005,9 @@ bool c_kernel_hle_bridge::handle_thbase(uint32_t ordinal)
         }
         return true;
     }
+    case 43u:
+        cpu.m_gpr[2] = static_cast<uint32_t>(m_kernel.cycles());
+        return true;
     default:
         return false;
     }
@@ -978,7 +1108,7 @@ bool c_kernel_hle_bridge::handle_thevent(uint32_t ordinal)
         }
         else
         {
-            if (!m_kernel.block_current())
+            if (!m_kernel.block_current(4u))
             {
                 return false;
             }
@@ -1119,7 +1249,7 @@ bool c_kernel_hle_bridge::handle_thsemap(uint32_t ordinal)
         }
         else
         {
-            if (!m_kernel.block_current())
+            if (!m_kernel.block_current(3u))
             {
                 return false;
             }
