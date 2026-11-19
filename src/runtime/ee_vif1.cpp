@@ -332,11 +332,13 @@ bool c_ee_vif1::execute(
             }
             else
             {
+                // Match vif.cpp::run_vu: TOP records the buffer given
+                // to this program, TOPS advances to the next buffer.
+                machine.m_top = machine.m_tops;
+                machine.m_itop = machine.m_itops;
                 machine.m_dbf = !machine.m_dbf;
                 machine.m_tops = machine.m_base +
                     (machine.m_dbf ? machine.m_ofst : 0u);
-                machine.m_itop = machine.m_itops;
-                machine.m_top = machine.m_tops;
             }
             break;
         }

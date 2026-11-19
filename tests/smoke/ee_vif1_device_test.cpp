@@ -482,6 +482,25 @@ int main()
         return 1;
     }
 
+
+    // VIF1 TOP is the buffer actually supplied to MSCAL, while TOPS
+    // toggles for the NEXT UNPACK buffer (ps2-web-recomp vif::run_vu).
+    vif1.reset();
+    if (!check(send(vif1, {
+                   0x03000020u, 0x02000010u,
+                   0x4a020000u, nop_lower, e_nop,
+                   nop_lower, nop_upper, 0u}),
+               "VIF TOP/TOPS setup and two-pair MPG failed") ||
+        !check(send(vif1, {0x14000000u, 0u, 0u, 0u}),
+               "VIF TOP/TOPS MSCAL refused") ||
+        !check(vif1.read_register(0xe0u) == 0x20u &&
+               vif1.read_register(0xc0u) == 0x30u &&
+               (vif1.read_register(0x00u) & 0x80u) != 0u,
+               "VIF TOP/TOPS double-buffer state incorrectly aliased"))
+    {
+        return 1;
+    }
+
     std::puts("EE native VIF1/MPG, VU1/XGKICK PATH1, PATH2 and TTE: PASS");
     return 0;
 }
