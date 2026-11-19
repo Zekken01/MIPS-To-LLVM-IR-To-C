@@ -445,13 +445,22 @@ def main():
         require(control["calls"] == [(31, 0x5678, ENTRY_PC)],
                 "failed CMSAR1 action must still be observable by the host")
 
-        # The same operations in a standard branch delay slot use the
-        # direction-specific wait policy, not the ordinary catch-up policy.
+        # The transfer's encoded I bit controls whether to interlock;
+        # ordinary .NI instructions only catch up to the EE instruction
+        # slot even when they execute inside a branch delay slot.
         for mode, expected_mode in (
-            ("qmfc2_delay", 1),
-            ("cfc2_delay", 1),
-            ("qmtc2_delay", 2),
-            ("ctc2_delay", 2),
+            ("qmfc2_delay", 0),
+            ("cfc2_delay", 0),
+            ("qmtc2_delay", 0),
+            ("ctc2_delay", 0),
+            ("qmfc2_i", 1),
+            ("cfc2_i", 1),
+            ("qmtc2_i", 2),
+            ("ctc2_i", 2),
+            ("qmfc2_i_delay", 1),
+            ("cfc2_i_delay", 1),
+            ("qmtc2_i_delay", 2),
+            ("ctc2_i_delay", 2),
         ):
             def init_delay(cpu, vu0):
                 cpu.gpr[8] = U128(0x1122334455667788, 0x99aabbccddeeff00)
@@ -461,6 +470,26 @@ def main():
                 fixture, temp_dir, target, mode, init_delay
             )
             check_sync(sync, expected_mode, ENTRY_PC + 4, mode)
+
+        # Sync refusal must preserve the destination regardless of
+        # whether the transfer explicitly interlocks.
+        for mode, expected_mode in (("qmfc2_i", 1), ("qmfc2_delay", 0)):
+            def init_refused(cpu, _vu0):
+                cpu.gpr[8] = U128(0x76543210, 0x0123456789abcdef)
+                cpu.vu0[6] = U128(0x99999999, 0x88888888)
+
+            result, cpu, vu0, sync, control, keep = run_guest(
+                fixture, temp_dir, target, mode, init_refused,
+                sync_result=VU0_SYNC_FAILED
+            )
+            require(result == EE_EXIT_UNSUPPORTED and cpu.pc ==
+                    (ENTRY_PC + 4 if "_delay" in mode else ENTRY_PC),
+                    f"{mode}: failed sync must preserve guest transfer PC")
+            require(cpu.gpr[8].lo == 0x76543210 and
+                    cpu.gpr[8].hi == 0x0123456789abcdef,
+                    f"{mode}: failing read changed guest GPR")
+            check_sync(sync, expected_mode,
+                       ENTRY_PC + (4 if "_delay" in mode else 0), mode)
 
         # GPR writes made in SSA before a helper call must be visible to the
         # helper, and GPR writes made by a helper must be visible afterwards.
