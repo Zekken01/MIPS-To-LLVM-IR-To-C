@@ -6,7 +6,7 @@ Main architectural reference: [twist84/ps2-web-recomp, `SDBZ` branch](https://gi
 
 Current native LLVM-IR implementation: [`src/iop/iop_kernel_hle_bridge.cpp`](../src/iop/iop_kernel_hle_bridge.cpp), audited blob `623875f9bacb21633a539ce2529570b81132c474`.
 
-The reference file defines **172 explicitly named `def("library", ordinal, ...)` handlers**. Our bridge registers **146 actual guest-callable HLE ordinals**; **131 match explicitly named reference definitions**. Counts include no claim about full behavioral equivalence. The reference also uses loops/dynamic registrations (e.g. `secrman#4/#5`) and separate IOP modules (`io.cpp`, `sif.cpp`, `cdvd.cpp`, `spu2.cpp`) and EE kernel syscalls. The full reference runtime is larger than these 172 direct definitions.
+The reference file defines **172 explicitly named `def("library", ordinal, ...)` handlers**. Our bridge registers **152 actual guest-callable HLE ordinals**; **131 match explicitly named reference definitions**. Counts include no claim about full behavioral equivalence. The reference also uses loops/dynamic registrations (e.g. `secrman#4/#5`) and separate IOP modules (`io.cpp`, `sif.cpp`, `cdvd.cpp`, `spu2.cpp`) and EE kernel syscalls. The full reference runtime is larger than these 172 direct definitions.
 
 Never bulk-register an unimplemented opcode. Each `k_exports` entry installs a **real executable import stub**, so an unimplemented handler must remain unresolved instead of returning fabricated success.
 
@@ -133,3 +133,35 @@ part of the 172 explicitly named `libs.cpp` handlers.
 **Next Windows validation:** MCMAN link/start outcome, subsequent
 imports, EE dispatches beyond 14,385, and authentic GS framebuffer.
 CI passing alone does not establish this.
+
+## 2026-11-19 — CDVDMAN clock and mounted-disc state batch
+
+The next matched Windows ZIP again stopped at **14,385 EE dispatches**,
+with one successful `SIO2MAN.IRX` load/start and a new rejected
+`MCMAN.IRX` link due to **`cdvdman#24`**. The preceding
+`ioman#20` import was cleared. The final replay generated zero new
+EE function modules; its three GS images were all black.
+
+The existing extracted-disc-only `c_cdvdman_bridge` now includes
+guest R3000 syscall stubs for `#4 sceCdInit`, `#8 sceCdGetError`,
+`#12 sceCdGetDiskType`, `#13 sceCdDiskReady`,
+`#24 sceCdReadClock`, `#28 sceCdStatus`, in addition to
+existing `#10 sceCdSearchFile`. These are grounded in the validated
+mounted virtual DVD and (for the RTC) host UTC calendar converted
+to the reference's JST BCD layout. The 8-byte clock output is
+guest-memory checked before writing.
+
+The subset does not implement CDVDMAN asynchronous reads,
+real seek timing, callbacks, or interrupt completion, and does not
+register those unsupported imports. The mounted-media ready status
+reflects only the virtual disc backend, not a physical PS2 drive.
+Guest R3000 tests verify CDVDMAN clock imports and media queries,
+unknown ordinal rejection, invalid memory rejection and original
+search-file semantics.
+
+The **172-handler libs.cpp reference total is unchanged**: these
+CDVDMAN handlers live in `runtime/src/iop/cdvd.cpp`. The native
+HLE ordinal total increases from **146 to 152**. The 41 explicit
+`libs.cpp` parity gaps remain separate. The next matched real
+Windows boot must confirm if MCMAN links/starts and whether EE
+execution or framebuffer contents progress.
