@@ -899,6 +899,9 @@ bool c_kernel::stop_thread(uint32_t id)
     }
     found->second.m_status = e_thread_status::dormant;
     found->second.m_wake_cycle = 0u;
+    found->second.m_wait_type = 0u;
+    found->second.m_wakeup_count = 0u;
+    found->second.m_delete_on_exit = false;
     return true;
 }
 
