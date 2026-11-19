@@ -16,6 +16,9 @@ struct s_ee_vu1_state
     std::array<uint32_t, 4> m_acc{};
     uint32_t m_i = 0u;
     uint32_t m_q = 0u;
+    uint32_t m_mac = 0u;
+    uint32_t m_status = 0u;
+    uint32_t m_clip = 0u;
     uint32_t m_tpc = 0u;
     bool m_initialized = false;
 };

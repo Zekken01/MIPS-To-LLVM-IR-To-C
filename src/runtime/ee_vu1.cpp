@@ -3,6 +3,7 @@
 // This first batch intentionally rejects unported instructions and timing
 // dependencies instead of silently treating them as NOPs.
 #include "ee_vu1.h"
+#include "ee_vu1_fp.h"
 
 #include <algorithm>
 #include <cstring>
@@ -120,114 +121,187 @@ struct s_upper_write
     std::array<uint32_t, 4> m_values{};
     uint32_t m_target = 0u;
     uint32_t m_mask = 0u;
+    uint32_t m_clip = 0u;
     bool m_acc = false;
+    bool m_flags = false;
+    bool m_has_clip = false;
+    bool m_writes = false;
 };
 
-bool upper(const s_ee_vu1_state& state, uint32_t hi,
-           s_upper_write& write)
+// VU FMAC and status calculations ported from vu_micro.cpp::set_flags.
+void set_mac_flags(s_ee_vu1_state& state,
+                   const std::array<uint32_t, 4>& value, uint32_t mask)
 {
-    const uint32_t funct = hi & 63u;
-    const uint32_t index = (((hi >> 6u) & 31u) << 2u) | (funct & 3u);
-    const uint32_t mask = (hi >> 21u) & 15u;
-    const uint32_t fs = (hi >> 11u) & 31u;
-    const uint32_t ft = (hi >> 16u) & 31u;
-    const uint32_t fd = (hi >> 6u) & 31u;
-    write.m_mask = mask;
-    write.m_target = fd;
-
-    uint32_t operation = funct;
-    bool broadcast = funct < 0x1cu;
-    uint32_t operand = 0u;
-    if (funct >= 0x3cu)
-    {
-        // Canonical VU NOP (special index 0x2f); reject unknown specials.
-        if (index == 0x2fu)
-        {
-            write.m_mask = 0u;
-            return true;
-        }
-        // ACC arithmetic, conversion, flag operations, clip and special
-        // pipelines are implemented in a later batch. Never guess effects.
-        return false;
-    }
-    // Validate even if the destination lane mask is zero. Unsupported
-    // opcode families must never become accidental successful NOPs.
-    const bool supported =
-        operation <= 0x07u ||
-        (operation >= 0x10u && operation <= 0x1bu) ||
-        operation == 0x1eu || operation == 0x22u ||
-        operation == 0x26u || operation == 0x28u ||
-        operation == 0x2au || operation == 0x2bu ||
-        operation == 0x2cu || operation == 0x2fu;
-    if (!supported)
-    {
-        return false;
-    }
-
-    // Source selectors: 0..27 use broadcast lanes, 28..2f use Q/I or
-    // vector operations. Q-dependent ops need the real Q timing pipeline.
-    if ((operation >= 0x1cu && operation <= 0x1fu) ||
-        (operation >= 0x20u && operation <= 0x27u))
-    {
-        if (operation == 0x1du || operation == 0x1eu ||
-            operation == 0x1fu || (operation & 1u) == 0u && operation >= 0x22u)
-        {
-            // These variants are I-dependent; handled below.
-            if (operation == 0x1du || operation == 0x1fu)
-            {
-                return false;
-            }
-            operand = state.m_i;
-        }
-        else if (operation == 0x22u || operation == 0x23u ||
-                 operation == 0x26u || operation == 0x27u)
-        {
-            operand = state.m_i;
-        }
-        else
-        {
-            return false;
-        }
-        broadcast = true;
-    }
-
+    uint32_t mac = 0u;
     for (uint32_t lane = 0u; lane < 4u; ++lane)
     {
         if ((mask & (8u >> lane)) == 0u)
         {
             continue;
         }
-        const uint32_t lhs = state.m_vf[fs][lane];
-        const uint32_t rhs = broadcast
-            ? (operation >= 0x1cu ? operand : state.m_vf[ft][funct & 3u])
-            : state.m_vf[ft][lane];
+        const uint32_t bit = 3u - lane;
+        const uint32_t x = value[lane];
+        if ((x & 0x7f800000u) == 0u)
+        {
+            mac |= 1u << bit;
+        }
+        if ((x & 0x80000000u) != 0u)
+        {
+            mac |= 1u << (bit + 4u);
+        }
+        if ((x & 0x7fffffffu) == 0x7fffffffu)
+        {
+            mac |= 1u << (bit + 12u);
+        }
+    }
+    state.m_mac = mac;
+    uint32_t status = state.m_status & 0xff0u;
+    if ((mac & 0x000fu) != 0u) { status |= 1u; }
+    if ((mac & 0x00f0u) != 0u) { status |= 2u; }
+    if ((mac & 0x0f00u) != 0u) { status |= 4u; }
+    if ((mac & 0xf000u) != 0u) { status |= 8u; }
+    status |= (status & 15u) << 6u;
+    state.m_status = (status & ~0x30u) | (state.m_status & 0x30u);
+}
+
+// All FMAC mathematics and special-index mappings below are ported from
+// ps2-web-recomp's reference upper()/decode_upper(). No Q-dependent opcode
+// is enabled before the Q-latency pipeline is implemented.
+bool upper(const s_ee_vu1_state& state, uint32_t hi,
+           s_upper_write& write)
+{
+    namespace fp = vu1_fp;
+    const uint32_t funct = hi & 63u;
+    const bool special = funct >= 0x3cu;
+    const uint32_t index = (((hi >> 6u) & 31u) << 2u) | (funct & 3u);
+    const uint32_t op = special ? index : funct;
+    const uint32_t mask = (hi >> 21u) & 15u;
+    const uint32_t fs = (hi >> 11u) & 31u;
+    const uint32_t ft = (hi >> 16u) & 31u;
+    const uint32_t fd = (hi >> 6u) & 31u;
+
+    if (special && op == 0x2fu)
+    {
+        return true; // Canonical upper NOP.
+    }
+    if (op > 0x2fu || (!special && funct >= 0x30u) ||
+        op == 0x1cu || op == 0x20u || op == 0x21u ||
+        op == 0x24u || op == 0x25u)
+    {
+        return false; // Unknown opcode or Q-latency dependency.
+    }
+
+    const bool conversion = special && op >= 0x10u && op <= 0x17u;
+    const bool abs_op = special && op == 0x1du;
+    const bool clip_op = special && op == 0x1fu;
+    const bool cross = op == 0x2eu;
+    const bool uses_acc = special && !conversion && !abs_op &&
+        !clip_op && op != 0x2fu;
+    const bool is_minmax =
+        (op >= 0x10u && op <= 0x17u && !conversion) ||
+        op == 0x1du || op == 0x1fu || op == 0x2bu || op == 0x2fu;
+    const bool is_arithmetic = !conversion && !abs_op &&
+        !clip_op && !is_minmax;
+
+    if (clip_op)
+    {
+        const int32_t limit = fp::key(state.m_vf[ft][3] & fp::kAbs);
+        uint32_t flags = 0u;
+        for (uint32_t lane = 0u; lane < 3u; ++lane)
+        {
+            const int32_t x = fp::key(state.m_vf[fs][lane]);
+            if (x > limit) { flags |= 1u << (lane * 2u); }
+            if (x < -limit) { flags |= 2u << (lane * 2u); }
+        }
+        write.m_clip = ((state.m_clip << 6u) | flags) & 0xffffffu;
+        write.m_has_clip = true;
+        return true;
+    }
+
+    write.m_mask = cross ? 0xeu : mask;
+    write.m_acc = uses_acc;
+    write.m_target = special && (conversion || abs_op) ? ft : fd;
+    write.m_flags = is_arithmetic;
+    write.m_writes = true;
+    static constexpr int k_fractions[4]{0, 4, 12, 15};
+    const int frac = k_fractions[op & 3u];
+
+    for (uint32_t lane = 0u; lane < 4u; ++lane)
+    {
+        if ((write.m_mask & (8u >> lane)) == 0u)
+        {
+            continue;
+        }
+        const uint32_t lhs = state.m_vf[fs][cross
+            ? (lane == 0u ? 1u : lane == 1u ? 2u : 0u) : lane];
+        const uint32_t rhs_cross = state.m_vf[ft][
+            lane == 0u ? 2u : lane == 1u ? 0u : 1u];
+        const uint32_t rhs =
+            op <= 0x1bu ? state.m_vf[ft][funct & 3u] :
+            op == 0x1du || op == 0x1eu || op == 0x1fu ||
+            op == 0x22u || op == 0x23u || op == 0x26u ||
+            op == 0x27u ? state.m_i : state.m_vf[ft][lane];
+        const uint32_t acc = state.m_acc[lane];
         uint32_t result = 0u;
-        if (operation <= 0x03u || operation == 0x28u || operation == 0x22u)
+
+        if (conversion)
         {
-            result = to_bits(to_float(lhs) + to_float(rhs));
+            if (op <= 0x13u)
+            {
+                result = fp::from_fixed(
+                    static_cast<int32_t>(lhs), frac);
+            }
+            else
+            {
+                result = fp::to_fixed(lhs, frac);
+            }
         }
-        else if (operation <= 0x07u || operation == 0x2cu || operation == 0x26u)
+        else if (abs_op)
         {
-            result = to_bits(to_float(lhs) - to_float(rhs));
+            result = lhs & fp::kAbs;
         }
-        else if ((operation >= 0x18u && operation <= 0x1bu) ||
-                 operation == 0x2au || operation == 0x1eu)
+        else if (cross)
         {
-            result = to_bits(to_float(lhs) * to_float(rhs));
+            const uint32_t product = fp::mul(lhs, rhs_cross);
+            result = special ? product : fp::sub(acc, product);
         }
-        else if ((operation >= 0x10u && operation <= 0x13u) ||
-                 operation == 0x2bu)
+        else if (op <= 0x03u || op == 0x20u ||
+                 op == 0x22u || op == 0x28u)
         {
-            result = to_float(lhs) > to_float(rhs) ? lhs : rhs;
+            result = fp::add(lhs, rhs);
         }
-        else if ((operation >= 0x14u && operation <= 0x17u) ||
-                 operation == 0x2fu)
+        else if ((op >= 0x04u && op <= 0x07u) ||
+                 op == 0x24u || op == 0x26u || op == 0x2cu)
         {
-            result = to_float(lhs) < to_float(rhs) ? lhs : rhs;
+            result = fp::sub(lhs, rhs);
+        }
+        else if ((op >= 0x08u && op <= 0x0bu) ||
+                 op == 0x21u || op == 0x23u || op == 0x29u)
+        {
+            result = fp::add(acc, fp::mul(lhs, rhs));
+        }
+        else if ((op >= 0x0cu && op <= 0x0fu) ||
+                 op == 0x25u || op == 0x27u || op == 0x2du)
+        {
+            result = fp::sub(acc, fp::mul(lhs, rhs));
+        }
+        else if ((op >= 0x10u && op <= 0x13u) ||
+                 op == 0x1du || op == 0x2bu)
+        {
+            result = fp::max(lhs, rhs);
+        }
+        else if ((op >= 0x14u && op <= 0x17u) ||
+                 op == 0x1fu || op == 0x2fu)
+        {
+            result = fp::min(lhs, rhs);
+        }
+        else if ((op >= 0x18u && op <= 0x1bu) ||
+                 op == 0x1eu || op == 0x2au)
+        {
+            result = fp::mul(lhs, rhs);
         }
         else
         {
-            // MADD/MSUB/ACC/MAC/Q operations not safe without pipelines.
             return false;
         }
         write.m_values[lane] = result;
