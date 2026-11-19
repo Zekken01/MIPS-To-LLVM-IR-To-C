@@ -1695,3 +1695,22 @@ but still no general TLB, BIOS, other DMA channels,
 device scheduling, or full interrupt emulation. The syscall handling is deliberately
 opt-in, experimental, and incomplete. Reaching the PCs above is not evidence
 of full console initialization, correct kernel behaviour or graphical output.
+
+## M2 implementation checkpoint — 2026-11-19 (after 07:27 matched batch)
+
+- **M2.0 instrumentation implemented (F for tooling, not a game fix):** native runner exports bounded host-dispatch PC/edge frequency and observed COP0/INTC/DMAC/GS/thread/RPC state deltas inside `first-boot.json.m2_runtime`. These are `native_dispatch_boundary` observations, not individual guest instruction counts or validated R5900 cycles. Saturation is explicit rather than silently claiming full coverage.
+- **M2.0 ISA inventory implemented (S and sampled R, not semantics T):** `ee_recomp` exports a bounded, unique-CFG-PC decoder/lifter inventory in `ee_coverage.json.m2_instruction_inventory`. Opt-in `--trace-instructions` now also emits `<trace-path>.isa.json`, classifying actual recorded words (kind 0=native reached, 2=RAM interpreter committed) separately from excluded annulled branch-likely slots (kind 1) and HLE boundaries (kind 3). Both artifacts explicitly qualify coverage and cannot imply architectural correctness.
+- **M2.1 offline analysis tooling implemented (R observation, predicate unproven):** `tools/analyze_m2_dispatch_trace.py` consumes an existing `--trace` log and its *matching final report*, pins input SHA-256 digests, deduplicates repeated dispatch indices caused by yield handoffs, and exports hot PC/transition counts, temporal windows and concrete logged interrupt/DMAC/RPC observations. It does not modify guest state.
+- **07:27 runtime findings (R, from the matched log):** 13 committed SIF RPCs complete by approximately dispatch 6,941, including the one successful SIO2MAN start; 15 logged DMAC channel-5 IRQs; 195 logged INTC callback entries, last near dispatch 12,359, though the final clock reports 230 GS fields. The late update sequence is dominated by `0x00173250 ↔ 0x001734e4`, with recurrent `0x00172e20 → 0x00172a90 → 0x00172e3c → 0x00172998 → 0x00172e48`. Both are native host-dispatch sequences, **not decoded guest wait predicates**. The loop's health and first unmet producer remain unknown.
+- **Acceptance boundary:** M2.0 artifacts and regression tests exist. M2.1 is **not gated complete** until disassembly/live guest-state identifies PC→predicate→producer, and any defect receives an architectural regression. No extra interrupt/IRQ, DMA, RPC, or draw was fabricated. Existing 07:27 CPU images remain black and WebGPU run provenance remains unverified.
+
+To reproduce *offline* without another guest boot:
+
+```sh
+python tools/analyze_m2_dispatch_trace.py \\
+  --boot-log "boot(20261119-072747).log" \\
+  --report "first-boot(20261119-072746).json" \\
+  --output "m2-dispatch-analysis.json"
+```
+
+CI is checked per exact branch HEAD (do not infer the result of a newer commit from a prior green run). PR #142 remains draft and unmerged.
