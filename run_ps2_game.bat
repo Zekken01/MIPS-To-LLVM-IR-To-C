@@ -80,8 +80,10 @@ if /I "%EE_WEBGPU_WINDOW%"=="1" (
     set "EE_WEBGPU_WINDOW_ARG=--gs-webgpu-window"
 )
 rem Reuse the pinned MSVC SDK in build\_deps or download it once.
+rem Set this outside the block: cmd.exe expands %%VARS%% before executing
+rem a parenthesized block, so setting and reading inside it passes an empty root.
+if "%EE_WEBGPU_MODE%"=="ON" if not defined EE_WEBGPU_ROOT set "EE_WEBGPU_ROOT=%CD%\build\_deps\wgpu-native"
 if "%EE_WEBGPU_MODE%"=="ON" (
-    if not defined EE_WEBGPU_ROOT set "EE_WEBGPU_ROOT=%CD%\build\_deps\wgpu-native"
     python "tools\ensure_wgpu_native.py" --root "%EE_WEBGPU_ROOT%"
     if errorlevel 1 exit /b 1
 )
