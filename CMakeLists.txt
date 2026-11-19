@@ -542,6 +542,11 @@ if(EE_HAVE_LLVM_JIT_TEST)
                 ${CMAKE_SOURCE_DIR}/tests/smoke/test_vu0_transfer_ir_runtime.py
                 $<TARGET_FILE:ee_vu0_transfer_ir_fixture>
                 $<TARGET_FILE:ee_vu0_jit_helpers>)
+    add_test(NAME vu0_quadword_ir_runtime
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/smoke/test_vu0_quadword_ir_runtime.py
+                $<TARGET_FILE:ee_vu0_transfer_ir_fixture>
+                $<TARGET_FILE:ee_cop0_jit_helpers>)
     add_test(NAME compare_ir_runtime
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/smoke/test_compare_ir_runtime.py
