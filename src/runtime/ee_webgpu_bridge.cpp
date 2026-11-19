@@ -23,6 +23,56 @@ float float_bits(uint32_t bits)
     std::memcpy(&value, &bits, sizeof(value));
     return value;
 }
+bool make_display_source(
+    const s_ee_gs_display_registers& registers, uint32_t crt_mode,
+    ps2::gs::gpu::DisplaySource& src)
+{
+    if ((registers.m_pmode & 3u) == 0u ||
+        (crt_mode != 2u && crt_mode != 3u))
+    {
+        return false;
+    }
+    const uint32_t circuit = (registers.m_pmode & 2u) != 0u ? 1u : 0u;
+    const uint64_t fb = registers.m_dispfb[circuit];
+    const uint64_t disp = registers.m_display[circuit];
+    const uint32_t base = (static_cast<uint32_t>(fb) & 0x1ffu) * 32u;
+    const uint32_t fbw = static_cast<uint32_t>((fb >> 9u) & 0x3fu);
+    const uint32_t psm = static_cast<uint32_t>((fb >> 15u) & 0x1fu);
+    const uint32_t dbx = static_cast<uint32_t>((fb >> 32u) & 0x7ffu);
+    const uint32_t dby = static_cast<uint32_t>((fb >> 43u) & 0x7ffu);
+    if (psm != 0u && psm != 1u && psm != 2u && psm != 0x0au)
+    {
+        return false;
+    }
+
+    const uint32_t magh = static_cast<uint32_t>((disp >> 23u) & 0xfu) + 1u;
+    const uint32_t magv = static_cast<uint32_t>((disp >> 27u) & 3u) + 1u;
+    const uint32_t dw = static_cast<uint32_t>((disp >> 32u) & 0xfffu) + 1u;
+    const uint32_t raw_dh =
+        static_cast<uint32_t>((disp >> 44u) & 0x7ffu) + 1u;
+    const uint32_t dy = static_cast<uint32_t>((disp >> 12u) & 0x7ffu);
+    const bool pal = crt_mode == 3u;
+    const uint32_t scale = (registers.m_smode2 & 1u) != 0u ? 2u : 1u;
+    const uint32_t lines = (pal ? 288u : 240u) * scale;
+    const uint32_t top = (pal ? 36u : 25u) * scale;
+    const uint32_t span = (pal ? 256u : 224u) * scale;
+    const uint32_t below = dy > top ? std::min(dy - top, span) : 0u;
+    const uint32_t dh = std::min(raw_dh,
+        std::min(lines, below != 0u ? span - below : lines));
+    const uint32_t w = dw / magh;
+    const uint32_t h = dh / magv;
+    if (w == 0u || h == 0u || w > 2048u || h > 2048u ||
+        dbx + w > 2048u || dby + h > 2048u)
+    {
+        return false;
+    }
+
+    src = ps2::gs::gpu::DisplaySource{
+        base, fbw, psm, dbx, dby, w, h,
+        (registers.m_smode2 & 3u) == 3u
+    };
+    return true;
+}
 } // namespace
 
 bool c_ee_webgpu_bridge::init()
@@ -362,54 +412,20 @@ void c_ee_webgpu_bridge::committed_gif_events(
     }
 }
 
+bool c_ee_webgpu_bridge::present(
+    const s_ee_gs_display_registers& registers, uint32_t crt_mode)
+{
+    ps2::gs::gpu::DisplaySource src{};
+    return m_ready && make_display_source(registers, crt_mode, src)
+        && ps2::gs::gpu::present(src);
+}
+
 bool c_ee_webgpu_bridge::readback(
     const s_ee_gs_display_registers& registers, uint32_t crt_mode,
     std::vector<uint32_t>& pixels, uint32_t& width, uint32_t& height)
 {
-    if (!m_ready || (registers.m_pmode & 3u) == 0u ||
-        (crt_mode != 2u && crt_mode != 3u))
-    {
-        return false;
-    }
-    const uint32_t circuit = (registers.m_pmode & 2u) != 0u ? 1u : 0u;
-    const uint64_t fb = registers.m_dispfb[circuit];
-    const uint64_t disp = registers.m_display[circuit];
-    const uint32_t base = (static_cast<uint32_t>(fb) & 0x1ffu) * 32u;
-    const uint32_t fbw = static_cast<uint32_t>((fb >> 9u) & 0x3fu);
-    const uint32_t psm = static_cast<uint32_t>((fb >> 15u) & 0x1fu);
-    const uint32_t dbx = static_cast<uint32_t>((fb >> 32u) & 0x7ffu);
-    const uint32_t dby = static_cast<uint32_t>((fb >> 43u) & 0x7ffu);
-    if (psm != 0u && psm != 1u && psm != 2u && psm != 0x0au)
-    {
-        return false;
-    }
-
-    const uint32_t magh = static_cast<uint32_t>((disp >> 23u) & 0xfu) + 1u;
-    const uint32_t magv = static_cast<uint32_t>((disp >> 27u) & 3u) + 1u;
-    const uint32_t dw = static_cast<uint32_t>((disp >> 32u) & 0xfffu) + 1u;
-    const uint32_t raw_dh =
-        static_cast<uint32_t>((disp >> 44u) & 0x7ffu) + 1u;
-    const uint32_t dy = static_cast<uint32_t>((disp >> 12u) & 0x7ffu);
-    const bool pal = crt_mode == 3u;
-    const uint32_t scale = (registers.m_smode2 & 1u) != 0u ? 2u : 1u;
-    const uint32_t lines = (pal ? 288u : 240u) * scale;
-    const uint32_t top = (pal ? 36u : 25u) * scale;
-    const uint32_t span = (pal ? 256u : 224u) * scale;
-    const uint32_t below = dy > top ? std::min(dy - top, span) : 0u;
-    const uint32_t dh = std::min(raw_dh,
-        std::min(lines, below != 0u ? span - below : lines));
-    const uint32_t w = dw / magh;
-    const uint32_t h = dh / magv;
-    if (w == 0u || h == 0u || w > 2048u || h > 2048u ||
-        dbx + w > 2048u || dby + h > 2048u)
-    {
-        return false;
-    }
-
-    const ps2::gs::gpu::DisplaySource src{
-        base, fbw, psm, dbx, dby, w, h,
-        (registers.m_smode2 & 3u) == 3u
-    };
-    return ps2::gs::gpu::display(src, pixels, width, height);
+    ps2::gs::gpu::DisplaySource src{};
+    return m_ready && make_display_source(registers, crt_mode, src)
+        && ps2::gs::gpu::display(src, pixels, width, height);
 }
 } // namespace ee
