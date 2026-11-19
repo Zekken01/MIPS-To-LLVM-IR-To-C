@@ -5,6 +5,7 @@
 #include "ee_hw_bus.h"
 #include "ee_host_timers.h"
 #include "ee_hot_loop_diagnostics.h"
+#include "ee_reached_isa_inventory.h"
 #include "ee_vsync_flags.h"
 #include "ee_gif.h"
 #include "ee_gs.h"
@@ -5113,6 +5114,44 @@ int main(int argc, char** argv)
                     runtime.m_instruction_trace_count,
                     runtime.m_instruction_trace_overflow,
                     instruction_trace_path);
+
+        // M2.0: classify reached words from the actual bounded recorded
+        // stream. Kind=1 branch annulment and kind=3 HLE boundaries must
+        // never be counted as an executed native instruction.
+        ee::c_ee_reached_isa_inventory reached_inventory;
+        for (uint32_t index = 0u;
+             index < runtime.m_instruction_trace_count; ++index)
+        {
+            reached_inventory.record(instruction_trace[index]);
+        }
+        const std::string isa_path =
+            std::string(instruction_trace_path) + ".isa.json";
+        std::ofstream isa_output(isa_path, std::ios::binary | std::ios::trunc);
+        if (!isa_output)
+        {
+            std::fprintf(stderr,
+                         "failed to create reached ISA inventory: %s\n",
+                         isa_path.c_str());
+            return 1;
+        }
+        reached_inventory.write_json(
+            isa_output, instruction_trace_first_pc,
+            instruction_trace_last_pc, runtime.m_instruction_trace_overflow != 0u);
+        isa_output.close();
+        if (!isa_output)
+        {
+            std::fprintf(stderr,
+                         "failed to write reached ISA inventory: %s\n",
+                         isa_path.c_str());
+            return 1;
+        }
+        std::printf("EE reached ISA sample: events=%llu native_reached=%llu "
+                    "unique_pc_opcode=%llu path=%s (bounded, not full coverage)\n",
+                    static_cast<unsigned long long>(reached_inventory.events()),
+                    static_cast<unsigned long long>(reached_inventory.native_reached()),
+                    static_cast<unsigned long long>(
+                        reached_inventory.totals().m_total),
+                    isa_path.c_str());
     }
     if (status == 1u && remaining == 0)
     {

@@ -80,14 +80,19 @@ public:
 
     void write_json(std::ostream& out, bool selected_entries_only) const
     {
+        write_json(out, selected_entries_only
+            ? "selected_function_cfgs" : "discovered_function_cfgs",
+            "unmeasured_without_guest_trace");
+    }
+
+    void write_json(std::ostream& out, const char* scope,
+                    const char* reach_status) const
+    {
         out << "{\n"
             << "    \"schema\": \"ee-m2-cfg-isa-inventory-v1\",\n"
-            << "    \"scope\": \""
-            << (selected_entries_only
-                ? "selected_function_cfgs" : "discovered_function_cfgs")
-            << "\",\n"
-            << "    \"sampling\": \"unique_cfg_instruction_pcs\",\n"
-            << "    \"reached\": \"unmeasured_without_guest_trace\",\n"
+            << "    \"scope\": \"" << scope << "\",\n"
+            << "    \"sampling\": \"unique_pc_opcode_pairs\",\n"
+            << "    \"reached\": \"" << reach_status << "\",\n"
             << "    \"tested\": \"not_inferred_from_static_inventory\",\n"
             << "    \"decoder_valid\": " << m_totals.m_decoder_valid << ",\n"
             << "    \"decoder_unsupported\": "
