@@ -155,6 +155,34 @@ int main()
     expect("cfc2",    R(0x12,2,4,6,0,0), "cfc2", V);
     expect("qmtc2",   R(0x12,5,4,6,0,0), "qmtc2", V);
     expect("ctc2",    R(0x12,6,4,6,0,0), "ctc2", V);
+    // Cover all actual COP2 transfer opcodes reached by the SDBZ startup.
+    // The native emitter already runs these helpers; lifter coverage must
+    // agree rather than counting successful execution as UNSUPPORTED.
+    {
+        const uint32_t words[] =
+        {
+            0x48460800u, 0x48230800u, 0x48c50800u,
+            0x48220800u, 0x48c60800u, 0x48a30800u
+        };
+        const e_lift_op_kind expected[] =
+        {
+            LOP_MFC2, LOP_MFC2, LOP_MTC2,
+            LOP_MFC2, LOP_MTC2, LOP_MTC2
+        };
+        for (uint32_t i = 0u; i < 6u; ++i)
+        {
+            const auto inst = decode(0x00173258u + 4u * i, words[i]);
+            const bool ok = inst.valid == V &&
+                lift(inst).kind == expected[i];
+            ok ? ++g_pass : ++g_fail;
+            if (!ok)
+            {
+                std::printf("FAIL SDBZ COP2 transfer %u: %08x kind=%d\n",
+                            i, words[i], static_cast<int>(lift(inst).kind));
+            }
+        }
+    }
+
     // All four transfer forms reserve sa/funct. Do not classify malformed
     // words as merely unsupported valid instructions.
     expect("qmfc2 bad sa",   R(0x12,1,4,6,1,0), "qmfc2", X);

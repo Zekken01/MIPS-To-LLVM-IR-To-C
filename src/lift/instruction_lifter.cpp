@@ -313,16 +313,28 @@ s_lifted_op lift(const s_ee_instruction& insn)
         }
         break;
     case e_ee_opcode::OP_COP2:
-        // COP2 macro instructions are dispatched by the VU0 runtime helper.
-        // Keep all unimplemented macro classes fail-closed: the decoder marks
-        // only the FMAC subset backed by that helper VALID.
-        if (insn.rs >= 0x10u && insn.valid == e_ee_valid::VALID)
+        // These transfer and branch forms already have native LLVM
+        // emission and runtime helpers. Cover them accurately instead of
+        // reporting them as unsupported while the emitter executes them.
+        switch (insn.rs)
         {
-            op.kind = LOP_VU0_MACRO;
-        }
-        else
-        {
-            op.kind = LOP_UNSUPPORTED;
+        case static_cast<uint8_t>(e_ee_opcode::COP2_QMFC2):
+        case static_cast<uint8_t>(e_ee_opcode::COP2_CFC2):
+            op.kind = LOP_MFC2;
+            break;
+        case static_cast<uint8_t>(e_ee_opcode::COP2_QMTC2):
+        case static_cast<uint8_t>(e_ee_opcode::COP2_CTC2):
+            op.kind = LOP_MTC2;
+            break;
+        case static_cast<uint8_t>(e_ee_opcode::COP2_BC2):
+            op.kind = LOP_BEQ; // actual BC2 predicate is emitted separately
+            break;
+        default:
+            // The decoder admits only macro opcodes with implemented
+            // runtime helpers; all other recognized macros fail closed.
+            op.kind = insn.rs >= 0x10u
+                ? LOP_VU0_MACRO : LOP_UNSUPPORTED;
+            break;
         }
         break;
     default:
