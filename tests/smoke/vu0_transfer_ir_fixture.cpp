@@ -95,19 +95,25 @@ bool build_words(const std::string& mode, std::vector<uint32_t>& words)
     else if (mode == "ctc2_cmsar1")
         vu_index = 31;
 
-    const uint32_t transfer = make_cop2(cop2_rs, 8, vu_index);
+    const bool interlocked = mode.find("_i") != std::string::npos;
+    const uint32_t transfer = make_cop2(cop2_rs, 8, vu_index) |
+        (interlocked ? 1u : 0u);
     if (mode == "qmfc2" || mode == "qmtc2" ||
         mode == "cfc2" || mode == "ctc2" ||
         mode == "qmfc2_vf0" || mode == "qmtc2_vf0" ||
         mode == "cfc2_r" || mode == "ctc2_r" ||
-        mode == "ctc2_fbrst" || mode == "ctc2_cmsar1")
+        mode == "ctc2_fbrst" || mode == "ctc2_cmsar1" ||
+        mode == "qmfc2_i" || mode == "qmtc2_i" ||
+        mode == "cfc2_i" || mode == "ctc2_i")
     {
         words = {transfer};
         return true;
     }
 
     if (mode == "qmfc2_delay" || mode == "qmtc2_delay" ||
-        mode == "cfc2_delay" || mode == "ctc2_delay")
+        mode == "cfc2_delay" || mode == "ctc2_delay" ||
+        mode == "qmfc2_i_delay" || mode == "qmtc2_i_delay" ||
+        mode == "cfc2_i_delay" || mode == "ctc2_i_delay")
     {
         words = {
             make_beq(0, 0, 1), // target is the instruction after the delay slot
