@@ -64,6 +64,15 @@ def test_discovery_cache(ee_recomp):
         second_meta = json.loads((reused / "ee_functions.json").read_text())
         assert len(first_meta["functions"]) == 1
         assert len(second_meta["functions"]) == 1
+        # Discovery's denominator must be available before IR emission,
+        # and must agree with the fully generated function metadata.
+        for output_dir, metadata in ((full, first_meta), (reused, second_meta)):
+            marker = output_dir / "ee_expected_ll_count.txt"
+            assert marker.is_file(), marker
+            assert int(marker.read_text(encoding="ascii").strip()) == (
+                metadata["functions_discovered"]
+            )
+
         first_fn = first_meta["functions"][0]
         second_fn = second_meta["functions"][0]
         assert first_fn["block_pcs"] == second_fn["block_pcs"]
