@@ -1164,6 +1164,34 @@ def make_counting_loop_elf(path):
     path.write_bytes(image)
 
 
+def make_ee_timer_poll_elf(path):
+    """Exercise guest-programmed Timer 0 COUNT advancing inside native CFG."""
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    # 0x10000010 = T0_MODE; 0x10000000 = T0_COUNT.
+    # Enable bus-clock counting, then poll >= 32 entirely within a
+    # translated native function. A post-dispatch-only clock cannot pass.
+    program = [
+        0x3c081000,  # lui t0,0x1000
+        0x24090080,  # addiu t1,zero,0x80 (CUE enable)
+        0xad090010,  # sw t1,0x10(t0)
+        0x8d0a0000,  # lw t2,0(t0)
+        0x240b0000,  # addiu t3,zero,0
+        0x256b0001,  # poll: addiu t3,t3,1
+        0x8d0a0000,  # lw t2,0(t0)
+        0x29410020,  # slti at,t2,32
+        0x1420fffc,  # bne at,zero,poll
+        0x00000000,  # delay slot
+        0x01408021,  # addu s0,t2,zero
+        0xad000010,  # sw zero,0x10(t0): freeze counter
+        0x8d110000,  # lw s1,0(t0): frozen reading
+        0x0000000d,  # BREAK: expected terminal trap
+    ]
+    for index, word in enumerate(program):
+        struct.pack_into("<I", image, 0x108 + index * 4, word)
+    path.write_bytes(image)
+
+
 def make_spin_elf(path):
     make_elf(path)
     image = bytearray(path.read_bytes())
@@ -3179,6 +3207,45 @@ def main():
         assert state["gpr_lo"][8] == 12, state
         assert state["guest_instruction_attempts"] >= 24, state
         assert (state["cop0_cause"] & 0x7c) == 0, state
+
+    # A real guest Timer0 COUNT poll must finish *inside* its native CFG.
+    # Both the clock source and the device must advance; simply resuming
+    # a HOST_YIELD would conceal a missing MMIO timer.
+    with tempfile.TemporaryDirectory(prefix="ee-native-timer0-poll-") as tmp:
+        root = Path(tmp)
+        elf = root / "timer0-poll.elf"
+        make_ee_timer_poll_elf(elf)
+        report_path = root / "timer0-poll.json"
+        result = subprocess.run(
+            [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf), "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--functions=entry",
+                "--max-dispatches=16",
+                "--loop-budget=5000",
+                "--loop-yield-resumes=1",
+                "--hle-startup", "--kseg-ram",
+                "--ee-clock=reference-compat",
+                "--report", str(report_path),
+                "--timeout-seconds=10",
+            ],
+            capture_output=True, text=True, check=False, timeout=40,
+        )
+        assert result.returncode == 0 or result.returncode == 3, (
+            result.stdout, result.stderr
+        )
+        snapshot = json.loads(report_path.read_text(encoding="utf-8"))
+        assert snapshot["exit_name"] == "EXCEPTION", (
+            snapshot, result.stdout, result.stderr
+        )
+        assert snapshot["cop0_cause"] & 0x7c == 0x24, snapshot
+        assert 32 <= snapshot["gpr_lo"][10] <= 0xffff, snapshot
+        assert snapshot["gpr_lo"][16] == snapshot["gpr_lo"][17], snapshot
+        assert 1 <= snapshot["gpr_lo"][11] < 1000, snapshot
+        assert "guest host loop yield cap reached" not in result.stderr, (
+            result.stdout, result.stderr
+        )
 
     # Resuming without a bounded guest-loop watchdog would spin forever;
     # reject an invalid command before loading or mutating guest state.
