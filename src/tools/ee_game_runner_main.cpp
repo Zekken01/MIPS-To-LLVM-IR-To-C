@@ -5146,8 +5146,71 @@ int main(int argc, char** argv)
         );
         return 3;
     }
-    if (reason == static_cast<uint32_t>(ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED) ||
-        reason == static_cast<uint32_t>(ee::e_ee_exit_reason::EE_EXIT_EXCEPTION) ||
+    if (reason == static_cast<uint32_t>(ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED))
+    {
+        // Fail closed, but preserve the actual guest opcode as evidence.
+        // COP0 EPC is not the failing instruction for a native unsupported
+        // exit; cpu.m_pc is the address emitted by the translated code.
+        // Compare the original ELF with live guest RAM to distinguish
+        // an unimplemented static opcode from self-modifying guest code.
+        const uint32_t failed_pc = cpu.m_pc;
+        uint32_t elf_word = 0u;
+        const bool has_elf_word = image.read32_at(failed_pc, &elf_word);
+        const bool has_ram_word = memory->contains(failed_pc, 4u);
+        const uint32_t ram_word = has_ram_word
+            ? memory->read32(failed_pc) : 0u;
+        std::fprintf(stderr,
+            "EE unsupported guest PC: pc=0x%08x "
+            "elf=%s0x%08x ram=%s0x%08x "
+            "COP0_status=0x%08x COP0_cause=0x%08x COP0_epc=0x%08x\n",
+            failed_pc, has_elf_word ? "" : "unmapped:",
+            elf_word, has_ram_word ? "" : "unmapped:", ram_word,
+            cpu.m_cop0[12], cpu.m_cop0[13], cpu.m_cop0[14]);
+        for (int32_t relative = -32; relative <= 64; relative += 4)
+        {
+            const int64_t address =
+                static_cast<int64_t>(failed_pc) + relative;
+            if (address < 0 || address > 0xfffffffcll)
+            {
+                continue;
+            }
+            const uint32_t guest_address = static_cast<uint32_t>(address);
+            uint32_t original = 0u;
+            const bool original_valid =
+                image.read32_at(guest_address, &original);
+            const bool live_valid = memory->contains(guest_address, 4u);
+            if (!original_valid && !live_valid)
+            {
+                continue;
+            }
+            const uint32_t live = live_valid
+                ? memory->read32(guest_address) : 0u;
+            std::fprintf(stderr,
+                "EE unsupported code: %c pc=0x%08x "
+                "ELF=%s0x%08x RAM=%s0x%08x\n",
+                relative == 0 ? '>' : ' ', guest_address,
+                original_valid ? "" : "unmapped:", original,
+                live_valid ? "" : "unmapped:", live);
+        }
+        for (uint32_t index = 0u; index < 32u; index += 4u)
+        {
+            std::fprintf(stderr,
+                "EE unsupported GPR: r%02u=0x%016llx "
+                "r%02u=0x%016llx r%02u=0x%016llx "
+                "r%02u=0x%016llx\n",
+                index, static_cast<unsigned long long>(cpu.m_gpr[index].m_lo),
+                index + 1u,
+                static_cast<unsigned long long>(cpu.m_gpr[index + 1u].m_lo),
+                index + 2u,
+                static_cast<unsigned long long>(cpu.m_gpr[index + 2u].m_lo),
+                index + 3u,
+                static_cast<unsigned long long>(cpu.m_gpr[index + 3u].m_lo));
+        }
+        std::fprintf(stderr,
+            "guest blocked by an unsupported operation or host service\n");
+        return 3;
+    }
+    if (reason == static_cast<uint32_t>(ee::e_ee_exit_reason::EE_EXIT_EXCEPTION) ||
         reason == static_cast<uint32_t>(ee::e_ee_exit_reason::EE_EXIT_EXTERNAL_CALL))
     {
         std::fprintf(stderr, "guest blocked by an unsupported operation or host service\n");
