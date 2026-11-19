@@ -1,3 +1,5 @@
+// Adapted from ps2-web-recomp:SDBZ by Samir Nuri (2026), MIT license.
+// Upstream license: src/runtime/ps2_webgpu/gs/LICENSE.upstream
 #include "ee_vif1.h"
 
 #include <algorithm>
