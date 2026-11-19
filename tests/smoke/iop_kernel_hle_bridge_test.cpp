@@ -667,6 +667,94 @@ int main()
         return fail("heaplib free or delete failed");
     }
 
+    // A fixed pool only returns blocks it owns and rejects an
+    // additional allocation after its last free slot is consumed.
+    kernel.cpu().write32(0x2d00u, 0u);
+    kernel.cpu().write32(0x2d04u, 0u);
+    kernel.cpu().write32(0x2d08u, 16u);
+    kernel.cpu().write32(0x2d0cu, 2u);
+    if (!call_guest(
+            kernel, "thfpool", 4u,
+            {0x2d00u, 0u, 0u, 0u}, &result) ||
+        result == 0u)
+    {
+        return fail("THFPOOL guest creation failed");
+    }
+    const uint32_t fixed_pool = result;
+    if (!call_guest(
+            kernel, "thfpool", 7u,
+            {fixed_pool, 0u, 0u, 0u}, &result) ||
+        result < iop::c_kernel::k_user_base)
+    {
+        return fail("THFPOOL first allocation failed");
+    }
+    const uint32_t fixed_block_a = result;
+    if (!call_guest(
+            kernel, "thfpool", 8u,
+            {fixed_pool, 0u, 0u, 0u}, &result) ||
+        result != fixed_block_a + 16u ||
+        !call_guest(
+            kernel, "thfpool", 7u,
+            {fixed_pool, 0u, 0u, 0u}, &result) ||
+        result != 0u ||
+        !call_guest(
+            kernel, "thfpool", 9u,
+            {fixed_pool, fixed_block_a, 0u, 0u}, &result) ||
+        result != 0u ||
+        !call_guest(
+            kernel, "thfpool", 7u,
+            {fixed_pool, 0u, 0u, 0u}, &result) ||
+        result != fixed_block_a ||
+        !call_guest(
+            kernel, "thfpool", 5u,
+            {fixed_pool, 0u, 0u, 0u}, &result) ||
+        result != 0u)
+    {
+        return fail("THFPOOL exhaustion, release or deletion failed");
+    }
+    kernel.cpu().write32(0x2e00u, 0u);
+    kernel.cpu().write32(0x2e04u, 0u);
+    kernel.cpu().write32(0x2e08u, 64u);
+    if (!call_guest(
+            kernel, "thvpool", 4u,
+            {0x2e00u, 0u, 0u, 0u}, &result) ||
+        result == 0u)
+    {
+        return fail("THVPOOL guest creation failed");
+    }
+    const uint32_t variable_pool = result;
+    if (!call_guest(
+            kernel, "thvpool", 7u,
+            {variable_pool, 16u, 0u, 0u}, &result) ||
+        result < iop::c_kernel::k_user_base)
+    {
+        return fail("THVPOOL first allocation failed");
+    }
+    const uint32_t variable_block = result;
+    if (!call_guest(
+            kernel, "thvpool", 11u,
+            {variable_pool, 0x2e40u, 0u, 0u}, &result) ||
+        result != 0u ||
+        !kernel.cpu().read32(0x2e4cu, &remaining) ||
+        remaining != 48u ||
+        !call_guest(
+            kernel, "thvpool", 9u,
+            {variable_pool, variable_block, 0u, 0u}, &result) ||
+        result != 0u ||
+        !call_guest(
+            kernel, "thvpool", 12u,
+            {variable_pool, 0x2e40u, 0u, 0u}, &result) ||
+        result != 0u ||
+        !kernel.cpu().read32(0x2e4cu, &remaining) ||
+        remaining != 64u ||
+        !call_guest(
+            kernel, "thvpool", 5u,
+            {variable_pool, 0u, 0u, 0u}, &result) ||
+        result != 0u)
+    {
+        return fail("THVPOOL status, release or deletion failed");
+    }
+
     // SIO2 DMA MMIO request retains STR, but never invents a DMA
     // completion or sets IOP interrupt readiness.
     uint32_t request = 0u;
