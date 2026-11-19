@@ -32,7 +32,8 @@ def main():
         correct_hash = hashlib.sha256(zip_path.read_bytes()).hexdigest()
         module.SDK_SHA256 = correct_hash
         module.download_archive = lambda destination: shutil.copyfile(zip_path, destination)
-        destination = parent / "install"
+        # Match the repository's default CMake build/_deps layout.
+        destination = parent / "build" / "_deps" / "wgpu-native"
         module.ensure_sdk(destination)
         assert module.sdk_ready(destination)
         assert (destination / "include/webgpu/webgpu.h").read_bytes() == b"header"
