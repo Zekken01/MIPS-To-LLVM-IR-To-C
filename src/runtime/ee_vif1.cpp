@@ -55,6 +55,11 @@ void c_ee_vif1::bind_path2(c_ee_gif_path3* path2)
     m_path2 = path2;
 }
 
+void c_ee_vif1::bind_path1(c_ee_gif_path3* path1)
+{
+    m_path1 = path1;
+}
+
 void c_ee_vif1::reset()
 {
     m_machine = {};
@@ -230,7 +235,9 @@ void c_ee_vif1::unpack(s_machine& machine, uint32_t code,
 
 bool c_ee_vif1::execute(
     s_machine& machine, uint32_t code, const uint32_t* words,
-    std::vector<uint8_t>& path2_bytes, e_reject* reject)
+    std::vector<uint8_t>& path2_bytes,
+    std::vector<uint8_t>& path1_bytes,
+    s_ee_vu1_issue* vu_issue, e_reject* reject)
 {
     const uint32_t op = (code >> 24u) & 0x7fu;
     const uint32_t imm = code & 0xffffu;
@@ -305,9 +312,35 @@ bool c_ee_vif1::execute(
             accepted = false;
             break;
         case 0x14u: // MSCAL
-        case 0x15u: // MSCALF
         case 0x17u: // MSCNT
-            // Keep the uploaded original microprogram; never fake XGKICK.
+        {
+            if (op == 0x17u && !machine.m_vu1_state.m_initialized)
+            {
+                *reject = e_reject::unsupported_vu_execution;
+                accepted = false;
+                break;
+            }
+            const uint32_t start = op == 0x14u
+                ? (imm & 0x7ffu) * 8u : machine.m_vu1_state.m_tpc;
+            accepted = c_ee_vu1::run(
+                machine.m_vu1_state, machine.m_vu1_code,
+                machine.m_vu1_data, start, machine.m_tops,
+                machine.m_itops, path1_bytes, vu_issue);
+            if (!accepted)
+            {
+                *reject = e_reject::unsupported_vu_execution;
+            }
+            else
+            {
+                machine.m_dbf = !machine.m_dbf;
+                machine.m_tops = machine.m_base +
+                    (machine.m_dbf ? machine.m_ofst : 0u);
+                machine.m_itop = machine.m_itops;
+                machine.m_top = machine.m_tops;
+            }
+            break;
+        }
+        case 0x15u: // MSCALF requires real GIF PATH3 synchronization
             *reject = e_reject::unsupported_vu_execution;
             accepted = false;
             break;
@@ -360,6 +393,8 @@ bool c_ee_vif1::consume(const uint8_t* data, uint32_t qwc)
 
     size_t index = 0u;
     std::vector<uint8_t> path2_bytes;
+    std::vector<uint8_t> path1_bytes;
+    s_ee_vu1_issue vu_issue{};
     e_reject rejection = e_reject::none;
     uint32_t rejected_code = 0u;
     while (index < next.m_pending.size())
@@ -372,7 +407,7 @@ bool c_ee_vif1::consume(const uint8_t* data, uint32_t qwc)
             break; // Legitimate command continuation into the next DMA.
         }
         if (!execute(next, code, next.m_pending.data() + index + 1u,
-                     path2_bytes, &rejection))
+                     path2_bytes, path1_bytes, &vu_issue, &rejection))
         {
             rejected_code = code;
             break;
@@ -380,6 +415,25 @@ bool c_ee_vif1::consume(const uint8_t* data, uint32_t qwc)
         index += 1u + words;
     }
 
+    if (rejection == e_reject::none &&
+        !path1_bytes.empty() && !path2_bytes.empty())
+    {
+        rejection = e_reject::mixed_gif_paths;
+    }
+    if (rejection == e_reject::none && !path1_bytes.empty())
+    {
+        if (m_path1 == nullptr)
+        {
+            rejection = e_reject::missing_path1;
+        }
+        else if ((path1_bytes.size() & 15u) != 0u ||
+                 path1_bytes.size() / 16u > 0xffffu ||
+                 !m_path1->consume(path1_bytes.data(),
+                     static_cast<uint32_t>(path1_bytes.size() / 16u)))
+        {
+            rejection = e_reject::path1_rejected;
+        }
+    }
     if (rejection == e_reject::none && !path2_bytes.empty())
     {
         if (m_path2 == nullptr)
@@ -398,6 +452,9 @@ bool c_ee_vif1::consume(const uint8_t* data, uint32_t qwc)
     {
         m_diagnostic.m_reason = rejection;
         m_diagnostic.m_code = rejected_code;
+        m_diagnostic.m_vu_pc = vu_issue.m_pc;
+        m_diagnostic.m_vu_lower = vu_issue.m_lower;
+        m_diagnostic.m_vu_upper = vu_issue.m_upper;
         return false;
     }
     next.m_pending.erase(next.m_pending.begin(),
@@ -464,6 +521,7 @@ bool c_ee_vif1::write_register(uint32_t offset, uint32_t value)
             std::memcpy(next.m_col, m_machine.m_col, sizeof(next.m_col));
             next.m_vu1_data = m_machine.m_vu1_data;
             next.m_vu1_code = m_machine.m_vu1_code;
+            next.m_vu1_state = m_machine.m_vu1_state;
             m_machine = std::move(next);
             m_diagnostic = {};
         }

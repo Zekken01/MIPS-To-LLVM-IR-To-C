@@ -3,6 +3,7 @@
 #pragma once
 
 #include "ee_gif.h"
+#include "ee_vu1.h"
 #include "ee_runtime.h"
 
 #include <array>
@@ -34,6 +35,9 @@ public:
         irq_requires_resume,
         missing_path2,
         path2_rejected,
+        missing_path1,
+        path1_rejected,
+        mixed_gif_paths,
         pending_limit
     };
 
@@ -46,9 +50,13 @@ public:
         uint32_t m_mpg_uploads = 0u;
         uint32_t m_unpack_commands = 0u;
         uint32_t m_direct_qwc = 0u;
+        uint32_t m_vu_pc = 0u;
+        uint32_t m_vu_lower = 0u;
+        uint32_t m_vu_upper = 0u;
     };
 
     void bind_path2(c_ee_gif_path3* path2);
+    void bind_path1(c_ee_gif_path3* path1);
     void reset();
     bool consume(const uint8_t* data, uint32_t qwc);
     const s_diagnostic& diagnostic() const;
@@ -88,6 +96,7 @@ private:
         std::vector<uint32_t> m_pending;
         std::array<uint8_t, k_vu1_memory_size> m_vu1_data{};
         std::array<uint8_t, k_vu1_memory_size> m_vu1_code{};
+        s_ee_vu1_state m_vu1_state{};
         uint32_t m_commands = 0u;
         uint32_t m_mpg_uploads = 0u;
         uint32_t m_unpack_commands = 0u;
@@ -101,10 +110,13 @@ private:
     static bool execute(s_machine& machine, uint32_t code,
                         const uint32_t* words,
                         std::vector<uint8_t>& path2_bytes,
+                        std::vector<uint8_t>& path1_bytes,
+                        s_ee_vu1_issue* vu_issue,
                         e_reject* reject);
 
     s_machine m_machine{};
     s_diagnostic m_diagnostic{};
     c_ee_gif_path3* m_path2 = nullptr;
+    c_ee_gif_path3* m_path1 = nullptr;
 };
 } // namespace ee

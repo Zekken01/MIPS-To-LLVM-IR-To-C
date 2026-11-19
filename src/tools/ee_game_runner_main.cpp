@@ -1298,11 +1298,14 @@ int main(int argc, char** argv)
     // Both GIF paths deliver original GS events to the same state.
     ee::c_ee_gif_path3 gif_path3{};
     ee::c_ee_gif_path3 gif_path2{};
+    ee::c_ee_gif_path3 gif_path1{};
     ee::c_ee_vif1 vif1{};
     ee::c_ee_gs_state gs_state{};
     gif_path3.bind_event_sink(&gs_state, &ee::c_ee_gs_state::gif_events);
     gif_path2.bind_event_sink(&gs_state, &ee::c_ee_gs_state::gif_events);
+    gif_path1.bind_event_sink(&gs_state, &ee::c_ee_gs_state::gif_events);
     vif1.bind_path2(&gif_path2);
+    vif1.bind_path1(&gif_path1);
     hardware.bind_vif1(&vif1);
 
     struct s_graphics_dma_routes
@@ -1328,9 +1331,11 @@ int main(int argc, char** argv)
                     const auto& diagnostic = routes->m_vif1->diagnostic();
                     std::fprintf(stderr,
                         "VIF1 native reject: reason=%u code=0x%08x "
-                        "pending_words=%u\n",
+                        "pending_words=%u vu_pc=%04x vu_lo=%08x vu_hi=%08x\n",
                         static_cast<uint32_t>(diagnostic.m_reason),
-                        diagnostic.m_code, diagnostic.m_pending_words);
+                        diagnostic.m_code, diagnostic.m_pending_words,
+                        diagnostic.m_vu_pc, diagnostic.m_vu_lower,
+                        diagnostic.m_vu_upper);
                     routes->m_rejection_logged = true;
                 }
             }

@@ -42,6 +42,7 @@ add_library(ee_core STATIC
     src/runtime/ee_dmac.cpp
     src/runtime/ee_gif.cpp
     src/runtime/ee_vif1.cpp
+    src/runtime/ee_vu1.cpp
     src/runtime/ee_gs.cpp
     src/runtime/ee_gs_display.cpp
     src/runtime/ee_exceptions.cpp
