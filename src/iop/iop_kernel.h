@@ -136,6 +136,7 @@ public:
         const std::vector<uint8_t>& bytes
     );
     const s_kernel_module* module(uint32_t id) const;
+    const std::map<uint32_t, s_kernel_module>& modules() const;
 
     // HLE IOPHEAP shares the same first-fit IOP RAM address space
     // as linked IRX modules and guest thread stacks. Only addresses
