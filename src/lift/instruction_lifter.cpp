@@ -204,6 +204,7 @@ s_lifted_op lift(const s_ee_instruction& insn)
         case 0x29: // MMI3
             switch (insn.sa & 31)
             {
+            case 0x0e: op.kind = LOP_MMI_COPY_UPPER_D; break;
             case 0x12: op.kind = LOP_MMI_OR; break;
             case 0x13: op.kind = LOP_MMI_NOR; break;
             case 0x1b: op.kind = LOP_MMI_COPY_H; break;
