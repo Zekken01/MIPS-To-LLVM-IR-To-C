@@ -90,6 +90,39 @@ then rerun `run_ps2_game.bat`. The launcher explicitly configures
 `-DEE_ENABLE_WEBGPU=OFF` for that mode, even if CMake previously cached
 the GPU-enabled build.
 
+## Optional raylib Win32 window
+
+raylib provides the native window and host input loop. The existing
+wgpu-native GS backend continues to perform compute rasterization, blitting,
+and DX12 swapchain presentation. Although raylib creates an OpenGL context
+during window setup, no raylib OpenGL rendering or swapping is used.
+
+On Windows, in the normal extracted-disc workflow:
+
+```bat
+git pull
+set EE_WEBGPU_WINDOW=1
+run_ps2_game.bat
+```
+
+The launcher enables `EE_ENABLE_WEBGPU` and `EE_ENABLE_RAYLIB_WINDOW`.
+CMake fetches the source for raylib 5.5 at its pinned commit under
+`build/_deps/raylib-src`; the wgpu-native SDK remains under
+`build/_deps/wgpu-native`. The window opens **only during the final traced
+replay**, not the repeated native expansion passes. You may also combine
+`EE_WEBGPU_WINDOW=1` with `EE_WEBGPU_SNAPSHOT=1` to retain a PPM
+diagnostic. Direct runner and Python tooling accept `--gs-webgpu-window`.
+
+The window is resizable, and physical framebuffer dimensions are used for
+the native WebGPU surface. The host polls input without calling raylib's
+`BeginDrawing`/`EndDrawing`. Presentation follows real scheduled GS
+scanout-field changes and requires a valid guest-configured GS display.
+No synthetic guest VBlank, interrupt, DMA completion, or fake frame is
+introduced. A blank window is expected until genuine visible GS output exists.
+
+This first integration is Win32-only. Native Linux builds, headless tests,
+offscreen WebGPU snapshots, and GPU-independent HLE execution remain available.
+
 ## Current acceptance boundaries
 
 The native backend and its synthetic GPU smoke tests exist, but the

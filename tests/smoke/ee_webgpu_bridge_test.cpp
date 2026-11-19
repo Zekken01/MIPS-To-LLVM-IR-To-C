@@ -15,6 +15,7 @@ int s_upload_bytes = 0;
 int s_local_copies = 0;
 int s_clut_loads = 0;
 int s_texflushes = 0;
+int s_presents = 0;
 ps2::gs::State s_last_state{};
 ps2::gs::Vertex s_last_vertex{};
 ps2::gs::gpu::DisplaySource s_last_source{};
@@ -70,6 +71,13 @@ void load_clut(uint64_t, uint64_t)
 void texflush()
 {
     ++s_texflushes;
+}
+
+bool present(const DisplaySource& src)
+{
+    ++s_presents;
+    s_last_source = src;
+    return true;
 }
 
 bool display(
@@ -172,10 +180,22 @@ int main()
         fail("native compute-display source was not selected");
         return 1;
     }
+    if (!bridge.present(display, 2u) || s_presents != 1 ||
+        s_last_source.fbw != 1u ||
+        s_last_source.width != 64u || s_last_source.height != 32u)
+    {
+        fail("valid GS scanout display was not presented");
+        return 1;
+    }
     display.m_dispfb[0] |= 0x13ull << 15u;
     if (bridge.readback(display, 2u, output, width, height))
     {
         fail("unsupported indexed display source was accepted");
+        return 1;
+    }
+    if (bridge.present(display, 2u) || s_presents != 1)
+    {
+        fail("unsupported indexed display source was presented");
         return 1;
     }
 

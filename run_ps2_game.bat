@@ -61,36 +61,32 @@ if errorlevel 1 (
     exit /b 1
 )
 
-rem Optional native WebGPU compute rendering: no browser, SDL or frontend.
-rem Set EE_WEBGPU_SNAPSHOT=1 to enable the native renderer.
-rem The pinned SDK is downloaded into build\_deps\wgpu-native by default.
-rem EE_WEBGPU_ROOT can still override the location with a compatible SDK.
+rem Optional WebGPU renderer and raylib Win32 window. The window opens
+rem only during the final traced replay; expansion remains headless.
+set "EE_WEBGPU_MODE=OFF"
+set "EE_RAYLIB_MODE=OFF"
 set "EE_WEBGPU_RUN_ARG="
+set "EE_WEBGPU_WINDOW_ARG="
 if /I "%EE_WEBGPU_SNAPSHOT%"=="1" (
-    if not defined EE_WEBGPU_ROOT set "EE_WEBGPU_ROOT=%CD%\build\_deps\wgpu-native"
+    set "EE_WEBGPU_MODE=ON"
     set "EE_WEBGPU_RUN_ARG=--gs-webgpu-snapshot=%WORK_DIR%\gs-webgpu.ppm"
 )
-rem Obtain the same pinned MSVC wgpu-native SDK used in WebGPU CI.
-rem Verify its checksum, headers, import library and runtime DLL before CMake.
-rem A complete existing SDK is reused offline; an incomplete one fails
-rem explicitly rather than silently overwriting local user files.
-if /I "%EE_WEBGPU_SNAPSHOT%"=="1" (
+if /I "%EE_WEBGPU_WINDOW%"=="1" (
+    set "EE_WEBGPU_MODE=ON"
+    set "EE_RAYLIB_MODE=ON"
+    set "EE_WEBGPU_WINDOW_ARG=--gs-webgpu-window"
+)
+rem Reuse the pinned MSVC SDK in build\_deps or download it once.
+if "%EE_WEBGPU_MODE%"=="ON" (
+    if not defined EE_WEBGPU_ROOT set "EE_WEBGPU_ROOT=%CD%\build\_deps\wgpu-native"
     python "tools\ensure_wgpu_native.py" --root "%EE_WEBGPU_ROOT%"
     if errorlevel 1 exit /b 1
 )
 echo === Configuring native host tools ===
-if /I "%EE_WEBGPU_SNAPSHOT%"=="1" (
-    if exist "build\CMakeCache.txt" (
-        cmake -S . -B build -DEE_ENABLE_WEBGPU=ON "-DEE_WEBGPU_ROOT=%EE_WEBGPU_ROOT%"
-    ) else (
-        cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DEE_ENABLE_WEBGPU=ON "-DEE_WEBGPU_ROOT=%EE_WEBGPU_ROOT%"
-    )
+if exist "build\CMakeCache.txt" (
+    cmake -S . -B build -DEE_ENABLE_WEBGPU=%EE_WEBGPU_MODE% -DEE_ENABLE_RAYLIB_WINDOW=%EE_RAYLIB_MODE% "-DEE_WEBGPU_ROOT=%EE_WEBGPU_ROOT%"
 ) else (
-    if exist "build\CMakeCache.txt" (
-        cmake -S . -B build -DEE_ENABLE_WEBGPU=OFF
-    ) else (
-        cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DEE_ENABLE_WEBGPU=OFF
-    )
+    cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DEE_ENABLE_WEBGPU=%EE_WEBGPU_MODE% -DEE_ENABLE_RAYLIB_WINDOW=%EE_RAYLIB_MODE% "-DEE_WEBGPU_ROOT=%EE_WEBGPU_ROOT%"
 )
 if errorlevel 1 exit /b 1
 
@@ -118,6 +114,7 @@ echo Report: "%WORK_DIR%\first-boot.json"
 echo Guest display VRAM: "%WORK_DIR%\gs-display.ppm" (only if configured)
 echo GS texture upload: "%WORK_DIR%\gs-upload.ppm" (only if complete)
 if /I "%EE_WEBGPU_SNAPSHOT%"=="1" echo Native WebGPU raster: "%WORK_DIR%\gs-webgpu.ppm"
+if /I "%EE_WEBGPU_WINDOW%"=="1" echo Native WebGPU presentation: raylib Win32 window in final replay
 python tools\run_boot_session.py "%GAME_ELF%" ^
     --disc-root "%DISC_ROOT%" ^
     --disc-folder "%DISC_ROOT%" ^
@@ -137,7 +134,7 @@ python tools\run_boot_session.py "%GAME_ELF%" ^
     --max-dispatches=100000 ^
     --loop-budget=1000000 ^
     --sif-poll-limit=%SIF_POLL_LIMIT% ^
-    --timeout-seconds=120 %CACHE_FLAG% %EE_WEBGPU_RUN_ARG%
+    --timeout-seconds=120 %CACHE_FLAG% %EE_WEBGPU_RUN_ARG% %EE_WEBGPU_WINDOW_ARG%
 set "EXIT_CODE=%ERRORLEVEL%"
 echo.
 echo Native HLE boot session exit code: %EXIT_CODE%
