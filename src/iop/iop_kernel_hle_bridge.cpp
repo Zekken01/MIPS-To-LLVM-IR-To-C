@@ -7,6 +7,7 @@
 #include <iterator>
 #include <limits>
 #include <utility>
+#include <vector>
 
 namespace iop
 {
@@ -37,9 +38,64 @@ constexpr s_export k_exports[] = {
     {"thevent", 10u, 6u},
     {"thsemap", 4u, 7u}, {"thsemap", 6u, 7u},
     {"thsemap", 8u, 7u}, {"thsemap", 11u, 7u},
-    {"sysclib", 8u, 8u}, {"sysclib", 29u, 8u},
+    {"sysclib", 8u, 8u}, {"sysclib", 10u, 8u},
+    {"sysclib", 11u, 8u}, {"sysclib", 12u, 8u},
+    {"sysclib", 13u, 8u}, {"sysclib", 14u, 8u},
+    {"sysclib", 15u, 8u}, {"sysclib", 16u, 8u},
+    {"sysclib", 17u, 8u}, {"sysclib", 29u, 8u},
     {"sysclib", 36u, 8u}
 };
+
+// SYSCLIB byte-memory functions operate on IOP RAM, including KSEG0/1
+// aliases. Preflight every span before writing: unsupported MMIO/ROM/TLB
+// addresses must not partially mutate guest RAM or fabricated hardware.
+bool is_iop_ram_span(uint32_t address, uint32_t length)
+{
+    const uint32_t region = address & 0xe0000000u;
+    if (region != 0u && region != 0x80000000u &&
+        region != 0xa0000000u)
+    {
+        return false;
+    }
+    const uint32_t physical = address & 0x1fffffffu;
+    return physical <= c_cpu::k_ram_size &&
+        length <= c_cpu::k_ram_size - physical;
+}
+
+bool read_iop_ram(c_cpu& cpu, uint32_t address,
+                  uint32_t length, std::vector<uint8_t>& data)
+{
+    if (!is_iop_ram_span(address, length))
+    {
+        return false;
+    }
+    data.resize(length);
+    for (uint32_t i = 0u; i < length; ++i)
+    {
+        if (!cpu.read8(address + i, &data[i]))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool write_iop_ram(c_cpu& cpu, uint32_t address,
+                   const std::vector<uint8_t>& data)
+{
+    if (!is_iop_ram_span(address, static_cast<uint32_t>(data.size())))
+    {
+        return false;
+    }
+    for (uint32_t i = 0u; i < data.size(); ++i)
+    {
+        if (!cpu.write8(address + i, data[i]))
+        {
+            return false;
+        }
+    }
+    return true;
+}
 
 bool create_stub(c_cpu& cpu, uint32_t pc, uint32_t service)
 {
@@ -739,6 +795,124 @@ bool c_kernel_hle_bridge::handle_sysclib(uint32_t ordinal)
         if (std::isxdigit(ch)) value |= 64u;
         cpu.m_gpr[2] = value;
         return true;
+    }
+    // PS2SDK SYSCLIB ordinals 10-17: memchr, memcmp, memcpy,
+    // memmove, memset, bcmp, bcopy and bzero. All reads and writes
+    // remain within real IOP RAM. No MMIO side effects are simulated.
+    if (ordinal >= 10u && ordinal <= 17u)
+    {
+        c_cpu& memory = m_kernel.cpu();
+        const uint32_t first = cpu.m_gpr[4];
+        const uint32_t second = cpu.m_gpr[5];
+        const uint32_t length =
+            ordinal == 17u ? second : cpu.m_gpr[6];
+        if (length == 0u)
+        {
+            if (ordinal == 10u || ordinal == 11u ||
+                ordinal == 15u)
+            {
+                cpu.m_gpr[2] = 0u;
+            }
+            else if (ordinal == 12u || ordinal == 13u ||
+                     ordinal == 14u)
+            {
+                cpu.m_gpr[2] = first;
+            }
+            return true;
+        }
+
+        if (ordinal == 10u) // memchr
+        {
+            if (!is_iop_ram_span(first, length))
+            {
+                return false;
+            }
+            cpu.m_gpr[2] = 0u;
+            for (uint32_t i = 0u; i < length; ++i)
+            {
+                uint8_t byte = 0u;
+                if (!memory.read8(first + i, &byte))
+                {
+                    return false;
+                }
+                if (byte == static_cast<uint8_t>(second))
+                {
+                    cpu.m_gpr[2] = first + i;
+                    break;
+                }
+            }
+            return true;
+        }
+        if (ordinal == 11u || ordinal == 15u) // memcmp / bcmp
+        {
+            if (!is_iop_ram_span(first, length) ||
+                !is_iop_ram_span(second, length))
+            {
+                return false;
+            }
+            int32_t difference = 0;
+            for (uint32_t i = 0u; i < length; ++i)
+            {
+                uint8_t lhs = 0u;
+                uint8_t rhs = 0u;
+                if (!memory.read8(first + i, &lhs) ||
+                    !memory.read8(second + i, &rhs))
+                {
+                    return false;
+                }
+                if (lhs != rhs)
+                {
+                    difference = static_cast<int32_t>(lhs) -
+                        static_cast<int32_t>(rhs);
+                    break;
+                }
+            }
+            cpu.m_gpr[2] = static_cast<uint32_t>(
+                ordinal == 15u && difference != 0 ? 1 : difference);
+            return true;
+        }
+        if (ordinal == 12u || ordinal == 13u ||
+            ordinal == 16u) // memcpy / memmove / bcopy
+        {
+            const uint32_t destination = ordinal == 16u ? second : first;
+            const uint32_t source = ordinal == 16u ? first : second;
+            if (!is_iop_ram_span(source, length) ||
+                !is_iop_ram_span(destination, length))
+            {
+                return false;
+            }
+            std::vector<uint8_t> data;
+            // Snapshot before writing, preserving overlapping memmove/bcopy.
+            if (!read_iop_ram(memory, source, length, data) ||
+                !write_iop_ram(memory, destination, data))
+            {
+                return false;
+            }
+            if (ordinal != 16u)
+            {
+                cpu.m_gpr[2] = destination;
+            }
+            return true;
+        }
+        if (ordinal == 14u || ordinal == 17u) // memset / bzero
+        {
+            if (!is_iop_ram_span(first, length))
+            {
+                return false;
+            }
+            const uint8_t byte =
+                ordinal == 17u ? 0u : static_cast<uint8_t>(second);
+            const std::vector<uint8_t> data(length, byte);
+            if (!write_iop_ram(memory, first, data))
+            {
+                return false;
+            }
+            if (ordinal == 14u)
+            {
+                cpu.m_gpr[2] = first;
+            }
+            return true;
+        }
     }
     if (ordinal == 29u)
     {
