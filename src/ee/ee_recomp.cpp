@@ -1,5 +1,6 @@
 #include "ee_recomp.h"
 #include "ee_instruction.h"
+#include "ee_isa_inventory.h"
 #include "ee_opcode.h"
 #include "ee_decoder.h"
 #include "ee_runtime.h"
@@ -696,6 +697,7 @@ bool ee_recomp(const char* elf_path,
     }
 
     uint32_t total_insns = 0, total_supported = 0, total_unsupported = 0;
+    c_ee_isa_inventory m2_inventory;
     std::map<uint16_t, std::pair<uint32_t, uint32_t>> coverage;
     std::map<std::tuple<uint16_t, uint16_t, uint16_t>, std::pair<uint32_t, uint32_t>> sub_cov;
 
@@ -728,6 +730,7 @@ bool ee_recomp(const char* elf_path,
         total_insns++;
         coverage[(uint16_t)ins.opcode].first++;
         bool ok = opcode_supported(ins);
+        m2_inventory.record(ins, ok);
         if (ok) total_supported++; else total_unsupported++;
         coverage[(uint16_t)ins.opcode].second += ok ? 1u : 0u;
         record_sub(ins, ok);
@@ -1043,6 +1046,9 @@ bool ee_recomp(const char* elf_path,
         if (result->linear_insns)
             os << "  \"linear_supported_pct\": "
                << (100.0 * result->linear_supported / result->linear_insns) << ",\n";
+        os << "  \"m2_instruction_inventory\": ";
+        m2_inventory.write_json(os, !requested_functions.empty());
+        os << ",\n";
         os << "  \"opcode_coverage\": [\n";
         for (size_t i = 0; i < result->coverage.size(); ++i)
         {
