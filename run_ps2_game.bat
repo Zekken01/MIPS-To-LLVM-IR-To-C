@@ -129,6 +129,7 @@ python tools\run_boot_session.py "%GAME_ELF%" ^
     --gs-upload-snapshot "%WORK_DIR%\gs-upload.ppm" ^
     --expansion-passes=%EXPANSION_PASSES% ^
     --expansion-per-pass=128 ^
+    --ll-progress ^
     --hle-startup ^
     --kseg-ram ^
     --emit-jobs=%EMIT_JOBS% ^
