@@ -209,6 +209,32 @@ int main()
     expect("cfc2",    R(0x12,2,4,6,0,0), "cfc2", V);
     expect("qmtc2",   R(0x12,5,4,6,0,0), "qmtc2", V);
     expect("ctc2",    R(0x12,6,4,6,0,0), "ctc2", V);
+
+    // Bit 0 is the actual VU0 transfer interlock, NOT a reserved bit.
+    for (uint32_t selector : {1u, 2u, 5u, 6u})
+    {
+        const char* names[4] = {"qmfc2.i", "cfc2.i", "qmtc2.i", "ctc2.i"};
+        const uint32_t index = selector == 1u ? 0u :
+            selector == 2u ? 1u : selector == 5u ? 2u : 3u;
+        const uint32_t word = R(0x12, selector, 4, 6, 0, 1);
+        const auto ins = decode(0x00173258, word);
+        const auto lifted = lift(ins);
+        const auto want = (selector == 1u || selector == 2u)
+            ? LOP_MFC2 : LOP_MTC2;
+        const bool ok = ins.valid == V &&
+            std::strcmp(ins.mnemonic, names[index]) == 0 &&
+            lifted.kind == want;
+        ok ? ++g_pass : ++g_fail;
+        if (!ok)
+        {
+            std::printf("FAIL COP2 .I transfer selector=%u word=%08x\n",
+                        selector, word);
+        }
+        // Other low bits remain reserved even if the interlock bit is set.
+        expect("cop2 bit1 reserved",
+               R(0x12, selector, 4, 6, 0, 3), names[index], X);
+    }
+
     // Cover all actual COP2 transfer opcodes reached by the SDBZ startup.
     // The native emitter already runs these helpers; lifter coverage must
     // agree rather than counting successful execution as UNSUPPORTED.
