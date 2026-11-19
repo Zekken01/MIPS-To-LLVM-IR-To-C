@@ -2090,3 +2090,21 @@ services remain unknown/unimplemented, never silent success. Exact
 PS2 `MCMAN.IRX` post-#12 demand and the EE `_SetTLBEntry` continuation
 still require new matched Windows diagnostics; these source additions do
 not establish runtime advancement or new visible GS frames.
+
+### SYSCLIB ASCII classification follow-on
+
+The PS2SDK `iop/system/sysclib/src/exports.tab` also identifies #6
+(`_toupper`), #7 (`_tolower`), #8 (`look_ctype_table`) and #9
+(`get_ctype_table`). Its `src/nonstd/ctype.c` defines a 128-byte
+ASCII classification table. The old #8 HLE used host `std::is*`
+categories and did not match this guest table (e.g. digit '0' is
+`0x04`, space is `0x18`, TAB is `0x08`).
+
+The bridge now explicitly computes reference-compatible ASCII flags,
+provides guest `_toupper`/`_tolower`, and reserves/stages the actual
+128-byte classification array in IOP RAM immediately before the
+kernel HLE stub block. SYSCLIB #9 returns that guest pointer; #8 reads
+the same bounded classification domain and rejects out-of-range input.
+The `iop_sysclib_ctype` CTest checks exported ordinals, the guest
+table bytes, case conversion and fail-closed bounds. This does not
+manufacture any IOP module start or proof of live game progression.
