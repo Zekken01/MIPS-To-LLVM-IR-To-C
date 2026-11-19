@@ -5091,16 +5091,25 @@ int main(int argc, char** argv)
             "QWC=0x%04x TADR=0x%08x D_STAT=0x%08x\n",
             gif_chcr, gif_madr, gif_qwc, gif_tadr,
             hardware.dmac().status());
+        const uint32_t gif_tag_mapped =
+            (gif_tadr & 0x80000000u) != 0u
+                ? ee::ee_memory::k_scratchpad_base +
+                    (gif_tadr & static_cast<uint32_t>(
+                        ee::ee_memory::k_scratchpad_size - 1u))
+                : gif_tadr;
         if ((gif_chcr & ee::c_ee_dmac::k_chcr_str) != 0u &&
             ((gif_chcr >> 2u) & 3u) == 1u &&
             (gif_tadr & 15u) == 0u &&
-            gif_tadr < 0x02000000u &&
-            memory->contains(gif_tadr, 16u))
+            ((gif_tadr & 0x80000000u) != 0u ||
+             gif_tadr < 0x02000000u) &&
+            memory->contains(gif_tag_mapped, 16u))
         {
-            const uint64_t tag = memory->read64(gif_tadr);
+            const uint64_t tag = memory->read64(gif_tag_mapped);
             std::fprintf(stderr,
-                "EE host GIF tag: raw=0x%016llx ID=%u "
-                "QWC=%u ADDR=0x%08x IRQ=%u TTE=%u TIE=%u\n",
+                "EE host GIF tag: TADR=0x%08x mapped=0x%08x "
+                "raw=0x%016llx ID=%u QWC=%u ADDR=0x%08x "
+                "IRQ=%u TTE=%u TIE=%u\n",
+                gif_tadr, gif_tag_mapped,
                 static_cast<unsigned long long>(tag),
                 static_cast<uint32_t>((tag >> 28u) & 7u),
                 static_cast<uint32_t>(tag & 0xffffu),
