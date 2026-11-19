@@ -50,8 +50,23 @@ struct s_kernel_thread
     uint32_t m_stack_base = 0u;
     uint32_t m_stack_size = 0u;
     uint64_t m_wake_cycle = 0u;
+    uint32_t m_alarm_id = 0u;
     e_thread_status m_status = e_thread_status::dormant;
     s_cpu_state m_cpu{};
+};
+
+// A scheduled IOP timer runs the original guest callback, never a
+// synthetic successful completion. Timing uses the current uncalibrated
+// IOP guest-instruction clock until the EE/IOP scheduler is synchronized.
+struct s_kernel_alarm
+{
+    uint32_t m_id = 0u;
+    uint32_t m_thread_id = 0u;
+    uint32_t m_callback = 0u;
+    uint32_t m_argument = 0u;
+    uint32_t m_gp = 0u;
+    uint64_t m_deadline = 0u;
+    bool m_cancelled = false;
 };
 
 struct s_kernel_module
@@ -148,6 +163,13 @@ public:
     // IOP execution turn; absent modules cannot advance IOP time.
     bool has_guest_work() const;
 
+    // Timers use the same bounded virtual-clock domain as sleep_current.
+    // Callback return values of zero disarm, otherwise they reschedule by
+    // the returned system-clock tick count. This is not a calibrated IRQ.
+    bool set_alarm(uint64_t ticks, uint32_t callback,
+                   uint32_t argument, uint32_t gp);
+    bool cancel_alarm(uint32_t callback, uint32_t argument);
+
     void bind_syscall(t_kernel_syscall handler);
     // Explicit IOP cycle budget. The EE must eventually provide this from
     // guest execution timing, never by counting native dispatches.
@@ -170,11 +192,13 @@ private:
     std::map<std::string, std::map<uint16_t, uint32_t>> m_libraries;
     std::map<uint32_t, s_kernel_module> m_modules;
     std::map<uint32_t, s_kernel_thread> m_threads;
+    std::map<uint32_t, s_kernel_alarm> m_alarms;
     t_kernel_syscall m_syscall;
     uint64_t m_cycles = 0u;
     bool m_rom0_boot_active = false;
     uint32_t m_next_module_id = 1u;
     uint32_t m_next_thread_id = 1u;
+    uint32_t m_next_alarm_id = 1u;
     uint32_t m_last_scheduled_id = 0u;
     uint32_t m_current_thread_id = 0u;
 };
