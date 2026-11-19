@@ -4,8 +4,10 @@
 // dependencies instead of silently treating them as NOPs.
 #include "ee_vu1.h"
 #include "ee_vu1_fp.h"
+#include "ee_vu1_dependency.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 namespace ee
@@ -475,6 +477,59 @@ bool branch_delay_exempt(uint32_t lower)
     }
 }
 
+// Reference EFU arithmetic from vu_ops.hpp::efu; pipeline latencies from
+// the VU manual. P retains its previous value until the producer retires.
+bool efu_result(const s_ee_vu1_state& state, uint32_t index,
+                uint32_t fs, uint32_t fsf,
+                uint32_t& value, uint32_t& latency)
+{
+    const auto& source = state.m_vf[fs];
+    const float x = to_float(source[0]);
+    const float y = to_float(source[1]);
+    const float z = to_float(source[2]);
+    const float scalar = to_float(source[fsf]);
+    const float sum = x * x + y * y + z * z;
+    float result = 0.0f;
+
+    switch (index)
+    {
+    case 0x70u: result = sum; latency = 11u; break; // ESADD
+    case 0x71u:
+        result = sum != 0.0f ? 1.0f / sum : 3.4e38f;
+        latency = 18u;
+        break; // ERSADD
+    case 0x72u: result = std::sqrt(sum); latency = 18u; break; // ELENG
+    case 0x73u:
+        result = sum != 0.0f ? 1.0f / std::sqrt(sum) : 3.4e38f;
+        latency = 24u;
+        break; // ERLENG
+    case 0x74u: result = std::atan2(y, x); latency = 54u; break;
+    case 0x75u: result = std::atan2(z, x); latency = 54u; break;
+    case 0x76u:
+        result = x + y + z + to_float(source[3]);
+        latency = 12u;
+        break; // ESUM
+    case 0x78u: result = std::sqrt(std::fabs(scalar)); latency = 12u; break;
+    case 0x79u:
+    {
+        const float root = std::sqrt(std::fabs(scalar));
+        result = root != 0.0f ? 1.0f / root : 3.4e38f;
+        latency = 18u;
+        break;
+    }
+    case 0x7au:
+        result = scalar != 0.0f ? 1.0f / scalar : 3.4e38f;
+        latency = 12u;
+        break;
+    case 0x7cu: result = std::sin(scalar); latency = 29u; break;
+    case 0x7du: result = std::atan(scalar); latency = 54u; break;
+    case 0x7eu: result = std::exp(-scalar); latency = 44u; break;
+    default: return false;
+    }
+    value = to_bits(result);
+    return true;
+}
+
 bool lower(s_ee_vu1_state& state, uint32_t lo, uint32_t pc,
            std::array<uint8_t, 16384>& data, uint32_t top, uint32_t itop,
            const std::array<uint16_t, 16>& branch_vi,
@@ -529,10 +584,179 @@ bool lower(s_ee_vu1_state& state, uint32_t lo, uint32_t pc,
                 }
             }
             return true;
+        case 0x34u: // LQI
+        case 0x36u: // LQD
+        {
+            if (index == 0x36u)
+            {
+                store_vi(state, is, state.m_vi[is] - 1u);
+            }
+            const uint8_t* bytes = data.data() + qword_offset(state.m_vi[is]);
+            if (ft != 0u)
+            {
+                for (uint32_t lane = 0u; lane < 4u; ++lane)
+                {
+                    if ((dest & (8u >> lane)) != 0u)
+                    {
+                        state.m_vf[ft][lane] = read32(bytes + lane * 4u);
+                    }
+                }
+            }
+            if (index == 0x34u)
+            {
+                store_vi(state, is, state.m_vi[is] + 1u);
+            }
+            return true;
+        }
+        case 0x35u: // SQI
+        case 0x37u: // SQD
+        {
+            if (index == 0x37u)
+            {
+                store_vi(state, it, state.m_vi[it] - 1u);
+            }
+            uint8_t* bytes = data.data() + qword_offset(state.m_vi[it]);
+            for (uint32_t lane = 0u; lane < 4u; ++lane)
+            {
+                if ((dest & (8u >> lane)) != 0u)
+                {
+                    const uint32_t value = state.m_vf[fs][lane];
+                    std::memcpy(bytes + lane * 4u, &value, sizeof(value));
+                }
+            }
+            if (index == 0x35u)
+            {
+                store_vi(state, it, state.m_vi[it] + 1u);
+            }
+            return true;
+        }
+        case 0x38u: // DIV
+        {
+            const uint32_t fsf = (lo >> 21u) & 3u;
+            const uint32_t ftf = (lo >> 23u) & 3u;
+            const auto result = vu1_fp::div(
+                state.m_vf[fs][fsf], state.m_vf[ft][ftf]);
+            pipe.schedule_q(state, result.value, 7u);
+            state.m_status = (state.m_status & ~0x30u) |
+                (result.invalid ? 0x20u : 0u);
+            return true;
+        }
+        case 0x39u: // SQRT
+        {
+            const uint32_t ftf = (lo >> 23u) & 3u;
+            pipe.schedule_q(state,
+                vu1_fp::sqrt(state.m_vf[ft][ftf]), 7u);
+            return true;
+        }
+        case 0x3au: // RSQRT
+        {
+            const uint32_t fsf = (lo >> 21u) & 3u;
+            const uint32_t ftf = (lo >> 23u) & 3u;
+            const auto result = vu1_fp::rsqrt(
+                state.m_vf[fs][fsf], state.m_vf[ft][ftf]);
+            pipe.schedule_q(state, result.value, 13u);
+            state.m_status = (state.m_status & ~0x30u) |
+                (result.invalid ? 0x20u : 0u);
+            return true;
+        }
+        case 0x3bu: pipe.wait_q(state); return true; // WAITQ
+        case 0x3cu: // MTIR
+            store_vi(state, it, state.m_vf[fs][(lo >> 21u) & 3u]);
+            return true;
+        case 0x3du: // MFIR
+        {
+            const uint32_t value = static_cast<uint32_t>(
+                static_cast<int32_t>(static_cast<int16_t>(state.m_vi[is])));
+            if (ft != 0u)
+            {
+                for (uint32_t lane = 0u; lane < 4u; ++lane)
+                {
+                    if ((dest & (8u >> lane)) != 0u)
+                    {
+                        state.m_vf[ft][lane] = value;
+                    }
+                }
+            }
+            return true;
+        }
+        case 0x3eu: // ILWR
+        {
+            const uint8_t* bytes = data.data() + qword_offset(state.m_vi[is]);
+            for (uint32_t lane = 0u; lane < 4u; ++lane)
+            {
+                if ((dest & (8u >> lane)) != 0u)
+                {
+                    store_vi(state, it, read32(bytes + lane * 4u) & 0xffffu);
+                    break;
+                }
+            }
+            return true;
+        }
+        case 0x3fu: // ISWR
+        {
+            uint8_t* bytes = data.data() + qword_offset(state.m_vi[is]);
+            const uint32_t value = state.m_vi[it];
+            for (uint32_t lane = 0u; lane < 4u; ++lane)
+            {
+                if ((dest & (8u >> lane)) != 0u)
+                {
+                    std::memcpy(bytes + lane * 4u, &value, sizeof(value));
+                }
+            }
+            return true;
+        }
+        case 0x40u: // RNEXT
+            state.m_r = ((state.m_r << 1u) |
+                (((state.m_r >> 4u) ^ (state.m_r >> 22u)) & 1u)) & 0x7fffffu;
+            [[fallthrough]];
+        case 0x41u: // RGET
+            if (ft != 0u)
+            {
+                for (uint32_t lane = 0u; lane < 4u; ++lane)
+                {
+                    if ((dest & (8u >> lane)) != 0u)
+                    {
+                        state.m_vf[ft][lane] =
+                            (state.m_r & 0x7fffffu) | vu1_fp::kOne;
+                    }
+                }
+            }
+            return true;
+        case 0x42u: // RINIT
+            state.m_r = state.m_vf[fs][(lo >> 21u) & 3u] & 0x7fffffu;
+            return true;
+        case 0x43u: // RXOR
+            state.m_r = (state.m_r ^
+                state.m_vf[fs][(lo >> 21u) & 3u]) & 0x7fffffu;
+            return true;
+        case 0x64u: // MFP reads the previous P until the EFU completes
+            if (ft != 0u)
+            {
+                for (uint32_t lane = 0u; lane < 4u; ++lane)
+                {
+                    if ((dest & (8u >> lane)) != 0u)
+                    {
+                        state.m_vf[ft][lane] = state.m_p;
+                    }
+                }
+            }
+            return true;
+        case 0x7bu: pipe.wait_p(state); return true; // WAITP
+        default:
+        {
+            uint32_t value = 0u;
+            uint32_t latency = 0u;
+            if (!efu_result(state, index, fs, (lo >> 21u) & 3u,
+                            value, latency))
+            {
+                return false;
+            }
+            pipe.schedule_p(state, value, latency);
+            return true;
+        }
         case 0x68u: store_vi(state, it, top); return true;
         case 0x69u: store_vi(state, it, itop); return true;
         case 0x6cu: return xgkick(data, state.m_vi[is], path1_bytes);
-        default: return false;
         }
     }
 
@@ -678,6 +902,7 @@ bool c_ee_vu1::run(
     bool ending = false;
     int32_t fsset = -1;
     s_flag_pipe pipe{};
+    s_ee_vu1_dependency dependencies{};
     pipe.start(state);
 
     for (uint32_t step = 0u; step < k_max_steps; ++step)
@@ -689,7 +914,21 @@ bool c_ee_vu1::run(
         issue->m_upper = hi;
         issue->m_steps = step + 1u;
 
+        // D/T debug interrupts require guest-visible delivery, not NOPs.
+        if ((hi & 0x18000000u) != 0u)
+        {
+            return false;
+        }
+
         ++pipe.m_t;
+        const s_ee_vu1_use use = dependencies.decode(lo, hi);
+        const uint32_t issued = dependencies.issue(use, pipe.now());
+        if (issued > pipe.now())
+        {
+            pipe.m_stalls += issued - pipe.now();
+        }
+        pipe.sync_q(state);
+        pipe.sync_p(state);
         s_upper_write pending{};
         if (!upper(state, hi, pending))
         {
@@ -721,6 +960,7 @@ bool c_ee_vu1::run(
             }
         }
 
+        dependencies.retire(use, issued);
         if (pending.m_writes)
         {
             if (pending.m_acc || pending.m_target != 0u)
@@ -751,16 +991,20 @@ bool c_ee_vu1::run(
         if (pending.m_has_clip)
         {
             state.m_clip = pending.m_clip;
-            pipe.set_clip(state.m_clip, pipe.m_t);
+            pipe.set_clip(state.m_clip, pipe.now());
         }
         state.m_vi[0] = 0u;
         state.m_vf[0] = {0u, 0u, 0u, 0x3f800000u};
         previous_vi = before;
         previous_lower = (hi & 0x80000000u) == 0u &&
             !branch_delay_exempt(lo);
+        issue->m_cycles = pipe.now() - 16u;
 
         if (ending)
         {
+            pipe.wait_q(state);
+            pipe.wait_p(state);
+            issue->m_cycles = pipe.now() - 16u;
             state.m_tpc = pc;
             return true;
         }
