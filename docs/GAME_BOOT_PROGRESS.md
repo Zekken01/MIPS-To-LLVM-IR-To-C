@@ -1897,3 +1897,12 @@ Implemented a **strict subset** of VU1 micro execution from the primary ps2-web-
 ### M2.7 Batch B — Reference FMAC/flags and XGKICK fixture (19 November 2026)
 
 Ported ps2-web-recomp PS2 floating-point bit arithmetic to C++17 and expanded VU1 ACC, MADD/MSUB, FTOI/ITOF, CLIP, MAC/status/clip flags and a four-issued-pair flag delay buffer. Added lower flag opcodes and focused arithmetic/CLIP regressions. Fixed synthetic GIFtag NREG to one. Q/P latency, precise VF/VI stalls, lower special opcodes, MSCALF, GIF arbitration and VIF IRQ remain unsupported and fail closed. Native USA boot advancement remains unverified. PR #142 stays draft/unmerged.
+
+
+## M2.7 Batch C on a new post-merge branch — 2026-11-19
+
+PR #142 is squash-merged to `main` as `c576a0cec1732d21efb04889cc95a627f0883ece`. Follow-on `feature/sdbz-m2-7-vu1-q-p-pipelines` adds reference-derived VU1 Q/P instruction execution, pipeline synchronization, EFU/RNG/lower-specials, VF/VI dependency scoreboarding, and an independent CTest regression. The four-shard build-once workflow remains unchanged. This is source/regression work, **not verified USA game progression**.
+
+**Last matched real game evidence remains** the command-slot pending/VIF1 CHCR `0x1c5`, TADR `0x00771400` and red fallback. No local Windows boot rerun has yet established game VIF packet acceptance or a new framebuffer. Continue to fail closed on unsupported DMA/VIF/GIF operations; never clear STR, raise D_STAT, free the guest command slot or invent graphics as a substitute for hardware execution.
+
+Before requesting another local Windows run, require exact-commit CI success for Build and test (game and fast-0/1/2), SIF DMA, ROM0 and Native WebGPU, followed by coherent M2.8 GIF path arbitration as needed.
