@@ -134,6 +134,7 @@ private:
     std::map<uint32_t, s_fixed_pool> m_fixed_pools;
     std::map<uint32_t, s_variable_pool> m_variable_pools;
     uint32_t m_dma_direction[16]{};
+    uint32_t m_strtok_next = 0u;
     uint32_t m_next_object = 1u;
     bool m_cpu_interrupts_suspended = false;
     bool m_installed = false;
