@@ -69,6 +69,28 @@ uint32_t mmio(ee::s_ee_runtime* runtime, uint32_t address)
     return ee::ee_mem_read32(runtime, address);
 }
 
+struct s_committed_observer
+{
+    uint32_t m_calls = 0u;
+    size_t m_last_count = 0u;
+    uint32_t m_last_qwc = 0u;
+};
+
+void observe_committed(
+    void* user, const ee::s_ee_gif_event* events,
+    size_t count, const uint8_t* data, uint32_t qwc)
+{
+    auto& observer = *static_cast<s_committed_observer*>(user);
+    if ((count != 0u && events == nullptr) ||
+        (qwc != 0u && data == nullptr))
+    {
+        return;
+    }
+    ++observer.m_calls;
+    observer.m_last_count = count;
+    observer.m_last_qwc = qwc;
+}
+
 } // namespace
 
 int main()
@@ -440,6 +462,38 @@ int main()
     {
         return fail("out-of-bounds GIF chain payload was accepted");
     }
+
+    // A GPU observer receives only committed GS packets. A rejected
+    // multi-event batch never leaks speculative register or IMAGE writes.
+    gs.reset();
+    s_committed_observer observer{};
+    gs.bind_committed_event_observer(&observer, observe_committed);
+    uint8_t one_qword[16]{};
+    ee::s_ee_gif_event good_tag{};
+    good_tag.m_type = ee::e_ee_gif_event_type::tag;
+    ee::s_ee_gif_event bad_signal{};
+    bad_signal.m_type = ee::e_ee_gif_event_type::reglist;
+    bad_signal.m_byte_offset = 0u;
+    bad_signal.m_register = 0x60u; // SIGNAL unsupported without GS IRQ
+    bad_signal.m_word0 = 1u;
+    const ee::s_ee_gif_event rejected[2] = {
+        good_tag, bad_signal
+    };
+    if (gs.consume(rejected, 2u, one_qword, 1u) ||
+        observer.m_calls != 0u ||
+        gs.state().m_tag_count != 0u)
+    {
+        return fail("GPU observer saw a rejected GS transaction");
+    }
+    if (!gs.consume(&good_tag, 1u, one_qword, 1u) ||
+        observer.m_calls != 1u ||
+        observer.m_last_count != 1u ||
+        observer.m_last_qwc != 1u ||
+        gs.state().m_tag_count != 1u)
+    {
+        return fail("GPU observer did not see committed GS transaction");
+    }
+    gs.bind_committed_event_observer(nullptr, nullptr);
 
     std::puts("EE GS register capture via DMA/GIF with atomic IMAGE: PASS");
     return 0;
