@@ -1,7 +1,9 @@
 #include "ee_ram_interpreter.h"
 #include "ee_memory.h"
+#include "ee_exceptions.h"
 #include "ee_runtime.h"
 
+#include <atomic>
 #include <cstdint>
 
 namespace ee
@@ -11,6 +13,7 @@ namespace
 struct s_ee_ram_step
 {
     bool m_is_branch = false;
+    bool m_tlb_written = false;
     bool m_taken = false;
     uint32_t m_target = 0;
 };
@@ -85,6 +88,13 @@ e_ee_ram_result step(
         case 0x03u: // SRA
             write_word(cpu, rd, static_cast<uint32_t>(
                 static_cast<int32_t>(b) >> sa));
+            return e_ee_ram_result::RETURNED;
+        case 0x0fu: // SYNC (including PS2 SYNC.P)
+            if (rs != 0u || rt != 0u || rd != 0u)
+            {
+                return e_ee_ram_result::UNSUPPORTED;
+            }
+            std::atomic_thread_fence(std::memory_order_seq_cst);
             return e_ee_ram_result::RETURNED;
         case 0x08u: // JR
             branch.m_is_branch = true;
@@ -200,6 +210,88 @@ e_ee_ram_result step(
         }
         write_word(cpu, rt, static_cast<uint32_t>(imm) << 16u);
         return e_ee_ram_result::RETURNED;
+    case 0x10u: // COP0, registered kernel RAM callbacks
+    {
+        // The real _SetTLBEntry handler uses MTC0, SYNC.P and TLBWI.
+        // Keep the decoded operations, not a host shortcut to success.
+        if ((rs == 0u || rs == 4u) &&
+            (instruction & 0x7ffu) == 0u)
+        {
+            bool supported = false;
+            switch (rd)
+            {
+            case COP0_Index:
+            case COP0_EntryLo0:
+            case COP0_EntryLo1:
+            case COP0_PageMask:
+            case COP0_Wired:
+            case COP0_EntryHi:
+            case COP0_Compare:
+            case COP0_Status:
+            case COP0_Cause:
+            case COP0_EPC:
+                supported = true;
+                break;
+            default:
+                break;
+            }
+            if (!supported)
+            {
+                return e_ee_ram_result::UNSUPPORTED;
+            }
+            if (rs == 0u) // MFC0
+            {
+                write_word(cpu, rt, cpu.m_cop0[rd]);
+                return e_ee_ram_result::RETURNED;
+            }
+            // Wired cannot exceed the architectural 48 TLB entries.
+            if (rd == COP0_Wired &&
+                static_cast<uint32_t>(b) > c_ee_tlb::k_entry_count)
+            {
+                return e_ee_ram_result::INVALID_TLB_STATE;
+            }
+            ee_cop0_write(&cpu, rd, static_cast<uint32_t>(b));
+            return e_ee_ram_result::RETURNED;
+        }
+        if (instruction == 0x42000002u) // TLBWI
+        {
+            const uint32_t index = cpu.m_cop0[COP0_Index];
+            if (!memory.tlb().write(
+                    index, cpu.m_cop0[COP0_PageMask],
+                    cpu.m_cop0[COP0_EntryHi],
+                    cpu.m_cop0[COP0_EntryLo0],
+                    cpu.m_cop0[COP0_EntryLo1]))
+            {
+                return e_ee_ram_result::INVALID_TLB_STATE;
+            }
+            branch.m_tlb_written = true;
+            return e_ee_ram_result::RETURNED;
+        }
+        if (instruction == 0x42000001u) // TLBR
+        {
+            s_ee_tlb_entry entry{};
+            if (!memory.tlb().read(cpu.m_cop0[COP0_Index], &entry))
+            {
+                return e_ee_ram_result::INVALID_TLB_STATE;
+            }
+            cpu.m_cop0[COP0_PageMask] = entry.m_page_mask;
+            cpu.m_cop0[COP0_EntryHi] = entry.m_entry_hi;
+            cpu.m_cop0[COP0_EntryLo0] = entry.m_entry_lo0;
+            cpu.m_cop0[COP0_EntryLo1] = entry.m_entry_lo1;
+            return e_ee_ram_result::RETURNED;
+        }
+        if (instruction == 0x42000008u) // TLBP
+        {
+            uint32_t index = 0u;
+            cpu.m_cop0[COP0_Index] =
+                memory.tlb().probe(cpu.m_cop0[COP0_EntryHi], &index) ?
+                    index : 0x80000000u;
+            return e_ee_ram_result::RETURNED;
+        }
+        // TLBWR needs guest Random/Wired progression. ERET and other
+        // COP0 operations remain deliberately unsupported in RAM callbacks.
+        return e_ee_ram_result::UNSUPPORTED;
+    }
     case 0x19u: // DADDIU
         write_dword(cpu, rt, a + static_cast<uint64_t>(signed_imm));
         return e_ee_ram_result::RETURNED;
@@ -345,6 +437,10 @@ s_ee_ram_execution ee_execute_ram_callback(
             return result;
         }
         ++result.m_instructions;
+        if (branch.m_tlb_written)
+        {
+            ++result.m_tlb_writes;
+        }
         // Interpreted RAM contributes committed instructions to the same
         // diagnostics as translated code; it cannot advance EE cycle time.
         if (runtime != nullptr)
@@ -420,6 +516,7 @@ const char* ee_ram_result_name(e_ee_ram_result result)
     case e_ee_ram_result::RETURNED: return "returned";
     case e_ee_ram_result::UNMAPPED: return "unmapped or unaligned access";
     case e_ee_ram_result::UNSUPPORTED: return "unsupported R5900 instruction";
+    case e_ee_ram_result::INVALID_TLB_STATE: return "invalid R5900 TLB state";
     case e_ee_ram_result::BRANCH_IN_DELAY_SLOT: return "branch in delay slot";
     case e_ee_ram_result::INSTRUCTION_BUDGET: return "instruction budget exhausted";
     case e_ee_ram_result::TIMING_OBSERVER_REJECTED: return "timing observer rejected";
