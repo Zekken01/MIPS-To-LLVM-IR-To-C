@@ -267,13 +267,13 @@ int main()
     // All four transfer forms reserve sa/funct. Do not classify malformed
     // words as merely unsupported valid instructions.
     expect("qmfc2 bad sa",   R(0x12,1,4,6,1,0), "qmfc2", X);
-    expect("qmfc2 bad funct",R(0x12,1,4,6,0,1), "qmfc2", X);
+    expect("qmfc2 bad funct",R(0x12,1,4,6,0,2), "qmfc2", X);
     expect("cfc2 bad sa",    R(0x12,2,4,6,1,0), "cfc2", X);
-    expect("cfc2 bad funct", R(0x12,2,4,6,0,1), "cfc2", X);
+    expect("cfc2 bad funct", R(0x12,2,4,6,0,2), "cfc2", X);
     expect("qmtc2 bad sa",   R(0x12,5,4,6,1,0), "qmtc2", X);
-    expect("qmtc2 bad funct",R(0x12,5,4,6,0,1), "qmtc2", X);
+    expect("qmtc2 bad funct",R(0x12,5,4,6,0,2), "qmtc2", X);
     expect("ctc2 bad sa",    R(0x12,6,4,6,1,0), "ctc2", X);
-    expect("ctc2 bad funct", R(0x12,6,4,6,0,1), "ctc2", X);
+    expect("ctc2 bad funct", R(0x12,6,4,6,0,2), "ctc2", X);
     expect("vadd",    R(0x12,0x10,4,5,0,0x28), "vu0_macro", U);
     expect("vadda",   R(0x12,0x10,4,5,0,0x3c), "vu0_macro", U); // SPECIAL2 index 0
 
