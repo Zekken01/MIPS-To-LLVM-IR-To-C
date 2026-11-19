@@ -236,6 +236,115 @@ int main()
         return fail("real guest R3000 GetThreadId import did not run");
     }
 
+    // The next game loader IRX (MCMAN) requires threadman timing,
+    // not merely the original SIO2MAN thread service imports.
+    for (uint16_t ordinal : {33u, 34u, 35u, 37u, 39u, 40u})
+    {
+        uint32_t entry = 0u;
+        if (!kernel.lookup_library("thbase", ordinal, &entry) ||
+            entry < iop::c_kernel_hle_bridge::k_stub_base)
+        {
+            return fail("MCMAN timer dependency was not registered");
+        }
+    }
+    for (uint16_t ordinal : {36u, 38u})
+    {
+        uint32_t entry = 0u;
+        if (kernel.lookup_library("thbase", ordinal, &entry))
+        {
+            return fail("unsupported interrupt-context timer was registered");
+        }
+    }
+
+    // Exact PS2SDK clock conversion uses 4608/125 ticks per usec.
+    // The virtual current clock and wake scheduling are deliberately
+    // not claimed to be calibrated to real IOP hardware cycles.
+    kernel.cpu().write32(0x2a00u, 0u);
+    kernel.cpu().write32(0x2a04u, 0u);
+    if (!call_guest(
+            kernel, "thbase", 39u, {125u, 0x2a00u, 0u, 0u},
+            &result))
+    {
+        return fail("USec2SysClock guest import did not execute");
+    }
+    uint32_t low = 0u;
+    uint32_t high = 0u;
+    uint32_t sec = 0u;
+    uint32_t usec = 0u;
+    if (!kernel.cpu().read32(0x2a00u, &low) ||
+        !kernel.cpu().read32(0x2a04u, &high) ||
+        low != 4608u || high != 0u ||
+        !call_guest(
+            kernel, "thbase", 40u,
+            {0x2a00u, 0x2a08u, 0x2a0cu, 0u}, &result) ||
+        !kernel.cpu().read32(0x2a08u, &sec) ||
+        !kernel.cpu().read32(0x2a0cu, &usec) ||
+        sec != 0u || usec != 125u ||
+        !call_guest(
+            kernel, "thbase", 34u,
+            {0x2a10u, 0u, 0u, 0u}, &result) ||
+        !kernel.cpu().read32(0x2a10u, &low) ||
+        !kernel.cpu().read32(0x2a14u, &high) ||
+        (low == 0u && high == 0u) ||
+        !call_guest(
+            kernel, "thbase", 33u, {1u, 0u, 0u, 0u}, &result) ||
+        result != 0u)
+    {
+        return fail("THBASE clock conversion, time or delay failed");
+    }
+
+    // A timer's effect must come from executable guest R3000 callback
+    // instructions, not an artificial ready bit or ignored completion.
+    const uint32_t callback_words[] = {
+        0x3c080000u, // lui t0, 0
+        0x35082a28u, // ori t0, t0, 0x2a28
+        0x24090001u, // addiu t1, zero, 1
+        0xad090000u, // sw t1, 0(t0)
+        0x00001021u, // addu v0, zero, zero; disarm timer
+        0x03e00008u, // jr ra
+        0x00000000u
+    };
+    for (uint32_t i = 0u;
+         i < sizeof(callback_words) / sizeof(callback_words[0]); ++i)
+    {
+        if (!kernel.cpu().write32(
+                0x3000u + i * 4u, callback_words[i]))
+        {
+            return fail("cannot prepare original guest alarm callback");
+        }
+    }
+    kernel.cpu().write32(0x2a20u, 1000u);
+    kernel.cpu().write32(0x2a24u, 0u);
+    kernel.cpu().write32(0x2a28u, 0u);
+    if (!call_guest(
+            kernel, "thbase", 35u,
+            {0x2a20u, 0x3000u, 0u, 0u}, &result) ||
+        result != 0u || !kernel.has_guest_work())
+    {
+        return fail("SetAlarm did not schedule a guest callback");
+    }
+    const iop::s_kernel_run_result timer_run = kernel.run(2048u);
+    if (timer_run.m_stop != iop::e_kernel_stop::idle ||
+        !kernel.cpu().read32(0x2a28u, &low) ||
+        low != 1u || kernel.has_guest_work())
+    {
+        return fail("alarm callback did not execute and disarm");
+    }
+
+    kernel.cpu().write32(0x2a20u, 5000u);
+    kernel.cpu().write32(0x2a28u, 0u);
+    if (!call_guest(
+            kernel, "thbase", 35u,
+            {0x2a20u, 0x3000u, 0u, 0u}, &result) ||
+        !call_guest(
+            kernel, "thbase", 37u,
+            {0x3000u, 0u, 0u, 0u}, &result) ||
+        result != 0u || kernel.has_guest_work() ||
+        !kernel.cpu().read32(0x2a28u, &low) || low != 0u)
+    {
+        return fail("CancelAlarm did not disarm the scheduled callback");
+    }
+
     // Bounded guest-memory strncmp, lookup_ctype and strtol operate
     // through actual R3000 import stubs, not direct host-only calls.
     const std::string lhs = "ABC";
