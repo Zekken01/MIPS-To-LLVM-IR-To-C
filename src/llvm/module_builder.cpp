@@ -865,6 +865,35 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
     if (fallthrough_pc == 0)
         fallthrough_pc = ins.pc + 8;
 
+    // VU User's Manual v6.0, LQC2/SQC2: a misaligned 128-bit
+    // effective address traps with AdEL/AdES before any VF or memory
+    // modification. Flush earlier SSA GPR writes on either branch so
+    // guest exception handlers observe the committed program state.
+    const auto guard_vu0_quad_alignment =
+        [&](const std::string& address, uint32_t excode)
+    {
+        const std::string bits = newtemp();
+        const std::string misaligned = newtemp();
+        const std::string suffix = std::to_string(m_temp_counter++);
+        const std::string fault = "vu0_quad_fault_" + suffix;
+        const std::string aligned = "vu0_quad_aligned_" + suffix;
+        m_out += "  " + bits + " = and i32 " + address + ", 15\n";
+        m_out += "  " + misaligned + " = icmp ne i32 " + bits + ", 0\n";
+        std::set<uint8_t> dirty(m_dirty_regs.begin(), m_dirty_regs.end());
+        store_dirty_regs(dirty);
+        reset_tracking();
+        m_out += "  br i1 " + misaligned + ", label %" + fault +
+                 ", label %" + aligned + "\n";
+        m_out += fault + ":\n";
+        m_out += "  call i32 @ee_raise_exception(ptr %cpu, ptr %rt, i32 " +
+                 std::to_string(excode) + ", i32 " +
+                 std::to_string(ins.pc) + ", i32 " +
+                 std::to_string(in_delay_slot ? 1u : 0u) + ", i32 " +
+                 address + ")\n";
+        m_out += "  ret i32 1\n"; // EE_EXIT_EXCEPTION
+        m_out += aligned + ":\n";
+    };
+
     switch (ins.opcode)
     {
     case ee::e_ee_opcode::OP_ADDIU:
@@ -1114,11 +1143,17 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
         std::string vhi = newtemp();
         m_out += "  " + sum + " = add i64 " + src_lo(ins.rs) + ", " + imm + "\n";
         m_out += "  " + addr + " = trunc i64 " + sum + " to i32\n";
+        guard_vu0_quad_alignment(addr, 4u); // EX_AdEL
         m_out += "  " + addr8 + " = add i32 " + addr + ", 8\n";
         m_out += "  " + vlo + " = call i64 @ee_mem_read64(ptr %rt, i32 " + addr + ")\n";
         m_out += "  " + vhi + " = call i64 @ee_mem_read64(ptr %rt, i32 " + addr8 + ")\n";
-        m_out += "  store i64 " + vlo + ", ptr " + vu0_lo_ptr(ins.rt) + "\n";
-        m_out += "  store i64 " + vhi + ", ptr " + vu0_hi_ptr(ins.rt) + "\n";
+        // VF00 is hardwired to (0,0,0,1). The access may still trap
+        // or read mapped memory, but it may not mutate the VF0 slot.
+        if (ins.rt != 0u)
+        {
+            m_out += "  store i64 " + vlo + ", ptr " + vu0_lo_ptr(ins.rt) + "\n";
+            m_out += "  store i64 " + vhi + ", ptr " + vu0_hi_ptr(ins.rt) + "\n";
+        }
         break;
     }
     case ee::e_ee_opcode::OP_SQC2:
@@ -1132,9 +1167,20 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
         std::string vhi = newtemp();
         m_out += "  " + sum + " = add i64 " + src_lo(ins.rs) + ", " + imm + "\n";
         m_out += "  " + addr + " = trunc i64 " + sum + " to i32\n";
+        guard_vu0_quad_alignment(addr, 5u); // EX_AdES
         m_out += "  " + addr8 + " = add i32 " + addr + ", 8\n";
-        m_out += "  " + vlo + " = load i64, ptr " + vu0_lo_ptr(ins.rt) + "\n";
-        m_out += "  " + vhi + " = load i64, ptr " + vu0_hi_ptr(ins.rt) + "\n";
+        // SQC2 VF00 always stores (0,0,0,1), even if the host backing
+        // VF0 bytes are stale. Only VF1..31 are backed by storage.
+        if (ins.rt == 0u)
+        {
+            m_out += "  " + vlo + " = add i64 0, 0\n";
+            m_out += "  " + vhi + " = add i64 4575657221408423936, 0\n";
+        }
+        else
+        {
+            m_out += "  " + vlo + " = load i64, ptr " + vu0_lo_ptr(ins.rt) + "\n";
+            m_out += "  " + vhi + " = load i64, ptr " + vu0_hi_ptr(ins.rt) + "\n";
+        }
         emit_guest_store_trace(ins, addr, addr, 8u, vlo, 0u);
         m_out += "  call void @ee_mem_write64(ptr %rt, i32 " + addr + ", i64 " + vlo + ")\n";
         emit_guest_store_trace(ins, addr8, addr8, 8u, vhi, 1u);
