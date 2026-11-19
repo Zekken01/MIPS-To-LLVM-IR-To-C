@@ -24,11 +24,15 @@ struct s_export
 // Explicit HLE coverage for the actual USA SIO2MAN import families.
 // The same services are reusable by later PADMAN/MCMAN/LIBSD IRXs.
 constexpr s_export k_exports[] = {
+    {"loadcore", 4u, 1u}, {"loadcore", 5u, 1u},
     {"loadcore", 6u, 1u}, {"loadcore", 7u, 1u},
     {"intrman", 4u, 2u}, {"intrman", 5u, 2u},
     {"intrman", 6u, 2u}, {"intrman", 7u, 2u},
+    {"intrman", 8u, 2u}, {"intrman", 9u, 2u},
     {"intrman", 17u, 2u}, {"intrman", 18u, 2u},
-    {"stdio", 4u, 3u},
+    {"intrman", 23u, 2u},
+    {"stdio", 4u, 3u}, {"stdio", 6u, 3u},
+    {"stdio", 7u, 3u},
     {"dmacman", 28u, 4u}, {"dmacman", 32u, 4u},
     {"dmacman", 33u, 4u}, {"dmacman", 34u, 4u},
     {"dmacman", 35u, 4u},
@@ -61,7 +65,10 @@ constexpr s_export k_exports[] = {
     {"sysclib", 28u, 8u}, {"sysclib", 29u, 8u},
     {"sysclib", 30u, 8u}, {"sysclib", 31u, 8u},
     {"sysclib", 32u, 8u}, {"sysclib", 33u, 8u},
-    {"sysclib", 34u, 8u}, {"sysclib", 36u, 8u}
+    {"sysclib", 34u, 8u}, {"sysclib", 36u, 8u},
+    {"sysmem", 4u, 9u}, {"sysmem", 5u, 9u},
+    {"sysmem", 6u, 9u}, {"sysmem", 7u, 9u},
+    {"sysmem", 8u, 9u}, {"sysmem", 14u, 9u}
 };
 
 // SYSCLIB byte-memory functions operate on IOP RAM, including KSEG0/1
@@ -328,9 +335,66 @@ bool c_kernel_hle_bridge::take_event(
     return true;
 }
 
+bool c_kernel_hle_bridge::handle_sysmem(uint32_t ordinal)
+{
+    s_cpu_state& cpu = m_kernel.cpu().state();
+    switch (ordinal)
+    {
+    case 4u:
+    {
+        // AllocSysMemory(ALLOC_FIRST, size, nullptr). Fixed-address
+        // modes require separate tested allocator semantics.
+        if (cpu.m_gpr[4] != 0u || cpu.m_gpr[6] != 0u)
+        {
+            return false;
+        }
+        const uint32_t address = m_kernel.allocate_heap(cpu.m_gpr[5]);
+        if (address == 0u)
+        {
+            return false;
+        }
+        cpu.m_gpr[2] = address;
+        return true;
+    }
+    case 5u:
+        if (!m_kernel.free_heap(cpu.m_gpr[4]))
+        {
+            return false;
+        }
+        cpu.m_gpr[2] = 0u;
+        return true;
+    case 6u:
+        cpu.m_gpr[2] = c_cpu::k_ram_size;
+        return true;
+    case 7u:
+        cpu.m_gpr[2] = m_kernel.heap_max_free();
+        return true;
+    case 8u:
+        cpu.m_gpr[2] = m_kernel.heap_total_free();
+        return true;
+    case 14u:
+        // Kprintf uses the same bounded guest formatter as stdio.
+        if (!handle_stdio(4u))
+        {
+            return false;
+        }
+        cpu.m_gpr[2] = 0u;
+        return true;
+    default:
+        return false;
+    }
+}
+
 bool c_kernel_hle_bridge::handle_loadcore(uint32_t ordinal)
 {
     const uint32_t table = m_kernel.cpu().state().m_gpr[4];
+    // R3000 code and data use the same coherent RAM backing in this
+    // HLE interpreter; there is no simulated stale I/D cache to flush.
+    if (ordinal == 4u || ordinal == 5u)
+    {
+        m_kernel.cpu().state().m_gpr[2] = 0u;
+        return true;
+    }
     bool accepted = false;
     if (ordinal == 6u)
     {
@@ -355,6 +419,25 @@ bool c_kernel_hle_bridge::handle_intrman(uint32_t ordinal)
 {
     s_cpu_state& cpu = m_kernel.cpu().state();
     const uint32_t line = cpu.m_gpr[4];
+    if (ordinal == 23u)
+    {
+        // HLE kernel bridge executes in the scheduler's normal thread
+        // context, not inside a simulated interrupt callback.
+        cpu.m_gpr[2] = 0u;
+        return true;
+    }
+    if (ordinal == 8u || ordinal == 9u)
+    {
+        const bool disabled = ordinal == 8u;
+        if (!m_kernel.hardware().write(
+                c_hw::k_i_ctrl, 4u, disabled ? 0u : 1u))
+        {
+            return false;
+        }
+        m_cpu_interrupts_suspended = disabled;
+        cpu.m_gpr[2] = 0u;
+        return true;
+    }
     if (ordinal == 17u)
     {
         const bool suspended = m_cpu_interrupts_suspended;
@@ -447,11 +530,32 @@ bool c_kernel_hle_bridge::handle_intrman(uint32_t ordinal)
 
 bool c_kernel_hle_bridge::handle_stdio(uint32_t ordinal)
 {
+    s_cpu_state& cpu = m_kernel.cpu().state();
+    if (ordinal == 6u)
+    {
+        const char ch = static_cast<char>(cpu.m_gpr[4] & 0xffu);
+        if (!write_console(std::string(1u, ch)))
+        {
+            return false;
+        }
+        cpu.m_gpr[2] = static_cast<uint8_t>(ch);
+        return true;
+    }
+    if (ordinal == 7u)
+    {
+        std::string value;
+        if (!read_string(cpu.m_gpr[4], 4096u, &value) ||
+            !write_console(value + "\n"))
+        {
+            return false;
+        }
+        cpu.m_gpr[2] = 0u;
+        return true;
+    }
     if (ordinal != 4u)
     {
         return false;
     }
-    const s_cpu_state& cpu = m_kernel.cpu().state();
     std::string format;
     if (!read_string(cpu.m_gpr[4], 4096u, &format))
     {
@@ -1267,6 +1371,7 @@ bool c_kernel_hle_bridge::handle_syscall(
     case 6u: return handle_thevent(ordinal);
     case 7u: return handle_thsemap(ordinal);
     case 8u: return handle_sysclib(ordinal);
+    case 9u: return handle_sysmem(ordinal);
     default: return false;
     }
 }
