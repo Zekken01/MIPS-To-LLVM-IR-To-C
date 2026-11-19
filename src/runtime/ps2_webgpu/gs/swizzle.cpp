@@ -5,6 +5,8 @@
 
 namespace ps2::gs
 {
+uint32_t g_setup_generation = 0u;
+
 namespace
 {
 std::uint32_t g_off32[32][64], g_offz32[32][64];
