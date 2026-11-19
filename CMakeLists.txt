@@ -426,6 +426,10 @@ add_executable(ee_vif1_device_test tests/smoke/ee_vif1_device_test.cpp)
 target_link_libraries(ee_vif1_device_test PRIVATE ee_core)
 add_test(NAME ee_vif1_device COMMAND ee_vif1_device_test)
 
+add_executable(ee_vu1_pipeline_test tests/smoke/ee_vu1_pipeline_test.cpp)
+target_link_libraries(ee_vu1_pipeline_test PRIVATE ee_core)
+add_test(NAME ee_vu1_pipeline COMMAND ee_vu1_pipeline_test)
+
 add_executable(ee_sdbz_dma_wait_probe_test tests/smoke/ee_sdbz_dma_wait_probe_test.cpp)
 target_link_libraries(ee_sdbz_dma_wait_probe_test PRIVATE ee_core)
 add_test(NAME ee_sdbz_dma_wait_probe COMMAND ee_sdbz_dma_wait_probe_test)
