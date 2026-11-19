@@ -3,6 +3,7 @@
 #include "ps2_webgpu/gs/gpu/gpu.hpp"
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstdio>
 #include <vector>
 
@@ -14,8 +15,8 @@ int main()
     {
         // No WebGPU adapter available on this runner.
         // CTest may report this as skipped; strict CI can require one.
-        std::fprintf(stderr, "native WebGPU adapter unavailable\n");
-        return 77;
+        std::fprintf(stderr, "native WebGPU initialization failed\n");
+        return std::getenv("EE_WEBGPU_REQUIRE_ADAPTER") ? 1 : 77;
     }
 
     ps2::gs::State state{};
