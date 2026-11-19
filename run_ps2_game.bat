@@ -77,9 +77,9 @@ if /I "%EE_WEBGPU_SNAPSHOT%"=="1" (
     )
 ) else (
     if exist "build\CMakeCache.txt" (
-        cmake -S . -B build
+        cmake -S . -B build -DEE_ENABLE_WEBGPU=OFF
     ) else (
-        cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DEE_ENABLE_WEBGPU=OFF
     )
 )
 if errorlevel 1 exit /b 1
