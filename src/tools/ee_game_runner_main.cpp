@@ -5115,6 +5115,63 @@ int main(int argc, char** argv)
             std::fprintf(stderr,
                 "EE host GIF tag: unavailable (invalid or unbacked TADR)\n");
         }
+        // These are diagnostic observations of already committed guest
+        // MMIO writes. They must not retry a DMA or mutate guest memory.
+        const auto gif_reject_name =
+            [](ee::c_ee_dmac::e_gif_dma_reject reason) -> const char*
+        {
+            using e_reject = ee::c_ee_dmac::e_gif_dma_reject;
+            switch (reason)
+            {
+            case e_reject::none: return "none";
+            case e_reject::missing_memory_or_sink: return "missing_memory_or_sink";
+            case e_reject::invalid_start_state: return "invalid_start_state";
+            case e_reject::invalid_tag_address: return "invalid_tag_address";
+            case e_reject::unsupported_tag: return "unsupported_tag";
+            case e_reject::invalid_payload_span: return "invalid_payload_span";
+            case e_reject::chain_qwc_limit: return "chain_qwc_limit";
+            case e_reject::chain_tag_limit: return "chain_tag_limit";
+            case e_reject::rejected_by_sink: return "rejected_by_sink";
+            }
+            return "unknown";
+        };
+        const auto& gif_dma = hardware.dmac();
+        const uint64_t gif_write_count = gif_dma.gif_trace_count();
+        std::fprintf(stderr,
+            "EE host GIF history: writes=%llu last_reject=%s\n",
+            static_cast<unsigned long long>(gif_write_count),
+            gif_reject_name(gif_dma.gif_last_reject()));
+        const uint32_t gif_recent = static_cast<uint32_t>(
+            gif_write_count < ee::c_ee_dmac::k_gif_trace_capacity
+                ? gif_write_count : ee::c_ee_dmac::k_gif_trace_capacity);
+        for (uint32_t index = gif_recent; index > 0u; --index)
+        {
+            ee::c_ee_dmac::s_gif_dma_write event{};
+            if (!gif_dma.gif_trace_newest(index - 1u, &event))
+            {
+                break;
+            }
+            std::fprintf(stderr,
+                "EE host GIF write: seq=%llu offset=0x%02x value=0x%08x "
+                "previous=0x%08x CHCR=0x%08x MADR=0x%08x "
+                "QWC=0x%04x TADR=0x%08x reject=%s\n",
+                static_cast<unsigned long long>(event.m_sequence),
+                event.m_offset, event.m_value, event.m_previous,
+                event.m_chcr, event.m_madr, event.m_qwc, event.m_tadr,
+                gif_reject_name(event.m_reject));
+        }
+        // A nearby RAM word can help distinguish a tag *value* from
+        // the actual tag *address*. This is explicitly not a tag decode.
+        if (gif_madr >= 16u && (gif_madr & 15u) == 0u &&
+            memory->contains(gif_madr - 16u, 16u))
+        {
+            std::fprintf(stderr,
+                "EE host GIF nearby RAM: address=0x%08x raw_lo=0x%016llx "
+                "(candidate bytes only, not a validated DMA tag)\n",
+                gif_madr - 16u,
+                static_cast<unsigned long long>(
+                    memory->read64(gif_madr - 16u)));
+        }
         for (uint32_t timer_index = 0u; timer_index < 4u; ++timer_index)
         {
             std::fprintf(stderr,
