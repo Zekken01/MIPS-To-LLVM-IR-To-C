@@ -79,7 +79,14 @@ constexpr s_export k_exports[] = {
     {"thmsgbx", 6u, 10u}, {"thmsgbx", 7u, 10u},
     {"thmsgbx", 8u, 10u}, {"thmsgbx", 9u, 10u},
     {"heaplib", 4u, 11u}, {"heaplib", 5u, 11u},
-    {"heaplib", 6u, 11u}, {"heaplib", 7u, 11u}
+    {"heaplib", 6u, 11u}, {"heaplib", 7u, 11u},
+    {"thfpool", 4u, 12u}, {"thfpool", 5u, 12u},
+    {"thfpool", 6u, 12u}, {"thfpool", 7u, 12u},
+    {"thfpool", 8u, 12u}, {"thfpool", 9u, 12u},
+    {"thvpool", 4u, 13u}, {"thvpool", 5u, 13u},
+    {"thvpool", 6u, 13u}, {"thvpool", 7u, 13u},
+    {"thvpool", 8u, 13u}, {"thvpool", 9u, 13u},
+    {"thvpool", 11u, 13u}, {"thvpool", 12u, 13u}
 };
 
 // SYSCLIB byte-memory functions operate on IOP RAM, including KSEG0/1
@@ -240,6 +247,8 @@ void c_kernel_hle_bridge::reset_for_reboot()
     m_events.clear();
     m_mailboxes.clear();
     m_heaps.clear();
+    m_fixed_pools.clear();
+    m_variable_pools.clear();
     std::fill(std::begin(m_dma_direction),
               std::end(m_dma_direction), 0u);
     m_next_object = 1u;
@@ -346,6 +355,344 @@ bool c_kernel_hle_bridge::take_event(
         event.m_bits = 0u;
     }
     return true;
+}
+
+uint32_t c_kernel_hle_bridge::variable_pool_take(
+    s_variable_pool& pool, uint32_t requested
+)
+{
+    uint64_t size = (static_cast<uint64_t>(requested) + 7u) & ~uint64_t(7u);
+    if (size == 0u)
+    {
+        size = 8u;
+    }
+    if (size > pool.m_size)
+    {
+        return 0u;
+    }
+    uint64_t candidate = pool.m_base;
+    const uint64_t end = candidate + pool.m_size;
+    for (const auto& block : pool.m_blocks)
+    {
+        if (candidate + size <= block.first)
+        {
+            break;
+        }
+        candidate = std::max(
+            candidate, static_cast<uint64_t>(block.first) + block.second
+        );
+    }
+    if (candidate + size > end ||
+        candidate > std::numeric_limits<uint32_t>::max())
+    {
+        return 0u;
+    }
+    const uint32_t address = static_cast<uint32_t>(candidate);
+    pool.m_blocks.emplace(address, static_cast<uint32_t>(size));
+    return address;
+}
+
+bool c_kernel_hle_bridge::handle_fixed_pool(uint32_t ordinal)
+{
+    s_cpu_state& cpu = m_kernel.cpu().state();
+    if (ordinal == 4u)
+    {
+        const uint32_t descriptor = cpu.m_gpr[4];
+        uint32_t attr = 0u, option = 0u, block = 0u, count = 0u;
+        if (!is_iop_ram_span(descriptor, 16u) ||
+            !m_kernel.cpu().read32(descriptor, &attr) ||
+            !m_kernel.cpu().read32(descriptor + 4u, &option) ||
+            !m_kernel.cpu().read32(descriptor + 8u, &block) ||
+            !m_kernel.cpu().read32(descriptor + 12u, &count))
+        {
+            return false;
+        }
+        const uint64_t block_size =
+            (static_cast<uint64_t>(block) + 3u) & ~uint64_t(3u);
+        const uint64_t allocation = block_size * count;
+        if (block_size == 0u || count == 0u ||
+            block_size > std::numeric_limits<uint32_t>::max() ||
+            allocation > c_cpu::k_ram_size)
+        {
+            return false;
+        }
+        const uint32_t base =
+            m_kernel.allocate_heap(static_cast<uint32_t>(allocation));
+        if (base == 0u)
+        {
+            return false;
+        }
+        s_fixed_pool pool{};
+        pool.m_attr = attr;
+        pool.m_option = option;
+        pool.m_base = base;
+        pool.m_block_size = static_cast<uint32_t>(block_size);
+        pool.m_block_count = count;
+        for (uint32_t i = count; i-- > 0u;)
+        {
+            pool.m_free.push_back(
+                base + i * static_cast<uint32_t>(block_size));
+        }
+        const uint32_t id = m_next_object++;
+        m_fixed_pools.emplace(id, std::move(pool));
+        cpu.m_gpr[2] = id;
+        return true;
+    }
+    const uint32_t id = cpu.m_gpr[4];
+    auto found = m_fixed_pools.find(id);
+    if (found == m_fixed_pools.end())
+    {
+        return false;
+    }
+    s_fixed_pool& pool = found->second;
+    switch (ordinal)
+    {
+    case 5u:
+        for (uint32_t waiter : pool.m_waiters)
+        {
+            const s_kernel_thread* thread = m_kernel.thread(waiter);
+            if (thread == nullptr ||
+                thread->m_status != e_thread_status::blocked)
+            {
+                return false;
+            }
+        }
+        if (!m_kernel.owns_heap_span(pool.m_base, 1u))
+        {
+            return false;
+        }
+        for (uint32_t waiter : pool.m_waiters)
+        {
+            if (!m_kernel.wake_thread_with_result(
+                    waiter, static_cast<uint32_t>(-425)))
+            {
+                return false;
+            }
+        }
+        if (!m_kernel.free_heap(pool.m_base))
+        {
+            return false;
+        }
+        m_fixed_pools.erase(found);
+        cpu.m_gpr[2] = 0u;
+        return true;
+    case 6u:
+    case 7u:
+    case 8u:
+        if (pool.m_free.empty())
+        {
+            if (ordinal != 6u)
+            {
+                cpu.m_gpr[2] = 0u;
+                return true;
+            }
+            if (!m_kernel.block_current(6u))
+            {
+                return false;
+            }
+            pool.m_waiters.push_back(m_kernel.current_thread_id());
+            return true;
+        }
+        cpu.m_gpr[2] = pool.m_free.back();
+        pool.m_in_use.insert(cpu.m_gpr[2]);
+        pool.m_free.pop_back();
+        return true;
+    case 9u:
+    {
+        const uint32_t address = cpu.m_gpr[5];
+        if (pool.m_in_use.count(address) == 0u)
+        {
+            return false;
+        }
+        if (!pool.m_waiters.empty())
+        {
+            const uint32_t waiter = pool.m_waiters.front();
+            const s_kernel_thread* thread = m_kernel.thread(waiter);
+            if (thread == nullptr ||
+                thread->m_status != e_thread_status::blocked ||
+                !m_kernel.wake_thread_with_result(waiter, address))
+            {
+                return false;
+            }
+            pool.m_waiters.pop_front();
+        }
+        else
+        {
+            pool.m_in_use.erase(address);
+            pool.m_free.push_back(address);
+        }
+        cpu.m_gpr[2] = 0u;
+        return true;
+    }
+    default:
+        return false;
+    }
+}
+
+bool c_kernel_hle_bridge::handle_variable_pool(uint32_t ordinal)
+{
+    s_cpu_state& cpu = m_kernel.cpu().state();
+    if (ordinal == 4u)
+    {
+        const uint32_t descriptor = cpu.m_gpr[4];
+        uint32_t attr = 0u, option = 0u, bytes = 0u;
+        if (!is_iop_ram_span(descriptor, 12u) ||
+            !m_kernel.cpu().read32(descriptor, &attr) ||
+            !m_kernel.cpu().read32(descriptor + 4u, &option) ||
+            !m_kernel.cpu().read32(descriptor + 8u, &bytes))
+        {
+            return false;
+        }
+        const uint64_t size =
+            (static_cast<uint64_t>(bytes) + 7u) & ~uint64_t(7u);
+        if (size == 0u || size > c_cpu::k_ram_size)
+        {
+            return false;
+        }
+        const uint32_t base =
+            m_kernel.allocate_heap(static_cast<uint32_t>(size));
+        if (base == 0u)
+        {
+            return false;
+        }
+        const uint32_t id = m_next_object++;
+        s_variable_pool pool{};
+        pool.m_attr = attr;
+        pool.m_option = option;
+        pool.m_base = base;
+        pool.m_size = static_cast<uint32_t>(size);
+        m_variable_pools.emplace(id, std::move(pool));
+        cpu.m_gpr[2] = id;
+        return true;
+    }
+    const uint32_t id = cpu.m_gpr[4];
+    auto found = m_variable_pools.find(id);
+    if (found == m_variable_pools.end())
+    {
+        return false;
+    }
+    s_variable_pool& pool = found->second;
+    switch (ordinal)
+    {
+    case 5u:
+        for (const s_variable_pool_waiter& waiter : pool.m_waiters)
+        {
+            const s_kernel_thread* thread =
+                m_kernel.thread(waiter.m_thread);
+            if (thread == nullptr ||
+                thread->m_status != e_thread_status::blocked)
+            {
+                return false;
+            }
+        }
+        if (!m_kernel.owns_heap_span(pool.m_base, 1u))
+        {
+            return false;
+        }
+        for (const s_variable_pool_waiter& waiter : pool.m_waiters)
+        {
+            if (!m_kernel.wake_thread_with_result(
+                    waiter.m_thread, static_cast<uint32_t>(-425)))
+            {
+                return false;
+            }
+        }
+        if (!m_kernel.free_heap(pool.m_base))
+        {
+            return false;
+        }
+        m_variable_pools.erase(found);
+        cpu.m_gpr[2] = 0u;
+        return true;
+    case 6u:
+    case 7u:
+    case 8u:
+    {
+        const uint32_t address = variable_pool_take(
+            pool, cpu.m_gpr[5]);
+        if (address != 0u)
+        {
+            cpu.m_gpr[2] = address;
+            return true;
+        }
+        if (ordinal != 6u)
+        {
+            cpu.m_gpr[2] = static_cast<uint32_t>(-400);
+            return true;
+        }
+        if (!m_kernel.block_current(7u))
+        {
+            return false;
+        }
+        pool.m_waiters.push_back({
+            m_kernel.current_thread_id(), cpu.m_gpr[5]
+        });
+        return true;
+    }
+    case 9u:
+    {
+        if (pool.m_blocks.erase(cpu.m_gpr[5]) == 0u)
+        {
+            return false;
+        }
+        while (!pool.m_waiters.empty())
+        {
+            const s_variable_pool_waiter waiter = pool.m_waiters.front();
+            const s_kernel_thread* thread =
+                m_kernel.thread(waiter.m_thread);
+            if (thread == nullptr ||
+                thread->m_status != e_thread_status::blocked)
+            {
+                return false;
+            }
+            const uint32_t assigned =
+                variable_pool_take(pool, waiter.m_size);
+            if (assigned == 0u)
+            {
+                break;
+            }
+            if (!m_kernel.wake_thread_with_result(
+                    waiter.m_thread, assigned))
+            {
+                pool.m_blocks.erase(assigned);
+                return false;
+            }
+            pool.m_waiters.pop_front();
+        }
+        cpu.m_gpr[2] = 0u;
+        return true;
+    }
+    case 11u:
+    case 12u:
+    {
+        const uint32_t output = cpu.m_gpr[5];
+        if (!is_iop_ram_span(output, 20u))
+        {
+            return false;
+        }
+        uint32_t used = 0u;
+        for (const auto& item : pool.m_blocks)
+        {
+            used += item.second;
+        }
+        const uint32_t words[5] = {
+            pool.m_attr, pool.m_option, pool.m_size,
+            pool.m_size - used,
+            static_cast<uint32_t>(pool.m_waiters.size())
+        };
+        for (uint32_t i = 0u; i < 5u; ++i)
+        {
+            if (!m_kernel.cpu().write32(output + i * 4u, words[i]))
+            {
+                return false;
+            }
+        }
+        cpu.m_gpr[2] = 0u;
+        return true;
+    }
+    default:
+        return false;
+    }
 }
 
 bool c_kernel_hle_bridge::handle_heaplib(uint32_t ordinal)
@@ -1703,6 +2050,8 @@ bool c_kernel_hle_bridge::handle_syscall(
     case 9u: return handle_sysmem(ordinal);
     case 10u: return handle_thmsgbx(ordinal);
     case 11u: return handle_heaplib(ordinal);
+    case 12u: return handle_fixed_pool(ordinal);
+    case 13u: return handle_variable_pool(ordinal);
     default: return false;
     }
 }
