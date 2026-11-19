@@ -184,6 +184,178 @@ bool c_kernel::register_library(
     return library.emplace(ordinal, entry).second;
 }
 
+// LOADCORE RegisterLibraryEntries/ReleaseLibraryEntries operate on actual
+// relocated IRX export tables, not an arbitrary guest-supplied name/address.
+// Modules publish their entries during load_irx() after transactional
+// validation; the original entrypoint's RegisterLibraryEntries is therefore
+// initially idempotent. Release unregisters exactly that module's exports.
+// Previously bound consumer JAL stubs are not repatched (linker limitation).
+bool c_kernel::set_module_library_registration(
+    uint32_t table, bool registered)
+{
+    if ((table & 3u) != 0u)
+    {
+        return false;
+    }
+    const uint32_t physical = table & 0x1fffffffu;
+    const s_kernel_module* owner = nullptr;
+    for (const auto& item : m_modules)
+    {
+        const s_irx_module& module = item.second.m_irx;
+        const uint64_t base = module.m_base;
+        const uint64_t end = base + module.m_size;
+        if (physical >= base &&
+            static_cast<uint64_t>(physical) + 24u <= end)
+        {
+            owner = &item.second;
+            break;
+        }
+    }
+    if (owner == nullptr)
+    {
+        return false;
+    }
+
+    uint32_t marker = 0u;
+    if (!m_cpu.read32(table, &marker) || marker != 0x41c00000u)
+    {
+        return false;
+    }
+    std::string name;
+    for (uint32_t i = 0u; i < 8u; ++i)
+    {
+        uint8_t ch = 0u;
+        if (!m_cpu.read8(table + 12u + i, &ch))
+        {
+            return false;
+        }
+        if (ch == 0u)
+        {
+            break;
+        }
+        if (ch < 0x21u || ch > 0x7eu)
+        {
+            return false;
+        }
+        name.push_back(static_cast<char>(ch));
+    }
+    if (name.empty())
+    {
+        return false;
+    }
+
+    std::map<uint16_t, uint32_t> expected;
+    for (const s_irx_export& item : owner->m_irx.m_exports)
+    {
+        if (item.m_library == name)
+        {
+            if (!expected.emplace(item.m_ordinal, item.m_entry).second)
+            {
+                return false;
+            }
+        }
+    }
+    if (expected.empty())
+    {
+        return false;
+    }
+
+    // Recheck all guest words against the real module export metadata,
+    // including zero holes in sparse tables, before touching the registry.
+    // The 20-byte header is followed by ordinal-indexed 32-bit pointers.
+    const uint64_t end = static_cast<uint64_t>(owner->m_irx.m_base) +
+        owner->m_irx.m_size;
+    uint32_t entries_seen = 0u;
+    bool terminated = false;
+    for (uint32_t ordinal = 0u; ordinal < 1024u; ++ordinal)
+    {
+        const uint64_t offset = static_cast<uint64_t>(physical) +
+            20u + static_cast<uint64_t>(ordinal) * 4u;
+        if (offset + 4u > end)
+        {
+            return false;
+        }
+        uint32_t entry = 0u;
+        if (!m_cpu.read32(table + 20u + ordinal * 4u, &entry))
+        {
+            return false;
+        }
+        const auto found = expected.find(static_cast<uint16_t>(ordinal));
+        if (found == expected.end())
+        {
+            if (entry != 0u)
+            {
+                return false;
+            }
+            if (expected.upper_bound(static_cast<uint16_t>(ordinal)) ==
+                expected.end())
+            {
+                terminated = true;
+                break;
+            }
+            continue;
+        }
+        if (entry != found->second)
+        {
+            return false;
+        }
+        ++entries_seen;
+    }
+    if (!terminated || entries_seen != expected.size())
+    {
+        return false;
+    }
+
+    // An existing kernel/HLE provider cannot be overwritten or released
+    // using a forged export table. Reject partial and conflicting state.
+    const auto library = m_libraries.find(name);
+    uint32_t existing_count = 0u;
+    for (const auto& entry : expected)
+    {
+        if (library != m_libraries.end())
+        {
+            const auto found = library->second.find(entry.first);
+            if (found != library->second.end())
+            {
+                if (found->second != entry.second)
+                {
+                    return false;
+                }
+                ++existing_count;
+            }
+        }
+    }
+    if (existing_count != 0u && existing_count != expected.size())
+    {
+        return false;
+    }
+    if (registered)
+    {
+        if (existing_count == 0u)
+        {
+            auto& entries = m_libraries[name];
+            entries.insert(expected.begin(), expected.end());
+        }
+    }
+    else
+    {
+        if (existing_count != expected.size() ||
+            library == m_libraries.end())
+        {
+            return false;
+        }
+        for (const auto& entry : expected)
+        {
+            library->second.erase(entry.first);
+        }
+        if (library->second.empty())
+        {
+            m_libraries.erase(library);
+        }
+    }
+    return true;
+}
+
 uint32_t c_kernel::allocate(uint32_t size)
 {
     const uint64_t required = align16(size);
