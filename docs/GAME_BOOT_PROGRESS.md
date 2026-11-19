@@ -2058,3 +2058,35 @@ same block passed an empty `--root`, resolving to the repository directory.
 Assigning it immediately *before* the installer block now passes
 `build\\_deps\\wgpu-native` and preserves a user-provided SDK path.
 This fixes fresh setups without removing the SDK path safety check.
+
+## Proactive IOP SYSCLIB string-family batch
+
+Before another Windows SDBZ run, the user requested further proactive kernel
+work rather than blocking on repeated local auto-expansion. The real
+`MCMAN.IRX` seq14 import failure proves that this game boots through
+IOP SYSCLIB dependencies. The PS2SDK source
+`iop/system/sysclib/src/exports.tab` is the ordinal authority (0-based).
+It maps #20–#34 to `strcat`, `strchr`, `strcmp`, `strcpy`,
+`strcspn`, `index`, `rindex`, `strlen`, `strncat`, `strncmp`,
+`strncpy`, `strpbrk`, `strrchr`, `strspn` and `strstr`.
+
+The `iop_sysclib_strings` implementation exports that coherent family and
+executes real guest-memory effects through IOP c_cpu, never host addresses.
+CString scans are bounded to 65536 bytes; source and destination accesses
+are limited to IOP RAM and its KSEG0/KSEG1 aliases. Guest return values,
+NUL terminators, overlap-free checked writes, exact/truncated comparison
+semantics and unknown-address rejection are implemented. No write begins
+without full destination-span validation. #29 `strncmp` now uses the same
+bounded path; the older isolated implementation is removed.
+
+The `iop_sysclib_string` CTest exercises all 15 imported symbols, correct
+pointer/length/difference values, NUL search, substring and span semantics,
+concat/truncation/padding, KSEG aliases, invalid-source/destination rollback
+and unsupported ordinal #35 rejection.
+
+**Deliberate exclusions:** SYSCLIB `setjmp`/`longjmp` (#4/#5),
+formatting (#18/#19/#42), stateful `strtok` (#35/#43), and hardware
+services remain unknown/unimplemented, never silent success. Exact
+PS2 `MCMAN.IRX` post-#12 demand and the EE `_SetTLBEntry` continuation
+still require new matched Windows diagnostics; these source additions do
+not establish runtime advancement or new visible GS frames.
