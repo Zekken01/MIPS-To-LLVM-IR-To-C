@@ -1718,3 +1718,7 @@ CI is checked per exact branch HEAD (do not infer the result of a newer commit f
 ### Provenance and bounds follow-up
 
 The offline M2 analyzer accepts optional `--catalog <matching-iop-disc-catalog.json>` and `--revision <verified-commit-sha>`; absent explicit revision is reported as unknown rather than inferred from a subsequent checkout. It hashes the supplied catalog and reports the catalog's ELF SHA-256 as *catalog-supplied*, not an independent ELF rehash. It also captures the **actual native runner invocation** found in the log and separately reports whether `--gs-webgpu-snapshot` was passed; no PPM file alone establishes this. The max-record safety cap now uses a constant-size overflow flag rather than storing every dropped index. These remain host diagnostic observations and do not change guest execution.
+
+### M2.1 verified-USA-ELF correction
+
+The USA SLUS_214.42 ELF SHA-256 matches the 07:27 catalog. See [M2.1 physical GIF DMA and VU predicate map](M2_SDBZ_0727_ELF_GS_DEPENDENCIES.md). The apparent `0x00173250 ↔ 0x001734e4` hot loop is a finite VU/COP2 register-save helper, **not** the game idle predicate. The exact DMA predicates include GIF CHCR STR at `0x1000a000` (ELF `0x00102814`) and the mode-1 check through `0x001730c0` from `0x00105020`. New bounded read-only GIF state counters observe channel 2 CHCR/MADR/QWC/TADR and GIF write/rejection sequence. A missing producer is **not yet proven**; no synthetic completion was added.

@@ -2221,11 +2221,16 @@ int main(int argc, char** argv)
             }
             history.push_back({dispatched, from_pc, out_pc, reason, status});
             // Host read-only observations, not synthetic guest events.
+            const auto gif_channel = hardware.dmac().gif_channel_state();
             const ee::s_ee_hot_loop_state state{
                 current_thread_id,
                 cpu.m_cop0[12], cpu.m_cop0[13],
                 hardware.intc().status(), hardware.intc().mask(),
                 hardware.dmac().status(), hardware.dmac().pending(),
+                gif_channel.m_chcr, gif_channel.m_madr,
+                gif_channel.m_qwc, gif_channel.m_tadr,
+                hardware.dmac().gif_trace_count(),
+                static_cast<uint32_t>(hardware.dmac().gif_last_reject()),
                 hardware.scanout().fields_started(), hardware.scanout().csr(),
                 last_iop_rpc_sequence
             };

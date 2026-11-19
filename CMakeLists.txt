@@ -370,6 +370,10 @@ target_link_libraries(ee_physical_bus_test PRIVATE ee_core)
 add_executable(ee_intc_test tests/smoke/ee_intc_test.cpp)
 target_link_libraries(ee_intc_test PRIVATE ee_core)
 
+add_executable(ee_dmac_gif_observer_test tests/smoke/ee_dmac_gif_observer_test.cpp)
+target_link_libraries(ee_dmac_gif_observer_test PRIVATE ee_core)
+add_test(NAME ee_dmac_gif_observer COMMAND ee_dmac_gif_observer_test)
+
 add_executable(ee_dmac_test tests/smoke/ee_dmac_test.cpp)
 target_link_libraries(ee_dmac_test PRIVATE ee_core)
 

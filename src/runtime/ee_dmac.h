@@ -61,6 +61,16 @@ public:
         e_gif_dma_reject m_reject = e_gif_dma_reject::none;
     };
 
+    struct s_gif_channel_state
+    {
+        uint32_t m_chcr = 0u;
+        uint32_t m_madr = 0u;
+        uint32_t m_qwc = 0u;
+        uint32_t m_tadr = 0u;
+    };
+
+    // Physical GIF-channel state for host diagnostics (read only).
+    s_gif_channel_state gif_channel_state() const;
     uint64_t gif_trace_count() const;
     bool gif_trace_newest(uint32_t offset, s_gif_dma_write* result) const;
     e_gif_dma_reject gif_last_reject() const;

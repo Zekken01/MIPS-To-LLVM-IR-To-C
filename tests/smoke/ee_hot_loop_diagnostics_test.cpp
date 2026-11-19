@@ -36,6 +36,8 @@ int main()
     hotspots.record(2u, 0x172e20u, 0x172e48u, initial);
     ee::s_ee_hot_loop_state changed = initial;
     changed.m_gs_fields = 1u;
+    changed.m_gif_chcr = 0x100u;
+    changed.m_gif_write_sequence = 4u;
     hotspots.record(3u, 0x1730c0u, 0x172e20u, changed);
     hotspots.record(4u, 0x102670u, 0x1730c0u, changed);
     hotspots.record(5u, 0x172e20u, 0x172e48u, changed);
@@ -47,6 +49,8 @@ int main()
     assert(json.find("\"untracked_pc_samples\": 1") != std::string::npos);
     assert(json.find("\"total_state_changes\": 1") != std::string::npos);
     assert(json.find("\"gs_fields\": 1") != std::string::npos);
+    assert(json.find("\"gif_chcr\": 256") != std::string::npos);
+    assert(json.find("\"gif_write_sequence\": 4") != std::string::npos);
 
     ee::c_ee_dispatch_hotspots changes;
     ee::s_ee_hot_loop_state state{};

@@ -22,6 +22,12 @@ struct s_ee_hot_loop_state
     uint32_t m_intc_mask = 0u;
     uint32_t m_dmac_status = 0u;
     uint32_t m_dmac_pending = 0u;
+    uint32_t m_gif_chcr = 0u;
+    uint32_t m_gif_madr = 0u;
+    uint32_t m_gif_qwc = 0u;
+    uint32_t m_gif_tadr = 0u;
+    uint64_t m_gif_write_sequence = 0u;
+    uint32_t m_gif_reject = 0u;
     uint64_t m_gs_fields = 0u;
     uint64_t m_gs_csr = 0u;
     uint64_t m_iop_rpc_sequence = 0u;
@@ -35,6 +41,12 @@ struct s_ee_hot_loop_state
             m_intc_mask == other.m_intc_mask &&
             m_dmac_status == other.m_dmac_status &&
             m_dmac_pending == other.m_dmac_pending &&
+            m_gif_chcr == other.m_gif_chcr &&
+            m_gif_madr == other.m_gif_madr &&
+            m_gif_qwc == other.m_gif_qwc &&
+            m_gif_tadr == other.m_gif_tadr &&
+            m_gif_write_sequence == other.m_gif_write_sequence &&
+            m_gif_reject == other.m_gif_reject &&
             m_gs_fields == other.m_gs_fields &&
             m_gs_csr == other.m_gs_csr &&
             m_iop_rpc_sequence == other.m_iop_rpc_sequence;
@@ -220,11 +232,18 @@ private:
             "{\"thread_id\": %u, \"cop0_status\": %u,"
             " \"cop0_cause\": %u, \"intc_status\": %u,"
             " \"intc_mask\": %u, \"dmac_status\": %u,"
-            " \"dmac_pending\": %u, \"gs_fields\": %llu,"
-            " \"gs_csr\": %llu, \"iop_rpc_sequence\": %llu}",
+            " \"dmac_pending\": %u, \"gif_chcr\": %u,"
+            " \"gif_madr\": %u, \"gif_qwc\": %u, \"gif_tadr\": %u,"
+            " \"gif_write_sequence\": %llu, \"gif_reject\": %u,"
+            " \"gs_fields\": %llu, \"gs_csr\": %llu,"
+            " \"iop_rpc_sequence\": %llu}",
             state.m_thread_id, state.m_cop0_status, state.m_cop0_cause,
             state.m_intc_status, state.m_intc_mask,
             state.m_dmac_status, state.m_dmac_pending,
+            state.m_gif_chcr, state.m_gif_madr,
+            state.m_gif_qwc, state.m_gif_tadr,
+            static_cast<unsigned long long>(state.m_gif_write_sequence),
+            state.m_gif_reject,
             static_cast<unsigned long long>(state.m_gs_fields),
             static_cast<unsigned long long>(state.m_gs_csr),
             static_cast<unsigned long long>(state.m_iop_rpc_sequence));
