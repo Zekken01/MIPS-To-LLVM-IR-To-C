@@ -1906,3 +1906,11 @@ PR #142 is squash-merged to `main` as `c576a0cec1732d21efb04889cc95a627f0883ece`
 **Last matched real game evidence remains** the command-slot pending/VIF1 CHCR `0x1c5`, TADR `0x00771400` and red fallback. No local Windows boot rerun has yet established game VIF packet acceptance or a new framebuffer. Continue to fail closed on unsupported DMA/VIF/GIF operations; never clear STR, raise D_STAT, free the guest command slot or invent graphics as a substitute for hardware execution.
 
 Before requesting another local Windows run, require exact-commit CI success for Build and test (game and fast-0/1/2), SIF DMA, ROM0 and Native WebGPU, followed by coherent M2.8 GIF path arbitration as needed.
+
+## M2.5/VIF1 NEXT DMA address bug found in matched 16:14 Windows batch — 2026-11-19
+
+The completed USA run still reached dispatch 10495 with pending command flag 1, VIF1 CHCR `0x1C5` and TADR `0x00771400`, and reached its red fallback at dispatch 36205. It ended after the 100000-dispatch budget with the flag and registers unchanged. New read-only probe `chain_reject=3` is specifically **invalid_tag_address**. The captured tag at `0x00771400` is `0x0077144020000003` (NEXT, QWC 3, destination `0x00771440`) and TTE code `0x5000000313000000`. The DMAC walker wrongly read ADDR from TTE data, generating `0x13000000`, and was corrected on the follow-on PR #143 branch. Regression fixtures now use the architectural first-word encoding, with real-tag and rollback tests. This bug predates Batch C.
+
+Same-invocation snapshots: GS display and GS upload are all black; WebGPU readback has one nonblack red pixel. Diagnostic GS counters still report 2275 nonblack untextured sprite kicks; these are not proof of correctly displayed graphics. The disc catalog records 7 static candidate IRX paths but just 1 final-replay committed runtime load (`SIO2MAN.IRX`) and 13 SIFRPC commits, not seven runtime module starts. Do not claim progress before the next post-fix run.
+
+The pre-fix batch is matched by `20261119-161404` through `20261119-161408` filenames. The translation-cache input hash includes the current VU1 code; compilation/rebuild happens through `run_ps2_game.bat`. Do not blame stale executable without evidence. Continue HLE-first, preserve transactional DMA semantics, and do not fake guest completion or graphics.
