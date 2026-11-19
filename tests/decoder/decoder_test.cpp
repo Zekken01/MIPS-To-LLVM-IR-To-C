@@ -231,8 +231,9 @@ int main()
                         selector, word);
         }
         // Other low bits remain reserved even if the interlock bit is set.
+        const char* base_names[4] = {"qmfc2", "cfc2", "qmtc2", "ctc2"};
         expect("cop2 bit1 reserved",
-               R(0x12, selector, 4, 6, 0, 3), names[index], X);
+               R(0x12, selector, 4, 6, 0, 3), base_names[index], X);
     }
 
     // Cover all actual COP2 transfer opcodes reached by the SDBZ startup.
