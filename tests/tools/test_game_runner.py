@@ -1173,6 +1173,29 @@ def make_unsupported_instruction_elf(path):
     path.write_bytes(image)
 
 
+def make_vu0_indexed_native_elf(path):
+    """Exercise real COP2 transfer and indexed quadword macros in one CFG."""
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    program = [
+        0x3c081234,  # lui t0,0x1234
+        0x35085678,  # ori t0,t0,0x5678
+        0x48a81800,  # qmtc2 t0,vf3
+        0x24090000,  # addiu t1,zero,0
+        0x48c90800,  # ctc2 t1,vi1
+        0x4b011b7d,  # vsqi.x vf3,(vi1++)
+        0x48c91000,  # ctc2 t1,vi2
+        0x4b02137c,  # vlqi.x vf2,(vi2++)
+        0x482a1000,  # qmfc2 t2,vf2
+        0x484b0800,  # cfc2 t3,vi1
+        0x484c1000,  # cfc2 t4,vi2
+        0x0000000d,  # break after all guest side effects
+    ]
+    for index, word in enumerate(program):
+        struct.pack_into("<I", image, 0x108 + 4 * index, word)
+    path.write_bytes(image)
+
+
 def make_ee_timer_poll_elf(path):
     """Exercise guest-programmed Timer 0 COUNT advancing inside native CFG."""
     make_elf(path)
@@ -3247,6 +3270,39 @@ def main():
         )
         assert ("EE unsupported code: > pc=0x00100008 "
                 "ELF=0x4c000000 RAM=0x4c000000") in result.stderr, (
+            result.stdout, result.stderr
+        )
+
+    # Both real VU0 data memory macros and COP2 register transfers must
+    # execute in a single emitted native block, not through a host fallback.
+    with tempfile.TemporaryDirectory(prefix="ee-native-vu0-indexed-") as tmp:
+        root = Path(tmp)
+        elf = root / "vu0-indexed.elf"
+        make_vu0_indexed_native_elf(elf)
+        report_path = root / "vu0-indexed.json"
+        result = subprocess.run(
+            [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf), "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--functions=entry",
+                "--max-dispatches=16",
+                "--hle-startup", "--kseg-ram",
+                "--report", str(report_path),
+                "--timeout-seconds=10",
+            ],
+            capture_output=True, text=True, check=False, timeout=40,
+        )
+        assert result.returncode == 3, (result.stdout, result.stderr)
+        snapshot = json.loads(report_path.read_text(encoding="utf-8"))
+        assert snapshot["exit_name"] == "EXCEPTION", (
+            snapshot, result.stdout, result.stderr
+        )
+        assert (snapshot["cop0_cause"] >> 2) & 31 == 9, snapshot
+        assert snapshot["gpr_lo"][10] & 0xffffffff == 0x12345678, snapshot
+        assert snapshot["gpr_lo"][11] == 1, snapshot
+        assert snapshot["gpr_lo"][12] == 1, snapshot
+        assert "EE unsupported guest PC:" not in result.stderr, (
             result.stdout, result.stderr
         )
 
