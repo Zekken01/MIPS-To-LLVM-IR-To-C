@@ -67,6 +67,7 @@ private:
                      uint32_t mode) const;
     bool take_event(s_event& event, uint32_t bits, uint32_t mode,
                     uint32_t output);
+    bool handle_sysmem(uint32_t ordinal);
     bool handle_loadcore(uint32_t ordinal);
     bool handle_intrman(uint32_t ordinal);
     bool handle_stdio(uint32_t ordinal);
