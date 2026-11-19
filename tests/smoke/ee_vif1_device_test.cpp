@@ -127,13 +127,13 @@ int main()
         return 1;
     }
 
-    // MPG writes the real VU1 microprogram memory. An MSCAL cannot
-    // succeed until a genuine VU1 interpreter is connected.
+    // MPG writes the real VU1 microprogram memory. A VU program with
+    // an unsupported upper opcode must reject MSCAL transactionally.
     const uint32_t before = vif1.read_register(0x40u);
     if (!check(!send(vif1, {0x01000202u, 0x4a010002u,
-                           0x11223344u, 0x55667788u,
+                           0x11223344u, 0x00000030u,
                            0x14000002u, 0u, 0u, 0u}),
-               "MSCAL without a VU engine succeeded") ||
+               "unsupported MSCAL microprogram succeeded") ||
         !check(vif1.diagnostic().m_reason ==
                ee::c_ee_vif1::e_reject::unsupported_vu_execution &&
                vif1.diagnostic().m_code == 0x14000002u,
