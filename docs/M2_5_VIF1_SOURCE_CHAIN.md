@@ -101,3 +101,13 @@ IRQ as a shortcut.
    and raise DMAC channel-1 status/interrupt.
 5. CTest + Windows/Linux build, SIF and ROM0 CI
    green at exact commit; PR #142 remains draft.
+
+## Matched USA Windows boot 2026-11-19 16:14 — NEXT address decode fix
+
+Matched five artifacts by invocation: `boot(20261119-161406).log`, `expansion(20261119-161404).log`, `first-boot(20261119-161404).json`, `iop-disc-catalog(20261119-161407).json`, and `translation-cache(20261119-161408).json`; GS snapshots are from the same replay (`gs-display(20261119-161404).ppm`, `gs-upload(20261119-161404).ppm`, and WebGPU readback).
+
+The first pending command slot at dispatch 10495 had VIF1 `CHCR=0x000001C5`, `TADR=0x00771400`, and `vif1.chain_reject=3` (`invalid_tag_address`). Its real first DMA tag `0x0077144020000003` encodes `NEXT`, QWC 3, ADDR `0x00771440`; the following TTE VIF code word is `0x5000000313000000` (`0x13000000` and `0x50000003`). Prior code incorrectly read the chain's external address as `tag.m_hi & 0xfffffff0` and tried `0x13000000` instead of reading bits 32..63 of `tag.m_lo`. That address is outside EE RAM, causing the genuine invalid-tag rejection and leaving the guest DMA command pending. This is a confirmed DMAC implementation defect, unrelated to newly added VU1 opcodes.
+
+Fix: decode `external = (low >> 32) & 0xfffffff0`, retaining the scratchpad selector, independently of the upper TTE half. The previous `ee_vif1_chain` synthetic writer incorrectly encoded the external DMA address in the TTE half and therefore failed to detect the defect. The writer is corrected, and regressions cover the captured NEXT/TTE sequence, nonsequential NEXT routing, and fail-closed invalid-next rollback. The separate PATH3 tag parser already decoded bits 32..63 correctly.
+
+**Verification boundary:** This fix is proven by source inspection and targeted regression once CI passes. The only matched Windows boot is from *before* the fix: at dispatch 36205, red-loop pending flag was still 1 with CHCR/TADR unchanged, and the run exhausted 100000 dispatches. No post-fix real-game advancement or GIF output may be asserted without new matched Windows evidence.
