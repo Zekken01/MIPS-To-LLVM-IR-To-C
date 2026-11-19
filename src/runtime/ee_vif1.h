@@ -19,6 +19,8 @@ class c_ee_vif1
 public:
     static constexpr uint32_t k_register_base = 0x10003c00u;
     static constexpr uint32_t k_fifo_base = 0x10005000u;
+    static constexpr uint32_t k_vu1_code_base = 0x11008000u;
+    static constexpr uint32_t k_vu1_data_base = 0x1100c000u;
     static constexpr size_t k_vu1_memory_size = 16384u;
 
     enum class e_reject : uint32_t
