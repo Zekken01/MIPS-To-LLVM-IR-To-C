@@ -1,7 +1,9 @@
 #include "iop_cdvdman_bridge.h"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
+#include <ctime>
 #include <vector>
 
 namespace iop
@@ -36,6 +38,11 @@ void put32(uint8_t* bytes, uint32_t value)
         bytes[i] = static_cast<uint8_t>(value >> (8u * i));
     }
 }
+
+uint8_t decimal_to_bcd(uint32_t value)
+{
+    return static_cast<uint8_t>(((value / 10u) << 4u) | (value % 10u));
+}
 } // namespace
 
 c_cdvdman_bridge::c_cdvdman_bridge(
@@ -46,10 +53,30 @@ c_cdvdman_bridge::c_cdvdman_bridge(
 
 bool c_cdvdman_bridge::install()
 {
-    return m_source.valid() &&
-        m_kernel.register_library("cdvdman", 10u, k_search_file_stub) &&
-        create_stub(m_kernel.cpu(), k_search_file_stub,
-                    k_search_file_syscall);
+    if (!m_source.valid() || m_source.sector_count() == 0u)
+    {
+        return false;
+    }
+
+    // Keep the original #10 address stable. Other CDVDMAN services have
+    // distinct executable stubs in the reserved IOP kernel area.
+    constexpr std::array<uint16_t, 7u> ordinals = {
+        4u, 8u, 10u, 12u, 13u, 24u, 28u
+    };
+    for (uint16_t ordinal : ordinals)
+    {
+        const uint32_t pc = ordinal == 10u
+            ? k_search_file_stub
+            : k_extra_stub_base + static_cast<uint32_t>(ordinal) * 0x20u;
+        if (!create_stub(m_kernel.cpu(), pc, k_service_base + ordinal) ||
+            !m_kernel.register_library("cdvdman", ordinal, pc))
+        {
+            return false;
+        }
+    }
+    m_initialized = false;
+    m_last_error = 0u;
+    return true;
 }
 
 bool c_cdvdman_bridge::ram_pointer(
@@ -120,12 +147,110 @@ bool c_cdvdman_bridge::read_path(
     return false;
 }
 
+bool c_cdvdman_bridge::handle_read_clock(uint32_t destination)
+{
+    uint32_t physical = 0u;
+    if (!ram_pointer(destination, 8u, &physical))
+    {
+        return false;
+    }
+
+    // sceCdReadClock returns the eight-byte CDVD RTC layout in BCD.
+    // The reference reports Japan Standard Time (UTC+9); deriving the
+    // calendar after applying the offset also handles date rollover.
+    constexpr std::time_t k_jst_offset = 9 * 60 * 60;
+    const std::time_t now = std::time(nullptr);
+    if (now == static_cast<std::time_t>(-1))
+    {
+        return false;
+    }
+    const std::time_t in_japan = now + k_jst_offset;
+    const std::tm* calendar = std::gmtime(&in_japan);
+    if (calendar == nullptr)
+    {
+        return false;
+    }
+    const uint32_t year = static_cast<uint32_t>(
+        (calendar->tm_year + 1900) % 100);
+    const std::array<uint8_t, 8u> rtc = {
+        0u,
+        decimal_to_bcd(static_cast<uint32_t>(calendar->tm_sec)),
+        decimal_to_bcd(static_cast<uint32_t>(calendar->tm_min)),
+        decimal_to_bcd(static_cast<uint32_t>(calendar->tm_hour)),
+        0u,
+        decimal_to_bcd(static_cast<uint32_t>(calendar->tm_mday)),
+        decimal_to_bcd(static_cast<uint32_t>(calendar->tm_mon + 1)),
+        decimal_to_bcd(year)
+    };
+    for (uint32_t i = 0u; i < rtc.size(); ++i)
+    {
+        if (!m_kernel.cpu().write8(destination + i, rtc[i]))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool c_cdvdman_bridge::handle_syscall(
     c_kernel& kernel, uint32_t service
 )
 {
-    if (&kernel != &m_kernel || service != k_search_file_syscall)
+    if (&kernel != &m_kernel)
     {
+        return false;
+    }
+
+    s_cpu_state& state = m_kernel.cpu().state();
+    switch (service)
+    {
+    case k_service_base + 4u: // sceCdInit
+        // Only the already-mounted verified source is initialised.
+        if (!m_source.valid() || m_source.sector_count() == 0u)
+        {
+            state.m_gpr[2] = 0u;
+            return true;
+        }
+        m_initialized = true;
+        m_last_error = 0u;
+        state.m_gpr[2] = 1u;
+        return true;
+
+    case k_service_base + 8u: // sceCdGetError
+        state.m_gpr[2] = m_last_error;
+        return true;
+
+    case k_service_base + 12u: // sceCdGetDiskType
+        // The mounted SDBZ virtual DVD has one deterministic disc type.
+        state.m_gpr[2] = m_source.valid() &&
+            m_source.sector_count() != 0u ? 0x14u : 0u;
+        return true;
+
+    case k_service_base + 13u: // sceCdDiskReady
+        // No native CDVDMAN command can be pending in this HLE subset;
+        // this checks the mounted sector backend, not physical hardware.
+        state.m_gpr[2] = m_source.valid() &&
+            m_source.sector_count() != 0u ? 2u : 0u;
+        return true;
+
+    case k_service_base + 24u: // sceCdReadClock
+        if (!handle_read_clock(state.m_gpr[4]))
+        {
+            // Invalid guest output is an unsupported syscall boundary,
+            // never a fabricated valid clock.
+            return false;
+        }
+        state.m_gpr[2] = 1u;
+        return true;
+
+    case k_service_base + 28u: // sceCdStatus
+        state.m_gpr[2] = m_source.valid() &&
+            m_source.sector_count() != 0u ? 0x0au : 0u;
+        return true;
+
+    case k_search_file_syscall:
+        break;
+    default:
         return false;
     }
 
