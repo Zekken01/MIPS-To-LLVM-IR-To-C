@@ -71,10 +71,13 @@ constexpr s_export k_exports[] = {
     {"sysclib", 28u, 8u}, {"sysclib", 29u, 8u},
     {"sysclib", 30u, 8u}, {"sysclib", 31u, 8u},
     {"sysclib", 32u, 8u}, {"sysclib", 33u, 8u},
-    {"sysclib", 34u, 8u}, {"sysclib", 36u, 8u},
+    {"sysclib", 34u, 8u}, {"sysclib", 35u, 8u},
+    {"sysclib", 36u, 8u}, {"sysclib", 38u, 8u},
+    {"sysclib", 40u, 8u}, {"sysclib", 41u, 8u},
     {"sysmem", 4u, 9u}, {"sysmem", 5u, 9u},
     {"sysmem", 6u, 9u}, {"sysmem", 7u, 9u},
-    {"sysmem", 8u, 9u}, {"sysmem", 14u, 9u},
+    {"sysmem", 8u, 9u}, {"sysmem", 9u, 9u},
+    {"sysmem", 10u, 9u}, {"sysmem", 14u, 9u},
     {"thmsgbx", 4u, 10u}, {"thmsgbx", 5u, 10u},
     {"thmsgbx", 6u, 10u}, {"thmsgbx", 7u, 10u},
     {"thmsgbx", 8u, 10u}, {"thmsgbx", 9u, 10u},
@@ -251,6 +254,7 @@ void c_kernel_hle_bridge::reset_for_reboot()
     m_variable_pools.clear();
     std::fill(std::begin(m_dma_direction),
               std::end(m_dma_direction), 0u);
+    m_strtok_next = 0u;
     m_next_object = 1u;
     m_cpu_interrupts_suspended = false;
     m_installed = false;
@@ -924,6 +928,19 @@ bool c_kernel_hle_bridge::handle_sysmem(uint32_t ordinal)
     case 8u:
         cpu.m_gpr[2] = m_kernel.heap_total_free();
         return true;
+    case 9u:
+    case 10u:
+    {
+        uint32_t base = 0u;
+        uint32_t size = 0u;
+        if (!m_kernel.query_heap_block(cpu.m_gpr[4], &base, &size))
+        {
+            cpu.m_gpr[2] = 0u;
+            return true;
+        }
+        cpu.m_gpr[2] = ordinal == 9u ? base : size;
+        return true;
+    }
     case 14u:
         // Kprintf uses the same bounded guest formatter as stdio.
         if (!handle_stdio(4u))
@@ -1995,7 +2012,125 @@ bool c_kernel_hle_bridge::handle_sysclib(uint32_t ordinal)
     {
         return execute_sysclib_string(m_kernel.cpu(), ordinal);
     }
-    if (ordinal == 36u)
+    if (ordinal == 35u) // strtok (stateful, bounded IOP strings)
+    {
+        const uint32_t first = cpu.m_gpr[4];
+        uint32_t at = first == 0u ? m_strtok_next : first;
+        std::string delimiters;
+        if (!read_string(cpu.m_gpr[5], 256u, &delimiters))
+        {
+            return false;
+        }
+        if (at == 0u)
+        {
+            cpu.m_gpr[2] = 0u;
+            return true;
+        }
+        uint8_t ch = 0u;
+        uint32_t count = 0u;
+        for (; count < 65536u; ++count)
+        {
+            if (!is_iop_ram_span(at, 1u) ||
+                !m_kernel.cpu().read8(at, &ch))
+            {
+                return false;
+            }
+            if (ch == 0u ||
+                delimiters.find(static_cast<char>(ch)) ==
+                    std::string::npos)
+            {
+                break;
+            }
+            if (at == std::numeric_limits<uint32_t>::max())
+            {
+                return false;
+            }
+            ++at;
+        }
+        if (count == 65536u)
+        {
+            return false;
+        }
+        if (ch == 0u)
+        {
+            m_strtok_next = 0u;
+            cpu.m_gpr[2] = 0u;
+            return true;
+        }
+        const uint32_t token = at;
+        for (; count < 65536u; ++count)
+        {
+            if (!is_iop_ram_span(at, 1u) ||
+                !m_kernel.cpu().read8(at, &ch))
+            {
+                return false;
+            }
+            if (ch == 0u ||
+                delimiters.find(static_cast<char>(ch)) !=
+                    std::string::npos)
+            {
+                break;
+            }
+            if (at == std::numeric_limits<uint32_t>::max())
+            {
+                return false;
+            }
+            ++at;
+        }
+        if (count == 65536u)
+        {
+            return false;
+        }
+        if (ch != 0u)
+        {
+            if (!m_kernel.cpu().write8(at, 0u))
+            {
+                return false;
+            }
+            m_strtok_next = at + 1u;
+        }
+        else
+        {
+            m_strtok_next = at;
+        }
+        cpu.m_gpr[2] = token;
+        return true;
+    }
+    if (ordinal == 40u) // _wmemcopy (byte count in PS2SDK)
+    {
+        const uint32_t target = cpu.m_gpr[4];
+        const uint32_t source = cpu.m_gpr[5];
+        const uint32_t length = cpu.m_gpr[6];
+        std::vector<uint8_t> bytes;
+        if (!read_iop_ram(m_kernel.cpu(), source, length, bytes) ||
+            !write_iop_ram(m_kernel.cpu(), target, bytes))
+        {
+            return false;
+        }
+        cpu.m_gpr[2] = target;
+        return true;
+    }
+    if (ordinal == 41u) // _wmemset (complete 32-bit units)
+    {
+        const uint32_t target = cpu.m_gpr[4];
+        const uint32_t length = cpu.m_gpr[6];
+        if ((target & 3u) != 0u || (length & 3u) != 0u ||
+            !is_iop_ram_span(target, length))
+        {
+            return false;
+        }
+        for (uint32_t i = 0u; i < length; i += 4u)
+        {
+            if (!m_kernel.cpu().write32(
+                    target + i, cpu.m_gpr[5]))
+            {
+                return false;
+            }
+        }
+        cpu.m_gpr[2] = target;
+        return true;
+    }
+    if (ordinal == 36u || ordinal == 38u)
     {
         std::string input;
         if (!read_string(cpu.m_gpr[4], 256u, &input))
@@ -2008,8 +2143,11 @@ bool c_kernel_hle_bridge::handle_sysclib(uint32_t ordinal)
             return false;
         }
         char* end = nullptr;
-        const long converted = std::strtol(
-            input.c_str(), &end, static_cast<int>(base));
+        const uint32_t converted = ordinal == 36u
+            ? static_cast<uint32_t>(std::strtol(
+                input.c_str(), &end, static_cast<int>(base)))
+            : static_cast<uint32_t>(std::strtoul(
+                input.c_str(), &end, static_cast<int>(base)));
         if (cpu.m_gpr[5] != 0u &&
             !m_kernel.cpu().write32(
                 cpu.m_gpr[5],
@@ -2018,7 +2156,7 @@ bool c_kernel_hle_bridge::handle_sysclib(uint32_t ordinal)
         {
             return false;
         }
-        cpu.m_gpr[2] = static_cast<uint32_t>(converted);
+        cpu.m_gpr[2] = converted;
         return true;
     }
     return false;
