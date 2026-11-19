@@ -200,8 +200,8 @@ int main()
         return fail("invalid source span delivered partial GIF payload");
     }
 
-    // Chain DMA for VIF/GIF is not yet supported, even with a sink
-    // installed. Neither source data nor a D_STAT completion is sent.
+    // GIF source chains started with a pending nonzero QWC are not
+    // supported; the staged transfer must remain outstanding.
     hardware.reset();
     sink.m_calls = 0u;
     program(&runtime, k_gif, 0x100u, 1u);
@@ -212,6 +212,137 @@ int main()
     {
         return fail("unsupported GIF chain mode fabricated completion");
     }
+
+    // A complete source chain must forward the actual payloads, in
+    // tag order, and acknowledge channel 2 only after the PATH3 sink.
+    // CNT -> REF -> NEXT -> END covers sequential and jumped tag walks.
+    hardware.reset();
+    sink.m_calls = 0u;
+    sink.m_bytes.clear();
+    const auto write_source_tag =
+        [&](uint32_t at, uint32_t id, uint32_t qwc,
+            uint32_t addr, bool irq)
+    {
+        const ee::s_ee_u128 tag{
+            static_cast<uint64_t>(qwc) |
+                (static_cast<uint64_t>(id) << 28u) |
+                (irq ? 0x80000000ull : 0ull) |
+                (static_cast<uint64_t>(addr) << 32u),
+            0u
+        };
+        ee::ee_mem_write128(&runtime, at, &tag);
+    };
+    const ee::s_ee_u128 data_cnt{0x1111111111111101ull, 0u};
+    const ee::s_ee_u128 data_ref{0x2222222222222202ull, 0u};
+    const ee::s_ee_u128 data_next{0x3333333333333303ull, 0u};
+    const ee::s_ee_u128 data_end{0x4444444444444404ull, 0u};
+    write_source_tag(0x300u, 1u, 1u, 0u, false);
+    ee::ee_mem_write128(&runtime, 0x310u, &data_cnt);
+    write_source_tag(0x320u, 3u, 1u, 0x500u, false);
+    write_source_tag(0x330u, 2u, 1u, 0x400u, false);
+    ee::ee_mem_write128(&runtime, 0x340u, &data_next);
+    write_source_tag(0x400u, 7u, 1u, 0u, false);
+    ee::ee_mem_write128(&runtime, 0x410u, &data_end);
+    ee::ee_mem_write128(&runtime, 0x500u, &data_ref);
+    ee::ee_mem_write32(&runtime, k_gif + 0x30u, 0x300u);
+    program(&runtime, k_gif, 0u, 0u);
+    ee::ee_mem_write32(&runtime, k_gif, k_str | 5u);
+    if (sink.m_calls != 1u || sink.m_channel != 2u ||
+        sink.m_qwc != 4u || sink.m_bytes.size() != 64u ||
+        sink.m_bytes[0] != 1u || sink.m_bytes[16] != 2u ||
+        sink.m_bytes[32] != 3u || sink.m_bytes[48] != 4u ||
+        reg(&runtime, k_gif + 0x10u) != 0x420u ||
+        reg(&runtime, k_gif + 0x20u) != 0u ||
+        reg(&runtime, k_gif + 0x30u) != 0x420u ||
+        (reg(&runtime, k_gif) & (k_str | 0x70000000u)) != 0x70000000u ||
+        (hardware.dmac().status() & (1u << 2u)) == 0u)
+    {
+        return fail("CNT/REF/NEXT/END GIF chain payload or completion");
+    }
+
+    // REFE references external bytes and terminates without using
+    // an inline payload. Its successor TADR is tag+16.
+    hardware.reset();
+    sink.m_calls = 0u;
+    write_source_tag(0x600u, 0u, 1u, 0x700u, false);
+    ee::ee_mem_write128(&runtime, 0x700u, &data_ref);
+    ee::ee_mem_write32(&runtime, k_gif + 0x30u, 0x600u);
+    program(&runtime, k_gif, 0u, 0u);
+    ee::ee_mem_write32(&runtime, k_gif, k_str | 5u);
+    if (sink.m_calls != 1u || sink.m_qwc != 1u ||
+        sink.m_bytes[0] != 2u ||
+        reg(&runtime, k_gif + 0x10u) != 0x710u ||
+        reg(&runtime, k_gif + 0x30u) != 0x610u ||
+        (reg(&runtime, k_gif) & k_str) != 0u ||
+        (hardware.dmac().status() & (1u << 2u)) == 0u)
+    {
+        return fail("GIF REFE external payload");
+    }
+
+    // TIE + tag IRQ must terminate after this CNT, without walking
+    // into the next tag or fabricating any additional sink calls.
+    hardware.reset();
+    sink.m_calls = 0u;
+    write_source_tag(0x800u, 1u, 1u, 0u, true);
+    ee::ee_mem_write128(&runtime, 0x810u, &data_cnt);
+    ee::ee_mem_write32(&runtime, k_gif + 0x30u, 0x800u);
+    program(&runtime, k_gif, 0u, 0u);
+    ee::ee_mem_write32(&runtime, k_gif, k_str | 5u | 0x80u);
+    if (sink.m_calls != 1u || sink.m_qwc != 1u ||
+        sink.m_bytes[0] != 1u ||
+        reg(&runtime, k_gif + 0x30u) != 0x820u ||
+        (reg(&runtime, k_gif) & k_str) != 0u ||
+        (hardware.dmac().status() & (1u << 2u)) == 0u)
+    {
+        return fail("GIF chain TIE/IRQ termination");
+    }
+
+    // Neither an unsupported CALL tag nor TTE may silently consume
+    // bytes, clear STR, update a register, or raise a completion IRQ.
+    hardware.reset();
+    sink.m_calls = 0u;
+    write_source_tag(0x900u, 5u, 1u, 0x400u, false);
+    ee::ee_mem_write32(&runtime, k_gif + 0x30u, 0x900u);
+    program(&runtime, k_gif, 0u, 0u);
+    ee::ee_mem_write32(&runtime, k_gif, k_str | 5u);
+    if (sink.m_calls != 0u ||
+        reg(&runtime, k_gif + 0x30u) != 0x900u ||
+        (reg(&runtime, k_gif) & k_str) == 0u ||
+        hardware.dmac().status() != 0u)
+    {
+        return fail("unsupported GIF CALL tag falsely completed");
+    }
+    hardware.reset();
+    sink.m_calls = 0u;
+    write_source_tag(0x900u, 7u, 1u, 0u, false);
+    ee::ee_mem_write32(&runtime, k_gif + 0x30u, 0x900u);
+    program(&runtime, k_gif, 0u, 0u);
+    ee::ee_mem_write32(&runtime, k_gif, k_str | 5u | 0x40u);
+    if (sink.m_calls != 0u ||
+        reg(&runtime, k_gif + 0x30u) != 0x900u ||
+        (reg(&runtime, k_gif) & k_str) == 0u ||
+        hardware.dmac().status() != 0u)
+    {
+        return fail("unsupported GIF TTE falsely completed");
+    }
+
+    // Refusal on a valid multi-tag chain preserves register state
+    // and does not generate an interrupt.
+    hardware.reset();
+    sink.m_accept = false;
+    sink.m_calls = 0u;
+    ee::ee_mem_write32(&runtime, k_gif + 0x30u, 0x300u);
+    program(&runtime, k_gif, 0u, 0u);
+    ee::ee_mem_write32(&runtime, k_gif, k_str | 5u);
+    if (sink.m_calls != 1u ||
+        reg(&runtime, k_gif + 0x30u) != 0x300u ||
+        reg(&runtime, k_gif + 0x10u) != 0u ||
+        (reg(&runtime, k_gif) & k_str) == 0u ||
+        hardware.dmac().status() != 0u)
+    {
+        return fail("GIF multi-tag source chain sink refusal mutated state");
+    }
+    sink.m_accept = true;
 
     // QWC=0 can complete without touching a device. This mirrors the
     // reference's zero-byte deliver() no-op rather than stalling forever.
