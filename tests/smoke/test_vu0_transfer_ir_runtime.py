@@ -469,7 +469,8 @@ def main():
             result, cpu, vu0, sync, control, keep = run_guest(
                 fixture, temp_dir, target, mode, init_delay
             )
-            check_sync(sync, expected_mode, ENTRY_PC + 4, mode)
+            expected_pc = ENTRY_PC + (4 if "_delay" in mode else 0)
+            check_sync(sync, expected_mode, expected_pc, mode)
 
         # Sync refusal must preserve the destination regardless of
         # whether the transfer explicitly interlocks.
