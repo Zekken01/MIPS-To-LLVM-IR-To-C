@@ -2108,3 +2108,28 @@ the same bounded classification domain and rejects out-of-range input.
 The `iop_sysclib_ctype` CTest checks exported ordinals, the guest
 table bytes, case conversion and fail-closed bounds. This does not
 manufacture any IOP module start or proof of live game progression.
+
+### Static IRX import inventory — proactive dependency visibility
+
+`tools/iop_irx_imports.py` now reads the imported library name and ordinal
+from **file-backed PT_LOAD** sections of a bounded ELF32/MIPS IRX.
+Its signature matches `src/iop/irx_loader.cpp::resolve_imports`:
+`0x41e00000` import header, eight-byte library name at +12, followed by
+actual `JR RA / ADDIU zero,zero,ordinal` stubs. It never executes, links,
+relocates or loads an IRX, and ignores non-file-backed and unsupported tables.
+
+`tools/iop_disc_catalog.py` records each resolved static candidate's
+`static_imports`, `static_import_count` and `static_import_status`,
+plus a catalog-wide static count. Malformed or unfamiliar IRX import layouts
+are reported as scan failure diagnostics without blocking a valid game boot.
+`run_boot_session.py` prints one static import summary before native
+translation; the already-uploaded `iop-disc-catalog.json` format now
+carries the detail needed to plan *coherent future IOP HLE batches*
+without discovering one unresolved import per separate Windows session.
+
+The synthetic `iop_irx_import_scan` and existing extended
+`iop_disc_catalog` CTests verify real PT_LOAD signatures, import order,
+per-library ordinals, malformed headers, non-loaded data exclusion, and
+catalog-to-runtime evidence isolation. Static imports remain candidate
+evidence, **not** proof of actual SIFRPC requests, module starts, or
+execution. No user game IRX contents are committed to this repo.
