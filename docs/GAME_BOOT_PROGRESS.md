@@ -1887,3 +1887,8 @@ The transactional parser handles split 32-bit VIF commands, V4/V3/V2/V1 UNPACK w
 New `ee_vif1_device` regression exercises packet continuation, UNPACK, masking, micro uploads, physical apertures, PATH2 events and a real bounded synthetic source chain with TTE/TIE. **A synthetic DMA completion is not proof of native SDBZ boot.** The source bytes at `0x00771400` were not captured by the 13:53 user-owned boot, because it predates M2.5's raw source-prefix probe. VU1 micro execution and XGKICK/PATH1 require their own implementation and tests when actual commands are observed.
 
 See [M2.6 Native VIF1 Consumer](M2_6_NATIVE_VIF1_CONSUMER.md). Keep the existing branch/PR #142 draft and unmerged; revalidate exact-commit CI, and use only a new matched Windows boot batch for game progression claims.
+
+
+## M2.7 — Bounded VU1 interpreter and genuine GIF PATH1 (19 November 2026; partial)
+
+Implemented a **strict subset** of VU1 micro execution from the primary ps2-web-recomp reference: MPG-resident microcode, MSCAL/MSCNT, E-bit delay slot, floating-point VF operations, VI branch view, memory operations and genuine XGKICK into PATH1. Unsupported opcodes, flag/Q/P pipelines, MSCALF, mixed-path arbitration and IRQs **fail closed**: no DMA completion or fabricated rendering. The new test exercises MPG → original VU1 microinstructions → GIF PATH1 tag/body, opcode rejection and arithmetic. See [M2.7 VU1 first batch](M2_7_VU1_NATIVE_FIRST_BATCH.md). The 13:53 USA game logs predate the VIF source prefix; do not assert native boot progression. PR #142 remains draft, unmerged.

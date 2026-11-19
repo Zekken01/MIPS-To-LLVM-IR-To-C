@@ -280,6 +280,99 @@ int main()
         return 1;
     }
 
-    std::puts("EE native VIF1 commands, UNPACK/MPG, PATH2 and TTE: PASS");
+
+    // M2.7: run original VU1 pairs from MPG storage, with E-bit
+    // delay-slot termination and a genuine XGKICK GIF PATH1 stream.
+    vif1.reset();
+    ee::c_ee_gif_path3 path1{};
+    path1.bind_event_sink(&capture, capture_gif);
+    vif1.bind_path1(&path1);
+    const uint32_t before_kick = capture.m_calls;
+    const uint32_t nop_upper = 0x000002ffu;
+    const uint32_t nop_lower = 0x8000033cu;
+    // IADDIU VI1, VI0, +2; XGKICK VI1; final delay-slot pair.
+    const uint32_t vi1_two = (0x08u << 25u) | (1u << 16u) | 2u;
+    if (!check(send(vif1, {
+                   0x4a030000u, vi1_two, nop_upper,
+                   0x80000efcu, 0x400002ffu,
+                   nop_lower, nop_upper, 0u}),
+               "VU1 3-instruction MPG upload refused"))
+    {
+        return 1;
+    }
+    const ee::s_ee_u128 kick_tag{0x8001u, 0xeu};
+    const ee::s_ee_u128 kick_body{0x06u, 0u};
+    if (!check(ee::c_ee_vif1::mmio_write(
+                   &vif1, ee::c_ee_vif1::k_vu1_data_base + 32u,
+                   16u, &kick_tag) &&
+               ee::c_ee_vif1::mmio_write(
+                   &vif1, ee::c_ee_vif1::k_vu1_data_base + 48u,
+                   16u, &kick_body),
+               "VU1 data MMIO writes refused") ||
+        !check(send(vif1, {0x14000000u, 0u, 0u, 0u}),
+               "bounded MSCAL/XGKICK rejected") ||
+        !check(capture.m_calls == before_kick + 1u &&
+               capture.m_events.size() >= 2u &&
+               capture.m_events[capture.m_events.size() - 2u].m_type ==
+                   ee::e_ee_gif_event_type::tag &&
+               capture.m_events.back().m_type ==
+                   ee::e_ee_gif_event_type::packed,
+               "real XGKICK did not reach GIF PATH1"))
+    {
+        return 1;
+    }
+
+    // Unknown upper operation must fail before emitting or retiring DMA.
+    // An invalid MPG pair is visible in the actual VU code aperture.
+    const ee::s_ee_u128 unsupported_pair{nop_lower, 0x000002feu};
+    const uint32_t after_kick = capture.m_calls;
+    if (!check(ee::c_ee_vif1::mmio_write(
+                   &vif1, ee::c_ee_vif1::k_vu1_code_base,
+                   16u, &unsupported_pair),
+               "VU1 unsupported-code MMIO failed") ||
+        !check(!send(vif1, {0x14000000u, 0u, 0u, 0u}) &&
+               vif1.diagnostic().m_reason ==
+                   ee::c_ee_vif1::e_reject::unsupported_vu_execution &&
+               vif1.diagnostic().m_vu_pc == 0u &&
+               vif1.diagnostic().m_vu_upper == 0x000002feu &&
+               capture.m_calls == after_kick,
+               "unsupported VU opcode fabricated DMA/GIF completion"))
+    {
+        return 1;
+    }
+
+    // The upper pair writes back after the lower pair; vector arithmetic
+    // uses actual floating-point register bit patterns.
+    ee::s_ee_vu1_state state{};
+    state.m_initialized = true;
+    state.m_vf[0][3] = 0x3f800000u;
+    for (uint32_t lane = 0u; lane < 4u; ++lane)
+    {
+        state.m_vf[2][lane] = 0x3f800000u;
+        state.m_vf[3][lane] = 0x40000000u;
+    }
+    std::array<uint8_t, ee::c_ee_vu1::k_memory_size> code{};
+    std::array<uint8_t, ee::c_ee_vu1::k_memory_size> data{};
+    const uint32_t upper_add =
+        0x40000000u | (15u << 21u) | (3u << 16u) |
+        (2u << 11u) | (1u << 6u) | 0x28u;
+    std::memcpy(code.data(), &nop_lower, 4u);
+    std::memcpy(code.data() + 4u, &upper_add, 4u);
+    std::memcpy(code.data() + 8u, &nop_lower, 4u);
+    std::memcpy(code.data() + 12u, &nop_upper, 4u);
+    std::vector<uint8_t> no_gif;
+    ee::s_ee_vu1_issue issue{};
+    if (!check(ee::c_ee_vu1::run(
+                   state, code, data, 0u, 0u, 0u, no_gif, &issue) &&
+               issue.m_steps == 2u &&
+               state.m_vf[1][0] == 0x40400000u &&
+               state.m_vf[1][3] == 0x40400000u &&
+               no_gif.empty(),
+               "VU1 dual-word arithmetic or E-bit delay-slot failed"))
+    {
+        return 1;
+    }
+
+    std::puts("EE native VIF1/MPG, VU1/XGKICK PATH1, PATH2 and TTE: PASS");
     return 0;
 }

@@ -341,3 +341,8 @@ A standalone `ee_vif1_device` CTest regression checks device parse, data/code up
 **Not yet accepted:** VU1 MSCAL/MSCALF/MSCNT micro execution, XGKICK/PATH1, VIF IRQ/stall/resume and MSKPATH3 arbitration remain fail-closed. In particular, this batch is not evidence of original SDBZ DMA completion, natural release of the guest pending flag, a new displayed frame or disappearance of the red fallback. The only confirmed 13:53 boot predates the raw source-prefix probe and does not contain the tag bytes at `0x00771400`. The next same-invocation Windows log is needed to select the next reference-derived implementation batch, not to justify a shortcut.
 
 Preserve existing M2/M1-A clocks, GIF PATH3, WebGPU, SIF, IOP and EE ISA behavior. Complete CI on the exact post-documentation commit before requesting local validation. Keep [PR #142](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/pull/142) draft and unmerged.
+
+
+## M2.7 — Bounded VU1 interpreter and genuine GIF PATH1 (19 November 2026; partial)
+
+Implemented a **strict subset** of VU1 micro execution from the primary ps2-web-recomp reference: MPG-resident microcode, MSCAL/MSCNT, E-bit delay slot, floating-point VF operations, VI branch view, memory operations and genuine XGKICK into PATH1. Unsupported opcodes, flag/Q/P pipelines, MSCALF, mixed-path arbitration and IRQs **fail closed**: no DMA completion or fabricated rendering. The new test exercises MPG → original VU1 microinstructions → GIF PATH1 tag/body, opcode rejection and arithmetic. See [M2.7 VU1 first batch](M2_7_VU1_NATIVE_FIRST_BATCH.md). The 13:53 USA game logs predate the VIF source prefix; do not assert native boot progression. PR #142 remains draft, unmerged.
