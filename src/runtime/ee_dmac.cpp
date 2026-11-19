@@ -618,7 +618,11 @@ bool c_ee_dmac::transfer_vif1_source_chain()
         const uint32_t qwc = static_cast<uint32_t>(low & 0xffffu);
         const uint32_t id = static_cast<uint32_t>((low >> 28u) & 7u);
         const bool tag_irq = (low & 0x80000000ull) != 0u;
-        const uint64_t external = tag.m_hi & 0xfffffff0ull;
+        // DMA tag ADDR occupies bits 32..63 of the FIRST 64-bit word.
+        // The second 64-bit word contains TTE VIF command payload, not ADDR.
+        // Preserve bit 63 (SPR selector) and clear the low alignment nibble.
+        // ps2-web-recomp:SDBZ runtime/src/dmac.cpp::run_chain().
+        const uint64_t external = (low >> 32u) & 0xfffffff0ull;
         uint64_t data_address = tag_address + 16u;
         uint64_t next_tag_address = data_address +
             static_cast<uint64_t>(qwc) * 16u;
