@@ -457,6 +457,17 @@ if(Python3_Interpreter_FOUND)
 endif()
 
 enable_testing()
+
+# Real wgpu-native compute execution, independent of browser or window.
+if(EE_ENABLE_WEBGPU)
+    add_executable(ee_webgpu_native_smoke
+        tests/smoke/ee_webgpu_native_smoke.cpp)
+    target_link_libraries(ee_webgpu_native_smoke PRIVATE ee_webgpu_native)
+    add_test(NAME ee_webgpu_native_smoke COMMAND ee_webgpu_native_smoke)
+    set_tests_properties(ee_webgpu_native_smoke
+        PROPERTIES SKIP_RETURN_CODE 77)
+endif()
+
 if(Python3_Interpreter_FOUND)
     add_test(NAME ee_timing_differential
         COMMAND ${Python3_EXECUTABLE}
