@@ -13,6 +13,7 @@ import re
 from pathlib import Path
 
 from analyze_iop_module_paths import analyze_elf
+from iop_irx_imports import scan_irx_imports
 
 CDROM_PATH = re.compile(r"(?i)^cdrom0:[\\/]*(.+)$")
 IRX_NAME = re.compile(r"(?i)^(.+\.irx)(?:;[0-9]+)?$")
@@ -189,6 +190,16 @@ def build_catalog(elf, disc_root=None):
         resolved = None
         if kind == "cdrom":
             resolved = resolve_disc_path(root, guest_path)
+        static_imports = []
+        import_status = "not-resolved"
+        if resolved is not None:
+            try:
+                static_imports = scan_irx_imports(resolved.read_bytes())
+                import_status = "static-pt-load"
+            except (OSError, ValueError) as exc:
+                # A diagnostic scanner must never block a valid game boot
+                # on an unfamiliar or malformed IRX variant.
+                import_status = f"scan-failed: {exc}"
         candidates.append({
             "guest_path": guest_path,
             "guest_address": item["guest_address"],
@@ -198,6 +209,9 @@ def build_catalog(elf, disc_root=None):
             ),
             "host_path": str(resolved) if resolved else None,
             "static_call_candidates": len(item.get("call_candidates", [])),
+            "static_import_status": import_status,
+            "static_import_count": len(static_imports),
+            "static_imports": static_imports,
         })
 
     return {
@@ -208,6 +222,13 @@ def build_catalog(elf, disc_root=None):
         "resolved_count": sum(
             item["status"] == "resolved" for item in candidates
         ),
+        "static_import_count": sum(
+            item["static_import_count"] for item in candidates
+        ),
+        "static_import_module_count": sum(
+            item["static_import_status"] == "static-pt-load"
+            for item in candidates
+        ),
         "runtime_load_count": 0,
         "runtime_load_attempt_count": 0,
         "runtime_rpc_commit_count": 0,
@@ -217,6 +238,8 @@ def build_catalog(elf, disc_root=None):
             "Only ELF-embedded cdrom0: IRX paths are discovered.",
             "Static candidates do not establish runtime load order.",
             "No IOP firmware, module imports or IRX entrypoints are executed.",
+            "Static IRX imports are file-backed PT_LOAD signatures only; "
+            "they are not runtime load evidence.",
             "Runtime LOADFILE RPC handling is not yet attached to the catalog.",
         ],
     }
