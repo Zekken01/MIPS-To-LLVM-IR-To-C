@@ -34,19 +34,27 @@ does not change the semantics of a normal HLE boot.
 
 ## Windows (MSVC / LLVM)
 
-Download the `wgpu-native` **Windows x86-64 MSVC** release compatible
-with the native WebGPU workflow (currently `v29.0.1.1`), and extract its
-`include/` and `lib/` directories into
-`third_party/wgpu-native/`.
-
-Then, from a Windows command prompt in the repository root:
+From a Windows command prompt in the repository root:
 
 ```bat
 git pull
 set EE_WEBGPU_SNAPSHOT=1
-set EE_WEBGPU_ROOT=%CD%\third_party\wgpu-native
 run_ps2_game.bat
 ```
+
+When WebGPU is enabled, the launcher automatically downloads and
+installs the pinned `wgpu-native v29.0.1.1` **Windows x86-64 MSVC**
+SDK to `third_party/wgpu-native`, verifies the same SHA-256 as native
+CI, checks `include/webgpu/webgpu.h`, `include/webgpu/wgpu.h`,
+`lib/wgpu_native.lib`, and the runtime DLL, then configures CMake.
+A complete installed SDK is reused without network access.
+The downloader requires internet access only on the first install.
+
+To use an SDK already installed elsewhere, optionally set
+`EE_WEBGPU_ROOT` to its root directory containing `include/` and
+`lib/`. If an SDK directory exists but is incomplete, the launcher
+fails explicitly instead of overwriting local files. Repair or empty
+that directory before retrying.
 
 This configures `-DEE_ENABLE_WEBGPU=ON`, builds the native renderer,
 and requests a GPU snapshot at
