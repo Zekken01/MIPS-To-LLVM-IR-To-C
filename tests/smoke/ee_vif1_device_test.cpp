@@ -1,0 +1,250 @@
+#include "ee_dmac.h"
+#include "ee_gif.h"
+#include "ee_hw_bus.h"
+#include "ee_memory.h"
+#include "ee_vif1.h"
+
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <vector>
+
+namespace
+{
+struct s_capture
+{
+    uint32_t m_calls = 0u;
+    std::vector<ee::s_ee_gif_event> m_events;
+};
+
+bool capture_gif(void* user, const ee::s_ee_gif_event* events,
+                 size_t count, const uint8_t*, uint32_t)
+{
+    s_capture& capture = *static_cast<s_capture*>(user);
+    ++capture.m_calls;
+    capture.m_events.insert(
+        capture.m_events.end(), events, events + count);
+    return true;
+}
+
+bool check(bool condition, const char* message)
+{
+    if (!condition)
+    {
+        std::fprintf(stderr, "VIF1 native device: %s\n", message);
+    }
+    return condition;
+}
+
+std::vector<uint8_t> pack_words(const std::vector<uint32_t>& words)
+{
+    std::vector<uint8_t> bytes(words.size() * 4u);
+    for (size_t index = 0u; index < words.size(); ++index)
+    {
+        for (uint32_t lane = 0u; lane < 4u; ++lane)
+        {
+            bytes[index * 4u + lane] =
+                static_cast<uint8_t>(words[index] >> (lane * 8u));
+        }
+    }
+    return bytes;
+}
+
+bool send(ee::c_ee_vif1& vif1, const std::vector<uint32_t>& words)
+{
+    if ((words.size() & 3u) != 0u)
+    {
+        return false;
+    }
+    const std::vector<uint8_t> bytes = pack_words(words);
+    return vif1.consume(bytes.data(),
+                        static_cast<uint32_t>(bytes.size() / 16u));
+}
+
+uint32_t lane32(const uint8_t* data, uint32_t address, uint32_t lane)
+{
+    uint32_t value = 0u;
+    std::memcpy(&value, data + address * 16u + lane * 4u, 4u);
+    return value;
+}
+
+bool write_dmac(ee::c_ee_dmac& dmac, uint32_t offset, uint32_t value)
+{
+    const ee::s_ee_u128 quad{value, 0u};
+    return ee::c_ee_dmac::mmio_write(
+        &dmac, ee::c_ee_dmac::k_vif1_base + offset, 4u, &quad);
+}
+} // namespace
+
+int main()
+{
+    ee::c_ee_vif1 vif1{};
+    ee::c_ee_gif_path3 path2{};
+    s_capture capture{};
+    path2.bind_event_sink(&capture, capture_gif);
+    vif1.bind_path2(&path2);
+
+    // Basic command sequencing and V4-32 writes.
+    if (!check(send(vif1, {0x01000101u, 0x6c010000u,
+                          10u, 20u, 30u, 40u, 0u, 0u}),
+               "STCYCL/UNPACK refused") ||
+        !check(vif1.read_register(0x40u) == 0x101u,
+               "STCYCL state") ||
+        !check(lane32(vif1.vu1_data(), 0u, 0u) == 10u &&
+               lane32(vif1.vu1_data(), 0u, 3u) == 40u,
+               "V4-32 VU1 memory"))
+    {
+        return 1;
+    }
+
+    // V2-16 sign extension, vector lane replication and continuation.
+    if (!check(send(vif1, {0x65020001u, 0x0003fffeu,
+                          0x7fff8001u, 0u}),
+               "V2-16 command refused") ||
+        !check(lane32(vif1.vu1_data(), 1u, 0u) == 0xfffffffeu &&
+               lane32(vif1.vu1_data(), 1u, 1u) == 3u &&
+               lane32(vif1.vu1_data(), 1u, 2u) == 0xfffffffeu &&
+               lane32(vif1.vu1_data(), 2u, 0u) == 0xffff8001u,
+               "V2-16 sign extension and replication"))
+    {
+        return 1;
+    }
+
+    // STROW/STCOL, STMASK and masked UNPACK: data/row/col/skip.
+    if (!check(send(vif1, {0x30000000u, 9u, 8u, 7u,
+                          6u, 0x31000000u, 11u, 12u,
+                          13u, 14u, 0x20000000u, 0x39u}),
+               "STROW/STCOL/STMASK refused") ||
+        !check(send(vif1, {0x7c010000u, 1u, 2u, 3u,
+                          4u, 0u, 0u, 0u}),
+               "masked V4-32 refused") ||
+        !check(lane32(vif1.vu1_data(), 0u, 0u) == 9u &&
+               lane32(vif1.vu1_data(), 0u, 1u) == 11u &&
+               lane32(vif1.vu1_data(), 0u, 2u) == 30u &&
+               lane32(vif1.vu1_data(), 0u, 3u) == 4u,
+               "masked UNPACK row/col/skip semantics"))
+    {
+        return 1;
+    }
+
+    // MPG writes the real VU1 microprogram memory. An MSCAL cannot
+    // succeed until a genuine VU1 interpreter is connected.
+    const uint32_t before = vif1.read_register(0x40u);
+    if (!check(!send(vif1, {0x01000202u, 0x4a010002u,
+                           0x11223344u, 0x55667788u,
+                           0x14000002u, 0u, 0u, 0u}),
+               "MSCAL without a VU engine succeeded") ||
+        !check(vif1.diagnostic().m_reason ==
+               ee::c_ee_vif1::e_reject::unsupported_vu_execution &&
+               vif1.diagnostic().m_code == 0x14000002u,
+               "MSCAL rejection diagnostics") ||
+        !check(vif1.read_register(0x40u) == before &&
+               vif1.vu1_code()[16u] == 0u,
+               "failed batch partly committed STCYCL/MPG") ||
+        !check(send(vif1, {0x4a010002u, 0x11223344u,
+                          0x55667788u, 0u}),
+               "MPG upload refused") ||
+        !check(vif1.vu1_code()[16u] == 0x44u &&
+               vif1.vu1_code()[23u] == 0x55u,
+               "MPG code bytes"))
+    {
+        return 1;
+    }
+
+    // Split DIRECT: command and first seven words in one DMA; the
+    // eighth GIF word arrives in a subsequent DMA with trailing NOPs.
+    vif1.reset();
+    path2.reset();
+    if (!check(send(vif1, {0x50000002u, 0x8001u, 0u, 0xeu,
+                          0u, 0x06u, 0u, 0u}),
+               "partial DIRECT refused") ||
+        !check(vif1.diagnostic().m_pending_words == 8u &&
+               capture.m_calls == 0u, "partial DIRECT committed GIF") ||
+        !check(send(vif1, {0u, 0u, 0u, 0u}),
+               "DIRECT continuation refused") ||
+        !check(capture.m_calls == 1u &&
+               capture.m_events.size() == 2u &&
+               capture.m_events[0].m_type ==
+                   ee::e_ee_gif_event_type::tag &&
+               capture.m_events[1].m_type ==
+                   ee::e_ee_gif_event_type::packed &&
+               vif1.diagnostic().m_pending_words == 0u,
+               "DIRECT did not deliver real GIF PATH2"))
+    {
+        return 1;
+    }
+
+    // Unknown commands and IRQ stalls fail closed without altering
+    // the accepted VIF state or delivering a second PATH2 batch.
+    const uint32_t calls_before = capture.m_calls;
+    const uint32_t accepted_before = vif1.diagnostic().m_commands;
+    if (!check(!send(vif1, {0x1e000000u, 0u, 0u, 0u}),
+               "unknown opcode silently completed") ||
+        !check(vif1.diagnostic().m_reason ==
+               ee::c_ee_vif1::e_reject::unsupported_command &&
+               vif1.diagnostic().m_code == 0x1e000000u,
+               "unknown opcode diagnostic") ||
+        !check(capture.m_calls == calls_before &&
+               vif1.read_register(0x80u) == 0u,
+               "rejected opcode partially committed") ||
+        !check(!send(vif1, {0x80000000u, 0u, 0u, 0u}) &&
+               vif1.diagnostic().m_reason ==
+                   ee::c_ee_vif1::e_reject::irq_requires_resume,
+               "VIF IRQ fabricated completion") ||
+        !check(vif1.diagnostic().m_commands == accepted_before,
+               "rejected command advanced state"))
+    {
+        return 1;
+    }
+
+    // Guest MMIO register state, 128-bit VIF FIFO, and FBRST reset.
+    ee::c_ee_hw_bus hardware{};
+    hardware.bind_vif1(&vif1);
+    ee::s_ee_u128 quad{0x0000000001000101ull, 0u};
+    if (!check(ee::c_ee_hw_bus::mmio_write(
+                   &hardware, ee::c_ee_vif1::k_fifo_base, 16u, &quad),
+               "VIF1 FIFO did not accept a quadword") ||
+        !check(vif1.read_register(0x40u) == 0x101u,
+               "VIF1 FIFO did not decode STCYCL") ||
+        !check(ee::c_ee_hw_bus::mmio_write(
+                   &hardware, ee::c_ee_vif1::k_register_base + 0x10u,
+                   4u, &ee::s_ee_u128{1u, 0u}),
+               "VIF1 FBRST MMIO rejected") ||
+        !check(vif1.read_register(0x40u) == 0u,
+               "VIF1 FBRST failed to reset command state"))
+    {
+        return 1;
+    }
+
+    // Real channel-1 source chain: TTE's high tag half carries
+    // DIRECT(2), followed by the two original GIF quadwords.
+    ee::ee_memory memory(0x2000u);
+    ee::c_ee_dmac dmac{};
+    dmac.bind_memory(&memory);
+    dmac.bind_device_transfer(&vif1, &ee::c_ee_vif1::dma_transfer);
+    const ee::s_ee_u128 tag{
+        2u | (uint64_t{7u} << 28u),
+        static_cast<uint64_t>(0x50000002u) << 32u
+    };
+    const ee::s_ee_u128 gif_tag{0x8001u, 0xeu};
+    const ee::s_ee_u128 packed{0x06u, 0u};
+    memory.write128(0x100u, &tag);
+    memory.write128(0x110u, &gif_tag);
+    memory.write128(0x120u, &packed);
+    const uint32_t before_chain = capture.m_calls;
+    if (!check(write_dmac(dmac, 0x30u, 0x100u) &&
+               write_dmac(dmac, 0x20u, 0u) &&
+               write_dmac(dmac, 0x00u, 0x1c5u),
+               "VIF1 TTE chain start refused") ||
+        !check(dmac.status() == 2u &&
+               (dmac.vif1_channel_state().m_chcr & 0x100u) == 0u &&
+               dmac.vif1_channel_state().m_tadr == 0x130u &&
+               capture.m_calls == before_chain + 1u,
+               "VIF1 TTE DMA did not consume and complete"))
+    {
+        return 1;
+    }
+
+    std::puts("EE native VIF1 commands, UNPACK/MPG, PATH2 and TTE: PASS");
+    return 0;
+}
