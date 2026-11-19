@@ -11,7 +11,7 @@ int main()
 
     // The two alternating guest slots must be sampled without changing
     // the value held in guest RAM or generating a device read.
-    memory.write32(0x00502368u, 1u);
+    memory.write32(0x00502368u, 0u);
     memory.write32(0x0050236cu, 7u);
     memory.write32(0x005030acu, 1u);
     memory.write32(0x00502354u, 1024u);
@@ -26,14 +26,32 @@ int main()
     }
     if (!probe.wait().m_observed ||
         probe.wait().m_dispatch != 11u ||
-        probe.wait().flag0() != 1u ||
+        probe.wait().flag0() != 0u ||
         probe.wait().flag1() != 7u ||
         probe.wait().selected_slot() != 1u ||
         probe.wait().polled_slot() != 0u ||
-        probe.wait().polled_flag() != 1u ||
+        probe.wait().polled_flag() != 0u ||
+        probe.pending_wait().m_observed ||
         probe.wait().m_slot_words[1] != 1024u)
     {
         std::fputs("M2 SDBZ wait snapshot mismatch\n", stderr);
+        return 1;
+    }
+
+    // The first call was a successful wait. The next enters a pending
+    // opposite-slot wait, which is the one we need to diagnose.
+    memory.write32(0x00502368u, 1u);
+    if (!probe.observe(ee::c_ee_sdbz_dma_wait_probe::k_wait_pc,
+                       13u, 1u, &memory) ||
+        probe.observe(ee::c_ee_sdbz_dma_wait_probe::k_wait_pc,
+                      14u, 1u, &memory) ||
+        !probe.pending_wait().m_observed ||
+        probe.pending_wait().m_dispatch != 13u ||
+        probe.pending_wait().polled_slot() != 0u ||
+        probe.pending_wait().polled_flag() != 1u ||
+        probe.wait().flag0() != 0u)
+    {
+        std::fputs("M2 SDBZ first pending wait was lost\n", stderr);
         return 1;
     }
 
@@ -47,7 +65,8 @@ int main()
         probe.red_loop().selected_slot() != 0u ||
         probe.red_loop().polled_slot() != 1u ||
         probe.red_loop().polled_flag() != 9u ||
-        probe.wait().flag0() != 1u ||
+        probe.wait().flag0() != 0u ||
+        probe.pending_wait().flag0() != 1u ||
         memory.read32(0x00502368u) != 2u ||
         memory.read32(0x0050236cu) != 9u)
     {
@@ -69,6 +88,7 @@ int main()
     if (count == 0u || !closed ||
         std::strstr(data, "\"selected_slot\":1") == nullptr ||
         std::strstr(data, "\"selected_slot\":0") == nullptr ||
+        std::strstr(data, "\"pending_wait\":{") == nullptr ||
         std::strstr(data, "\"schema\":\"ee-sdbz-dma-wait-v1\"") == nullptr)
     {
         std::fputs("M2 SDBZ DMA wait JSON missing expected values\n", stderr);

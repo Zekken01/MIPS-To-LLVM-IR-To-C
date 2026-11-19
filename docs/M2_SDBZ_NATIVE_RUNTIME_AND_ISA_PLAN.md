@@ -262,3 +262,5 @@ The **original expected completion producer is still
 unproven**; do not manufacture an IRQ/DMA completion,
 override scissor or invent a menu frame. See
 [M2.4 guest failure path](M2_4_SDBZ_COMMAND_SLOT_TIMEOUT.md).
+
+M2.4 follow-up: preserve both `wait` (first entry) and `pending_wait` (first **nonzero** opposite-slot flag) separately; the first call may succeed. Red-loop entry is a third independently bounded sample. Do not mistake the first successful wait for the stuck one.

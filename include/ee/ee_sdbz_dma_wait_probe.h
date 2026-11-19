@@ -69,17 +69,10 @@ public:
     bool observe(uint32_t pc, uint64_t dispatch, uint32_t thread,
                  ee_memory* memory)
     {
-        s_snapshot* target = nullptr;
-        if (pc == k_wait_pc && !m_wait.m_observed)
-        {
-            target = &m_wait;
-        }
-        else if (pc == k_red_loop_pc && !m_red.m_observed)
-        {
-            target = &m_red;
-        }
-
-        if (target == nullptr || memory == nullptr ||
+        const bool wait_needed = pc == k_wait_pc &&
+            (!m_wait.m_observed || !m_pending_wait.m_observed);
+        const bool red_needed = pc == k_red_loop_pc && !m_red.m_observed;
+        if ((!wait_needed && !red_needed) || memory == nullptr ||
             !memory->contains(k_slot_base, k_slot_words * sizeof(uint32_t)))
         {
             return false;
@@ -106,13 +99,35 @@ public:
             sample.m_extra_words[i] = memory->read32(k_extra_addresses[i]);
         }
         sample.m_observed = true;
-        *target = sample;
+        if (wait_needed)
+        {
+            bool captured = false;
+            if (!m_wait.m_observed)
+            {
+                m_wait = sample;
+                captured = true;
+            }
+            if (!m_pending_wait.m_observed &&
+                sample.polled_slot() < 2u &&
+                sample.polled_flag() != 0u)
+            {
+                m_pending_wait = sample;
+                captured = true;
+            }
+            return captured;
+        }
+        m_red = sample;
         return true;
     }
 
     const s_snapshot& wait() const
     {
         return m_wait;
+    }
+
+    const s_snapshot& pending_wait() const
+    {
+        return m_pending_wait;
     }
 
     const s_snapshot& red_loop() const
@@ -132,6 +147,8 @@ public:
             "\"limitation\":\"read_only_guest_RAM_not_MMIO_or_causality\","
             "\"wait\":", output);
         write_snapshot_json(output, m_wait);
+        std::fputs(",\"pending_wait\":", output);
+        write_snapshot_json(output, m_pending_wait);
         std::fputs(",\"red_loop\":", output);
         write_snapshot_json(output, m_red);
         std::fputs("}", output);
@@ -174,6 +191,7 @@ private:
     }
 
     s_snapshot m_wait{};
+    s_snapshot m_pending_wait{};
     s_snapshot m_red{};
 };
 

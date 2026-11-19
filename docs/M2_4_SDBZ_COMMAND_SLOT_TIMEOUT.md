@@ -84,12 +84,19 @@ only proven loaded IRX (13 committed RPCs).
 ## Follow-up: read-only evidence at the exact first bad transition
 
 New `ee_sdbz_dma_wait_probe.h` snapshots raw backed EE RAM
-**once** at each of two native entry PCs:
+at **three bounded, semantically distinct points**:
 
-1. **Wait-entry** `0x00102560`: first reached state before
-   the opposite-slot wait logic.
-2. **Red-loop entry** `0x00102670`: first state after the
+1. **First wait entry** `0x00102560`: baseline state before
+   the opposite-slot wait logic, which may return successfully.
+2. **First pending wait entry** `0x00102560` where the actual
+   polled opposite-slot flag is nonzero; unlike the baseline,
+   this identifies the first known outstanding command.
+3. **Red-loop entry** `0x00102670`: first state after the
    timeout/recovery sequence.
+
+The distinction is necessary because the 11:29 trace reaches
+`0x00102560` more than once. Capturing only the earliest call
+could retain a successful wait and miss the failure trigger.
 
 Each sample records dispatch number, thread, all 32 words
 of `0x00502350..0x005023cf` (including both flags), and
@@ -102,7 +109,8 @@ matching the ELF. Invalid buffer selection cannot be
 presented as a valid probed flag.
 
 The output lives in `first-boot.json.m2_sdbz_dma_wait`,
-schema `ee-sdbz-dma-wait-v1`. If a PC is not reached or
+schema `ee-sdbz-dma-wait-v1`, as `wait`,
+`pending_wait`, and `red_loop`. If a PC is not reached or
 guest RAM is not backed, the corresponding sample is null.
 The observer uses only `ee_memory::read32` on already-backed
 addresses: **no MMIO reads, writes, IRQs, DMA starts, retries,
@@ -115,7 +123,7 @@ and unchanged guest memory.
 
 On a matching future run, inspect whether the **polled**
 pending flag is still nonzero at red-loop entry and which
-command/queue values differ from wait entry. Then find its
+command/queue values differ between `pending_wait` and `red_loop`. Then find its
 actual guest or device writer and compare that producer
 with `ps2-web-recomp:SDBZ`. Only change HLE/DMAC/INTC
 behavior after a specific missing or incorrect event has

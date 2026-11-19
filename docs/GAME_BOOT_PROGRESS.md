@@ -1808,3 +1808,5 @@ The **original expected completion producer is still
 unproven**; do not manufacture an IRQ/DMA completion,
 override scissor or invent a menu frame. See
 [M2.4 guest failure path](M2_4_SDBZ_COMMAND_SLOT_TIMEOUT.md).
+
+M2.4 probe follow-up: `m2_sdbz_dma_wait.pending_wait` now retains the first wait entry whose **polled opposite** flag is nonzero, independent of `wait` and `red_loop`.

@@ -2165,8 +2165,13 @@ int main(int argc, char** argv)
             dma_wait_probe.observe(
                 from_pc, dispatched + 1u, current_thread_id, memory.get()))
         {
-            const auto& sample = from_pc ==
-                ee::c_ee_sdbz_dma_wait_probe::k_wait_pc ?
+            const bool newly_pending =
+                from_pc == ee::c_ee_sdbz_dma_wait_probe::k_wait_pc &&
+                dma_wait_probe.pending_wait().m_observed &&
+                dma_wait_probe.pending_wait().m_dispatch == dispatched + 1u;
+            const auto& sample = newly_pending ?
+                dma_wait_probe.pending_wait() :
+                from_pc == ee::c_ee_sdbz_dma_wait_probe::k_wait_pc ?
                 dma_wait_probe.wait() : dma_wait_probe.red_loop();
             std::printf(
                 "EE SDBZ command wait snapshot: dispatch=%llu pc=0x%08x "
