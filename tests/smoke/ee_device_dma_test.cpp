@@ -377,6 +377,76 @@ int main()
         return fail("invalid GIF register width mutated QWC");
     }
 
+    // The 04:11 SDBZ diagnostic has an unbacked TADR 0xf0000000
+    // while GIF CHCR.STR remains set. Preserve this fail-closed case
+    // and record exactly which guest MMIO write created it.
+    hardware.reset();
+    sink.m_accept = true;
+    sink.m_calls = 0u;
+    hardware.bind_device_transfer(&sink, receive);
+    ee::ee_mem_write32(&runtime, k_gif + 0x30u, 0xf0000000u);
+    program(&runtime, k_gif, 0x100u, 0u);
+    ee::ee_mem_write32(&runtime, k_gif, k_str | 5u);
+    using t_reject = ee::c_ee_dmac::e_gif_dma_reject;
+    ee::c_ee_dmac::s_gif_dma_write newest{};
+    ee::c_ee_dmac::s_gif_dma_write oldest{};
+    if (hardware.dmac().gif_trace_count() != 4u ||
+        hardware.dmac().gif_last_reject() != t_reject::invalid_tag_address ||
+        !hardware.dmac().gif_trace_newest(0u, &newest) ||
+        !hardware.dmac().gif_trace_newest(3u, &oldest) ||
+        newest.m_sequence != 4u || newest.m_offset != 0u ||
+        newest.m_value != (k_str | 5u) ||
+        newest.m_chcr != (k_str | 5u) ||
+        newest.m_tadr != 0xf0000000u ||
+        newest.m_reject != t_reject::invalid_tag_address ||
+        oldest.m_sequence != 1u || oldest.m_offset != 0x30u ||
+        oldest.m_value != 0xf0000000u ||
+        hardware.dmac().gif_trace_newest(4u, &newest) ||
+        hardware.dmac().gif_trace_newest(0u, nullptr) ||
+        sink.m_calls != 0u ||
+        (reg(&runtime, k_gif) & k_str) == 0u ||
+        hardware.dmac().status() != 0u)
+    {
+        return fail("unbacked GIF TADR incorrectly completed or lost MMIO history");
+    }
+
+    // A genuine zero-payload END tag at a valid address terminates,
+    // unlike the previous raw 0xf0000000 address. No fake payload.
+    hardware.reset();
+    const ee::s_ee_u128 zero_end{0x70000000ull, 0u};
+    ee::ee_mem_write128(&runtime, 0x300u, &zero_end);
+    ee::ee_mem_write32(&runtime, k_gif + 0x30u, 0x300u);
+    program(&runtime, k_gif, 0u, 0u);
+    ee::ee_mem_write32(&runtime, k_gif, k_str | 5u);
+    if (hardware.dmac().gif_last_reject() != t_reject::none ||
+        sink.m_calls != 0u ||
+        (reg(&runtime, k_gif) & k_str) != 0u ||
+        reg(&runtime, k_gif + 0x30u) != 0x310u ||
+        (hardware.dmac().status() & (1u << 2u)) == 0u ||
+        !hardware.dmac().gif_trace_newest(0u, &newest) ||
+        (newest.m_chcr & k_str) != 0u ||
+        newest.m_reject != t_reject::none)
+    {
+        return fail("valid empty GIF END tag did not retire without payload");
+    }
+
+    // The host ring is bounded and resettable, not an unbounded
+    // trace or a writable guest register.
+    hardware.reset();
+    for (uint32_t i = 0u; i < 40u; ++i)
+    {
+        ee::ee_mem_write32(&runtime, k_gif + 0x10u, i * 16u);
+    }
+    if (hardware.dmac().gif_trace_count() != 40u ||
+        !hardware.dmac().gif_trace_newest(0u, &newest) ||
+        newest.m_sequence != 40u || newest.m_value != 39u * 16u ||
+        !hardware.dmac().gif_trace_newest(31u, &oldest) ||
+        oldest.m_sequence != 9u || oldest.m_value != 8u * 16u ||
+        hardware.dmac().gif_trace_newest(32u, &newest))
+    {
+        return fail("bounded GIF write history ring wrap");
+    }
+
     hardware.reset();
     if (reg(&runtime, k_vif0) != 0u ||
         reg(&runtime, k_vif1) != 0u ||
