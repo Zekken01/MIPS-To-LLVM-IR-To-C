@@ -85,7 +85,8 @@ bool cop2_special2_defined(uint32_t index)
 bool cop1_s_defined(uint32_t funct)
 {
     return funct <= 7 || funct == 0x16 ||
-           (funct >= 0x18 && funct <= 0x1f) ||
+           (funct >= 0x18 && funct <= 0x1a) ||
+           (funct >= 0x1c && funct <= 0x1f) ||
            funct == 0x24 || funct == 0x28 || funct == 0x29 ||
            funct == 0x30 || funct == 0x32 || funct == 0x34 || funct == 0x36;
 }
@@ -271,9 +272,17 @@ s_ee_instruction decode(uint32_t pc, uint32_t word)
             insn.valid = e_ee_valid::UNSUPPORTED;
             set_mnemonic(insn, "trap");
             break;
-        default:
+        case e_ee_opcode::FUNCT_MFSA:
+        case e_ee_opcode::FUNCT_MTSA:
+            // R5900 scalar shift-amount register transfers are genuine
+            // instructions, but have no complete native lowering yet.
             insn.valid = e_ee_valid::UNSUPPORTED;
-            set_mnemonic(insn, "special");
+            set_mnemonic(insn, insn.funct == static_cast<uint8_t>(e_ee_opcode::FUNCT_MFSA)
+                ? "mfsa" : "mtsa");
+            break;
+        default:
+            insn.valid = e_ee_valid::INVALID;
+            set_mnemonic(insn, "special_reserved");
             break;
         }
         break;
@@ -645,8 +654,7 @@ s_ee_instruction decode(uint32_t pc, uint32_t word)
         set_mnemonic(insn, "sqc2");
         break;
 
-    case 0x37: // LD (R5900)
-    case 0x38: // legacy alias some tools use for LD
+    case 0x37: // LD (R5900); 0x38 is not a valid EE LD alias
         insn.type = e_ee_op_type::OP_TYPE_ITYPE;
         insn.opcode = e_ee_opcode::OP_LD;
         insn.flow = e_ee_flow::FLOW_NONE;
@@ -1082,7 +1090,9 @@ s_ee_instruction decode(uint32_t pc, uint32_t word)
     default:
         insn.opcode = e_ee_opcode::OP_INVALID;
         insn.flow = e_ee_flow::FLOW_NONE;
-        insn.valid = e_ee_valid::UNSUPPORTED;
+        // Unassigned primary R5900 selector, not an implemented ISA
+        // instruction awaiting lowering. Preserve the original word.
+        insn.valid = e_ee_valid::INVALID;
         set_mnemonic(insn, "unknown");
         break;
     }
