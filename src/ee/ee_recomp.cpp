@@ -337,6 +337,45 @@ bool ee_recomp(const char* elf_path,
     result->machine = loader.machine();
     result->segment_count = (uint32_t)loader.segments().size();
 
+    if (!opts.only_functions.empty() &&
+        (opts.only_function != 0u || opts.max_functions != 0u))
+    {
+        if (error)
+        {
+            *error = "batched --functions conflicts with single/capped emission";
+        }
+        return false;
+    }
+    const std::vector<uint32_t> requested_functions =
+        !opts.only_functions.empty()
+            ? opts.only_functions
+            : (opts.only_function != 0u
+                ? std::vector<uint32_t>{opts.only_function}
+                : std::vector<uint32_t>{});
+    for (uint32_t entry : requested_functions)
+    {
+        if (entry == 0u || (entry & 3u) != 0u ||
+            !loader.is_executable_address(entry))
+        {
+            if (error)
+            {
+                *error = "requested function address is not executable/aligned: "
+                    + u32hex(entry);
+            }
+            return false;
+        }
+    }
+    if (requested_functions.size() >
+        std::set<uint32_t>(requested_functions.begin(),
+                           requested_functions.end()).size())
+    {
+        if (error)
+        {
+            *error = "duplicate requested function entry";
+        }
+        return false;
+    }
+
     // ------------------------------------------------------------------
     // Worklist-based code discovery: start from entry points and follow
     // control-flow edges. Only decode instructions that are actually
@@ -360,7 +399,10 @@ bool ee_recomp(const char* elf_path,
         }
     };
     seed_entry(loader.entry_point());
-    seed_entry(opts.only_function);
+    for (uint32_t entry : requested_functions)
+    {
+        seed_entry(entry);
+    }
     for (const auto& sym : loader.symbols())
     {
         if (sym.is_function && !sym.is_undefined && sym.value != 0)
@@ -498,11 +540,11 @@ bool ee_recomp(const char* elf_path,
     }
     else
     {
-        if (opts.only_function == 0)
+        if (requested_functions.empty())
         {
             if (error)
             {
-                *error = "--discovery-cache requires --function";
+                *error = "--discovery-cache requires explicit function entries";
             }
             return false;
         }
@@ -525,15 +567,19 @@ bool ee_recomp(const char* elf_path,
         // A dynamic dispatcher entry need not have been reachable from
         // static ELF discovery. Decode newly reached instructions locally,
         // without re-running all-ELF direct/indirect call discovery.
-        std::set<uint32_t> pending{opts.only_function};
+        std::set<uint32_t> pending(
+            requested_functions.begin(), requested_functions.end());
         std::set<uint32_t> seen;
         const std::set<uint32_t> known_entries(entries.begin(), entries.end());
+        const std::set<uint32_t> selected_entries(
+            requested_functions.begin(), requested_functions.end());
         while (!pending.empty())
         {
             const uint32_t pc = *pending.begin();
             pending.erase(pending.begin());
-            if (!seen.insert(pc).second || (pc != opts.only_function &&
-                known_entries.count(pc) != 0))
+            if (!seen.insert(pc).second ||
+                (selected_entries.count(pc) == 0 &&
+                 known_entries.count(pc) != 0))
             {
                 continue;
             }
@@ -567,6 +613,18 @@ bool ee_recomp(const char* elf_path,
 
     const auto discovery_done = std::chrono::steady_clock::now();
     const std::vector<uint32_t> discovered_entries = entries;
+    // A batch shares one immutable discovery and one CFG boundary index.
+    // Treat all requested dynamic entries as function boundaries so a
+    // sibling's successor blocks cannot be spuriously claimed by another.
+    // Single-function mode retains its existing discovery/CFG semantics.
+    if (!opts.only_functions.empty())
+    {
+        entries.insert(entries.end(), requested_functions.begin(),
+                       requested_functions.end());
+        std::sort(entries.begin(), entries.end());
+        entries.erase(std::unique(entries.begin(), entries.end()),
+                      entries.end());
+    }
     function_analyzer analyzer;
     llvm::llvm_context ctx("ee_game");
 
@@ -583,8 +641,8 @@ bool ee_recomp(const char* elf_path,
     std::set<uint32_t> stop_entries(entries.begin(), entries.end());
     std::set<uint32_t> function_pcs;
     std::set<uint32_t> analyzed_entries;
-    const std::vector<uint32_t> coverage_entries = opts.only_function != 0
-        ? std::vector<uint32_t>{opts.only_function} : entries;
+    const std::vector<uint32_t> coverage_entries =
+        !requested_functions.empty() ? requested_functions : entries;
     for (uint32_t ep : coverage_entries)
     {
         if (!analyzed_entries.insert(ep).second) continue;
@@ -747,37 +805,25 @@ bool ee_recomp(const char* elf_path,
         return true;
     };
 
-    result->functions_discovered = (uint32_t)entries.size();
+    result->functions_discovered =
+        static_cast<uint32_t>(discovered_entries.size());
 
-    if (opts.only_function != 0)
+    if (!requested_functions.empty())
     {
-        // Single-function mode: still use full entry set for CFG bounds.
-        bool found = false;
-        for (uint32_t ep : entries)
+        for (uint32_t entry : requested_functions)
         {
-            if (ep == opts.only_function)
+            // Preserve legacy single-entry behaviour for a dynamic address:
+            // its own CFG may be translated without harvesting new callees.
+            if (opts.only_functions.empty() &&
+                stop_entries.insert(entry).second)
             {
-                found = true;
-                break;
+                entries.push_back(entry);
+                std::sort(entries.begin(), entries.end());
+                entries.erase(std::unique(entries.begin(), entries.end()),
+                              entries.end());
             }
+            emit_entry(entry);
         }
-        if (!found && loader.is_executable_address(opts.only_function))
-        {
-            // Allow an explicit address even if not in the harvested set.
-            entries.push_back(opts.only_function);
-            stop_entries.insert(opts.only_function);
-            std::sort(entries.begin(), entries.end());
-            entries.erase(std::unique(entries.begin(), entries.end()),
-                          entries.end());
-            found = true;
-        }
-        if (!found)
-        {
-            if (error)
-                *error = "only_function address not found in executable image";
-            return false;
-        }
-        emit_entry(opts.only_function);
     }
     else
     {
