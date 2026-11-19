@@ -51,6 +51,33 @@ uint32_t make_j(uint32_t target)
 
 bool build_words(const std::string& mode, std::vector<uint32_t>& words)
 {
+    // The same real LLVM builder emits quadword VU0 memory transfers.
+    // Use them to check alignment faults and immutable VF00 end-to-end.
+    if (mode.rfind("lqc2_vf", 0u) == 0u ||
+        mode.rfind("sqc2_vf", 0u) == 0u)
+    {
+        const bool load = mode.rfind("lqc2", 0u) == 0u;
+        const uint32_t vec = mode.find("_vf0") != std::string::npos
+            ? 0u : 6u;
+        const uint32_t op = load ? 0x36u : 0x3eu;
+        const uint32_t transfer = (op << 26u) | (9u << 21u) |
+            (vec << 16u); // base r9, vector vf0/vf6, offset zero
+        if (mode.find("_delay") != std::string::npos)
+        {
+            words = {
+                make_beq(0, 0, 1),
+                transfer,
+                make_jr(31),
+                0u
+            };
+        }
+        else
+        {
+            words = {transfer};
+        }
+        return true;
+    }
+
     if (mode == "bc2_f_delay" || mode == "bc2_t_delay" ||
         mode == "bc2_fl_annul" || mode == "bc2_tl_delay")
     {
