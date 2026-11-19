@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ee_gif.h"
+#include "ee_runtime.h"
 
 #include <array>
 #include <cstddef>
