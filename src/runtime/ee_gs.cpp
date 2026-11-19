@@ -1025,6 +1025,50 @@ bool c_ee_gs_state::stage_host_upload(
     return true;
 }
 
+void record_sprite_pair(s_ee_gs_state& state, uint64_t xyz1)
+{
+    const uint64_t prim = state.m_registers[0x00u];
+    // PRMODECONT selects whether the primitive's own flags or PRMODE's
+    // flags control rendering. The primitive type always comes from PRIM.
+    const uint64_t effective =
+        (state.m_registers[0x1au] & 1u) != 0u ? prim :
+        (prim & 7u) | (state.m_registers[0x1bu] & ~7ull);
+    const uint32_t context = static_cast<uint32_t>((effective >> 9u) & 1u);
+    s_ee_gs_sprite_sample sample{};
+    sample.m_index = ++state.m_total_sprite_pair_kicks;
+    sample.m_prim = prim;
+    sample.m_effective_prim = effective;
+    sample.m_rgbaq = state.m_registers[0x01u];
+    sample.m_xyz0 = state.m_pending_sprite_xyz0;
+    sample.m_xyz1 = xyz1;
+    sample.m_context = context;
+    sample.m_xyoffset = state.m_registers[0x18u + context];
+    sample.m_scissor = state.m_registers[0x40u + context];
+    sample.m_frame = state.m_registers[0x4cu + context];
+    sample.m_zbuf = state.m_registers[0x4eu + context];
+    sample.m_test = state.m_registers[0x47u + context];
+    if ((effective & (1u << 4u)) != 0u)
+    {
+        ++state.m_total_sprite_textured_kicks;
+    }
+    if ((sample.m_rgbaq & 0xffffffu) != 0u)
+    {
+        ++state.m_total_sprite_nonblack_rgb_kicks;
+    }
+
+    // Keep the beginning and trailing window, without allocation or
+    // scanning the unbounded guest stream. consume() copies the entire
+    // state transactionally; rejected DMA never commits either sample.
+    const size_t last = static_cast<size_t>(
+        (sample.m_index - 1u) % s_ee_gs_state::k_sprite_sample_capacity
+    );
+    state.m_recent_sprite_samples[last] = sample;
+    if (sample.m_index <= s_ee_gs_state::k_sprite_sample_capacity)
+    {
+        state.m_first_sprite_samples[last] = sample;
+    }
+}
+
 bool c_ee_gs_state::write_register(
     s_ee_gs_state& state, uint32_t reg, uint64_t value)
 {
@@ -1039,6 +1083,7 @@ bool c_ee_gs_state::write_register(
     {
     case 0x00u: // PRIM
         state.m_vertex_count = 0u;
+        state.m_pending_sprite_xyz0 = 0u;
         ++state.m_total_prim_writes;
         ++state.m_prim_type_counts[value & 7u];
         break;
@@ -1047,12 +1092,28 @@ bool c_ee_gs_state::write_register(
         ++state.m_vertex_count;
         ++state.m_total_vertex_writes;
         ++state.m_total_vertex_kicks;
+        if ((state.m_registers[0x00u] & 7u) == 6u)
+        {
+            if ((state.m_vertex_count & 1u) != 0u)
+            {
+                state.m_pending_sprite_xyz0 = value;
+            }
+            else
+            {
+                record_sprite_pair(state, value);
+            }
+        }
         break;
     case 0x0cu: // XYZF3 (ADC)
     case 0x0du: // XYZ3 (ADC)
         ++state.m_vertex_count;
         ++state.m_total_vertex_writes;
         ++state.m_total_adc_vertices;
+        if ((state.m_registers[0x00u] & 7u) == 6u &&
+            (state.m_vertex_count & 1u) != 0u)
+        {
+            state.m_pending_sprite_xyz0 = value;
+        }
         break;
     case 0x01u: // RGBAQ
     case 0x02u: // ST

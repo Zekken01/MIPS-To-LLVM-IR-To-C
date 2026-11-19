@@ -12,6 +12,24 @@ namespace ee
 // GS register-state and swizzled PSMCT, PSMZ and indexed PSMT transfers.
 // It does not rasterize primitives, present frames or implement GS IRQs.
 // Based on ps2-web-recomp/runtime/src/gs/gs.cpp::write/write_packed.
+// Bounded read-only provenance for committed sprite pairs. Raw GS values
+// preserve all context/alpha/test/offset fields for offline interpretation.
+struct s_ee_gs_sprite_sample
+{
+    uint64_t m_index = 0u;
+    uint64_t m_prim = 0u;
+    uint64_t m_effective_prim = 0u;
+    uint64_t m_rgbaq = 0u;
+    uint64_t m_xyz0 = 0u;
+    uint64_t m_xyz1 = 0u;
+    uint64_t m_xyoffset = 0u;
+    uint64_t m_scissor = 0u;
+    uint64_t m_frame = 0u;
+    uint64_t m_zbuf = 0u;
+    uint64_t m_test = 0u;
+    uint32_t m_context = 0u;
+};
+
 struct s_ee_gs_state
 {
     std::array<uint64_t, 128> m_registers{};
@@ -39,6 +57,16 @@ struct s_ee_gs_state
     std::array<uint64_t, 8> m_prim_type_counts{};
     std::array<uint64_t, 16> m_packed_register_counts{};
     std::array<uint64_t, 128> m_ad_register_counts{};
+
+    static constexpr size_t k_sprite_sample_capacity = 8u;
+    uint64_t m_total_sprite_pair_kicks = 0u; // committed primitive-6 XYZ2 pairs
+    uint64_t m_total_sprite_textured_kicks = 0u; // effective PRIM.TME=1
+    uint64_t m_total_sprite_nonblack_rgb_kicks = 0u; // raw RGBAQ RGB != 0
+    uint64_t m_pending_sprite_xyz0 = 0u; // first vertex of next sprite pair
+    std::array<s_ee_gs_sprite_sample, k_sprite_sample_capacity>
+        m_first_sprite_samples{};
+    std::array<s_ee_gs_sprite_sample, k_sprite_sample_capacity>
+        m_recent_sprite_samples{};
 
     std::vector<uint8_t> m_image_data; // bounded diagnostic transfer capture
     bool m_transfer_started = false;

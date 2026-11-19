@@ -432,12 +432,12 @@ TEX0/TEX2 in the **same** event batch is visible to the palette load
 using a palette-only staged-byte overlay. A later unsupported event
 rolls back both VRAM and palette state.
 
-\`read_clut_entry(slot)\` and
-\`read_indexed_clut_value(context,x,y)\` are diagnostic read APIs,
+`read_clut_entry(slot)` and
+`read_indexed_clut_value(context,x,y)` are diagnostic read APIs,
 not a GS renderer. Indexed reads support PSMT8, PSMT4, PSMT8H, PSMT4HL and
 PSMT4HH, returning loaded raw palette words; all 4-bit modes
 apply the TEX0.CSA bank selection. The indexed palette storage modes and load semantics here
-follow \`ps2-web-recomp/runtime/src/gs/gs.cpp::load_clut()\`.
+follow `ps2-web-recomp/runtime/src/gs/gs.cpp::load_clut()`.
 Explicitly unsupported CPSM values and formats with unknown CLUT
 semantics reject CLD-triggered loads instead of inventing colors.
 Real SDBZ/PCSX2 differential validation and full GS rasterization,
@@ -1726,3 +1726,56 @@ The USA SLUS_214.42 ELF SHA-256 matches the 07:27 catalog. See [M2.1 physical GI
 ### M2.3 — Correct cumulative GIF/GS traffic diagnostics
 
 The 07:27 report's two `m_vertex_count` writes describe only the **current primitive**: `PRIM` resets that counter. Its `m_image_qwc=16384` also resets on each `TRXDIR=0`. Therefore neither is a valid lifetime numerator/denominator for accepted 4,584 PATH3 tags. The native GS consumer now tracks lifetime committed PRIM/XYZ2/XYZ3, ADC versus kick, PACKED/REGLIST/IMAGE/IMAGE2 tag formats, A+D register addresses and total IMAGE QWC, exported under `m2_gif_gs` (JSON schema `ee-m2-gif-gs-v1`) as well as a concise console line. Tests exercise multiple PRIM/TRXDIR resets, IMAGE2, and atomic rejection; guest-visible GS/DMAC semantics are unchanged. See [the M2.3 traffic interpretation](M2_3_GIF_GS_COMMITTED_TRAFFIC.md). A new matching boot is required before concluding whether SDBZ lacks drawing traffic, has VIF/VU1 paths, or the WebGPU bridge misses actual committed draws.
+
+## M2.3 real SDBZ replay — 2026-11-19 09:09 matched batch
+
+Validated the same final boot's `boot(20261119-090909).log`,
+`first-boot(20261119-090907).json`, catalog, cache and three PPMs.
+The *final* native runner command included
+`--gs-webgpu-snapshot=...`; WebGPU reported successful init and a
+`512x448` GPU readback with `draws=2275`. This is confirmed
+**GPU compute raster work**, not scanout or a successful menu frame.
+
+- PATH3: 4,584 committed tags/batches, 4,568 PACKED tags and
+  16 IMAGE tags; no REGLIST/IMAGE2.
+- Exactly 2,275 PRIM writes, all `PRIM & 7 == 6` (**sprites**);
+  4,550 XYZ2/XYZF2 vertex kicks, zero ADC vertices.
+- The 29,655 PACKED events are all A+D (`reg=0xE`).
+  `RGBAQ` and `PRIM` each appear 2,275 times;
+  `XYZ2` appears 4,550 times. The only other A+D
+  writes are repeated frame/depth/offset/test setup and sixteen
+  `BITBLTBUF`/`TRXPOS`/`TRXREG`/`TRXDIR` groups.
+  Crucially, **no TEX0/TEX1 or other texture-state writes**
+  were committed. This is a **clear/setup-like sprite workload**,
+  not evidence of actual textured title/menu traffic.
+- Cumulative IMAGE QWC = **262,144** (4 MiB of accepted payload).
+  The final individual IMAGE transfer had 16,384 QWC.
+- Readback inspection: `gs-display.ppm` 512x448 entirely black;
+  `gs-upload.ppm` 1024x64 entirely black;
+  `gs-webgpu.ppm` 512x448 has 229,375 black pixels and
+  one RGB(254,0,0) pixel at (0,0). This does not establish
+  that the sprite colour/target is correct until source attributes
+  are captured and compared with display FB pointers.
+- The 100,000-dispatch budget ended at `0x00172e48` with
+  `GIF_REJECT=0`, 230 *reference-compatibility* GS fields;
+  no unsupported opcode exit. The catalog identifies 13 committed
+  SIF RPCs and one successful SIO2MAN load, but cannot
+  prove PADMAN, other modules or title application initialization.
+
+**Next discriminator, implemented read-only:** bounded first/last
+8 committed PATH3 sprite pair snapshots contain raw PRIM/effective
+PRIM, RGBAQ, XYZ pair, XYOFFSET, SCISSOR, FRAME, ZBUF, TEST and
+context selection. `sprite_pair_kicks_total`,
+`sprite_textured_kicks_total` and
+`sprite_nonblack_rgb_kicks_total` provide totals.
+The new diagnostics cannot create or reject guest DMA,
+change GS state, or synthesize a visible frame.
+A further matched native boot is needed to obtain these
+new raw attributes before implementing a speculative GS fix.
+
+**Disposition:** M2.3 proved *GPU packet delivery* and corrected
+false lifetime-vertex conclusions; visible native boot remains
+incomplete. M2.4 isolates the earliest unfulfilled game
+application/IOP producer independently of sprite clear behaviour.
+
+See [the 09:09 sprite analysis](M2_3_0909_GS_SPRITE_PROVENANCE.md).

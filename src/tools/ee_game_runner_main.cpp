@@ -478,6 +478,31 @@ const char* ee_cycle_source_name(ee::e_ee_cycle_source source)
 
 // This is a read-only summary of committed GIF PATH3 work. It never
 // treats the current primitive's vertex count as an entire-boot total.
+void write_gs_sprite_sample_json(
+    FILE* output, const ee::s_ee_gs_sprite_sample& sample)
+{
+    std::fprintf(output,
+        "{\"index\": %llu, \"context\": %u, "
+        "\"prim\": \"0x%016llx\", \"effective_prim\": \"0x%016llx\", "
+        "\"rgbaq\": \"0x%016llx\", "
+        "\"xyz0\": \"0x%016llx\", \"xyz1\": \"0x%016llx\", "
+        "\"xyoffset\": \"0x%016llx\", \"scissor\": \"0x%016llx\", "
+        "\"frame\": \"0x%016llx\", \"zbuf\": \"0x%016llx\", "
+        "\"test\": \"0x%016llx\"}",
+        static_cast<unsigned long long>(sample.m_index),
+        sample.m_context,
+        static_cast<unsigned long long>(sample.m_prim),
+        static_cast<unsigned long long>(sample.m_effective_prim),
+        static_cast<unsigned long long>(sample.m_rgbaq),
+        static_cast<unsigned long long>(sample.m_xyz0),
+        static_cast<unsigned long long>(sample.m_xyz1),
+        static_cast<unsigned long long>(sample.m_xyoffset),
+        static_cast<unsigned long long>(sample.m_scissor),
+        static_cast<unsigned long long>(sample.m_frame),
+        static_cast<unsigned long long>(sample.m_zbuf),
+        static_cast<unsigned long long>(sample.m_test));
+}
+
 void write_gs_diagnostics_json(FILE* output, const ee::s_ee_gs_state& gs)
 {
     std::fprintf(output,
@@ -534,9 +559,40 @@ void write_gs_diagnostics_json(FILE* output, const ee::s_ee_gs_state& gs)
         std::fprintf(output, "%s%llu", i ? ", " : "",
             static_cast<unsigned long long>(gs.m_ad_register_counts[i]));
     }
-    std::fputs("],\n    \"limitations\": ["
+    std::fprintf(output,
+        "],\n    \"sprite_pair_kicks_total\": %llu,"
+        "\n    \"sprite_textured_kicks_total\": %llu,"
+        "\n    \"sprite_nonblack_rgb_kicks_total\": %llu,"
+        "\n    \"sprite_samples_first\": [",
+        static_cast<unsigned long long>(gs.m_total_sprite_pair_kicks),
+        static_cast<unsigned long long>(gs.m_total_sprite_textured_kicks),
+        static_cast<unsigned long long>(gs.m_total_sprite_nonblack_rgb_kicks));
+    const uint64_t cap = ee::s_ee_gs_state::k_sprite_sample_capacity;
+    const size_t count = static_cast<size_t>(
+        gs.m_total_sprite_pair_kicks < cap ? gs.m_total_sprite_pair_kicks : cap
+    );
+    for (size_t i = 0u; i < count; ++i)
+    {
+        std::fputs(i == 0u ? "\n      " : ",\n      ", output);
+        write_gs_sprite_sample_json(output, gs.m_first_sprite_samples[i]);
+    }
+    std::fputs(count ? "\n    ],\n    \"sprite_samples_last\": [" :
+        "],\n    \"sprite_samples_last\": [", output);
+    const uint64_t first = gs.m_total_sprite_pair_kicks - count;
+    for (size_t i = 0u; i < count; ++i)
+    {
+        const uint64_t index = first + i;
+        std::fputs(i == 0u ? "\n      " : ",\n      ", output);
+        write_gs_sprite_sample_json(output,
+            gs.m_recent_sprite_samples[index % cap]);
+    }
+    std::fputs(count ? "\n    ],\n    \"limitations\": [" :
+        "],\n    \"limitations\": [", output);
+    std::fputs(
         "\"does_not_include_vif_or_vu1_gif_paths\", "
         "\"does_not_imply_rasterization_or_present\", "
+        "\"samples_are_bounded_committed_path3_sprite_pairs\", "
+        "\"coordinates_and_registers_are_uninterpreted_raw_gs_values\", "
         "\"current_primitive_and_transfer_counters_reset\"]\n  }", output);
 }
 
@@ -4974,6 +5030,15 @@ int main(int argc, char** argv)
             static_cast<unsigned long long>(gs.m_tag_format_counts[1]),
             static_cast<unsigned long long>(gs.m_tag_format_counts[2]),
             static_cast<unsigned long long>(gs.m_tag_format_counts[3]));
+        std::printf(
+            "GS PATH3 sprite provenance: pairs=%llu textured=%llu "
+            "nonblack_rgb=%llu samples=first_and_last_%zu\n",
+            static_cast<unsigned long long>(gs.m_total_sprite_pair_kicks),
+            static_cast<unsigned long long>(gs.m_total_sprite_textured_kicks),
+            static_cast<unsigned long long>(gs.m_total_sprite_nonblack_rgb_kicks),
+            gs.m_total_sprite_pair_kicks < gs.k_sprite_sample_capacity ?
+            static_cast<size_t>(gs.m_total_sprite_pair_kicks) :
+            gs.k_sprite_sample_capacity);
     }
 
     if (gs_snapshot_path != nullptr || gs_upload_snapshot_path != nullptr)

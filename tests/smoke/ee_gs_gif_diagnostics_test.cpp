@@ -164,12 +164,60 @@ int main()
         return 1;
     }
 
-    const auto before = gs.state();
-    // Rejection is transactional: neither the earlier accepted-looking
-    // FRAME write nor the GIF tag/counters may commit before SIGNAL.
+    // A+D-only sprite registers in the actual SDBZ boot complete a
+    // two-kick primitive; capture the first and most recent *committed*
+    // rectangle's raw attributes and frame target without parsing
+    // speculative GS event batches.
+    const uint64_t rgbaq = 0x3f80000011223344ull;
+    const uint64_t frame = 0x0000000000020090ull;
+    const uint64_t xyz0 = (uint64_t{0x11} << 32u) |
+        (uint64_t{0x0200} << 16u) | 0x0100u;
+    const uint64_t xyz1 = (uint64_t{0x22} << 32u) |
+        (uint64_t{0x0300} << 16u) | 0x0180u;
     packet.clear();
-    tag(packet, 2u, 0u, 1u, 0xeu, true, 4u);
-    ad(packet, 0x4cu, 0x1234u);
+    tag(packet, 4u, 0u, 1u, 0xeu);
+    ad(packet, 0x01u, rgbaq);
+    ad(packet, 0x1au, 1u); // PRMODECONT selects primitive flags
+    ad(packet, 0x18u, 0x0010002000300040ull); // XYOFFSET_1
+    ad(packet, 0x4cu, frame); // FRAME_1
+    if (!check(feed(gif, packet), "sprite frame setup rejected"))
+    {
+        return 1;
+    }
+    packet.clear();
+    tag(packet, 2u, 0u, 1u, 0xeu, true, 6u);
+    ad(packet, 0x05u, xyz0);
+    ad(packet, 0x05u, xyz1);
+    if (!check(feed(gif, packet), "A+D sprite pair rejected"))
+    {
+        return 1;
+    }
+    const auto& sample = gs.state().m_first_sprite_samples[0];
+    if (!check(gs.state().m_total_sprite_pair_kicks == 1u &&
+               gs.state().m_total_sprite_textured_kicks == 0u &&
+               gs.state().m_total_sprite_nonblack_rgb_kicks == 1u &&
+               sample.m_index == 1u &&
+               sample.m_prim == 6u &&
+               sample.m_effective_prim == 6u &&
+               sample.m_context == 0u &&
+               sample.m_rgbaq == rgbaq &&
+               sample.m_xyz0 == xyz0 &&
+               sample.m_xyz1 == xyz1 &&
+               sample.m_frame == frame &&
+               sample.m_xyoffset == 0x0010002000300040ull &&
+               gs.state().m_recent_sprite_samples[0].m_index == 1u,
+               "committed sprite provenance lost RGB, geometry or frame"))
+    {
+        return 1;
+    }
+
+    const auto before = gs.state();
+    // Rejection is transactional even if the batch contains a complete
+    // sprite pair before the unsupported SIGNAL. Nothing may leak.
+    packet.clear();
+    tag(packet, 3u, 0u, 1u, 0xeu, true, 6u);
+    ad(packet, 0x05u, xyz0);
+    ad(packet, 0x05u, xyz1);
     ad(packet, 0x60u, 1u); // Unsupported SIGNAL, fail closed
     if (!check(!feed(gif, packet) &&
                gs.state().m_committed_gif_batches == before.m_committed_gif_batches &&
@@ -178,7 +226,14 @@ int main()
                gs.state().m_total_vertex_writes == before.m_total_vertex_writes &&
                gs.state().m_total_ad_events == before.m_total_ad_events &&
                gs.state().m_tag_format_counts == before.m_tag_format_counts &&
-               gs.state().m_ad_register_counts == before.m_ad_register_counts,
+               gs.state().m_ad_register_counts == before.m_ad_register_counts &&
+               gs.state().m_total_sprite_pair_kicks == before.m_total_sprite_pair_kicks &&
+               gs.state().m_total_sprite_textured_kicks == before.m_total_sprite_textured_kicks &&
+               gs.state().m_total_sprite_nonblack_rgb_kicks == before.m_total_sprite_nonblack_rgb_kicks &&
+               gs.state().m_first_sprite_samples[0].m_index ==
+                   before.m_first_sprite_samples[0].m_index &&
+               gs.state().m_recent_sprite_samples[0].m_index ==
+                   before.m_recent_sprite_samples[0].m_index,
                "rejected GIF batch modified cumulative stats"))
     {
         return 1;
@@ -189,7 +244,9 @@ int main()
     if (!check(gs.state().m_committed_gif_batches == 0u &&
                gs.state().m_tag_count == 0u &&
                gs.state().m_total_image_qwc == 0u &&
-               gs.state().m_total_vertex_writes == 0u,
+               gs.state().m_total_vertex_writes == 0u &&
+               gs.state().m_total_sprite_pair_kicks == 0u &&
+               gs.state().m_first_sprite_samples[0].m_index == 0u,
                "GS reset retained stale diagnostic state"))
     {
         return 1;
