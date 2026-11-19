@@ -12,6 +12,8 @@ from analyze_m2_dispatch_trace import analyze  # noqa: E402
 class TestM2DispatchTrace(unittest.TestCase):
     def test_dedup_and_events(self):
         trace = (
+            "+ C:\\ps2\\ee_game_runner.exe foo --ee-clock=reference-compat "
+            "--gs-snapshot=out.ppm\n"
             "dispatch=1 pc=0x00001000 -> 0x00001004 reason=RETURN(0) status=1\n"
             "dispatch=2 pc=0x00001004 -> 0x00001004 reason=HOST_YIELD(6) status=0\n"
             "EE host loop resume: count=1/256 pc=0x00001004\n"
@@ -44,6 +46,9 @@ class TestM2DispatchTrace(unittest.TestCase):
         self.assertEqual(irq["first"]["fields"]["cause"], "2")
         self.assertEqual(analyzed["event_counts"]["committed_sif_rpc"]["count"], 1)
         self.assertEqual(analyzed["guest_clock"]["gs_fields_started"], 5)
+        self.assertFalse(analyzed["final_runner_flags"]["webgpu_snapshot_requested"])
+        self.assertTrue(analyzed["final_runner_flags"]["cpu_display_snapshot_requested"])
+        self.assertTrue(analyzed["final_runner_flags"]["reference_compat_clock_requested"])
 
     def test_record_limit_explicit(self):
         with tempfile.TemporaryDirectory() as directory:

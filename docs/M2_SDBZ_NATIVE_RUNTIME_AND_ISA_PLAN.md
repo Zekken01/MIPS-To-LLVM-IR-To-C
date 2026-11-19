@@ -168,3 +168,7 @@ python tools/analyze_m2_dispatch_trace.py \\
 ```
 
 CI is checked per exact branch HEAD (do not infer the result of a newer commit from a prior green run). PR #142 remains draft and unmerged.
+
+### Provenance and bounds follow-up
+
+The offline M2 analyzer accepts optional `--catalog <matching-iop-disc-catalog.json>` and `--revision <verified-commit-sha>`; absent explicit revision is reported as unknown rather than inferred from a subsequent checkout. It hashes the supplied catalog and reports the catalog's ELF SHA-256 as *catalog-supplied*, not an independent ELF rehash. It also captures the **actual native runner invocation** found in the log and separately reports whether `--gs-webgpu-snapshot` was passed; no PPM file alone establishes this. The max-record safety cap now uses a constant-size overflow flag rather than storing every dropped index. These remain host diagnostic observations and do not change guest execution.

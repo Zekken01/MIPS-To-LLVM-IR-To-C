@@ -50,7 +50,8 @@ def analyze(log_path, report, top=12, max_records=200000):
     in the host-boundary histogram. No missing event is synthesized.
     """
     observations = {}
-    dropped_indices = set()
+    record_limit_exceeded = False
+    native_runner_command = None
     raw_dispatch_records = 0
     repeated_indices = 0
     events = {key: {"count": 0, "first": None, "last": None}
@@ -59,6 +60,10 @@ def analyze(log_path, report, top=12, max_records=200000):
 
     with Path(log_path).open("r", encoding="utf-8", errors="replace") as source:
         for line_number, line in enumerate(source, 1):
+            # Capture the command that actually invoked the *final* runner,
+            # not an assumed launcher option or a stale GPU snapshot file.
+            if line.lstrip().startswith("+ ") and "ee_game_runner" in line:
+                native_runner_command = line.strip()[2:]
             match = _DISPATCH.match(line)
             if match:
                 index = int(match.group(1))
@@ -68,7 +73,7 @@ def analyze(log_path, report, top=12, max_records=200000):
                 if index in observations:
                     repeated_indices += 1
                 if index not in observations and len(observations) >= max_records:
-                    dropped_indices.add(index)
+                    record_limit_exceeded = True
                 else:
                     observations[index] = (
                         int(match.group(2), 16),
@@ -136,7 +141,22 @@ def analyze(log_path, report, top=12, max_records=200000):
         "repeated_dispatch_indices": repeated_indices,
         "indices_not_observed": max(0, limit_dispatch - len(observations)),
         "record_limit": max_records,
-        "record_limit_exceeded": bool(dropped_indices),
+        "record_limit_exceeded": record_limit_exceeded,
+        "final_runner_command": native_runner_command,
+        "final_runner_flags": {
+            "webgpu_snapshot_requested": (
+                "--gs-webgpu-snapshot" in native_runner_command
+                if native_runner_command is not None else None),
+            "cpu_display_snapshot_requested": (
+                "--gs-snapshot" in native_runner_command
+                if native_runner_command is not None else None),
+            "cpu_upload_snapshot_requested": (
+                "--gs-upload-snapshot" in native_runner_command
+                if native_runner_command is not None else None),
+            "reference_compat_clock_requested": (
+                "--ee-clock=reference-compat" in native_runner_command
+                if native_runner_command is not None else None),
+        },
         "event_counts": events,
         "guest_clock": {
             "source": report.get("ee_cycle_source"),
@@ -165,6 +185,10 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--top", type=int, default=12)
     parser.add_argument("--max-records", type=int, default=200000)
+    parser.add_argument("--catalog", type=Path,
+                        help="explicit matching iop-disc-catalog JSON; not auto-inferred")
+    parser.add_argument("--revision",
+                        help="explicit verified Git revision for this historical batch")
     arguments = parser.parse_args()
     if not 1 <= arguments.top <= 64 or arguments.max_records < 1:
         parser.error("require 1 <= --top <= 64 and --max-records >= 1")
@@ -179,6 +203,23 @@ def main():
         "report": arguments.report.name,
         "report_sha256": _digest(arguments.report),
     }
+    result["revision"] = arguments.revision
+    if arguments.catalog is not None:
+        with arguments.catalog.open(encoding="utf-8") as source:
+            catalog = json.load(source)
+        if catalog.get("schema") != "iop-disc-catalog-v1":
+            parser.error("expected iop-disc-catalog-v1, not arbitrary JSON")
+        result["inputs"]["catalog"] = arguments.catalog.name
+        result["inputs"]["catalog_sha256"] = _digest(arguments.catalog)
+        result["catalog_evidence"] = {
+            "elf_sha256": catalog.get("elf_sha256"),
+            "elf_sha256_provenance": "catalog_field_not_rehashed_elf",
+            "rpc_commits_reported": catalog.get("runtime_rpc_commit_count"),
+            "rpc_commits_logged": result["event_counts"]["committed_sif_rpc"]["count"],
+            "rpc_count_agrees": (
+                catalog.get("runtime_rpc_commit_count")
+                == result["event_counts"]["committed_sif_rpc"]["count"]),
+        }
     arguments.output.parent.mkdir(parents=True, exist_ok=True)
     arguments.output.write_text(
         json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
