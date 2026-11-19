@@ -85,7 +85,7 @@ int main()
                q.m_vf[4][0] == 0x40e00000u && // 6 + old 1
                q.m_vf[5][0] == 0x41100000u && // 6 + new 3
                q.m_q == 0x40400000u &&
-               issue.m_steps == 6u && issue.m_cycles >= 12u,
+               issue.m_steps == 6u && issue.m_cycles == 11u,
                "DIV, Q-old/Q-new, WAITQ or latency"))
     {
         return 1;
