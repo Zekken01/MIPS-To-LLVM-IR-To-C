@@ -245,6 +245,13 @@ uint32_t c_ee_gs_state::psmt4_nibble_address(
     );
 }
 
+void c_ee_gs_state::bind_committed_event_observer(
+    void* user, t_committed_event_callback callback)
+{
+    m_committed_user = user;
+    m_committed_callback = callback;
+}
+
 const std::vector<uint8_t>& c_ee_gs_state::vram() const
 {
     return m_vram;
@@ -1422,6 +1429,13 @@ bool c_ee_gs_state::consume(
         apply_vram_write(m_vram, write);
     }
     m_state = std::move(next);
+    if (m_committed_callback != nullptr)
+    {
+        // Observer receives the already validated guest event stream.
+        // It has no success/failure return into the GIF or DMAC.
+        m_committed_callback(
+            m_committed_user, events, count, data, qwc);
+    }
     return true;
 }
 
