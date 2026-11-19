@@ -50,6 +50,43 @@ add_library(ee_core STATIC
     src/runtime/ee_cycle_scheduler.cpp
 )
 
+# The original SDBZ WebGPU compute shaders are embedded unchanged. This
+# target is dependency-free and builds on Windows/Linux without wgpu-native;
+# the native renderer source is vendored separately until its GS adapter
+# can be compiled and validated against real guest GIF/GS events.
+option(EE_BUILD_WEBGPU_SHADER_ASSETS "Embed native reference GS WebGPU shaders" ON)
+if(EE_BUILD_WEBGPU_SHADER_ASSETS)
+    set(EE_REF_GPU_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ps2_web_recomp_gpu")
+    set(EE_REF_GPU_GENERATED "${CMAKE_CURRENT_BINARY_DIR}/ee_webgpu")
+    foreach(EE_SHADER IN ITEMS gs blit font)
+        if(EE_SHADER STREQUAL "gs")
+            set(EE_SHADER_SYMBOL kGsShader)
+        elseif(EE_SHADER STREQUAL "blit")
+            set(EE_SHADER_SYMBOL kBlitShader)
+        else()
+            set(EE_SHADER_SYMBOL kFontShader)
+        endif()
+        add_custom_command(
+            OUTPUT "${EE_REF_GPU_GENERATED}/${EE_SHADER}_wgsl.cpp"
+            COMMAND "${CMAKE_COMMAND}" -E make_directory "${EE_REF_GPU_GENERATED}"
+            COMMAND "${CMAKE_COMMAND}"
+                "-DSRC=${EE_REF_GPU_SOURCE}/${EE_SHADER}.wgsl"
+                "-DOUT=${EE_REF_GPU_GENERATED}/${EE_SHADER}_wgsl.cpp"
+                "-DNAME=${EE_SHADER_SYMBOL}"
+                -P "${EE_REF_GPU_SOURCE}/embed.cmake"
+            DEPENDS
+                "${EE_REF_GPU_SOURCE}/${EE_SHADER}.wgsl"
+                "${EE_REF_GPU_SOURCE}/embed.cmake"
+            VERBATIM)
+    endforeach()
+    add_library(ee_webgpu_shaders STATIC
+        "${EE_REF_GPU_GENERATED}/gs_wgsl.cpp"
+        "${EE_REF_GPU_GENERATED}/blit_wgsl.cpp"
+        "${EE_REF_GPU_GENERATED}/font_wgsl.cpp")
+    set_target_properties(ee_webgpu_shaders PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+endif()
+
 # Standalone IOP R3000A interpreter, initially isolated from the EE
 # runner until module loading, timing and SIF transport are integrated.
 add_library(iop_cpu STATIC
