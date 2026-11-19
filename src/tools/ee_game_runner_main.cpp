@@ -3,6 +3,7 @@
 #include "ee_memory.h"
 #include "ee_ram_interpreter.h"
 #include "ee_hw_bus.h"
+#include "ee_host_timers.h"
 #include "ee_vsync_flags.h"
 #include "ee_gif.h"
 #include "ee_gs.h"
@@ -1492,9 +1493,12 @@ int main(int argc, char** argv)
     runtime.m_vu0_state = &vu0;
     runtime.m_vu0_sync = runner_vu0_sync;
     runtime.m_vu0_control = runner_vu0_control;
-    runtime.m_mmio_user = &hardware;
-    runtime.m_mmio_read = &ee::c_ee_hw_bus::mmio_read;
-    runtime.m_mmio_write = &ee::c_ee_hw_bus::mmio_write;
+    // The timers share the hardware MMIO bus but own their clocked state
+    // in this host runner, leaving cached translated IR unchanged.
+    ee::c_ee_host_timers host_timers(&runtime, &hardware);
+    runtime.m_mmio_user = &host_timers;
+    runtime.m_mmio_read = &ee::c_ee_host_timers::mmio_read;
+    runtime.m_mmio_write = &ee::c_ee_host_timers::mmio_write;
     runtime.m_loop_safepoint_limit = loop_budget;
     runtime.m_loop_safepoint_remaining = loop_budget;
     runtime.m_loop_safepoint_yield_enabled = loop_yield_resumes != 0u ? 1u : 0u;
@@ -2110,6 +2114,11 @@ int main(int argc, char** argv)
             std::fprintf(stderr, "EE compatibility cycle publication rejected\n");
             return 1;
         }
+        // Service guest-programmed timer compare/overflow events against
+        // the same reached-instruction compatibility clock as scanout.
+        // Timer COUNT reads inside a long native loop sample the live
+        // instruction budget rather than this after-dispatch checkpoint.
+        host_timers.service();
         const auto scanout_result = runtime.m_ee_cycle_scheduler.service_scanout(
             hardware, vsync_flags, *memory);
         if (scanout_result == ee::e_ee_scheduled_event_result::INVALID_TIMESTAMP_OR_DELIVERY)
@@ -5059,6 +5068,13 @@ int main(int argc, char** argv)
             static_cast<unsigned long long>(hardware.scanout().fields_started()),
             static_cast<unsigned long long>(
                 runtime.m_ee_cycle_scheduler.current_cycle()));
+        for (uint32_t timer_index = 0u; timer_index < 4u; ++timer_index)
+        {
+            std::fprintf(stderr,
+                "EE host timer: index=%u COUNT=0x%04x MODE=0x%04x\n",
+                timer_index, host_timers.current_count(timer_index),
+                host_timers.current_mode(timer_index));
+        }
         for (uint32_t index = 0u; index < 32u; index += 4u)
         {
             std::fprintf(stderr,
