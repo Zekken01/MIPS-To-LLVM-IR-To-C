@@ -219,6 +219,13 @@ def main(argv=None):
                 f"({catalog_path}); no IOP modules started",
                 flush=True,
             )
+            print(
+                f"IOP static import inventory: "
+                f"{catalog['static_import_count']} symbols in "
+                f"{catalog['static_import_module_count']} file-backed IRXs; "
+                "see iop-disc-catalog.json (not runtime load evidence)",
+                flush=True,
+            )
         except (OSError, ValueError) as exc:
             catalog_path.unlink(missing_ok=True)
             # Diagnostic discovery must not make EE boot or --no-recompile
