@@ -33,7 +33,10 @@ constexpr s_export k_exports[] = {
     {"dmacman", 33u, 4u}, {"dmacman", 34u, 4u},
     {"dmacman", 35u, 4u},
     {"thbase", 4u, 5u}, {"thbase", 6u, 5u},
-    {"thbase", 20u, 5u},
+    {"thbase", 20u, 5u}, {"thbase", 33u, 5u},
+    {"thbase", 34u, 5u}, {"thbase", 35u, 5u},
+    {"thbase", 37u, 5u}, {"thbase", 39u, 5u},
+    {"thbase", 40u, 5u},
     {"thevent", 4u, 6u}, {"thevent", 6u, 6u},
     {"thevent", 7u, 6u}, {"thevent", 8u, 6u},
     {"thevent", 10u, 6u},
@@ -660,6 +663,112 @@ bool c_kernel_hle_bridge::handle_thbase(uint32_t ordinal)
     case 20u:
         cpu.m_gpr[2] = m_kernel.current_thread_id();
         return true;
+    case 33u:
+    {
+        // PS2SDK threadman: 0x1200 / 125 system-clock ticks per
+        // microsecond. The scheduler clock is guest-instruction based;
+        // this is a virtual delay, NOT calibrated IOP hardware time.
+        const uint64_t ticks =
+            static_cast<uint64_t>(cpu.m_gpr[4]) * 0x1200u / 125u;
+        if (!m_kernel.sleep_current(std::max<uint64_t>(1u, ticks)))
+        {
+            return false;
+        }
+        cpu.m_gpr[2] = 0u;
+        return true;
+    }
+    case 34u:
+    {
+        const uint32_t output = cpu.m_gpr[4];
+        const uint64_t ticks = m_kernel.cycles();
+        if (!is_iop_ram_span(output, 8u) ||
+            !m_kernel.cpu().write32(output,
+                                   static_cast<uint32_t>(ticks)) ||
+            !m_kernel.cpu().write32(output + 4u,
+                                   static_cast<uint32_t>(ticks >> 32u)))
+        {
+            return false;
+        }
+        cpu.m_gpr[2] = 0u;
+        return true;
+    }
+    case 35u:
+    {
+        const uint32_t address = cpu.m_gpr[4];
+        uint32_t low = 0u;
+        uint32_t high = 0u;
+        if (!is_iop_ram_span(address, 8u) ||
+            !m_kernel.cpu().read32(address, &low) ||
+            !m_kernel.cpu().read32(address + 4u, &high))
+        {
+            return false;
+        }
+        const uint64_t ticks =
+            (static_cast<uint64_t>(high) << 32u) | low;
+        if (!m_kernel.set_alarm(
+                ticks, cpu.m_gpr[5], cpu.m_gpr[6], cpu.m_gpr[28]))
+        {
+            return false;
+        }
+        cpu.m_gpr[2] = 0u;
+        return true;
+    }
+    case 37u:
+        if (!m_kernel.cancel_alarm(cpu.m_gpr[4], cpu.m_gpr[5]))
+        {
+            return false;
+        }
+        cpu.m_gpr[2] = 0u;
+        return true;
+    case 39u:
+    {
+        const uint32_t output = cpu.m_gpr[5];
+        const uint64_t ticks =
+            static_cast<uint64_t>(cpu.m_gpr[4]) * 0x1200u / 125u;
+        if (!is_iop_ram_span(output, 8u) ||
+            !m_kernel.cpu().write32(
+                output, static_cast<uint32_t>(ticks)) ||
+            !m_kernel.cpu().write32(
+                output + 4u, static_cast<uint32_t>(ticks >> 32u)))
+        {
+            return false;
+        }
+        // USec2SysClock is void; leave $v0 alone.
+        return true;
+    }
+    case 40u:
+    {
+        const uint32_t input = cpu.m_gpr[4];
+        const uint32_t seconds_output = cpu.m_gpr[5];
+        const uint32_t microseconds_output = cpu.m_gpr[6];
+        uint32_t low = 0u;
+        uint32_t high = 0u;
+        if (!is_iop_ram_span(input, 8u) ||
+            !is_iop_ram_span(seconds_output, 4u) ||
+            !is_iop_ram_span(microseconds_output, 4u) ||
+            !m_kernel.cpu().read32(input, &low) ||
+            !m_kernel.cpu().read32(input + 4u, &high))
+        {
+            return false;
+        }
+        const uint64_t ticks =
+            (static_cast<uint64_t>(high) << 32u) | low;
+        const uint64_t whole = ticks / 0x1200u;
+        const uint64_t remainder = ticks % 0x1200u;
+        const uint64_t microseconds =
+            whole * 125u + remainder * 125u / 0x1200u;
+        const uint64_t seconds = microseconds / 1000000u;
+        if (seconds > std::numeric_limits<uint32_t>::max() ||
+            !m_kernel.cpu().write32(
+                seconds_output, static_cast<uint32_t>(seconds)) ||
+            !m_kernel.cpu().write32(
+                microseconds_output,
+                static_cast<uint32_t>(microseconds % 1000000u)))
+        {
+            return false;
+        }
+        return true;
+    }
     default:
         return false;
     }
