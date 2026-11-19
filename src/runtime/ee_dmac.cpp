@@ -11,6 +11,12 @@ c_ee_dmac::s_gif_channel_state c_ee_dmac::gif_channel_state() const
     return {channel.m_chcr, channel.m_madr, channel.m_qwc, channel.m_tadr};
 }
 
+c_ee_dmac::s_gif_channel_state c_ee_dmac::vif1_channel_state() const
+{
+    const s_spr_channel& channel = m_device_channels[1u];
+    return {channel.m_chcr, channel.m_madr, channel.m_qwc, channel.m_tadr};
+}
+
 uint64_t c_ee_dmac::gif_trace_count() const
 {
     return m_gif_trace_count;

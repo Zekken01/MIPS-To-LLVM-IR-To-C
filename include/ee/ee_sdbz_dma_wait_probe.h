@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ee_memory.h"
+#include "ee_dmac.h"
 
 #include <array>
 #include <cstddef>
@@ -33,6 +34,13 @@ public:
         uint32_t m_thread = 0u;
         std::array<uint32_t, k_slot_words> m_slot_words{};
         std::array<uint32_t, k_extra_addresses.size()> m_extra_words{};
+        bool m_vif1_observed = false;
+        uint32_t m_vif1_chcr = 0u;
+        uint32_t m_vif1_madr = 0u;
+        uint32_t m_vif1_qwc = 0u;
+        uint32_t m_vif1_tadr = 0u;
+        uint32_t m_dmac_status = 0u;
+        uint32_t m_dmac_pending = 0u;
 
         uint32_t selected_slot() const
         {
@@ -67,7 +75,7 @@ public:
     // Return true only for the first reached, backed snapshot at each
     // identified PC. For other games / unbacked RAM no sample is invented.
     bool observe(uint32_t pc, uint64_t dispatch, uint32_t thread,
-                 ee_memory* memory)
+                 ee_memory* memory, const c_ee_dmac* dmac)
     {
         const bool wait_needed = pc == k_wait_pc &&
             (!m_wait.m_observed || !m_pending_wait.m_observed);
@@ -97,6 +105,17 @@ public:
         for (size_t i = 0u; i < sample.m_extra_words.size(); ++i)
         {
             sample.m_extra_words[i] = memory->read32(k_extra_addresses[i]);
+        }
+        if (dmac != nullptr)
+        {
+            const auto vif1 = dmac->vif1_channel_state();
+            sample.m_vif1_observed = true;
+            sample.m_vif1_chcr = vif1.m_chcr;
+            sample.m_vif1_madr = vif1.m_madr;
+            sample.m_vif1_qwc = vif1.m_qwc;
+            sample.m_vif1_tadr = vif1.m_tadr;
+            sample.m_dmac_status = dmac->status();
+            sample.m_dmac_pending = dmac->pending();
         }
         sample.m_observed = true;
         if (wait_needed)
@@ -187,7 +206,21 @@ private:
         {
             std::fprintf(output, "%s%u", i ? "," : "", s.m_extra_words[i]);
         }
-        std::fputs("]}", output);
+        std::fputs("],\"vif1\":", output);
+        if (s.m_vif1_observed)
+        {
+            std::fprintf(output,
+                "{\"chcr\":%u,\"madr\":%u,\"qwc\":%u,\"tadr\":%u,"
+                "\"dmac_status\":%u,\"dmac_pending\":%u}",
+                s.m_vif1_chcr, s.m_vif1_madr,
+                s.m_vif1_qwc, s.m_vif1_tadr,
+                s.m_dmac_status, s.m_dmac_pending);
+        }
+        else
+        {
+            std::fputs("null", output);
+        }
+        std::fputs("}", output);
     }
 
     s_snapshot m_wait{};

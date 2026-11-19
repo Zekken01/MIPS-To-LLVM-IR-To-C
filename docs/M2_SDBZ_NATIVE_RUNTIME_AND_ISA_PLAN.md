@@ -264,3 +264,48 @@ override scissor or invent a menu frame. See
 [M2.4 guest failure path](M2_4_SDBZ_COMMAND_SLOT_TIMEOUT.md).
 
 M2.4 follow-up: preserve both `wait` (first entry) and `pending_wait` (first **nonzero** opposite-slot flag) separately; the first call may succeed. Red-loop entry is a third independently bounded sample. Do not mistake the first successful wait for the stuck one.
+
+
+## M2.4 VIF1/DMAC1 expected completion — evidence and diagnostic gate
+
+The **11:29 final boot** registers `AddDmacHandler cause=1
+handler=0x00102a60` and enables DMAC1. Its ELF handler
+decrements the selected guest command pending count at
+`0x00102b08..0x00102b10` after channel status/STR
+checks. That final trace contains **15 DMAC channel 5
+callbacks and zero channel 1 callbacks**. Consequently
+DMAC1/VIF1 completion is the strongest known candidate
+for the unretired buffer slot, not an unrendered menu frame.
+
+The current native `ee_dmac.cpp` routes VIF1 starts to
+`transfer_device_normal(1)`, which refuses source-chain
+mode; for normal VIF1 outbound data it uses a sink currently
+bound to a GIF PATH3 parser accepting only channel 2. This
+**does not establish that the guest's stalled transfer was a
+chain**: only the actual CHCR/MADR/QWC/TADR at the failure
+boundary can settle that. Compared with
+`twist84/ps2-web-recomp:SDBZ`,
+`runtime/src/dmac.cpp::run_chain` and
+`runtime/src/vif.cpp::transfer`, an actual implementation
+will need genuine VIF1 payload parsing/state effects and
+proper producer-driven DMA completion, not an IRQ shortcut.
+
+The bounded `m2_sdbz_dma_wait` probe now additionally
+reads **physical VIF1 channel 1 state** through a new
+host-only `c_ee_dmac::vif1_channel_state()` accessor:
+`CHCR`, `MADR`, `QWC`, `TADR` and `D_STAT`
+status/pending. These are attached to `wait`,
+`pending_wait` and `red_loop` snapshots.
+No guest MMIO read, DMA scheduling, timer update, CPU
+write, IRQ or other guest-visible action is performed.
+The test explicitly starts an **unsupported synthetic
+VIF1 chain (CHCR=0x105)** and verifies it remains
+unretired while the probe captures its immutable channel
+state and does not fabricate a completion interrupt.
+
+**Next decision:** Confirm which VIF1 mode, address and
+QWC the guest actually reached, and whether STR remains set,
+then implement the necessary real VIF1 delivery and
+channel-1 completion semantics in a batch of independently
+verified tests. Never clear STR or pending flags merely to
+avoid the red fallback loop.

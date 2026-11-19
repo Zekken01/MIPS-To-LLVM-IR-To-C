@@ -2163,7 +2163,8 @@ int main(int argc, char** argv)
         const uint32_t from_pc = cpu.m_pc;
         if (report_path != nullptr &&
             dma_wait_probe.observe(
-                from_pc, dispatched + 1u, current_thread_id, memory.get()))
+                from_pc, dispatched + 1u, current_thread_id,
+                memory.get(), &hardware.dmac()))
         {
             const bool newly_pending =
                 from_pc == ee::c_ee_sdbz_dma_wait_probe::k_wait_pc &&
@@ -2176,10 +2177,15 @@ int main(int argc, char** argv)
             std::printf(
                 "EE SDBZ command wait snapshot: dispatch=%llu pc=0x%08x "
                 "slot=%u flags=[0x%08x,0x%08x] "
+                "vif1=[chcr=%08x madr=%08x qwc=%u tadr=%08x] "
+                "dstat=%08x pending=%08x "
                 "(read-only; completion producer unproven)\n",
                 static_cast<unsigned long long>(sample.m_dispatch),
                 sample.m_pc, sample.selected_slot(),
-                sample.flag0(), sample.flag1()
+                sample.flag0(), sample.flag1(),
+                sample.m_vif1_chcr, sample.m_vif1_madr,
+                sample.m_vif1_qwc, sample.m_vif1_tadr,
+                sample.m_dmac_status, sample.m_dmac_pending
             );
         }
         if (has_trace_entry && from_pc == trace_entry)

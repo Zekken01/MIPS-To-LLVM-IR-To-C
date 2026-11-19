@@ -71,6 +71,9 @@ public:
 
     // Physical GIF-channel state for host diagnostics (read only).
     s_gif_channel_state gif_channel_state() const;
+    // The same read-only CHCR/MADR/QWC/TADR view for physical VIF1.
+    // This does not advance the DMA engine or read guest MMIO.
+    s_gif_channel_state vif1_channel_state() const;
     uint64_t gif_trace_count() const;
     bool gif_trace_newest(uint32_t offset, s_gif_dma_write* result) const;
     e_gif_dma_reject gif_last_reject() const;
