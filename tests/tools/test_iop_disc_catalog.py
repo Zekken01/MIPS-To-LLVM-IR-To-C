@@ -27,6 +27,21 @@ def write_mips_elf(path):
     path.write_bytes(header)
 
 
+def write_irx_import_fixture(path):
+    image = bytearray(0x180)
+    image[:7] = b"\\x7fELF\\x01\\x01\\x01"
+    struct.pack_into("<HHI", image, 16, 0xFF80, 8, 1)
+    struct.pack_into("<I", image, 28, 52)
+    struct.pack_into("<HH", image, 42, 32, 1)
+    struct.pack_into("<IIIIIIII", image, 52,
+                     1, 0x80, 0, 0, 0x80, 0x80, 5, 4)
+    struct.pack_into("<I", image, 0xA0, 0x41E00000)
+    image[0xAC:0xB4] = b"sysclib\\x00"
+    struct.pack_into("<II", image, 0xB4, 0x03E00008, 0x2400000C)
+    struct.pack_into("<II", image, 0xBC, 0x03E00008, 0x2400000D)
+    path.write_bytes(image)
+
+
 def make_test_elf(paths):
     image = bytearray(0x100 + 0x500)
     image[:7] = b"\x7fELF\x01\x01\x01"
@@ -102,7 +117,7 @@ def main():
         disc = root / "PS2_GAME"
         disc.mkdir()
         (disc / "DATA").mkdir()
-        write_mips_elf(disc / "padman.irx")
+        write_irx_import_fixture(disc / "padman.irx")
         write_mips_elf(disc / "DATA" / "ArIkA.IrX;1")
         elf = disc / "SLUS_214.42"
         elf.write_bytes(make_test_elf([
@@ -117,6 +132,16 @@ def main():
             "resolved", "resolved", "missing", "unsupported-device",
         ], result
         assert result["resolved_count"] == 2
+        assert result["static_import_count"] == 2
+        assert result["static_import_module_count"] == 2
+        assert result["candidates"][0]["static_imports"] == [
+            {"library": "sysclib", "ordinal": 12},
+            {"library": "sysclib", "ordinal": 13},
+        ]
+        assert result["candidates"][1]["static_imports"] == []
+        assert result["candidates"][2]["static_import_status"] == (
+            "not-resolved"
+        )
         assert result["runtime_load_count"] == 0
         assert result["runtime_evidence_source"] == "static-only"
         original_paths = [item["guest_path"] for item in result["candidates"]]
