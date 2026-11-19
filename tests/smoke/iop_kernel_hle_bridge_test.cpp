@@ -236,6 +236,115 @@ int main()
         return fail("real guest R3000 GetThreadId import did not run");
     }
 
+
+    // MODLOAD introspection operates on the actual linked IRX registry.
+    // Probe the six implemented ordinals through guest R3000 stubs.
+    uint32_t modload_pc = 0u;
+    for (uint16_t ordinal : {10u, 13u, 16u, 17u, 18u, 22u})
+    {
+        if (!kernel.lookup_library("modload", ordinal, &modload_pc))
+        {
+            return fail("implemented MODLOAD import was not registered");
+        }
+    }
+    for (uint16_t ordinal : {7u, 8u})
+    {
+        if (kernel.lookup_library("modload", ordinal, &modload_pc))
+        {
+            return fail("unsupported MODLOAD start/wait import registered");
+        }
+    }
+    kernel.cpu().write32(0x2b00u, 0x0000000du);
+    if (!call_guest(
+            kernel, "modload", 13u, {0x2b00u, 0u, 0u, 0u}, &result) ||
+        result != 0u ||
+        !call_guest(
+            kernel, "modload", 13u, {3u, 0u, 0u, 0u}, &result) ||
+        result != static_cast<uint32_t>(-201))
+    {
+        return fail("MODLOAD callback registration validation failed");
+    }
+    if (!call_guest(
+            kernel, "modload", 16u,
+            {0x2b10u, 4u, 0x2b20u, 0u}, &result) ||
+        result != 0u)
+    {
+        return fail("MODLOAD module ID list call failed");
+    }
+    uint32_t module_id = 0u;
+    uint32_t module_count = 0u;
+    if (!kernel.cpu().read32(0x2b10u, &module_id) ||
+        !kernel.cpu().read32(0x2b20u, &module_count) ||
+        module_id != 1u || module_count != 1u ||
+        !call_guest(
+            kernel, "modload", 17u,
+            {module_id, 0x2b40u, 0u, 0u}, &result) ||
+        result != 0u)
+    {
+        return fail("MODLOAD module list and status failed");
+    }
+    uint32_t status_id = 0u;
+    uint32_t status_entry = 0u;
+    if (!kernel.cpu().read32(0x2b40u + 0x38u, &status_id) ||
+        !kernel.cpu().read32(0x2b40u + 0x40u, &status_entry) ||
+        status_id != module_id ||
+        status_entry != kernel.module(module_id)->m_irx.m_entry)
+    {
+        return fail("MODLOAD status does not reflect the IRX");
+    }
+    for (uint32_t i = 0u; i < 4u; ++i)
+    {
+        const char name[] = "irx";
+        kernel.cpu().write8(0x2ba0u + i,
+                            static_cast<uint8_t>(name[i]));
+    }
+    if (!call_guest(
+            kernel, "modload", 22u,
+            {0x2ba0u, 0u, 0u, 0u}, &result) ||
+        result != 1u ||
+        !call_guest(
+            kernel, "modload", 18u,
+            {0x2ba0u, 0x2bb0u, 4u, 0x2bc0u}, &result) ||
+        result != 0u ||
+        !kernel.cpu().read32(0x2bb0u, &module_id) ||
+        !kernel.cpu().read32(0x2bc0u, &module_count) ||
+        module_id != 1u || module_count != 1u)
+    {
+        return fail("MODLOAD case-insensitive name search failed");
+    }
+    if (!call_guest(
+            kernel, "modload", 17u,
+            {0xffffffffu, 0x2b40u, 0u, 0u}, &result) ||
+        result != static_cast<uint32_t>(-202))
+    {
+        return fail("MODLOAD unknown module did not fail closed");
+    }
+
+
+    // Link a second synthetic IRX from IOP RAM. LoadModuleBuffer must
+    // not execute an entrypoint, and the registry must reflect the load.
+    const uint32_t guest_image = 0x6000u;
+    for (uint32_t i = 0u; i < synthetic.size(); ++i)
+    {
+        if (!kernel.cpu().write8(guest_image + i, synthetic[i]))
+        {
+            return fail("could not stage guest IRX buffer");
+        }
+    }
+    if (!call_guest(
+            kernel, "modload", 10u,
+            {guest_image, 0u, 0u, 0u}, &result) ||
+        result != 2u || kernel.module(2u) == nullptr ||
+        !call_guest(
+            kernel, "modload", 16u,
+            {0x2b10u, 1u, 0x2b20u, 0u}, &result) ||
+        result != 0u ||
+        !kernel.cpu().read32(0x2b20u, &module_count) ||
+        module_count != 2u)
+    {
+        return fail("MODLOAD buffer linking/count/truncation failed");
+    }
+
     // The next game loader IRX (MCMAN) requires threadman timing,
     // not merely the original SIO2MAN thread service imports.
     for (uint16_t ordinal : {33u, 34u, 35u, 37u, 39u, 40u})
