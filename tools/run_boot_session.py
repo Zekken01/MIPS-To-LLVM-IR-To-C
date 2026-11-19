@@ -69,6 +69,10 @@ def main(argv=None):
         "--gs-upload-snapshot", type=Path,
         help="Capture final trace's completed GS upload, not a frame",
     )
+    parser.add_argument(
+        "--gs-webgpu-snapshot", type=Path,
+        help="Capture final trace's native WebGPU raster (requires wgpu-native)",
+    )
     parser.add_argument("--expansion-passes", type=int, default=2)
     parser.add_argument("--expansion-per-pass", type=int, default=128)
     parser.add_argument("--no-recompile", action="store_true")
@@ -166,6 +170,7 @@ def main(argv=None):
     snapshots = [
         ("--gs-snapshot", args.gs_snapshot),
         ("--gs-upload-snapshot", args.gs_upload_snapshot),
+        ("--gs-webgpu-snapshot", args.gs_webgpu_snapshot),
     ]
     requested_paths = [
         path.resolve() for _, path in snapshots if path is not None
