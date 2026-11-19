@@ -309,11 +309,106 @@ bool upper(const s_ee_vu1_state& state, uint32_t hi,
     return true;
 }
 
+// Flag reads are four microinstruction cycles behind the latest writes.
+// Adapted from ps2-web-recomp runtime/include/ps2/vu_ops.hpp::FlagPipe.
+struct s_flag_pipe
+{
+    uint32_t m_t = 16u;
+    uint32_t m_mac_ts[8]{};
+    uint32_t m_mac_values[8]{};
+    uint32_t m_status_values[8]{};
+    uint32_t m_clip_ts[8]{};
+    uint32_t m_clip_values[8]{};
+    uint32_t m_mac_head = 0u;
+    uint32_t m_clip_head = 0u;
+
+    void start(const s_ee_vu1_state& state)
+    {
+        for (uint32_t i = 0u; i < 8u; ++i)
+        {
+            m_mac_values[i] = state.m_mac;
+            m_status_values[i] = state.m_status;
+            m_clip_values[i] = state.m_clip;
+        }
+    }
+
+    void set_mac(uint32_t mac, uint32_t status)
+    {
+        const uint32_t i = m_mac_head++ & 7u;
+        m_mac_ts[i] = m_t;
+        m_mac_values[i] = mac;
+        m_status_values[i] = status;
+    }
+
+    void set_clip(uint32_t value, uint32_t at)
+    {
+        const uint32_t i = m_clip_head++ & 7u;
+        m_clip_ts[i] = at;
+        m_clip_values[i] = value;
+    }
+
+    void force_mac(uint32_t mac, uint32_t status)
+    {
+        set_mac(mac, status);
+        m_mac_ts[(m_mac_head - 1u) & 7u] = m_t - 4u;
+    }
+
+    uint32_t mac_slot() const
+    {
+        for (uint32_t k = 1u; k <= 8u; ++k)
+        {
+            const uint32_t i = (m_mac_head - k) & 7u;
+            if (m_mac_ts[i] + 4u <= m_t)
+            {
+                return i;
+            }
+        }
+        return (m_mac_head - 8u) & 7u;
+    }
+
+    uint32_t mac() const
+    {
+        return m_mac_values[mac_slot()];
+    }
+
+    uint32_t status() const
+    {
+        return m_status_values[mac_slot()];
+    }
+
+    uint32_t clip() const
+    {
+        for (uint32_t k = 1u; k <= 8u; ++k)
+        {
+            const uint32_t i = (m_clip_head - k) & 7u;
+            if (m_clip_ts[i] + 4u <= m_t)
+            {
+                return m_clip_values[i];
+            }
+        }
+        return m_clip_values[(m_clip_head - 8u) & 7u];
+    }
+};
+
+bool branch_delay_exempt(uint32_t lower)
+{
+    switch (lower >> 25u)
+    {
+    case 0x10u: case 0x12u: case 0x13u: case 0x14u:
+    case 0x16u: case 0x17u: case 0x18u: case 0x1au:
+    case 0x1bu: case 0x1cu: case 0x21u: case 0x25u:
+        return true;
+    default:
+        return false;
+    }
+}
+
 bool lower(s_ee_vu1_state& state, uint32_t lo, uint32_t pc,
            std::array<uint8_t, 16384>& data, uint32_t top, uint32_t itop,
            const std::array<uint16_t, 16>& branch_vi,
            std::vector<uint8_t>& path1_bytes,
-           uint32_t& branch_target, bool& branched)
+           uint32_t& branch_target, bool& branched,
+           s_flag_pipe& pipe, int32_t& fsset)
 {
     const uint32_t major = lo >> 25u;
     const uint32_t dest = (lo >> 21u) & 15u;
@@ -411,6 +506,52 @@ bool lower(s_ee_vu1_state& state, uint32_t lo, uint32_t pc,
         store_vi(state, it, state.m_vi[is] -
             (((lo >> 10u) & 0x7800u) | (lo & 0x7ffu)));
         return true;
+    case 0x10u: // FCEQ
+        store_vi(state, 1u,
+            (pipe.clip() & 0xffffffu) == (lo & 0xffffffu) ? 1u : 0u);
+        return true;
+    case 0x11u: // FCSET; visible immediately to subsequent flag reads
+        state.m_clip = lo & 0xffffffu;
+        pipe.set_clip(state.m_clip, pipe.m_t - 4u);
+        return true;
+    case 0x12u: // FCAND
+        store_vi(state, 1u, (pipe.clip() & lo & 0xffffffu) != 0u ? 1u : 0u);
+        return true;
+    case 0x13u: // FCOR
+        store_vi(state, 1u,
+            ((pipe.clip() | lo) & 0xffffffu) == 0xffffffu ? 1u : 0u);
+        return true;
+    case 0x14u: // FSEQ
+        store_vi(state, it,
+            (pipe.status() & 0xfffu) ==
+            (((lo >> 10u) & 0x800u) | (lo & 0x7ffu)) ? 1u : 0u);
+        return true;
+    case 0x15u: // FSSET sticky flags update after same-cycle upper
+        fsset = static_cast<int32_t>(
+            (((lo >> 10u) & 0x800u) | (lo & 0x7ffu)) & 0xfc0u);
+        return true;
+    case 0x16u: // FSAND
+        store_vi(state, it, pipe.status() &
+            (((lo >> 10u) & 0x800u) | (lo & 0x7ffu)));
+        return true;
+    case 0x17u: // FSOR
+        store_vi(state, it, (pipe.status() & 0xfffu) |
+            (((lo >> 10u) & 0x800u) | (lo & 0x7ffu)));
+        return true;
+    case 0x18u: // FMEQ
+        store_vi(state, it, (pipe.mac() & 0xffffu) ==
+            state.m_vi[is] ? 1u : 0u);
+        return true;
+    case 0x1au: // FMAND
+        store_vi(state, it, pipe.mac() & state.m_vi[is]);
+        return true;
+    case 0x1bu: // FMOR
+        store_vi(state, it, (pipe.mac() & 0xffffu) |
+            state.m_vi[is]);
+        return true;
+    case 0x1cu: // FCGET
+        store_vi(state, it, pipe.clip() & 0xfffu);
+        return true;
     case 0x20u: branch_target = target; branched = true; return true;
     case 0x21u:
         store_vi(state, it, (pc + 16u) / 8u);
@@ -463,6 +604,9 @@ bool c_ee_vu1::run(
     std::array<uint16_t, 16> previous_vi = state.m_vi;
     bool previous_lower = false;
     bool ending = false;
+    int32_t fsset = -1;
+    s_flag_pipe pipe{};
+    pipe.start(state);
 
     for (uint32_t step = 0u; step < k_max_steps; ++step)
     {
@@ -473,6 +617,7 @@ bool c_ee_vu1::run(
         issue->m_upper = hi;
         issue->m_steps = step + 1u;
 
+        ++pipe.m_t;
         s_upper_write pending{};
         if (!upper(state, hi, pending))
         {
@@ -494,7 +639,7 @@ bool c_ee_vu1::run(
             bool branched = false;
             if (!lower(state, lo, current, data, top, itop,
                        previous_lower ? previous_vi : state.m_vi,
-                       path1_bytes, target, branched))
+                       path1_bytes, target, branched, pipe, fsset))
             {
                 return false;
             }
@@ -504,22 +649,43 @@ bool c_ee_vu1::run(
             }
         }
 
-        if (pending.m_target != 0u)
+        if (pending.m_writes)
         {
-            auto& target = pending.m_acc
-                ? state.m_acc : state.m_vf[pending.m_target];
-            for (uint32_t lane = 0u; lane < 4u; ++lane)
+            if (pending.m_acc || pending.m_target != 0u)
             {
-                if ((pending.m_mask & (8u >> lane)) != 0u)
+                auto& target = pending.m_acc
+                    ? state.m_acc : state.m_vf[pending.m_target];
+                for (uint32_t lane = 0u; lane < 4u; ++lane)
                 {
-                    target[lane] = pending.m_values[lane];
+                    if ((pending.m_mask & (8u >> lane)) != 0u)
+                    {
+                        target[lane] = pending.m_values[lane];
+                    }
                 }
             }
+            if (pending.m_flags)
+            {
+                set_mac_flags(state, pending.m_values, pending.m_mask);
+                pipe.set_mac(state.m_mac, state.m_status);
+            }
+        }
+        if (fsset >= 0)
+        {
+            state.m_status = (state.m_status & 0x3fu) |
+                static_cast<uint32_t>(fsset);
+            pipe.force_mac(state.m_mac, state.m_status);
+            fsset = -1;
+        }
+        if (pending.m_has_clip)
+        {
+            state.m_clip = pending.m_clip;
+            pipe.set_clip(state.m_clip, pipe.m_t);
         }
         state.m_vi[0] = 0u;
         state.m_vf[0] = {0u, 0u, 0u, 0x3f800000u};
         previous_vi = before;
-        previous_lower = (hi & 0x80000000u) == 0u;
+        previous_lower = (hi & 0x80000000u) == 0u &&
+            !branch_delay_exempt(lo);
 
         if (ending)
         {
