@@ -1,8 +1,11 @@
 #include "iop_kernel_hle_bridge.h"
+#include "iop_folder_sector_source.h"
 
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -344,6 +347,142 @@ int main()
     {
         return fail("MODLOAD buffer linking/count/truncation failed");
     }
+
+
+    // Actual, read-only IOMAN guest file operations use the same
+    // ISO9660 folder sector source as native CDVD HLE.
+    namespace fs = std::filesystem;
+    const fs::path media = fs::temp_directory_path() /
+        "sdbz_ioman_hle_regression";
+    std::error_code media_error;
+    fs::remove_all(media, media_error);
+    media_error.clear();
+    fs::create_directories(media, media_error);
+    if (media_error)
+    {
+        return fail("could not create IOMAN media fixture");
+    }
+    {
+        std::ofstream file(media / "HELLO.BIN", std::ios::binary);
+        file << "SDBZ DATA";
+        if (!file)
+        {
+            return fail("could not write IOMAN media fixture");
+        }
+    }
+    iop::c_folder_sector_source sector_source(media);
+    if (!sector_source.valid())
+    {
+        return fail("could not mount IOMAN media fixture");
+    }
+    hle.attach_disc_source(&sector_source);
+    const char ioman_path[] = "cdrom0:\\HELLO.BIN;1";
+    for (uint32_t i = 0u; i < sizeof(ioman_path); ++i)
+    {
+        if (!kernel.cpu().write8(
+                0x3000u + i, static_cast<uint8_t>(ioman_path[i])))
+        {
+            return fail("could not install IOMAN path");
+        }
+    }
+    for (uint16_t ordinal : {4u, 5u, 6u, 7u, 8u, 16u, 20u, 21u})
+    {
+        uint32_t entry = 0u;
+        if (!kernel.lookup_library("ioman", ordinal, &entry))
+        {
+            return fail("IOMAN supported/safe boundary was not installed");
+        }
+    }
+    for (uint16_t ordinal : {4u, 5u, 6u})
+    {
+        uint32_t entry = 0u;
+        if (!kernel.lookup_library("secrman", ordinal, &entry))
+        {
+            return fail("SECRMAN explicit failed boundary not installed");
+        }
+    }
+    if (!call_guest(
+            kernel, "ioman", 16u, {0x3000u, 0x3100u, 0u, 0u},
+            &result) || result != 0u)
+    {
+        return fail("IOMAN getstat failed");
+    }
+    uint32_t file_mode = 0u;
+    uint32_t file_size = 0u;
+    if (!kernel.cpu().read32(0x3100u, &file_mode) ||
+        !kernel.cpu().read32(0x3108u, &file_size) ||
+        file_mode != 0x17u || file_size != 9u)
+    {
+        return fail("IOMAN getstat wrong native ISO metadata");
+    }
+    if (!call_guest(
+            kernel, "ioman", 4u, {0x3000u, 1u, 0u, 0u},
+            &result) || result != 3u)
+    {
+        return fail("IOMAN open failed");
+    }
+    if (!call_guest(
+            kernel, "ioman", 6u, {3u, 0x3140u, 4u, 0u}, &result) ||
+        result != 4u ||
+        !call_guest(
+            kernel, "ioman", 8u, {3u, 0u, 0u, 0u}, &result) ||
+        result != 0u ||
+        !call_guest(
+            kernel, "ioman", 6u, {3u, 0x3148u, 9u, 0u}, &result) ||
+        result != 9u)
+    {
+        return fail("IOMAN read/seek failed");
+    }
+    for (uint32_t i = 0u; i < 9u; ++i)
+    {
+        uint8_t byte = 0u;
+        const char expected[] = "SDBZ DATA";
+        if (!kernel.cpu().read8(0x3148u + i, &byte) ||
+            byte != static_cast<uint8_t>(expected[i]))
+        {
+            return fail("IOMAN disc bytes mismatch");
+        }
+    }
+    if (!call_guest(
+            kernel, "ioman", 7u, {3u, 0x3140u, 4u, 0u}, &result) ||
+        result != static_cast<uint32_t>(-13) ||
+        !call_guest(
+            kernel, "ioman", 5u, {3u, 0u, 0u, 0u}, &result) ||
+        result != 0u ||
+        !call_guest(
+            kernel, "ioman", 6u, {3u, 0x3140u, 4u, 0u}, &result) ||
+        result != static_cast<uint32_t>(-9))
+    {
+        return fail("IOMAN failed close/readonly/EBADF semantics");
+    }
+    if (!call_guest(
+            kernel, "ioman", 20u, {0x3100u, 0u, 0u, 0u}, &result) ||
+        result != static_cast<uint32_t>(-1) ||
+        !call_guest(
+            kernel, "ioman", 21u, {0x3000u, 0u, 0u, 0u}, &result) ||
+        result != static_cast<uint32_t>(-1) ||
+        !call_guest(
+            kernel, "secrman", 4u, {0u, 0u, 0u, 0u}, &result) ||
+        result != static_cast<uint32_t>(-1) ||
+        !call_guest(
+            kernel, "secrman", 5u, {0u, 0u, 0u, 0u}, &result) ||
+        result != static_cast<uint32_t>(-1) ||
+        !call_guest(
+            kernel, "secrman", 6u, {0u, 0u, 0u, 0u}, &result) ||
+        result != 0u)
+    {
+        return fail("IOMAN driver or SECRMAN authentication falsely succeeded");
+    }
+    for (uint16_t ordinal : {9u, 13u, 15u})
+    {
+        uint32_t entry = 0u;
+        if (kernel.lookup_library("ioman", ordinal, &entry))
+        {
+            return fail("unimplemented IOMAN operation was registered");
+        }
+    }
+    hle.attach_disc_source(nullptr);
+    fs::remove_all(media, media_error);
 
     // The next game loader IRX (MCMAN) requires threadman timing,
     // not merely the original SIO2MAN thread service imports.
