@@ -14,7 +14,7 @@
 
 ## Deliberately unsupported
 
-This is **not full VU1 parity**. Unimplemented upper arithmetic and ACC operations (MADD/MSUB, CLIP, etc.), MAC/status flags, Q/P latency, most lower specials (EFU, flags, RNG, division, etc.), exact instruction stalls/hazards, MSCALF synchronization, GIF PATH1/2/3 arbitration, and VIF IRQ still fail closed. There is no claim of complete PS2 VU correctness or original game progression. Complete the upstream interpreter in coherent tested batches before relaxing these gates.
+This is **not full VU1 parity**. Batch B provides reference-derived ACC/ADDA/MULA/MADD/MSUB, OPMSUB/OPMULA, FTOI/ITOF, CLIP, MAC/status/clip flag registers, four-issue flag visibility, and FCGET/FSEQ/FSSET/FSAND/FSOR/FMEQ/FMAND/FMOR/FCAND/FCOR/FCEQ/FCSET. Still unsupported: Q/P unit timing, precise VF/VI dependency stalls, lower EFU/RNG and related special instructions, MSCALF synchronization, GIF PATH1/2/3 arbitration, and VIF IRQ. These paths fail closed. There is no claim of complete PS2 VU correctness or original game progression. Complete the upstream interpreter in coherent tested batches before relaxing these gates.
 
 The original 13:53 boot showed VIF1 source-chain CHCR=0x1c5 and TADR=0x00771400, but was captured before source-prefix diagnostics existed. No game VIF opcode is proved reached. Only a new timestamp-matched Windows boot batch can prove progression.
 
@@ -24,4 +24,12 @@ The ee_vif1_device test adds a real 3-pair VU1 MPG program (IADDIU, XGKICK with 
 
 ## Next batch
 
-Port upstream VU1 ACC/arithmetic and flag/Q/P pipelines, with precise hazards, branch and register validation; then unify GIF PATH1/2/3 arbitration and VIF/DMAC stalls rather than skipping them.
+Next port upstream Q/P scalar pipelines, lower DIV/SQRT/RSQRT, register-hazard stalls, EFU/RNG specials and remaining micro opcodes, with differential vectors. Then unify GIF PATH1/2/3 arbitration and VIF/DMAC stalls.
+
+
+## Batch B — PS2 FMAC and delayed flags (validation pending)
+
+- Ported ps2-web-recomp:SDBZ runtime/include/ps2/fpu.hpp to C++17-friendly src/runtime/ee_vu1_fp.h, replacing bit_cast/countl_zero without changing reference arithmetic.
+- Implemented VU1 ACC operations, MADD/MSUB, FTOI/ITOF, CLIP, VF0 suppression, MAC/status/clip results and four-issued-pair flag visibility, with lower flag instructions.
+- Corrected synthetic XGKICK GIFtag fixture: NREG=0 means sixteen payload registers; the fixture now encodes NREG=1 for its single payload.
+- Added ACC/MADD, FTOI4 and delayed CLIP->FCGET regression vectors. No real-game boot progression is claimed.
