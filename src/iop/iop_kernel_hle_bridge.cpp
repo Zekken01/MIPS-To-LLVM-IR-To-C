@@ -22,7 +22,7 @@ struct s_export
 // Explicit HLE coverage for the actual USA SIO2MAN import families.
 // The same services are reusable by later PADMAN/MCMAN/LIBSD IRXs.
 constexpr s_export k_exports[] = {
-    {"loadcore", 6u, 1u},
+    {"loadcore", 6u, 1u}, {"loadcore", 7u, 1u},
     {"intrman", 4u, 2u}, {"intrman", 5u, 2u},
     {"intrman", 6u, 2u}, {"intrman", 7u, 2u},
     {"intrman", 17u, 2u}, {"intrman", 18u, 2u},
@@ -166,78 +166,10 @@ bool c_kernel_hle_bridge::write_console(
 
 bool c_kernel_hle_bridge::register_loaded_guest_library(uint32_t table)
 {
-    uint32_t marker = 0u;
-    if ((table & 3u) != 0u ||
-        !m_kernel.cpu().read32(table, &marker) ||
-        marker != 0x41c00000u)
-    {
-        return false;
-    }
-    std::string name;
-    for (uint32_t i = 0u; i < 8u; ++i)
-    {
-        uint8_t ch = 0u;
-        if (!m_kernel.cpu().read8(table + 12u + i, &ch))
-        {
-            return false;
-        }
-        if (ch == 0u)
-        {
-            break;
-        }
-        if (ch < 0x21u || ch > 0x7eu)
-        {
-            return false;
-        }
-        name.push_back(static_cast<char>(ch));
-    }
-    if (name.empty())
-    {
-        return false;
-    }
-
-    // The actual relocated module must have exported these entries.
-    // Never create fake providers simply because a guest passes a table.
-    bool any = false;
-    for (uint32_t ordinal = 0u; ordinal < 1024u; ++ordinal)
-    {
-        uint32_t entry = 0u;
-        if (!m_kernel.cpu().read32(table + 20u + ordinal * 4u,
-                                   &entry))
-        {
-            return false;
-        }
-        if (entry == 0u)
-        {
-            uint32_t next = 0u;
-            if (!m_kernel.cpu().read32(
-                    table + 24u + ordinal * 4u, &next))
-            {
-                return any;
-            }
-            const uint32_t physical = next & 0x1fffffffu;
-            uint32_t existing = 0u;
-            if (next == 0u || (next & 3u) != 0u ||
-                physical >= c_cpu::k_ram_size ||
-                !m_kernel.lookup_library(
-                    name, static_cast<uint16_t>(ordinal + 1u),
-                    &existing) ||
-                existing != next)
-            {
-                return any;
-            }
-            continue;
-        }
-        uint32_t registered = 0u;
-        if (!m_kernel.lookup_library(
-                name, static_cast<uint16_t>(ordinal), &registered) ||
-            registered != entry)
-        {
-            return false;
-        }
-        any = true;
-    }
-    return false;
+    // RegisterLibraryEntries, LOADCORE export #6. The real IRX linker
+    // already validates and publishes exports during module load.
+    // Re-registration after a real release is also supported.
+    return m_kernel.set_module_library_registration(table, true);
 }
 
 bool c_kernel_hle_bridge::match_event(
@@ -272,8 +204,20 @@ bool c_kernel_hle_bridge::take_event(
 
 bool c_kernel_hle_bridge::handle_loadcore(uint32_t ordinal)
 {
-    if (ordinal != 6u ||
-        !register_loaded_guest_library(m_kernel.cpu().state().m_gpr[4]))
+    const uint32_t table = m_kernel.cpu().state().m_gpr[4];
+    bool accepted = false;
+    if (ordinal == 6u)
+    {
+        accepted = register_loaded_guest_library(table);
+    }
+    else if (ordinal == 7u)
+    {
+        // ReleaseLibraryEntries unregisters only the actual loaded
+        // module's matching exports. Invalid tables do not mutate the
+        // registry, and HLE kernel providers cannot be released.
+        accepted = m_kernel.set_module_library_registration(table, false);
+    }
+    if (!accepted)
     {
         return false;
     }
