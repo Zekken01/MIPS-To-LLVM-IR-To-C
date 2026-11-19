@@ -51,6 +51,7 @@ struct s_kernel_thread
     uint32_t m_entry = 0u;
     uint32_t m_gp = 0u;
     uint32_t m_wakeup_count = 0u;
+    bool m_delete_on_exit = false;
     uint32_t m_wait_type = 0u;
     uint32_t m_stack_base = 0u;
     uint32_t m_stack_size = 0u;
@@ -161,11 +162,13 @@ public:
     );
     bool start_thread(uint32_t id);
     bool start_thread_with_argument(uint32_t id, uint32_t argument);
+    bool start_thread_with_arguments(uint32_t id,
+                                     uint32_t a0, uint32_t a1);
     bool wake_thread(uint32_t id);
     bool wake_thread_with_result(uint32_t id, uint32_t result);
     bool stop_thread(uint32_t id);
     bool delete_thread(uint32_t id);
-    bool exit_current_thread();
+    bool exit_current_thread(bool delete_on_exit = false);
     bool change_thread_priority(uint32_t id, uint32_t priority);
     bool sleep_thread();
     bool wakeup_thread(uint32_t id);
