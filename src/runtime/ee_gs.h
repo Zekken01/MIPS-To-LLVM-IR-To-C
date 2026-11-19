@@ -19,7 +19,27 @@ struct s_ee_gs_state
     uint32_t m_q_bits = 0x3f800000u; // GIFtag resets the STQ Q to 1.0
     uint64_t m_tag_count = 0;
     uint64_t m_vertex_count = 0; // diagnostic only; no rasterization
-    uint32_t m_image_qwc = 0;
+    uint32_t m_image_qwc = 0; // current host-to-local transfer, reset by TRXDIR=0
+
+    // Cumulative *committed* GIF PATH3 traffic. These host diagnostics
+    // do not draw, advance DMA, schedule GS fields, or alter guest registers.
+    // Unlike m_vertex_count and m_image_qwc, these never reset on a new
+    // PRIM or TRXDIR; reset() is the only clearing operation.
+    uint64_t m_committed_gif_batches = 0u;
+    uint64_t m_total_prim_writes = 0u;
+    uint64_t m_total_vertex_writes = 0u;
+    uint64_t m_total_vertex_kicks = 0u; // XYZF2/XYZ2, excluding ADC vertices
+    uint64_t m_total_adc_vertices = 0u; // XYZF3/XYZ3
+    uint64_t m_total_packed_events = 0u;
+    uint64_t m_total_reglist_events = 0u;
+    uint64_t m_total_ad_events = 0u;
+    uint64_t m_total_image_events = 0u;
+    uint64_t m_total_image_qwc = 0u;
+    std::array<uint64_t, 4> m_tag_format_counts{}; // PACKED, REGLIST, IMAGE, IMAGE2
+    std::array<uint64_t, 8> m_prim_type_counts{};
+    std::array<uint64_t, 16> m_packed_register_counts{};
+    std::array<uint64_t, 128> m_ad_register_counts{};
+
     std::vector<uint8_t> m_image_data; // bounded diagnostic transfer capture
     bool m_transfer_started = false;
     uint32_t m_transfer_pixels_written = 0; // across IMAGE events

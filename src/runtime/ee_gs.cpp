@@ -1039,12 +1039,20 @@ bool c_ee_gs_state::write_register(
     {
     case 0x00u: // PRIM
         state.m_vertex_count = 0u;
+        ++state.m_total_prim_writes;
+        ++state.m_prim_type_counts[value & 7u];
         break;
     case 0x04u: // XYZF2
     case 0x05u: // XYZ2
+        ++state.m_vertex_count;
+        ++state.m_total_vertex_writes;
+        ++state.m_total_vertex_kicks;
+        break;
     case 0x0cu: // XYZF3 (ADC)
     case 0x0du: // XYZ3 (ADC)
         ++state.m_vertex_count;
+        ++state.m_total_vertex_writes;
+        ++state.m_total_adc_vertices;
         break;
     case 0x01u: // RGBAQ
     case 0x02u: // ST
@@ -1337,6 +1345,7 @@ bool c_ee_gs_state::consume(
             }
             next.m_q_bits = 0x3f800000u;
             ++next.m_tag_count;
+            ++next.m_tag_format_counts[(e.m_word0 >> 58u) & 3u];
             break;
         case e_ee_gif_event_type::primitive:
             if ((offset & 15u) != 0u ||
@@ -1369,6 +1378,17 @@ bool c_ee_gs_state::consume(
             {
                 return false;
             }
+            ++next.m_total_packed_events;
+            ++next.m_packed_register_counts[e.m_register];
+            if (e.m_register == 0x0eu)
+            {
+                ++next.m_total_ad_events;
+                const uint32_t reg = static_cast<uint32_t>(e.m_word1 & 0xffu);
+                if (reg < next.m_ad_register_counts.size())
+                {
+                    ++next.m_ad_register_counts[reg];
+                }
+            }
             break;
         case e_ee_gif_event_type::reglist:
             if ((offset & 7u) != 0u ||
@@ -1379,6 +1399,7 @@ bool c_ee_gs_state::consume(
             {
                 return false;
             }
+            ++next.m_total_reglist_events;
             break;
         case e_ee_gif_event_type::image:
         {
@@ -1406,6 +1427,8 @@ bool c_ee_gs_state::consume(
                 data + static_cast<size_t>(offset + length)
             );
             next.m_image_qwc += e.m_qwc;
+            ++next.m_total_image_events;
+            next.m_total_image_qwc += e.m_qwc;
 
             if (!stage_host_upload(
                     next, writes, data + static_cast<size_t>(offset),
@@ -1427,6 +1450,10 @@ bool c_ee_gs_state::consume(
     for (const s_vram_write& write : writes)
     {
         apply_vram_write(m_vram, write);
+    }
+    if (count != 0u)
+    {
+        ++next.m_committed_gif_batches;
     }
     m_state = std::move(next);
     if (m_committed_callback != nullptr)

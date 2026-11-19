@@ -476,6 +476,70 @@ const char* ee_cycle_source_name(ee::e_ee_cycle_source source)
     }
 }
 
+// This is a read-only summary of committed GIF PATH3 work. It never
+// treats the current primitive's vertex count as an entire-boot total.
+void write_gs_diagnostics_json(FILE* output, const ee::s_ee_gs_state& gs)
+{
+    std::fprintf(output,
+        "{\n    \"schema\": \"ee-m2-gif-gs-v1\","
+        "\n    \"scope\": \"committed_gif_path3_only\","
+        "\n    \"accepted_batches\": %llu,"
+        "\n    \"accepted_tags\": %llu,"
+        "\n    \"prim_writes_total\": %llu,"
+        "\n    \"vertex_writes_total\": %llu,"
+        "\n    \"vertex_kicks_total\": %llu,"
+        "\n    \"adc_vertices_total\": %llu,"
+        "\n    \"current_primitive_vertex_writes\": %llu,"
+        "\n    \"packed_events_total\": %llu,"
+        "\n    \"reglist_events_total\": %llu,"
+        "\n    \"ad_events_total\": %llu,"
+        "\n    \"image_events_total\": %llu,"
+        "\n    \"image_qwc_total\": %llu,"
+        "\n    \"image_qwc_current_transfer\": %u,"
+        "\n    \"pixels_current_transfer\": %u,"
+        "\n    \"tag_formats\": [",
+        static_cast<unsigned long long>(gs.m_committed_gif_batches),
+        static_cast<unsigned long long>(gs.m_tag_count),
+        static_cast<unsigned long long>(gs.m_total_prim_writes),
+        static_cast<unsigned long long>(gs.m_total_vertex_writes),
+        static_cast<unsigned long long>(gs.m_total_vertex_kicks),
+        static_cast<unsigned long long>(gs.m_total_adc_vertices),
+        static_cast<unsigned long long>(gs.m_vertex_count),
+        static_cast<unsigned long long>(gs.m_total_packed_events),
+        static_cast<unsigned long long>(gs.m_total_reglist_events),
+        static_cast<unsigned long long>(gs.m_total_ad_events),
+        static_cast<unsigned long long>(gs.m_total_image_events),
+        static_cast<unsigned long long>(gs.m_total_image_qwc),
+        gs.m_image_qwc, gs.m_transfer_pixels_written);
+    for (size_t i = 0u; i < gs.m_tag_format_counts.size(); ++i)
+    {
+        std::fprintf(output, "%s%llu", i ? ", " : "",
+            static_cast<unsigned long long>(gs.m_tag_format_counts[i]));
+    }
+    std::fputs("],\n    \"primitive_types\": [", output);
+    for (size_t i = 0u; i < gs.m_prim_type_counts.size(); ++i)
+    {
+        std::fprintf(output, "%s%llu", i ? ", " : "",
+            static_cast<unsigned long long>(gs.m_prim_type_counts[i]));
+    }
+    std::fputs("],\n    \"packed_registers\": [", output);
+    for (size_t i = 0u; i < gs.m_packed_register_counts.size(); ++i)
+    {
+        std::fprintf(output, "%s%llu", i ? ", " : "",
+            static_cast<unsigned long long>(gs.m_packed_register_counts[i]));
+    }
+    std::fputs("],\n    \"ad_registers\": [", output);
+    for (size_t i = 0u; i < gs.m_ad_register_counts.size(); ++i)
+    {
+        std::fprintf(output, "%s%llu", i ? ", " : "",
+            static_cast<unsigned long long>(gs.m_ad_register_counts[i]));
+    }
+    std::fputs("],\n    \"limitations\": ["
+        "\"does_not_include_vif_or_vu1_gif_paths\", "
+        "\"does_not_imply_rasterization_or_present\", "
+        "\"current_primitive_and_transfer_counters_reset\"]\n  }", output);
+}
+
 bool write_report(
     const char* path,
     const ee::elf_loader& image,
@@ -490,6 +554,7 @@ bool write_report(
     uint32_t status,
     const std::vector<s_dispatch_sample>& history,
     const std::vector<s_syscall_sample>& syscall_history,
+    const ee::s_ee_gs_state& gs,
     const ee::c_ee_dispatch_hotspots& hotspots,
     bool in_progress
 )
@@ -585,6 +650,8 @@ bool write_report(
     std::fputs(syscall_history.empty() ? "]," : "\n  ],", output);
     std::fputs("\n  \"m2_runtime\": ", output);
     hotspots.write_json(output);
+    std::fputs(",\n  \"m2_gif_gs\": ", output);
+    write_gs_diagnostics_json(output, gs);
     std::fputs("\n}\n", output);
     const bool no_write_error = std::ferror(output) == 0;
     const bool closed = std::fclose(output) == 0;
@@ -1954,7 +2021,7 @@ int main(int argc, char** argv)
                 report_path, image, cpu, entry, dispatched,
                 runtime.m_guest_instruction_attempts,
                 runtime, hardware, vsync_flags,
-                reason, status, history, syscall_history, hotspots, true
+                reason, status, history, syscall_history, gs_state.state(), hotspots, true
             );
             report_time_ms += std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - report_start
@@ -4876,13 +4943,37 @@ int main(int argc, char** argv)
     if (gs_state.state().m_tag_count != 0u)
     {
         std::printf(
-            "GS PATH3 accepted: tags=%llu vertices=%llu image_qwc=%u "
-            "transfer_pixels=%u\n",
+            "GS PATH3 accepted: tags=%llu current_primitive_vertices=%llu "
+            "current_transfer_image_qwc=%u transfer_pixels=%u\n",
             static_cast<unsigned long long>(gs_state.state().m_tag_count),
             static_cast<unsigned long long>(gs_state.state().m_vertex_count),
             gs_state.state().m_image_qwc,
             gs_state.state().m_transfer_pixels_written
         );
+    }
+
+    if (gs_state.state().m_tag_count != 0u)
+    {
+        const auto& gs = gs_state.state();
+        std::printf(
+            "GS PATH3 cumulative: batches=%llu prim_writes=%llu "
+            "vertex_writes=%llu kicks=%llu adc=%llu "
+            "packed=%llu reglist=%llu ad=%llu image_events=%llu "
+            "image_qwc=%llu tags_by_flg=[%llu,%llu,%llu,%llu]\n",
+            static_cast<unsigned long long>(gs.m_committed_gif_batches),
+            static_cast<unsigned long long>(gs.m_total_prim_writes),
+            static_cast<unsigned long long>(gs.m_total_vertex_writes),
+            static_cast<unsigned long long>(gs.m_total_vertex_kicks),
+            static_cast<unsigned long long>(gs.m_total_adc_vertices),
+            static_cast<unsigned long long>(gs.m_total_packed_events),
+            static_cast<unsigned long long>(gs.m_total_reglist_events),
+            static_cast<unsigned long long>(gs.m_total_ad_events),
+            static_cast<unsigned long long>(gs.m_total_image_events),
+            static_cast<unsigned long long>(gs.m_total_image_qwc),
+            static_cast<unsigned long long>(gs.m_tag_format_counts[0]),
+            static_cast<unsigned long long>(gs.m_tag_format_counts[1]),
+            static_cast<unsigned long long>(gs.m_tag_format_counts[2]),
+            static_cast<unsigned long long>(gs.m_tag_format_counts[3]));
     }
 
     if (gs_snapshot_path != nullptr || gs_upload_snapshot_path != nullptr)
@@ -5082,7 +5173,7 @@ int main(int argc, char** argv)
         !write_report(report_path, image, cpu, entry, dispatched,
                       runtime.m_guest_instruction_attempts,
                       runtime, hardware, vsync_flags,
-                      reason, status, history, syscall_history, hotspots, false))
+                      reason, status, history, syscall_history, gs_state.state(), hotspots, false))
     {
         return 1;
     }
