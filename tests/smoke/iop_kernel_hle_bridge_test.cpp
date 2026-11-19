@@ -509,6 +509,101 @@ int main()
         return fail("semaphore polling, status or delete failed");
     }
 
+    // Cross-check the additional reference-backed families against
+    // the actual guest-visible IOP allocation and thread state.
+    uint32_t total_free = 0u;
+    if (!call_guest(
+            kernel, "sysmem", 6u, {0u, 0u, 0u, 0u}, &result) ||
+        result != iop::c_cpu::k_ram_size ||
+        !call_guest(
+            kernel, "sysmem", 8u, {0u, 0u, 0u, 0u}, &result))
+    {
+        return fail("SYS_MEM capacity import failed");
+    }
+    total_free = result;
+    if (!call_guest(
+            kernel, "sysmem", 4u, {0u, 64u, 0u, 0u}, &result) ||
+        result < iop::c_kernel::k_user_base)
+    {
+        return fail("SYS_MEM guest allocation failed");
+    }
+    const uint32_t allocated = result;
+    if (!call_guest(
+            kernel, "sysmem", 5u,
+            {allocated, 0u, 0u, 0u}, &result) ||
+        result != 0u ||
+        !call_guest(
+            kernel, "sysmem", 7u, {0u, 0u, 0u, 0u}, &result) ||
+        result == 0u ||
+        !call_guest(
+            kernel, "loadcore", 4u, {0u, 0u, 0u, 0u},
+            &result) ||
+        result != 0u ||
+        !call_guest(
+            kernel, "loadcore", 5u, {0u, 0u, 0u, 0u},
+            &result) ||
+        result != 0u ||
+        !call_guest(
+            kernel, "intrman", 23u, {0u, 0u, 0u, 0u},
+            &result) ||
+        result != 0u)
+    {
+        return fail("SYS_MEM free, coherent cache or context query failed");
+    }
+    // Each call_guest creates its own program thread stack, so total
+    // free memory decreases across calls independently of FreeSysMemory.
+    if (total_free == 0u)
+    {
+        return fail("SYS_MEM queried an impossible free-memory total");
+    }
+
+    kernel.cpu().write32(0x2b00u, 0u);
+    kernel.cpu().write32(0x2b04u, 0u);
+    kernel.cpu().write32(0x2b08u, 0x3000u);
+    kernel.cpu().write32(0x2b0cu, 0x400u);
+    kernel.cpu().write32(0x2b10u, 32u);
+    if (!call_guest(
+            kernel, "thbase", 4u,
+            {0x2b00u, 0u, 0u, 0u}, &result) ||
+        result == 0u)
+    {
+        return fail("guest thread creation import failed");
+    }
+    const uint32_t managed_thread = result;
+    uint32_t thread_status = 0u;
+    uint32_t priority = 0u;
+    if (!call_guest(
+            kernel, "thbase", 14u,
+            {managed_thread, 16u, 0u, 0u}, &result) ||
+        result != 0u ||
+        !call_guest(
+            kernel, "thbase", 22u,
+            {managed_thread, 0x2b40u, 0u, 0u}, &result) ||
+        result != 0u ||
+        !kernel.cpu().read32(0x2b48u, &thread_status) ||
+        thread_status != 16u ||
+        !kernel.cpu().read32(0x2b60u, &priority) ||
+        priority != 16u ||
+        !call_guest(
+            kernel, "thbase", 26u,
+            {managed_thread, 0u, 0u, 0u}, &result) ||
+        result != 0u ||
+        !call_guest(
+            kernel, "thbase", 27u,
+            {managed_thread, 0u, 0u, 0u}, &result) ||
+        result != 1u ||
+        !call_guest(
+            kernel, "thbase", 10u,
+            {managed_thread, 0u, 0u, 0u}, &result) ||
+        result != 0u ||
+        !call_guest(
+            kernel, "thbase", 5u,
+            {managed_thread, 0u, 0u, 0u}, &result) ||
+        result != 0u || kernel.thread(managed_thread) != nullptr)
+    {
+        return fail("THBASE guest thread management or status failed");
+    }
+
     // SIO2 DMA MMIO request retains STR, but never invents a DMA
     // completion or sets IOP interrupt readiness.
     uint32_t request = 0u;
