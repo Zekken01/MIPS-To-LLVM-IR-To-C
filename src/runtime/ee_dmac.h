@@ -14,9 +14,9 @@ namespace ee
 // Includes VIF1 reverse GS image downloads (CHCR.DIR=0).
 // Reference: ps2-web-recomp/runtime/src/dmac.cpp and hw.cpp.
 // Transfers execute synchronously, prevalidating physical RAM ranges.
-// GIF channel 2 supports bounded source-chain END tags (inline payload).
-// MFIFO, general device emulation, other device chain forms, arbitration,
-// and cycle-accurate completion remain unimplemented.
+// GIF channel 2 supports bounded transactional REFE/CNT/NEXT/REF/END
+// source chains. TTE, REFS, CALL/RET, MFIFO, general device emulation,
+// arbitration and cycle-accurate completion remain unimplemented.
 class c_ee_dmac
 {
 public:
@@ -101,7 +101,7 @@ private:
     bool read_spr_channel(uint32_t address, uint32_t* value) const;
     bool write_spr_channel(uint32_t address, uint32_t value);
     bool transfer_device_normal(uint32_t channel);
-    bool transfer_gif_chain_end();
+    bool transfer_gif_source_chain();
     bool transfer_spr_normal(uint32_t channel);
     bool transfer_spr_interleave(uint32_t channel);
     bool transfer_from_spr_chain();
