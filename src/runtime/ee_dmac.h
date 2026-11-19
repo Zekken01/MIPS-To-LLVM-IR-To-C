@@ -15,7 +15,8 @@ namespace ee
 // Reference: ps2-web-recomp/runtime/src/dmac.cpp and hw.cpp.
 // Transfers execute synchronously, prevalidating physical RAM ranges.
 // GIF channel 2 supports bounded transactional REFE/CNT/NEXT/REF/END
-// source chains. TTE, REFS, CALL/RET, MFIFO, general device emulation,
+// source chains in EE RAM and scratchpad-selected DMA memory.
+// TTE, REFS, CALL/RET, MFIFO, general device emulation,
 // arbitration and cycle-accurate completion remain unimplemented.
 class c_ee_dmac
 {
