@@ -1164,6 +1164,15 @@ def make_counting_loop_elf(path):
     path.write_bytes(image)
 
 
+def make_unsupported_instruction_elf(path):
+    """An invalid COP3 opcode must fail closed with its exact guest bytes."""
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    struct.pack_into("<I", image, 0x108, 0x4c000000)  # COP3 is not on R5900
+    struct.pack_into("<I", image, 0x10c, 0x03e00008)  # jr ra (unreached)
+    path.write_bytes(image)
+
+
 def make_ee_timer_poll_elf(path):
     """Exercise guest-programmed Timer 0 COUNT advancing inside native CFG."""
     make_elf(path)
@@ -3207,6 +3216,39 @@ def main():
         assert state["gpr_lo"][8] == 12, state
         assert state["guest_instruction_attempts"] >= 24, state
         assert (state["cop0_cause"] & 0x7c) == 0, state
+
+    # Unknown native guest opcodes stop without silently doing nothing.
+    # The final diagnostics must report the actual PC, the ELF word,
+    # the live RAM word and the nearby original instruction stream.
+    with tempfile.TemporaryDirectory(prefix="ee-native-unsupported-pc-") as tmp:
+        root = Path(tmp)
+        elf = root / "unsupported.elf"
+        make_unsupported_instruction_elf(elf)
+        report_path = root / "unsupported.json"
+        result = subprocess.run(
+            [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf), "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--functions=entry",
+                "--max-dispatches=8",
+                "--report", str(report_path),
+                "--timeout-seconds=10",
+            ],
+            capture_output=True, text=True, check=False, timeout=40,
+        )
+        assert result.returncode == 3, result.stdout + result.stderr
+        snapshot = json.loads(report_path.read_text(encoding="utf-8"))
+        assert snapshot["exit_name"] == "UNSUPPORTED", snapshot
+        assert snapshot["final_pc"] == 0x00100008, snapshot
+        assert ("EE unsupported guest PC: pc=0x00100008 "
+                "elf=0x4c000000 ram=0x4c000000") in result.stderr, (
+            result.stdout, result.stderr
+        )
+        assert ("EE unsupported code: > pc=0x00100008 "
+                "ELF=0x4c000000 RAM=0x4c000000") in result.stderr, (
+            result.stdout, result.stderr
+        )
 
     # A real guest Timer0 COUNT poll must finish *inside* its native CFG.
     # Both the clock source and the device must advance; simply resuming
