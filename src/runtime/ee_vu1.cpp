@@ -184,9 +184,7 @@ bool upper(const s_ee_vu1_state& state, uint32_t hi,
     {
         return true; // Canonical upper NOP.
     }
-    if (op > 0x2fu || (!special && funct >= 0x30u) ||
-        op == 0x1cu || op == 0x20u || op == 0x21u ||
-        op == 0x24u || op == 0x25u)
+    if (op > 0x2fu || (!special && funct >= 0x30u))
     {
         return false; // Unknown opcode or Q-latency dependency.
     }
@@ -236,11 +234,15 @@ bool upper(const s_ee_vu1_state& state, uint32_t hi,
             ? (lane == 0u ? 1u : lane == 1u ? 2u : 0u) : lane];
         const uint32_t rhs_cross = state.m_vf[ft][
             lane == 0u ? 2u : lane == 1u ? 0u : 1u];
+        const bool uses_q = op == 0x1cu || op == 0x20u ||
+            op == 0x21u || op == 0x24u || op == 0x25u;
+        const bool uses_i = op == 0x1du || op == 0x1eu ||
+            op == 0x1fu || op == 0x22u || op == 0x23u ||
+            op == 0x26u || op == 0x27u;
         const uint32_t rhs =
             op <= 0x1bu ? state.m_vf[ft][funct & 3u] :
-            op == 0x1du || op == 0x1eu || op == 0x1fu ||
-            op == 0x22u || op == 0x23u || op == 0x26u ||
-            op == 0x27u ? state.m_i : state.m_vf[ft][lane];
+            uses_q ? state.m_q :
+            uses_i ? state.m_i : state.m_vf[ft][lane];
         const uint32_t acc = state.m_acc[lane];
         uint32_t result = 0u;
 
@@ -295,7 +297,7 @@ bool upper(const s_ee_vu1_state& state, uint32_t hi,
         {
             result = fp::min(lhs, rhs);
         }
-        else if ((op >= 0x18u && op <= 0x1bu) ||
+        else if ((op >= 0x18u && op <= 0x1cu) ||
                  op == 0x1eu || op == 0x2au)
         {
             result = fp::mul(lhs, rhs);
@@ -314,6 +316,76 @@ bool upper(const s_ee_vu1_state& state, uint32_t hi,
 struct s_flag_pipe
 {
     uint32_t m_t = 16u;
+    uint32_t m_stalls = 0u;
+    uint32_t m_q_value = 0u;
+    uint32_t m_q_ready = 0u;
+    uint32_t m_p_value = 0u;
+    uint32_t m_p_ready = 0u;
+    bool m_q_pending = false;
+    bool m_p_pending = false;
+
+    uint32_t now() const
+    {
+        return m_t + m_stalls;
+    }
+
+    void sync_q(s_ee_vu1_state& state)
+    {
+        if (m_q_pending && now() >= m_q_ready)
+        {
+            state.m_q = m_q_value;
+            m_q_pending = false;
+        }
+    }
+
+    void wait_q(s_ee_vu1_state& state)
+    {
+        if (m_q_pending)
+        {
+            if (now() < m_q_ready)
+            {
+                m_stalls += m_q_ready - now();
+            }
+            sync_q(state);
+        }
+    }
+
+    void schedule_q(s_ee_vu1_state& state, uint32_t value, uint32_t latency)
+    {
+        wait_q(state);
+        m_q_value = value;
+        m_q_ready = now() + latency;
+        m_q_pending = true;
+    }
+
+    void sync_p(s_ee_vu1_state& state)
+    {
+        if (m_p_pending && now() >= m_p_ready)
+        {
+            state.m_p = m_p_value;
+            m_p_pending = false;
+        }
+    }
+
+    void wait_p(s_ee_vu1_state& state)
+    {
+        if (m_p_pending)
+        {
+            if (now() < m_p_ready)
+            {
+                m_stalls += m_p_ready - now();
+            }
+            sync_p(state);
+        }
+    }
+
+    void schedule_p(s_ee_vu1_state& state, uint32_t value, uint32_t latency)
+    {
+        wait_p(state);
+        m_p_value = value;
+        m_p_ready = now() + latency;
+        m_p_pending = true;
+    }
     uint32_t m_mac_ts[8]{};
     uint32_t m_mac_values[8]{};
     uint32_t m_status_values[8]{};
@@ -381,7 +453,7 @@ struct s_flag_pipe
         for (uint32_t k = 1u; k <= 8u; ++k)
         {
             const uint32_t i = (m_clip_head - k) & 7u;
-            if (m_clip_ts[i] + 4u <= m_t)
+            if (m_clip_ts[i] + 4u <= now())
             {
                 return m_clip_values[i];
             }
