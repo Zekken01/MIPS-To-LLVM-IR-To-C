@@ -2225,10 +2225,10 @@ int main(int argc, char** argv)
             {
                 std::printf(
                     "HLE guest RAM syscall returned: entry=0x%08x "
-                    "resume=0x%08x v0=0x%08x instructions=%u\n",
+                    "resume=0x%08x v0=0x%08x instructions=%u tlb_writes=%u\n",
                     ram_entry, cpu.m_pc,
                     static_cast<uint32_t>(cpu.m_gpr[2].m_lo),
-                    result.m_instructions
+                    result.m_instructions, result.m_tlb_writes
                 );
             }
             continue;
