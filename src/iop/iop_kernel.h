@@ -107,6 +107,10 @@ public:
     bool register_library(
         const std::string& name, uint16_t ordinal, uint32_t entry
     );
+    // Register/release only a verified export table belonging to a
+    // successfully loaded guest IRX. Never remove HLE-owned imports.
+    // All ordinals are validated before the library registry changes.
+    bool set_module_library_registration(uint32_t table, bool registered);
     s_module_load_result load_module(
         const std::vector<uint8_t>& bytes
     );
