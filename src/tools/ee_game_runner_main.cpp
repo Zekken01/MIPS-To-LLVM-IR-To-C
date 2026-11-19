@@ -1412,7 +1412,7 @@ int main(int argc, char** argv)
     std::string last_iop_rpc_path;
     std::unique_ptr<s_cdvd_context> cdvd;
     std::unique_ptr<iop::c_cdvdman_bridge> iop_cdvdman;
-    const iop::c_folder_sector_source* folder_disc_source = nullptr;
+    iop::c_folder_sector_source* folder_disc_source = nullptr;
     bool hle_iop_reboot_bootstrap_pending = false;
     bool hle_iop_reboot_ee_reset_seen = false;
     if (!iop_irx_paths.empty() || iop_rom0_path != nullptr ||
