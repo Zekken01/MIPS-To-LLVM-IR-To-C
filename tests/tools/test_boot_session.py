@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Unit tests for bounded, cache-preserving native EE boot sessions."""
 import importlib.util
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -137,7 +138,76 @@ def run_case(passes, initial_reuse=False, diagnostics=False,
         return code, calls, (work / "expansion.log").read_text(), (work / "boot.log").read_text()
 
 
+def test_ll_counter():
+    # The progress bar belongs only to a real console and never writes
+    # thousands of persistent log lines. Repeated polls have no output.
+    class c_fake_terminal(io.StringIO):
+        def isatty(self):
+            return True
+
+    with tempfile.TemporaryDirectory(prefix="ee-ll-progress-") as temp:
+        ir_dir = Path(temp) / "ir"
+        ir_dir.mkdir()
+        terminal = c_fake_terminal()
+        progress = SESSION.c_ll_file_progress(temp, stream=terminal)
+        assert progress.m_enabled
+        progress.refresh()  # No guessed or hardcoded denominator.
+        assert terminal.getvalue() == ""
+
+        (ir_dir / "ee_expected_ll_count.txt").write_text(
+            "7550\\n", encoding="ascii"
+        )
+        progress.refresh()
+        progress.refresh()
+        (ir_dir / "first.ll").write_text("define void @first() {}\\n")
+        progress.refresh()
+        progress.refresh()
+        (ir_dir / "second.ll").write_text("define void @second() {}\\n")
+        progress.refresh()
+        before_done = terminal.getvalue()
+        assert before_done.count("\\r") == 3, repr(before_done)
+        assert "\\n" not in before_done, repr(before_done)
+        assert "LLVM IR [0/7550]" in before_done
+        assert "LLVM IR [1/7550]" in before_done
+        assert "LLVM IR [2/7550]" in before_done
+        progress.finish_line()
+        assert terminal.getvalue().endswith("\\n")
+        progress.refresh()  # Preserve last display across sessions.
+        assert terminal.getvalue().count("\\r") == 3
+
+        # In a pipe/CI log, no carriage returns or per-file updates.
+        piped = io.StringIO()
+        quiet = SESSION.c_ll_file_progress(temp, stream=piped)
+        quiet.refresh()
+        quiet.finish_line()
+        assert piped.getvalue() == ""
+
+        # If an old discovery marker is absent, use actual persisted
+        # function-count metadata (cached --no-recompile sessions).
+        (ir_dir / "ee_expected_ll_count.txt").unlink()
+        (ir_dir / "ee_functions.json").write_text(
+            json.dumps({"functions_discovered": 5}), encoding="utf-8"
+        )
+        alt = c_fake_terminal()
+        cached = SESSION.c_ll_file_progress(temp, stream=alt)
+        cached.refresh()
+        assert "LLVM IR [2/5]" in alt.getvalue()
+        cached.finish_line()
+
+        # Dynamic functions beyond the original static discovery total
+        # must never create an impossible [current > expected] ratio.
+        (ir_dir / "ee_functions.json").write_text(
+            json.dumps({"functions_discovered": 1}), encoding="utf-8"
+        )
+        dynamic = c_fake_terminal()
+        updated = SESSION.c_ll_file_progress(temp, stream=dynamic)
+        updated.refresh()
+        assert "LLVM IR [2/2]" in dynamic.getvalue()
+        updated.finish_line()
+
+
 def main():
+    test_ll_counter()
     # First pass consumes its expansion cap; the second finds a real
     # non-DISPATCH blocker and the final run emits the useful trace.
     code, calls, expansion, boot = run_case([
