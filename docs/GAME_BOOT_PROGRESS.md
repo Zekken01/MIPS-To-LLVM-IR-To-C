@@ -1779,3 +1779,32 @@ incomplete. M2.4 isolates the earliest unfulfilled game
 application/IOP producer independently of sprite clear behaviour.
 
 See [the 09:09 sprite analysis](M2_3_0909_GS_SPRITE_PROVENANCE.md).
+
+
+### M2.4 — 11:29 ELF-derived native red-screen failure and wait producer
+
+The 11:29 matching boot confirms **2,275 red untextured
+sprite pairs**, all with `RGBAQ=0x3f800000000000ff`,
+`SCISSOR_1=0`, alternating FRAME bases `0x70`/`0x00`
+and FBMSK=1. The single `RGB(254,0,0)` pixel at
+(0,0) in the WebGPU readback is therefore consistent
+with correct scissor clipping and FBMSK, not proof
+of a GPU implementation bug.
+
+Disassembly of the verified USA ELF shows the red sprite
+function `0x00102670` is invoked **only after**
+a pending command-buffer wait at `0x00102560`
+(`0x00502368 + 4*(0x005030ac ^ 1)`), 3001 polling
+iterations, EE Timer 0 COUNT comparison against 60001,
+and recovery calls `0x00173888/0x00173460`.
+The actual trace first calls the red loop at dispatch
+36,205. This is **the game's explicit timeout/recovery
+fallback**, not a menu render.
+
+A bounded, read-only RAM probe now captures the first
+wait-entry and first red-loop-entry flag/queue state
+under `m2_sdbz_dma_wait`, with a synthetic regression.
+The **original expected completion producer is still
+unproven**; do not manufacture an IRQ/DMA completion,
+override scissor or invent a menu frame. See
+[M2.4 guest failure path](M2_4_SDBZ_COMMAND_SLOT_TIMEOUT.md).

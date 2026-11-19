@@ -7,6 +7,7 @@
 #include "ee_hot_loop_diagnostics.h"
 #include "ee_reached_isa_inventory.h"
 #include "ee_vsync_flags.h"
+#include "ee_sdbz_dma_wait_probe.h"
 #include "ee_gif.h"
 #include "ee_gs.h"
 #include "ee_gs_display.h"
@@ -611,6 +612,7 @@ bool write_report(
     const std::vector<s_dispatch_sample>& history,
     const std::vector<s_syscall_sample>& syscall_history,
     const ee::s_ee_gs_state& gs,
+    const ee::c_ee_sdbz_dma_wait_probe& dma_wait_probe,
     const ee::c_ee_dispatch_hotspots& hotspots,
     bool in_progress
 )
@@ -708,6 +710,8 @@ bool write_report(
     hotspots.write_json(output);
     std::fputs(",\n  \"m2_gif_gs\": ", output);
     write_gs_diagnostics_json(output, gs);
+    std::fputs(",\n  \"m2_sdbz_dma_wait\": ", output);
+    dma_wait_probe.write_json(output);
     std::fputs("\n}\n", output);
     const bool no_write_error = std::ferror(output) == 0;
     const bool closed = std::fclose(output) == 0;
@@ -1760,6 +1764,11 @@ int main(int argc, char** argv)
     // is not implied; this runner has no real GS vertical-blank producer yet.
     ee::c_ee_vsync_flags vsync_flags{};
 
+    // The ELF-derived red-clear loop is a *failure* path entered after
+    // waiting for two command-buffer flags. Record one before/after state
+    // pair without reading MMIO, changing RAM, or issuing any completion.
+    ee::c_ee_sdbz_dma_wait_probe dma_wait_probe{};
+
     struct s_kernel_thread
     {
         bool m_used = false;
@@ -2077,7 +2086,8 @@ int main(int argc, char** argv)
                 report_path, image, cpu, entry, dispatched,
                 runtime.m_guest_instruction_attempts,
                 runtime, hardware, vsync_flags,
-                reason, status, history, syscall_history, gs_state.state(), hotspots, true
+                reason, status, history, syscall_history, gs_state.state(),
+                dma_wait_probe, hotspots, true
             );
             report_time_ms += std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - report_start
@@ -2151,6 +2161,22 @@ int main(int argc, char** argv)
         }
 
         const uint32_t from_pc = cpu.m_pc;
+        if (report_path != nullptr &&
+            dma_wait_probe.observe(
+                from_pc, dispatched + 1u, current_thread_id, memory.get()))
+        {
+            const auto& sample = from_pc ==
+                ee::c_ee_sdbz_dma_wait_probe::k_wait_pc ?
+                dma_wait_probe.wait() : dma_wait_probe.red_loop();
+            std::printf(
+                "EE SDBZ command wait snapshot: dispatch=%llu pc=0x%08x "
+                "slot=%u flags=[0x%08x,0x%08x] "
+                "(read-only; completion producer unproven)\n",
+                static_cast<unsigned long long>(sample.m_dispatch),
+                sample.m_pc, sample.selected_slot(),
+                sample.flag0(), sample.flag1()
+            );
+        }
         if (has_trace_entry && from_pc == trace_entry)
         {
             const uint32_t a0 = static_cast<uint32_t>(cpu.m_gpr[4].m_lo);
@@ -5238,7 +5264,8 @@ int main(int argc, char** argv)
         !write_report(report_path, image, cpu, entry, dispatched,
                       runtime.m_guest_instruction_attempts,
                       runtime, hardware, vsync_flags,
-                      reason, status, history, syscall_history, gs_state.state(), hotspots, false))
+                      reason, status, history, syscall_history, gs_state.state(),
+                       dma_wait_probe, hotspots, false))
     {
         return 1;
     }
