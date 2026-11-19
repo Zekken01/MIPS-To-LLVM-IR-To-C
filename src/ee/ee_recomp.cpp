@@ -686,6 +686,8 @@ bool ee_recomp(const char* elf_path,
         rfn.insn_count = 0;
         rfn.supported_count = 0;
         rfn.unsupported_count = 0;
+        constexpr size_t k_max_unsupported_samples = 16u;
+        std::vector<s_ee_instruction> unsupported_samples;
         for (const auto& bb : fn.blocks)
         {
             for (uint32_t pc = bb.start_pc; pc < bb.end_pc; pc += 4)
@@ -693,8 +695,18 @@ bool ee_recomp(const char* elf_path,
                 auto it = global_insns.find(pc);
                 if (it == global_insns.end()) continue;
                 rfn.insn_count++;
-                if (opcode_supported(it->second)) rfn.supported_count++;
-                else rfn.unsupported_count++;
+                if (opcode_supported(it->second))
+                {
+                    ++rfn.supported_count;
+                }
+                else
+                {
+                    ++rfn.unsupported_count;
+                    if (unsupported_samples.size() < k_max_unsupported_samples)
+                    {
+                        unsupported_samples.push_back(it->second);
+                    }
+                }
             }
         }
         if (!fn.blocks.empty()) {
@@ -709,6 +721,29 @@ bool ee_recomp(const char* elf_path,
                     result->functions.back().supported_count,
                     result->functions.back().unsupported_count,
                     result->functions.back().block_count);
+        // These are static decode/lift observations, not evidence that
+        // guest execution ever reached the instruction. Retain exact PC
+        // and opcode so later boot audits can distinguish classification
+        // gaps from runtime blocks without re-inspecting the ELF.
+        for (const s_ee_instruction& insn : unsupported_samples)
+        {
+            const s_lifted_op lifted = lift(insn);
+            const char* classification = insn.valid == e_ee_valid::INVALID
+                ? "invalid" : (insn.valid == e_ee_valid::UNSUPPORTED
+                    ? "unsupported" : "valid_lift_gap");
+            std::printf(
+                "    not-lowered pc=0x%08x opcode=0x%08x mnemonic=%s "
+                "classification=%s lift_unsupported=%u\\n",
+                insn.pc, insn.opcode_word, insn.mnemonic,
+                classification, lifted.kind == LOP_UNSUPPORTED ? 1u : 0u);
+        }
+        if (result->functions.back().unsupported_count > unsupported_samples.size())
+        {
+            std::printf("    not-lowered more=%u (details capped at %u per function)\\n",
+                result->functions.back().unsupported_count -
+                    static_cast<uint32_t>(unsupported_samples.size()),
+                static_cast<uint32_t>(k_max_unsupported_samples));
+        }
         return true;
     };
 
