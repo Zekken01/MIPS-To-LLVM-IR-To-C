@@ -155,25 +155,25 @@ def test_ll_counter():
         assert terminal.getvalue() == ""
 
         (ir_dir / "ee_expected_ll_count.txt").write_text(
-            "7550\\n", encoding="ascii"
+            "7550\n", encoding="ascii"
         )
         progress.refresh()
         progress.refresh()
-        (ir_dir / "first.ll").write_text("define void @first() {}\\n")
+        (ir_dir / "first.ll").write_text("define void @first() {}\n")
         progress.refresh()
         progress.refresh()
-        (ir_dir / "second.ll").write_text("define void @second() {}\\n")
+        (ir_dir / "second.ll").write_text("define void @second() {}\n")
         progress.refresh()
         before_done = terminal.getvalue()
-        assert before_done.count("\\r") == 3, repr(before_done)
-        assert "\\n" not in before_done, repr(before_done)
+        assert before_done.count("\r") == 3, repr(before_done)
+        assert "\n" not in before_done, repr(before_done)
         assert "LLVM IR [0/7550]" in before_done
         assert "LLVM IR [1/7550]" in before_done
         assert "LLVM IR [2/7550]" in before_done
         progress.finish_line()
-        assert terminal.getvalue().endswith("\\n")
+        assert terminal.getvalue().endswith("\n")
         progress.refresh()  # Preserve last display across sessions.
-        assert terminal.getvalue().count("\\r") == 3
+        assert terminal.getvalue().count("\r") == 3
 
         # In a pipe/CI log, no carriage returns or per-file updates.
         piped = io.StringIO()
