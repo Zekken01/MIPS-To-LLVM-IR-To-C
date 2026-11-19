@@ -658,6 +658,11 @@ const s_kernel_module* c_kernel::module(uint32_t id) const
     return found == m_modules.end() ? nullptr : &found->second;
 }
 
+const std::map<uint32_t, s_kernel_module>& c_kernel::modules() const
+{
+    return m_modules;
+}
+
 uint32_t c_kernel::create_thread(
     uint32_t entry, uint32_t gp, uint32_t priority,
     uint32_t stack_size, uint32_t a0, uint32_t a1
