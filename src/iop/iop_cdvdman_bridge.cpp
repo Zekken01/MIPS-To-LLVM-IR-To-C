@@ -256,7 +256,6 @@ bool c_cdvdman_bridge::handle_syscall(
 
     // sceCdSearchFile(sceCdlFILE* output, const char* name)
     // sceCdlFILE = u32 lsn, u32 size, char name[16], u8 date[8].
-    const s_cpu_state& state = kernel.cpu().state();
     uint32_t destination = 0u;
     std::string name;
     if ((state.m_gpr[4] & 3u) != 0u ||
