@@ -11,6 +11,8 @@
 
 namespace iop
 {
+class c_folder_sector_source;
+
 // Guest-callable IOP kernel services used by the SDBZ module family.
 // Only explicitly implemented ordinals have MIPS R3000 syscall stubs;
 // unknown imports and unsupported hardware operations remain fail-closed.
@@ -25,6 +27,7 @@ public:
     bool install();
     void reset_for_reboot();
     bool handle_syscall(c_kernel& kernel, uint32_t service);
+    void attach_disc_source(const c_folder_sector_source* source);
 
 private:
     struct s_interrupt
@@ -125,8 +128,19 @@ private:
     bool handle_thsemap(uint32_t ordinal);
     bool handle_sysclib(uint32_t ordinal);
     bool handle_modload(uint32_t ordinal);
+    bool handle_ioman(uint32_t ordinal);
+    bool handle_secrman(uint32_t ordinal);
+
+    struct s_ioman_file
+    {
+        uint32_t m_lba = 0u;
+        uint32_t m_size = 0u;
+        uint32_t m_position = 0u;
+    };
 
     c_kernel& m_kernel;
+    const c_folder_sector_source* m_disc_source = nullptr;
+    std::map<uint32_t, s_ioman_file> m_ioman_files;
     std::map<uint32_t, s_interrupt> m_interrupts;
     std::map<uint32_t, s_semaphore> m_semaphores;
     std::map<uint32_t, s_event> m_events;
