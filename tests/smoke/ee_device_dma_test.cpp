@@ -377,13 +377,20 @@ int main()
         return fail("invalid GIF register width mutated QWC");
     }
 
-    // The 04:11 SDBZ diagnostic has an unbacked TADR 0xf0000000
-    // while GIF CHCR.STR remains set. Preserve this fail-closed case
-    // and record exactly which guest MMIO write created it.
+    // Real SDBZ TADR 0xf0000000 has the DMA scratchpad selector bit:
+    // its tag source is EE scratchpad offset 0, NOT unmapped RAM.
     hardware.reset();
     sink.m_accept = true;
     sink.m_calls = 0u;
     hardware.bind_device_transfer(&sink, receive);
+    const ee::s_ee_u128 scratch_end{0x70000001ull, 0u};
+    const ee::s_ee_u128 scratch_data{0x0807060504030201ull,
+                                    0x100f0e0d0c0b0a09ull};
+    ee::ee_mem_write128(
+        &runtime, ee::ee_memory::k_scratchpad_base, &scratch_end);
+    ee::ee_mem_write128(
+        &runtime, ee::ee_memory::k_scratchpad_base + 0x10u,
+        &scratch_data);
     ee::ee_mem_write32(&runtime, k_gif + 0x30u, 0xf0000000u);
     program(&runtime, k_gif, 0x100u, 0u);
     ee::ee_mem_write32(&runtime, k_gif, k_str | 5u);
@@ -391,28 +398,98 @@ int main()
     ee::c_ee_dmac::s_gif_dma_write newest{};
     ee::c_ee_dmac::s_gif_dma_write oldest{};
     if (hardware.dmac().gif_trace_count() != 4u ||
-        hardware.dmac().gif_last_reject() != t_reject::invalid_tag_address ||
+        hardware.dmac().gif_last_reject() != t_reject::none ||
         !hardware.dmac().gif_trace_newest(0u, &newest) ||
         !hardware.dmac().gif_trace_newest(3u, &oldest) ||
         newest.m_sequence != 4u || newest.m_offset != 0u ||
         newest.m_value != (k_str | 5u) ||
-        newest.m_chcr != (k_str | 5u) ||
-        newest.m_tadr != 0xf0000000u ||
-        newest.m_reject != t_reject::invalid_tag_address ||
+        (newest.m_chcr & k_str) != 0u ||
+        newest.m_tadr != 0xf0000020u ||
+        newest.m_reject != t_reject::none ||
         oldest.m_sequence != 1u || oldest.m_offset != 0x30u ||
         oldest.m_value != 0xf0000000u ||
         hardware.dmac().gif_trace_newest(4u, &newest) ||
         hardware.dmac().gif_trace_newest(0u, nullptr) ||
-        sink.m_calls != 0u ||
-        (reg(&runtime, k_gif) & k_str) == 0u ||
-        hardware.dmac().status() != 0u)
+        sink.m_calls != 1u || sink.m_qwc != 1u ||
+        sink.m_bytes.size() != 16u || sink.m_bytes[0] != 1u ||
+        reg(&runtime, k_gif + 0x10u) != 0xf0000020u ||
+        reg(&runtime, k_gif + 0x30u) != 0xf0000020u ||
+        (reg(&runtime, k_gif) & k_str) != 0u ||
+        (hardware.dmac().status() & (1u << 2u)) == 0u)
     {
-        return fail("unbacked GIF TADR incorrectly completed or lost MMIO history");
+        return fail("GIF scratchpad TADR source or ordered MMIO history");
     }
 
-    // A genuine zero-payload END tag at a valid address terminates,
-    // unlike the previous raw 0xf0000000 address. No fake payload.
+    // Scratchpad source spans wrap at 16 KiB. A tag in the last QW
+    // supplies payload at offsets 0 and 16, not outside the SPR.
     hardware.reset();
+    sink.m_calls = 0u;
+    const ee::s_ee_u128 scratch_wrap_end{0x70000002ull, 0u};
+    ee::ee_mem_write128(
+        &runtime, ee::ee_memory::k_scratchpad_base + 0x3ff0u,
+        &scratch_wrap_end);
+    ee::ee_mem_write128(
+        &runtime, ee::ee_memory::k_scratchpad_base,
+        &scratch_data);
+    const ee::s_ee_u128 second_scratch{0x2827262524232221ull, 0u};
+    ee::ee_mem_write128(
+        &runtime, ee::ee_memory::k_scratchpad_base + 0x10u,
+        &second_scratch);
+    ee::ee_mem_write32(&runtime, k_gif + 0x30u, 0xf0003ff0u);
+    program(&runtime, k_gif, 0u, 0u);
+    ee::ee_mem_write32(&runtime, k_gif, k_str | 5u);
+    if (sink.m_calls != 1u || sink.m_qwc != 2u ||
+        sink.m_bytes.size() != 32u ||
+        sink.m_bytes[0] != 1u || sink.m_bytes[16] != 0x21u ||
+        reg(&runtime, k_gif + 0x30u) != 0xf0004020u ||
+        reg(&runtime, k_gif + 0x10u) != 0xf0004020u ||
+        (reg(&runtime, k_gif) & k_str) != 0u ||
+        (hardware.dmac().status() & (1u << 2u)) == 0u)
+    {
+        return fail("GIF source-tag SPR boundary wrap");
+    }
+
+    // REFE in EE RAM with the DMAtag ADDR.SPR selector set sources
+    // its bytes from scratchpad and ends at the next RAM tag slot.
+    hardware.reset();
+    sink.m_calls = 0u;
+    const ee::s_ee_u128 scratch_ref{
+        0x00000001ull, 0xf0000010ull};
+    ee::ee_mem_write128(&runtime, 0x400u, &scratch_ref);
+    ee::ee_mem_write32(&runtime, k_gif + 0x30u, 0x400u);
+    program(&runtime, k_gif, 0u, 0u);
+    ee::ee_mem_write32(&runtime, k_gif, k_str | 5u);
+    if (sink.m_calls != 1u || sink.m_qwc != 1u ||
+        sink.m_bytes[0] != 0x21u ||
+        reg(&runtime, k_gif + 0x30u) != 0x410u ||
+        reg(&runtime, k_gif + 0x10u) != 0xf0000020u ||
+        (reg(&runtime, k_gif) & k_str) != 0u)
+    {
+        return fail("GIF external REF scratchpad source");
+    }
+
+    // A genuine unbacked *RAM* TADR still fails closed. In contrast,
+    // 0xf0000000 is a valid scratchpad-selected DMA address.
+    hardware.reset();
+    sink.m_calls = 0u;
+    ee::ee_mem_write32(&runtime, k_gif + 0x30u, 0x60000000u);
+    program(&runtime, k_gif, 0x100u, 0u);
+    ee::ee_mem_write32(&runtime, k_gif, k_str | 5u);
+    if (hardware.dmac().gif_last_reject() !=
+            t_reject::invalid_tag_address ||
+        !hardware.dmac().gif_trace_newest(0u, &newest) ||
+        newest.m_reject != t_reject::invalid_tag_address ||
+        newest.m_tadr != 0x60000000u ||
+        (newest.m_chcr & k_str) == 0u ||
+        sink.m_calls != 0u ||
+        hardware.dmac().status() != 0u)
+    {
+        return fail("unbacked RAM TADR falsely completed GIF DMA");
+    }
+
+    // A genuine zero-payload END tag terminates without invented bytes.
+    hardware.reset();
+    sink.m_calls = 0u;
     const ee::s_ee_u128 zero_end{0x70000000ull, 0u};
     ee::ee_mem_write128(&runtime, 0x300u, &zero_end);
     ee::ee_mem_write32(&runtime, k_gif + 0x30u, 0x300u);
