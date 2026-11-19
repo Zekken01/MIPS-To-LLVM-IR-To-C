@@ -150,6 +150,10 @@ def main(argv=None):
         "--gs-webgpu-snapshot", type=Path,
         help="Capture final trace's native WebGPU raster (requires wgpu-native)",
     )
+    parser.add_argument(
+        "--gs-webgpu-window", action="store_true",
+        help="Open raylib/WebGPU window during final traced replay (Windows)",
+    )
     parser.add_argument("--expansion-passes", type=int, default=2)
     parser.add_argument("--expansion-per-pass", type=int, default=128)
     parser.add_argument("--no-recompile", action="store_true")
@@ -368,6 +372,8 @@ def main(argv=None):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.unlink(missing_ok=True)
             final_command.append(f"{option}={target}")
+    if args.gs_webgpu_window:
+        final_command.append("--gs-webgpu-window")
     code, final_output, elapsed = run_session(
         final_command, boot_log, **progress_kwargs
     )
