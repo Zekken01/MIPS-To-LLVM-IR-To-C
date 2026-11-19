@@ -55,9 +55,9 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
-      - name: Configure native MSVC WebGPU
+      - name: Configure native MSVC WebGPU and raylib surface
         shell: pwsh
-        run: cmake -S . -B build -G Ninja -DEE_ENABLE_WEBGPU=ON
+        run: cmake -S . -B build -G Ninja -DEE_ENABLE_WEBGPU=ON -DEE_ENABLE_RAYLIB_WINDOW=ON
       - name: Assert native SDK lives under build/_deps
         shell: pwsh
         run: |
@@ -70,6 +70,12 @@ jobs:
           if (!(Test-Path (Join-Path $root 'lib/wgpu_native.dll')) -and
               !(Test-Path (Join-Path $root 'bin/wgpu_native.dll'))) {
             throw 'Missing build/_deps WebGPU runtime DLL'
+          }
+      - name: Assert raylib was fetched under build/_deps
+        shell: pwsh
+        run: |
+          if (!(Test-Path 'build/_deps/raylib-src/src/raylib.h')) {
+            throw 'Missing build/_deps/raylib-src dependency'
           }
       - name: Compile runner and native GPU smoke test
         shell: pwsh
