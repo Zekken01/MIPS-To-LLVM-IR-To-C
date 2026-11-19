@@ -953,19 +953,25 @@ s_ee_instruction decode(uint32_t pc, uint32_t word)
                     case 0x18: name = "vmulax"; break;
                     case 0x09: name = "vmadday"; break;
                     case 0x0a: name = "vmaddaz"; break;
+                    case 0x34: name = "vlqi"; break;
+                    case 0x35: name = "vsqi"; break;
+                    case 0x36: name = "vlqd"; break;
+                    case 0x37: name = "vsqd"; break;
                     default: break;
                     }
                 }
-                // Exactly the four matrix FMAC operations have a native
-                // runtime implementation; all other defined COP2 macros
-                // remain intentionally UNSUPPORTED.
+                // Four matrix FMAC and four indexed VU0 vector memory macros have
+                // native runtime implementations; all other defined COP2
+                // operations remain UNSUPPORTED.
                 const uint32_t special2_index =
                     (word & 0x3u) | ((word >> 4) & 0x7cu);
                 if (defined && (funct == 0x0bu ||
                     (funct >= 0x3cu &&
                      (special2_index == 0x18u ||
                       special2_index == 0x09u ||
-                      special2_index == 0x0au))))
+                      special2_index == 0x0au ||
+                       (special2_index >= 0x34u &&
+                        special2_index <= 0x37u)))))
                 {
                     insn.valid = e_ee_valid::VALID;
                 }

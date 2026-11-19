@@ -513,6 +513,12 @@ uint32_t ee_vu0_ctc2(s_ee_cpu_state* cpu, s_ee_runtime* rt,
 uint32_t ee_vu0_macro_fmac(s_ee_cpu_state* cpu, s_ee_runtime* rt,
                             uint32_t instruction_word, uint32_t pc);
 
+// Native-lowered VU0 indexed vector memory macros VLQI/VSQI/VLQD/VSQD.
+// These operate on VI-addressed VU0 quadwords with lane masking.
+uint32_t ee_vu0_macro_indexed_memory(
+    s_ee_cpu_state* cpu, s_ee_runtime* rt,
+    uint32_t instruction_word, uint32_t pc);
+
 // BC2 reads VPU_STAT bit 8 directly, as the interpreter branch handlers do.
 // Returns 0/1 for false/true, or 2 when VU0 state is unavailable.
 uint32_t ee_vu0_get_branch_condition(const s_ee_runtime* rt);

@@ -90,6 +90,7 @@ void module_builder::declare_memory_helpers()
     m_out += "declare i32 @ee_vu0_cfc2(ptr, ptr, i32, i32, i32, i32)\n";
     m_out += "declare i32 @ee_vu0_ctc2(ptr, ptr, i32, i32, i32, i32)\n";
     m_out += "declare i32 @ee_vu0_macro_fmac(ptr, ptr, i32, i32)\n";
+    m_out += "declare i32 @ee_vu0_macro_indexed_memory(ptr, ptr, i32, i32)\n";
     m_out += "declare i32 @ee_vu0_get_branch_condition(ptr)\n";
     m_out += "\n";
 
@@ -2433,8 +2434,8 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
             break;
         }
 
-        const bool matrix_macro = ins.rs >= 0x10u;
-        if (!helper && !matrix_macro)
+        const bool vu0_macro = ins.rs >= 0x10u;
+        if (!helper && !vu0_macro)
         {
             // BC2 is emitted separately as a control-flow predicate.
             m_out += "  ; COP2 operation has no runtime lowering\n";
@@ -2456,9 +2457,17 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
             ? 0u
             : (reads_vu0 ? 1u : 2u);
         const std::string result = newtemp();
-        if (matrix_macro)
+        if (vu0_macro)
         {
-            m_out += "  " + result + " = call i32 @ee_vu0_macro_fmac"
+            const uint32_t special2 =
+                (ins.opcode_word & 3u) | ((ins.opcode_word >> 4u) & 0x7cu);
+            const bool indexed_memory =
+                (ins.opcode_word & 0x3cu) == 0x3cu &&
+                special2 >= 0x34u && special2 <= 0x37u;
+            m_out += "  " + result + " = call i32 @" +
+                     std::string(indexed_memory
+                         ? "ee_vu0_macro_indexed_memory"
+                         : "ee_vu0_macro_fmac") +
                      "(ptr %cpu, ptr %rt, i32 " +
                      std::to_string(ins.opcode_word) + ", i32 " +
                      std::to_string(ins.pc) + ")\n";

@@ -200,6 +200,28 @@ int main()
         }
     }
 
+    // The retail SDBZ COP2 opcode which blocked boot, followed by its
+    // three adjacent legal indexed VU0 memory variants.
+    {
+        const uint32_t words[] = {
+            0x4be10b7cu, 0x4be10b7du, 0x4be10b7eu, 0x4be10b7fu
+        };
+        const char* names[] = {"vlqi", "vsqi", "vlqd", "vsqd"};
+        for (uint32_t i = 0u; i < 4u; ++i)
+        {
+            const auto inst = decode(0x00173264u + i * 4u, words[i]);
+            const bool ok = inst.valid == V &&
+                std::strcmp(inst.mnemonic, names[i]) == 0 &&
+                lift(inst).kind == LOP_VU0_MACRO;
+            ok ? ++g_pass : ++g_fail;
+            if (!ok)
+            {
+                std::printf("FAIL SDBZ VU0 indexed macro %u: %08x -> %s/%d\n",
+                            i, words[i], inst.mnemonic, (int)inst.valid);
+            }
+        }
+    }
+
     expect("reserved macro", R(0x12,0x10,4,5,0,0x33), "cop2_reserved", X);
     expect("reserved special2", R(0x12,0x10,4,5,20,0x3c), "cop2_reserved", X); // index 80
     expect("reserved rs", R(0x12,0,4,5,0,0), "cop2_reserved", X);
