@@ -613,6 +613,40 @@ bool ee_recomp(const char* elf_path,
 
     const auto discovery_done = std::chrono::steady_clock::now();
     const std::vector<uint32_t> discovered_entries = entries;
+    // Publish the discovery-derived expected IR file count *before* lengthy
+    // emission. The Windows HLE launcher polls this small marker and counts
+    // completed .ll files, updating one console line without forwarding the
+    // per-function diagnostic log to the screen. The file is advisory only:
+    // it does not change translation/discovery or cache provenance.
+    {
+        const std::filesystem::path progress_path =
+            std::filesystem::path(output_dir) / "ee_expected_ll_count.txt";
+        const std::filesystem::path temporary = progress_path.string() + ".tmp";
+        std::FILE* progress = std::fopen(temporary.string().c_str(), "wb");
+        if (progress)
+        {
+            const bool written = std::fprintf(progress, "%zu\n",
+                discovered_entries.size()) > 0;
+            const bool closed = std::fclose(progress) == 0;
+            if (written && closed)
+            {
+                std::error_code progress_error;
+                std::filesystem::remove(progress_path, progress_error);
+                progress_error.clear();
+                std::filesystem::rename(
+                    temporary, progress_path, progress_error);
+                if (progress_error)
+                {
+                    std::filesystem::remove(temporary, progress_error);
+                }
+            }
+            else
+            {
+                std::error_code progress_error;
+                std::filesystem::remove(temporary, progress_error);
+            }
+        }
+    }
     // A batch shares one immutable discovery and one CFG boundary index.
     // Treat all requested dynamic entries as function boundaries so a
     // sibling's successor blocks cannot be spuriously claimed by another.
