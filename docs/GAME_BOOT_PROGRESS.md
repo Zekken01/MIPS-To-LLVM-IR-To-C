@@ -1996,3 +1996,52 @@ The next matched local Windows batch must show whether
 `MCMAN.IRX` now links/starts or encounters another import and whether
 the registered EE RAM TLB callback is still the first terminal failure.
 Do not add TLB no-op fallbacks solely to bypass the stop.
+
+## Proactive next batch: real SDBZ EE _SetTLBEntry RAM callback
+
+**User-authorized work ahead of another Windows boot:** The 20:13 matched final
+replay stopped at `0x800750D4`, word `0x40840000`, inside the guest-installed
+syscall `0x56` (`_SetTLBEntry`). The diagnostic surrounding code shows this
+specific `SLUS_214.42` handler checking `index < 48`, writing
+COP0.Index, PageMask, EntryHi, EntryLo0 and EntryLo1, issuing `SYNC.P`,
+then `TLBWI` and returning the index; invalid indices return `-1`.
+This is concrete reachable code, not an arbitrary speculative opcode.
+
+- `ee_ram_interpreter.cpp` now decodes a bounded COP0 MFC0/MTC0
+  register subset, SYNC.P, TLBR, TLBP and TLBWI. MTC0 delegates to
+  `ee_cop0_write` to retain Compare/timer side effects. Unknown register
+  encodings and TLBWR (which needs genuine Random/Wired timing) remain
+  unsupported, never silently treated as success.
+- `c_ee_tlb` holds exactly 48 persistent guest-visible entries in
+  `ee_memory`, independent of thread-context snapshots. It accepts only
+  documented PS2 PageMask sizes; TLBWI validates index and mask before
+  committing all entry words. TLBP compares VPN2/ASID or global pairs;
+  TLBR reads back committed values. Its explicit translation helper
+  distinguishes even/odd PFNs, valid/dirty pages, ASID mismatch and
+  invalid scratchpad mappings.
+- **Important architectural boundary:** The native HLE memory fast path
+  still follows the existing `ps2-web-recomp:SDBZ` physical/RAM policy.
+  Merely recording authentic TLB entries does **not** activate
+  an unverified virtual memory translation mechanism: TLB lookup and
+  fault delivery are not yet integrated into every native EE memory
+  access, and full hardware TLB parity is not claimed. A caller must
+  explicitly request translation and handle any failure. This is
+  preferable to claiming virtual-memory correctness through a no-op.
+- New `ee_ram_tlb` regression replays the exact observed instruction
+  words at `0x800750C8`, checks real committed entry state and return
+  value, invalid-index and invalid-mask failure paths, independent PFNs,
+  read-only dirty bit, ASID, TLBR/MFC0, TLBP miss/Index.P and continued
+  fail-closed TLBWR behavior. Runtime traces record `tlb_writes` on
+  successful RAM callback returns.
+
+**Reference and scope:** The primary `ps2-web-recomp:SDBZ` reference uses
+direct HLE physical memory and does not provide full EE TLB hardware
+translation. The original guest sequence was taken from the user's
+`boot(20261119-201359).log`. Argument order and the 48-entry size
+are cross-checked with PS2SDK `ee/kernel/include/kernel.h` and
+`ee/kernel/src/tlbfunc.c`, and page-mask interpretation with PS2TEK.
+
+This source change is **not** evidence of a new Windows guest progression.
+A later matched run must confirm that this actual RAM handler completes,
+the prior `MCMAN.IRX` import failure is cleared, and the next stop is
+diagnosed without inventing a working boot or GS frame.
