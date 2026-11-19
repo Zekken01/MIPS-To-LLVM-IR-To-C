@@ -733,13 +733,13 @@ bool ee_recomp(const char* elf_path,
                     ? "unsupported" : "valid_lift_gap");
             std::printf(
                 "    not-lowered pc=0x%08x opcode=0x%08x mnemonic=%s "
-                "classification=%s lift_unsupported=%u\\n",
+                "classification=%s lift_unsupported=%u\n",
                 insn.pc, insn.opcode_word, insn.mnemonic,
                 classification, lifted.kind == LOP_UNSUPPORTED ? 1u : 0u);
         }
         if (result->functions.back().unsupported_count > unsupported_samples.size())
         {
-            std::printf("    not-lowered more=%u (details capped at %u per function)\\n",
+            std::printf("    not-lowered more=%u (details capped at %u per function)\n",
                 result->functions.back().unsupported_count -
                     static_cast<uint32_t>(unsupported_samples.size()),
                 static_cast<uint32_t>(k_max_unsupported_samples));
