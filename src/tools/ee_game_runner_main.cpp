@@ -14,6 +14,9 @@
 #ifdef EE_ENABLE_WEBGPU
 #include "ee_webgpu_bridge.h"
 #endif
+#ifdef EE_ENABLE_RAYLIB_WINDOW
+#include "ee_raylib_window.h"
+#endif
 #include "elf_loader.h"
 #include "iop_kernel.h"
 #include "iop_cdvd.h"
@@ -331,6 +334,7 @@ void usage(const char* program)
         "  --gs-snapshot=FILE   Read-only displayed GS VRAM PPM (not a frame)\n"
         "  --gs-upload-snapshot=FILE  Preview completed GIF upload VRAM PPM (not a frame)\n"
         "  --gs-webgpu-snapshot=FILE  Render actual native WebGPU GS raster to PPM (opt-in)\n"
+        "  --gs-webgpu-window   Show guest scanout fields in a raylib/WebGPU window (opt-in)\n"
         "  --trace              Print guest PC, reason and dispatch count per step\n"
         "  --trace-entry=0xPC   Print arguments and pointed-to words at a guest entry\n"
         "  --watch-word=0xADDR  Report guest word changes between native dispatches\n"
@@ -832,6 +836,7 @@ int main(int argc, char** argv)
     const char* gs_snapshot_path = nullptr;
     const char* gs_upload_snapshot_path = nullptr;
     const char* gs_webgpu_snapshot_path = nullptr;
+    bool gs_webgpu_window = false;
     const char* instruction_trace_path = nullptr;
     uint32_t instruction_trace_first_pc = 0u;
     uint32_t instruction_trace_last_pc = 0xffffffffu;
@@ -944,6 +949,22 @@ int main(int argc, char** argv)
                 gs_webgpu_snapshot_path = argv[i] + k_prefix_len;
                 continue;
             }
+        }
+        if (argument == "--gs-webgpu-window")
+        {
+#ifndef EE_ENABLE_RAYLIB_WINDOW
+            std::fprintf(stderr,
+                "--gs-webgpu-window requires EE_ENABLE_RAYLIB_WINDOW=ON\n");
+            return 2;
+#else
+            if (gs_webgpu_window)
+            {
+                std::fprintf(stderr, "duplicate --gs-webgpu-window\n");
+                return 2;
+            }
+            gs_webgpu_window = true;
+#endif
+            continue;
         }
         if (argument.compare(0, 9, "--report=") == 0)
         {
@@ -1349,7 +1370,7 @@ int main(int argc, char** argv)
 
 #ifdef EE_ENABLE_WEBGPU
     ee::c_ee_webgpu_bridge webgpu_bridge{};
-    if (gs_webgpu_snapshot_path != nullptr)
+    if (gs_webgpu_snapshot_path != nullptr || gs_webgpu_window)
     {
         if (!webgpu_bridge.init())
         {
@@ -1359,7 +1380,15 @@ int main(int argc, char** argv)
         }
         gs_state.bind_committed_event_observer(
             &webgpu_bridge, &ee::c_ee_webgpu_bridge::committed_gif_events);
-        std::printf("GS native WebGPU: enabled, offscreen readback requested\n");
+        std::printf("GS native WebGPU: enabled, committed GS event mirror\n");
+    }
+#endif
+#ifdef EE_ENABLE_RAYLIB_WINDOW
+    ee::c_ee_raylib_window raylib_window{};
+    if (gs_webgpu_window && !raylib_window.initialize())
+    {
+        std::fprintf(stderr, "native raylib window initialization failed\n");
+        return 2;
     }
 #endif
 
@@ -2381,6 +2410,16 @@ int main(int argc, char** argv)
                 static_cast<unsigned long long>(runtime.m_ee_cycle_scheduler.current_cycle()));
             return 1;
         }
+#ifdef EE_ENABLE_RAYLIB_WINDOW
+        if (gs_webgpu_window)
+        {
+            raylib_window.pump(
+                webgpu_bridge,
+                hardware.gs_display_registers(),
+                hardware.gs_crt_mode(),
+                hardware.scanout().fields_started());
+        }
+#endif
         if (has_watch_word && count != 0u)
         {
             const uint32_t watched_after = memory->read32(watch_word);
