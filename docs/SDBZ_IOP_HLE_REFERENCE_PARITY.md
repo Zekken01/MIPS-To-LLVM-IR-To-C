@@ -6,7 +6,7 @@ Main architectural reference: [twist84/ps2-web-recomp, `SDBZ` branch](https://gi
 
 Current native LLVM-IR implementation: [`src/iop/iop_kernel_hle_bridge.cpp`](../src/iop/iop_kernel_hle_bridge.cpp), audited blob `623875f9bacb21633a539ce2529570b81132c474`.
 
-The reference file defines **172 explicitly named `def("library", ordinal, ...)` handlers**. Our bridge registers **129 actual guest-callable HLE ordinals**; **124 match explicitly named reference definitions**. Counts include no claim about full behavioral equivalence. The reference also uses loops/dynamic registrations (e.g. `secrman#4/#5`) and separate IOP modules (`io.cpp`, `sif.cpp`, `cdvd.cpp`, `spu2.cpp`) and EE kernel syscalls. The full reference runtime is larger than these 172 direct definitions.
+The reference file defines **172 explicitly named `def("library", ordinal, ...)` handlers**. Our bridge registers **135 actual guest-callable HLE ordinals**; **130 match explicitly named reference definitions**. Counts include no claim about full behavioral equivalence. The reference also uses loops/dynamic registrations (e.g. `secrman#4/#5`) and separate IOP modules (`io.cpp`, `sif.cpp`, `cdvd.cpp`, `spu2.cpp`) and EE kernel syscalls. The full reference runtime is larger than these 172 direct definitions.
 
 Never bulk-register an unimplemented opcode. Each `k_exports` entry installs a **real executable import stub**, so an unimplemented handler must remain unresolved instead of returning fabricated success.
 
@@ -25,7 +25,7 @@ Never bulk-register an unimplemented opcode. Each `k_exports` entry installs a *
 | `thvpool` | 8/8 | — |
 | `sysclib` | 27/31 | `4 setjmp`, `5 longjmp`, `19 sprintf`, `42 vsprintf` |
 | `stdio` | 3/3 | — |
-| `modload` | 0/8 | `7 LoadStartModule`, `8 StartModule`, `10 LoadModuleBuffer`, `13 SetCheckKelfPathCallback`, `16 GetModuleIdList`, `17 ReferModuleStatus`, `18 GetModuleIdListByName`, `22 SearchModuleByName` |
+| `modload` | 6/8 | `7 LoadStartModule`, `8 StartModule` |
 | `vblank` | 0/6 | `4 WaitVblankStart`, `5 WaitVblankEnd`, `6 WaitVblank`, `7 WaitNonVblank`, `8 RegisterVblankHandler`, `9 ReleaseVblankHandler` |
 | `timrman` | 0/13 | `4 AllocHardTimer`, `5 ReferHardTimer`, `6 FreeHardTimer`, `7 SetTimerMode`, `8 GetTimerStatus`, `9 SetTimerCounter`, `10 GetTimerCounter`, `11 SetTimerCompare`, `16 GetHardTimerIntrCode`, `20 SetTimerHandler`, `22 SetupHardTimer`, `23 StartHardTimer`, `24 StopHardTimer` |
 | `dmacman` | 5/7 | `16 dmac_set_dpcr2`, `17 dmac_get_dpcr2` |
@@ -58,3 +58,36 @@ The 2026-11-19 22:41 Windows evidence had a final committed `MCMAN.IRX` unresolv
 ## Acceptance protocol
 
 For each batch: correct guest ABI and pointer bounds; tested state mutations; unknown import failure preserved; IRX loader atomic on rejection; complete CI at exact new branch HEAD; only then a matched Windows replay can establish actual game progress. CI green alone never establishes playable boot.
+
+## 2026-11-19 23:30 — MODLOAD guest registry and buffer batch
+
+The matched Windows replay again stopped at **14,385 dispatches**, with a
+committed LOADFILE request for `MCMAN.IRX` failing on
+`modload#13` (the preceding `thbase#33` dependency was cleared).
+The diagnostic run has zero newly discovered functions, and all three
+GS snapshots are black.
+
+Added six R3000-callable `modload` exports, based on
+`ps2-web-recomp/runtime/src/iop/libs.cpp`:
+
+- `#13 SetCheckKelfPathCallback`: records a validated guest callback
+  pointer, but **does not verify KELF files, execute callbacks, or
+  authorize authentication**. Unsupported KELF loading remains rejected.
+- `#10 LoadModuleBuffer`: resolves guest ELF/IRX bytes into the
+  existing transactional IOP linker and publishes a real module ID
+  only after successful linking. Does not start the guest module.
+- `#16 GetModuleIdList`, `#18 GetModuleIdListByName`,
+  `#17 ReferModuleStatus` and `#22 SearchModuleByName`:
+  report only actual linked modules, with bounded guest output buffers,
+  case-insensitive name search, and unknown-module errors.
+
+`#7 LoadStartModule` and `#8 StartModule` remain deliberately
+unregistered: guest module start/wait completion and caller unblock
+must be implemented coherently before exposing them. This batch does
+not claim that MCMAN's entrypoint runs or that EE execution progresses.
+The new HLE implementations are exercised through R3000 import stubs.
+
+The preceding 48 explicit reference gaps are reduced to **42**
+by adding six implementations. The new Windows boot must validate
+`MCMAN.IRX` and any subsequent imports; static/cached IRX data
+are not proof of successful module execution.
