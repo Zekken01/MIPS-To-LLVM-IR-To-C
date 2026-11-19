@@ -518,8 +518,9 @@ bool c_ee_dmac::transfer_device_normal(uint32_t channel_index)
 
 // Walk a complete GIF PATH3 source chain before consuming any bytes.
 // Supported: REFE, CNT, NEXT, REF and END, including TIE/IRQ termination.
-// TTE, REFS stall semantics, CALL/RET stacks, scratchpad tags and MFIFO
-// remain fail-closed until their full hardware behavior is implemented.
+// A DMA address with bit 31 set reads EE scratchpad at its low 14-bit
+// offset, matching ps2-web-recomp/runtime/src/dmac.cpp::source().
+// TTE, REFS stalls, CALL/RET and MFIFO remain fail-closed.
 bool c_ee_dmac::transfer_gif_source_chain()
 {
     s_spr_channel& channel = m_device_channels[2u];
@@ -539,6 +540,44 @@ bool c_ee_dmac::transfer_gif_source_chain()
         return false;
     }
 
+    // This resolves one physical DMA quadword, not an EE CPU virtual
+    // address. The high selector bit means scratchpad and its low
+    // 14 bits wrap within 16 KiB. RAM sources never silently wrap.
+    const auto source_qword =
+        [&](uint64_t dma_address, uint32_t* host_address) -> bool
+    {
+        if (host_address == nullptr || dma_address > 0xffffffffull ||
+            (dma_address & 15u) != 0u)
+        {
+            return false;
+        }
+
+        const uint32_t address = static_cast<uint32_t>(dma_address);
+        uint32_t mapped = 0u;
+        if ((address & 0x80000000u) != 0u)
+        {
+            const uint32_t offset = address &
+                static_cast<uint32_t>(ee_memory::k_scratchpad_size - 1u);
+            mapped = ee_memory::k_scratchpad_base + offset;
+        }
+        else
+        {
+            if (address >= 0x02000000u ||
+                static_cast<uint64_t>(address) + 16u > 0x02000000ull)
+            {
+                return false;
+            }
+            mapped = address;
+        }
+
+        if (!m_memory->contains(mapped, 16u))
+        {
+            return false;
+        }
+        *host_address = mapped;
+        return true;
+    };
+
     constexpr uint32_t k_max_chain_tags = 1024u;
     constexpr size_t k_max_chain_qwc = 0xffffu;
     uint64_t tag_address = channel.m_tadr;
@@ -550,21 +589,20 @@ bool c_ee_dmac::transfer_gif_source_chain()
     for (uint32_t tag_index = 0u;
          tag_index < k_max_chain_tags && !completed; ++tag_index)
     {
-        if ((tag_address & 15u) != 0u ||
-            tag_address >= 0x02000000ull ||
-            tag_address + 16u > 0x02000000ull ||
-            !m_memory->contains(static_cast<uint32_t>(tag_address), 16u))
+        uint32_t tag_host_address = 0u;
+        if (!source_qword(tag_address, &tag_host_address))
         {
             m_gif_last_reject = e_gif_dma_reject::invalid_tag_address;
             return false;
         }
 
-        const uint64_t tag = m_memory->read64(
-            static_cast<uint32_t>(tag_address));
+        const uint64_t tag = m_memory->read64(tag_host_address);
         const uint32_t tag_id = static_cast<uint32_t>(
             (tag >> 28u) & 7u);
         const uint32_t qwc = static_cast<uint32_t>(tag & 0xffffu);
-        const uint64_t tag_data_address = tag >> 32u;
+        // The tag's ADDR low nibble is not part of its DMA address.
+        const uint64_t tag_data_address =
+            static_cast<uint32_t>(tag >> 32u) & ~uint64_t{15};
         const uint64_t inline_data_address = tag_address + 16u;
         uint64_t data_address = inline_data_address;
         uint64_t next_tag_address = inline_data_address +
@@ -576,11 +614,11 @@ bool c_ee_dmac::transfer_gif_source_chain()
         case 0u: // REFE: external payload, terminate
             terminal = true;
             [[fallthrough]];
-        case 3u: // REF: external payload, continue at the next tag
+        case 3u: // REF: external payload, continue sequentially
             data_address = tag_data_address;
             next_tag_address = inline_data_address;
             break;
-        case 1u: // CNT: inline payload, sequential next tag
+        case 1u: // CNT: inline payload, sequentially
             break;
         case 2u: // NEXT: inline payload, jump to ADDR
             next_tag_address = tag_data_address;
@@ -589,33 +627,39 @@ bool c_ee_dmac::transfer_gif_source_chain()
             terminal = true;
             break;
         default:
-            // REFS, CALL and RET require additional state and cannot
-            // be treated as CNT, REF or a silently completed chain.
+            // REFS, CALL and RET require additional architectural state.
             m_gif_last_reject = e_gif_dma_reject::unsupported_tag;
             return false;
         }
 
-        const uint64_t byte_count = static_cast<uint64_t>(qwc) * 16u;
-        if ((data_address & 15u) != 0u ||
-            data_address >= 0x02000000ull ||
-            data_address + byte_count > 0x02000000ull ||
-            !m_memory->contains(
-                static_cast<uint32_t>(data_address),
-                static_cast<size_t>(byte_count)) ||
+        if (packet.size() / 16u > k_max_chain_qwc ||
             static_cast<size_t>(qwc) >
                 k_max_chain_qwc - packet.size() / 16u)
         {
-            m_gif_last_reject = e_gif_dma_reject::invalid_payload_span;
+            m_gif_last_reject = e_gif_dma_reject::chain_qwc_limit;
             return false;
         }
 
+        // Prevalidate every source quadword before the sink sees any
+        // bytes. Scratchpad may wrap at 0x3ff0; RAM must stay in range.
+        std::vector<uint32_t> source_addresses(qwc);
+        for (uint32_t i = 0u; i < qwc; ++i)
+        {
+            if (!source_qword(
+                    data_address + static_cast<uint64_t>(i) * 16u,
+                    &source_addresses[i]))
+            {
+                m_gif_last_reject = e_gif_dma_reject::invalid_payload_span;
+                return false;
+            }
+        }
+
         const size_t previous_size = packet.size();
-        packet.resize(previous_size + static_cast<size_t>(byte_count));
+        packet.resize(previous_size + static_cast<size_t>(qwc) * 16u);
         for (uint32_t i = 0u; i < qwc; ++i)
         {
             s_ee_u128 quad{};
-            m_memory->read128(
-                static_cast<uint32_t>(data_address) + i * 16u, &quad);
+            m_memory->read128(source_addresses[i], &quad);
             for (uint32_t lane = 0u; lane < 8u; ++lane)
             {
                 packet[previous_size + static_cast<size_t>(i) * 16u + lane] =
@@ -626,7 +670,8 @@ bool c_ee_dmac::transfer_gif_source_chain()
         }
 
         final_tag = static_cast<uint32_t>(tag);
-        final_madr = static_cast<uint32_t>(data_address + byte_count);
+        final_madr = static_cast<uint32_t>(
+            data_address + static_cast<uint64_t>(qwc) * 16u);
         tag_address = next_tag_address;
         completed = terminal ||
             ((channel.m_chcr & 0x80u) != 0u &&
@@ -646,8 +691,6 @@ bool c_ee_dmac::transfer_gif_source_chain()
         return false;
     }
 
-    // The entire source chain and PATH3 sink committed successfully.
-    // Only now publish registers and genuine channel-2 completion.
     channel.m_chcr = ((channel.m_chcr & 0x0000ffffu) |
                        (final_tag & 0xffff0000u)) & ~k_chcr_str;
     channel.m_madr = final_madr;
