@@ -254,6 +254,11 @@ option(EE_ENABLE_WEBGPU "Enable native wgpu-native GS rendering" OFF)
 # The usual Windows launcher uses build/_deps/wgpu-native.
 set(EE_WEBGPU_ROOT "${CMAKE_BINARY_DIR}/_deps/wgpu-native" CACHE PATH
     "wgpu-native SDK root (include/ and lib/); defaults to build/_deps")
+# Migrate the old empty cached default without overriding a custom SDK root.
+if("${EE_WEBGPU_ROOT}" STREQUAL "")
+    set(EE_WEBGPU_ROOT "${CMAKE_BINARY_DIR}/_deps/wgpu-native"
+        CACHE PATH "wgpu-native SDK root (include/ and lib/)" FORCE)
+endif()
 if(EE_ENABLE_WEBGPU)
     if(WIN32)
         # A direct CMake configure (not only run_ps2_game.bat) must also
