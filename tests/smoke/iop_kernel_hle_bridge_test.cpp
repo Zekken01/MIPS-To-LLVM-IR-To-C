@@ -847,6 +847,56 @@ int main()
         return fail("SYSCLIB strtoul or word memory operations failed");
     }
 
+    // StartThreadArgs preserves both guest entry arguments; the new
+    // thread executes actual R3000 instructions when scheduled.
+    kernel.cpu().write32(0x3e00u, 0x0000000du);
+    const uint32_t args_thread =
+        kernel.create_thread(0x3e00u, 0u, 32u, 0x400u);
+    if (args_thread == 0u ||
+        !call_guest(
+            kernel, "thbase", 7u,
+            {args_thread, 0x80u, 0x2e00u, 0u}, &result) ||
+        result != 0u ||
+        kernel.thread(args_thread) == nullptr ||
+        kernel.thread(args_thread)->m_cpu.m_gpr[4] != 0x80u ||
+        kernel.thread(args_thread)->m_cpu.m_gpr[5] != 0x2e00u)
+    {
+        return fail("StartThreadArgs lost guest argument state");
+    }
+    const iop::s_kernel_run_result args_run = kernel.run(64u);
+    if (args_run.m_stop != iop::e_kernel_stop::breakpoint ||
+        args_run.m_guest_pc != 0x3e00u)
+    {
+        return fail("StartThreadArgs guest was not actually scheduled");
+    }
+
+    // ExitDeleteThread must retire the real guest thread/stack after
+    // its syscall returns; an implementation that merely reports zero
+    // would instead execute the following BREAK.
+    uint32_t exit_import = 0u;
+    if (!kernel.lookup_library("thbase", 9u, &exit_import) ||
+        !kernel.cpu().write32(
+            0x3f40u, 0x0c000000u |
+                ((exit_import >> 2u) & 0x03ffffffu)) ||
+        !kernel.cpu().write32(0x3f44u, 0u) ||
+        !kernel.cpu().write32(0x3f48u, 0x0000000du))
+    {
+        return fail("cannot prepare ExitDeleteThread guest");
+    }
+    const uint32_t delete_thread =
+        kernel.create_thread(0x3f40u, 0u, 32u, 0x400u);
+    if (delete_thread == 0u ||
+        !kernel.start_thread(delete_thread))
+    {
+        return fail("cannot schedule ExitDeleteThread guest");
+    }
+    const iop::s_kernel_run_result delete_run = kernel.run(128u);
+    if (delete_run.m_stop != iop::e_kernel_stop::idle ||
+        kernel.thread(delete_thread) != nullptr)
+    {
+        return fail("ExitDeleteThread did not retire the real thread");
+    }
+
     // SIO2 DMA MMIO request retains STR, but never invents a DMA
     // completion or sets IOP interrupt readiness.
     uint32_t request = 0u;
