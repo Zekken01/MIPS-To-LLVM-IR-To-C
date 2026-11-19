@@ -1087,6 +1087,17 @@ s_ee_instruction decode(uint32_t pc, uint32_t word)
         set_mnemonic(insn, "sq");
         break;
 
+    case 0x38: // SC (MIPS III), explicitly unsupported by EE hardware
+        // Sony's instruction manual labels this opcode 'unsupported':
+        // executing it generates the undefined-instruction exception.
+        // Our UNSUPPORTED enum instead means a legal EE instruction
+        // awaiting native lowering, so this is INVALID on the EE.
+        insn.opcode = e_ee_opcode::OP_INVALID;
+        insn.flow = e_ee_flow::FLOW_NONE;
+        insn.valid = e_ee_valid::INVALID;
+        set_mnemonic(insn, "sc");
+        break;
+
     default:
         insn.opcode = e_ee_opcode::OP_INVALID;
         insn.flow = e_ee_flow::FLOW_NONE;
