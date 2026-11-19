@@ -217,6 +217,40 @@ int main()
         return 1;
     }
 
+    // VU1 CPU apertures share physical code/data with VIF1 MPG/UNPACK.
+    // The reference maps four pages each at 0x11008000/0x1100c000.
+    ee::s_ee_runtime native_runtime{};
+    native_runtime.m_mmio_user = &hardware;
+    native_runtime.m_mmio_read = &ee::c_ee_hw_bus::mmio_read;
+    native_runtime.m_mmio_write = &ee::c_ee_hw_bus::mmio_write;
+    const ee::s_ee_u128 original_code{
+        0x0102030405060708ull, 0x1112131415161718ull};
+    ee::ee_mem_write128(&native_runtime,
+                        ee::c_ee_vif1::k_vu1_code_base,
+                        &original_code);
+    ee::ee_mem_write32(&native_runtime,
+                       ee::c_ee_vif1::k_vu1_data_base + 16u,
+                       0x11223344u);
+    ee::s_ee_u128 code_read{};
+    ee::ee_mem_read128(&native_runtime,
+                       ee::c_ee_vif1::k_vu1_code_base, &code_read);
+    if (!check(code_read.m_lo == original_code.m_lo &&
+               code_read.m_hi == original_code.m_hi &&
+               ee::ee_mem_read32(
+                   &native_runtime,
+                   ee::c_ee_vif1::k_vu1_data_base + 16u) == 0x11223344u &&
+               vif1.vu1_data()[16u] == 0x44u,
+               "physical VU1 code/data apertures do not share residency") ||
+        !check(ee::c_ee_hw_bus::mmio_write(
+                   &hardware, ee::c_ee_vif1::k_register_base + 0x10u,
+                   4u, &fbrst) &&
+               vif1.vu1_code()[0u] == 0x08u &&
+               vif1.vu1_data()[16u] == 0x44u,
+               "FBRST erased resident VU1 memory"))
+    {
+        return 1;
+    }
+
     // Real channel-1 source chain: TTE's high tag half carries
     // DIRECT(2), followed by the two original GIF quadwords.
     ee::ee_memory memory(0x2000u);
