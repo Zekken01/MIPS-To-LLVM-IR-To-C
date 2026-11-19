@@ -1942,3 +1942,57 @@ The final-replay catalog shows 7 ELF-static IRX path candidates, **14** genuine 
 All three same-run GS snapshots are **uniform black** (`gs-display` 512×448, `gs-upload` 1024×64, `gs-webgpu` 512×448). The runner reports 2 scheduled GS fields, 37 accepted GS batches, 40 tags, 2 vertex kicks, and IMAGE transfers; those are diagnostics, not a visible game frame. PR #144's raylib presentation was merged separately into `main`; this PR #143 remains a separate draft pending combined-tree validation and Windows rerun.
 
 Acceptance for this next HLE batch is all four GitHub workflows green on the *final* exact commit plus a matched new Windows run demonstrating whether `GetMemorySize` returns and `MCMAN.IRX` import linking advances. Do not manufacture completion, IOP exports, GS events, or frame presentation.
+
+## 2026-11-19 20:13 matched native Windows boot — IOP SYSCLIB memory functions
+
+The user's `20261119-201359` final replay, expansion and report agree with
+`201402` IOP catalog and translation-cache metadata (same USA
+`SLUS_214.42` ELF SHA-256
+`1b213a85a2c305dc0f893c007a502c93e0851d1bb7db6164f9e0b72adb074a16`).
+The expansion session reused its translation cache, added **zero** new functions
+in the recorded pass, and retained 3,524 hashed IR modules. Do not confuse
+this with the 7,901 total static discovery count or the number of functions
+executed.
+
+**Boot progress:** The prior VIF1 source-chain invalid-tag rejection did not
+recur (observed CHCR/TADR zero and no pending DMA at dispatch 10,411).
+The previously unsupported EE `GetMemorySize` syscall now committed its
+32-MiB result and execution continued from dispatch 13,909.
+Final replay reached **14,240** native dispatches (previously 13,909)
+before stopping at guest RAM callback PC `0x800750D4`
+(`0x40840000`, `MTC0 a0, Index`), with
+`UNSUPPORTED(4)`. The surrounding installed handler writes COP0 Index,
+PageMask, EntryHi, EntryLo0, EntryLo1 and issues `TLBWI`. The bounded
+RAM interpreter deliberately lacks that full TLB behavior: no writes
+or virtual-memory translation are fabricated here.
+
+**Earlier demonstrated IOP failure:** SIFRPC seq 13 loaded and started
+`SIO2MAN.IRX` normally. Seq 14 advanced beyond the previous
+`loadcore#7` failure but rejected `MCMAN.IRX` with
+`unresolved=sysclib#12`; no MCMAN thread was started.
+PS2SDK's IOP SYSCLIB import table identifies ordinal #12 as `memcpy`.
+
+**Coherent IOP HLE batch:** Implement ordinals #10–#17
+(`memchr`, `memcmp`, `memcpy`, `memmove`, `memset`, `bcmp`,
+`bcopy`, `bzero`) with validated IOP RAM/KSEG0/KSEG1 spans,
+bounded length and overlap-safe source snapshots. Return the correct
+guest pointer/value for the non-void functions and leave void results
+unfabricated. Reject unsupported ranges and imports without writes.
+The new `iop_sysclib_memory` regression covers import registration,
+byte results, overlapping copies, aliases, invalid spans, oversized
+lengths, zero-length behavior and unknown ordinals.
+
+**GS:** The final raylib HWND / wgpu-native DX12 surface initialized.
+The runtime counted 37 accepted GIF batches, 40 tags, 16 image events,
+two vertex kicks and one GPU draw. The three uploads named
+`gs-display(20261119-201359).ppm`,
+`gs-upload(20261119-201359).ppm` and `gs-webgpu(6).ppm`
+are all black, not visible game frames or proof of scanout.
+
+**Validation boundary:** The HLE changes are source-level updates
+motivated by this new real run; only CI can validate their synthetic
+regressions. This 20:13 capture predates these changes.
+The next matched local Windows batch must show whether
+`MCMAN.IRX` now links/starts or encounters another import and whether
+the registered EE RAM TLB callback is still the first terminal failure.
+Do not add TLB no-op fallbacks solely to bypass the stop.
