@@ -48,6 +48,45 @@ int main()
         return 1;
     }
 
-    std::printf("native GS WebGPU compute: PASS (pixel=%08x)\n", rgba[0]);
+    // Exercise the actual raster compute pipeline, not merely the
+    // host-to-local upload/GS display compute pipelines. The 1x1
+    // point primitive is written at (2,2), away from the texture upload.
+    state.prim = 0u; // point
+    state.prmodecont = 1u;
+    state.ctx[0].frame = uint64_t{1} << 16u; // FBW=1, PSMCT32
+    state.ctx[0].scissor =
+        (uint64_t{63} << 16u) | (uint64_t{63} << 48u);
+    ps2::gs::Vertex vertex{};
+    vertex.x = 32u;
+    vertex.y = 32u;
+    vertex.z = 0u;
+    vertex.r = 0x11u;
+    vertex.g = 0x55u;
+    vertex.b = 0xaau;
+    vertex.a = 0x80u;
+    vertex.q = 1.0f;
+    ps2::gs::gpu::draw(state, &vertex, 1);
+    ps2::gs::gpu::flush();
+
+    const DisplaySource raster_source{
+        0u, 1u, ps2::gs::PSMCT32, 0u, 0u, 4u, 4u, false
+    };
+    rgba.clear();
+    width = height = 0u;
+    if (!ps2::gs::gpu::display(
+            raster_source, rgba, width, height) ||
+        width != 4u || height != 4u || rgba.size() != 16u ||
+        (rgba[2u + 2u * 4u] & 0x00ffffffu) == 0u)
+    {
+        std::fprintf(stderr,
+            "native GS WebGPU point raster failed: %ux%u pixels=%zu "
+            "at(2,2)=%08x\n",
+            width, height, rgba.size(),
+            rgba.size() >= 11u ? rgba[10u] : 0u);
+        return 1;
+    }
+
+    std::printf("native GS WebGPU compute: PASS "
+                "(upload=%08x point=%08x)\n", rgba[0], rgba[10u]);
     return 0;
 }
