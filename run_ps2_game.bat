@@ -62,10 +62,12 @@ if errorlevel 1 (
 )
 
 rem Optional native WebGPU compute rendering: no browser, SDL or frontend.
-rem Set EE_WEBGPU_SNAPSHOT=1 and EE_WEBGPU_ROOT to a compatible wgpu-native SDK.
+rem Set EE_WEBGPU_SNAPSHOT=1 to enable the native renderer.
+rem The pinned SDK is downloaded into build\_deps\wgpu-native by default.
+rem EE_WEBGPU_ROOT can still override the location with a compatible SDK.
 set "EE_WEBGPU_RUN_ARG="
 if /I "%EE_WEBGPU_SNAPSHOT%"=="1" (
-    if not defined EE_WEBGPU_ROOT set "EE_WEBGPU_ROOT=%CD%\third_party\wgpu-native"
+    if not defined EE_WEBGPU_ROOT set "EE_WEBGPU_ROOT=%CD%\build\_deps\wgpu-native"
     set "EE_WEBGPU_RUN_ARG=--gs-webgpu-snapshot=%WORK_DIR%\gs-webgpu.ppm"
 )
 rem Obtain the same pinned MSVC wgpu-native SDK used in WebGPU CI.
