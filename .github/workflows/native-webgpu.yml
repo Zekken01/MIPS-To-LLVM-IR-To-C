@@ -23,6 +23,11 @@ jobs:
           unzip -q "$RUNNER_TEMP/wgpu-native.zip" -d build/_deps/wgpu-native
       - name: Configure native-only WebGPU
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DEE_ENABLE_WEBGPU=ON
+      - name: Assert native SDK lives under build/_deps
+        run: |
+          test -f build/_deps/wgpu-native/include/webgpu/webgpu.h
+          test -f build/_deps/wgpu-native/include/webgpu/wgpu.h
+          test -f build/_deps/wgpu-native/lib/libwgpu_native.a -o -f build/_deps/wgpu-native/lib/libwgpu_native.so -o -f build/_deps/wgpu-native/lib/libwgpu_native.so.0
       - name: Install software Vulkan adapter
         run: sudo apt-get update -qq && sudo apt-get install -y -qq mesa-vulkan-drivers libvulkan1
       - name: Compile native WebGPU renderer and smoke test
@@ -53,6 +58,19 @@ jobs:
       - name: Configure native MSVC WebGPU
         shell: pwsh
         run: cmake -S . -B build -G Ninja -DEE_ENABLE_WEBGPU=ON
+      - name: Assert native SDK lives under build/_deps
+        shell: pwsh
+        run: |
+          $root = 'build/_deps/wgpu-native'
+          foreach ($file in @('include/webgpu/webgpu.h', 'include/webgpu/wgpu.h', 'lib/wgpu_native.lib')) {
+            if (!(Test-Path (Join-Path $root $file))) {
+              throw "Missing build/_deps WebGPU dependency: $file"
+            }
+          }
+          if (!(Test-Path (Join-Path $root 'lib/wgpu_native.dll')) -and
+              !(Test-Path (Join-Path $root 'bin/wgpu_native.dll'))) {
+            throw 'Missing build/_deps WebGPU runtime DLL'
+          }
       - name: Compile runner and native GPU smoke test
         shell: pwsh
         run: cmake --build build --target ee_game_runner ee_webgpu_native_smoke --config Release --parallel 2
