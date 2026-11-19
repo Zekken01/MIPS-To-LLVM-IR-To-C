@@ -51,6 +51,17 @@ struct s_ee_gs_state
 class c_ee_gs_state
 {
 public:
+    using t_committed_event_callback = void (*)(
+        void* user, const s_ee_gif_event* events, size_t count,
+        const uint8_t* data, uint32_t qwc
+    );
+
+    // Optional GPU mirror: invoked only AFTER transactional GS acceptance.
+    // The callback is observer-only and cannot complete or reject guest DMA.
+    void bind_committed_event_observer(
+        void* user, t_committed_event_callback callback
+    );
+
     static constexpr size_t k_max_image_bytes = 4u * 1024u * 1024u;
     static constexpr size_t k_vram_bytes = 4u * 1024u * 1024u;
     // Keep per-batch staged writes bounded for malformed transfer sizes.
@@ -197,6 +208,9 @@ private:
     static bool write_packed(
         s_ee_gs_state& state, uint32_t reg, uint64_t low, uint64_t high
     );
+
+    void* m_committed_user = nullptr;
+    t_committed_event_callback m_committed_callback = nullptr;
 
     s_ee_gs_state m_state{};
     std::vector<uint8_t> m_vram = std::vector<uint8_t>(k_vram_bytes, 0u);
