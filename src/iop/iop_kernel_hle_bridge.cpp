@@ -39,7 +39,9 @@ constexpr s_export k_exports[] = {
     {"thevent", 10u, 6u},
     {"thsemap", 4u, 7u}, {"thsemap", 6u, 7u},
     {"thsemap", 8u, 7u}, {"thsemap", 11u, 7u},
-    {"sysclib", 8u, 8u}, {"sysclib", 10u, 8u},
+    {"sysclib", 6u, 8u}, {"sysclib", 7u, 8u},
+    {"sysclib", 8u, 8u}, {"sysclib", 9u, 8u},
+    {"sysclib", 10u, 8u},
     {"sysclib", 11u, 8u}, {"sysclib", 12u, 8u},
     {"sysclib", 13u, 8u}, {"sysclib", 14u, 8u},
     {"sysclib", 15u, 8u}, {"sysclib", 16u, 8u},
@@ -105,6 +107,47 @@ bool write_iop_ram(c_cpu& cpu, uint32_t address,
     return true;
 }
 
+// PS2SDK sysclib/src/nonstd/ctype.c defines a 128-byte ASCII
+// classification table, not the host C locale's ctype bit flags.
+constexpr uint32_t k_ctype_guest_table = c_kernel_hle_bridge::k_stub_base - 0x100u;
+
+uint8_t ctype_flags(uint32_t ch)
+{
+    if (ch == 0x20u)
+    {
+        return 0x18u;
+    }
+    if (ch >= 0x09u && ch <= 0x0du)
+    {
+        return 0x08u;
+    }
+    if (ch <= 0x1fu || ch == 0x7fu)
+    {
+        return 0x20u;
+    }
+    if (ch >= '0' && ch <= '9')
+    {
+        return 0x04u;
+    }
+    if (ch >= 'A' && ch <= 'F')
+    {
+        return 0x41u;
+    }
+    if (ch >= 'G' && ch <= 'Z')
+    {
+        return 0x01u;
+    }
+    if (ch >= 'a' && ch <= 'f')
+    {
+        return 0x42u;
+    }
+    if (ch >= 'g' && ch <= 'z')
+    {
+        return 0x02u;
+    }
+    return 0x10u; // printable ASCII punctuation
+}
+
 bool create_stub(c_cpu& cpu, uint32_t pc, uint32_t service)
 {
     const uint32_t words[] = {
@@ -145,6 +188,17 @@ bool c_kernel_hle_bridge::install()
         if (!create_stub(m_kernel.cpu(), pc, service) ||
             !m_kernel.register_library(
                 item.m_library, item.m_ordinal, pc))
+        {
+            return false;
+        }
+    }
+    // Make get_ctype_table (#9) return an actual stable guest pointer.
+    // Its reserved 128-byte region is just below the kernel HLE stubs,
+    // outside the 0x20000+ relocated IRX module allocation range.
+    for (uint32_t index = 0u; index < 128u; ++index)
+    {
+        if (!m_kernel.cpu().write8(
+                k_ctype_guest_table + index, ctype_flags(index)))
         {
             return false;
         }
@@ -790,18 +844,34 @@ bool c_kernel_hle_bridge::handle_thsemap(uint32_t ordinal)
 bool c_kernel_hle_bridge::handle_sysclib(uint32_t ordinal)
 {
     s_cpu_state& cpu = m_kernel.cpu().state();
-    if (ordinal == 8u)
+    if (ordinal == 6u || ordinal == 7u) // _toupper / _tolower
     {
-        const int ch = static_cast<int>(cpu.m_gpr[4] & 0xffu);
-        uint32_t value = 0u;
-        if (std::isupper(ch)) value |= 1u;
-        if (std::islower(ch)) value |= 2u;
-        if (std::isdigit(ch)) value |= 4u;
-        if (std::isspace(ch)) value |= 8u;
-        if (std::ispunct(ch)) value |= 16u;
-        if (std::iscntrl(ch)) value |= 32u;
-        if (std::isxdigit(ch)) value |= 64u;
-        cpu.m_gpr[2] = value;
+        const uint32_t ch = cpu.m_gpr[4];
+        uint32_t result = ch;
+        if (ordinal == 6u && ch >= 'a' && ch <= 'z')
+        {
+            result = ch - ('a' - 'A');
+        }
+        else if (ordinal == 7u && ch >= 'A' && ch <= 'Z')
+        {
+            result = ch + ('a' - 'A');
+        }
+        cpu.m_gpr[2] = result;
+        return true;
+    }
+    if (ordinal == 8u) // look_ctype_table
+    {
+        const uint32_t ch = cpu.m_gpr[4] & 0xffu;
+        if (ch >= 128u)
+        {
+            return false;
+        }
+        cpu.m_gpr[2] = ctype_flags(ch);
+        return true;
+    }
+    if (ordinal == 9u) // get_ctype_table
+    {
+        cpu.m_gpr[2] = k_ctype_guest_table;
         return true;
     }
     // PS2SDK SYSCLIB ordinals 10-17: memchr, memcmp, memcpy,
