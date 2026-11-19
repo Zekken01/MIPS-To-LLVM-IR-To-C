@@ -604,6 +604,69 @@ int main()
         return fail("THBASE guest thread management or status failed");
     }
 
+    // Reference IOP mailbox and heaplib services are backed by real
+    // queues and owned IOP guest allocations, not success-only stubs.
+    kernel.cpu().write32(0x2c00u, 0u);
+    kernel.cpu().write32(0x2c04u, 0u);
+    kernel.cpu().write32(0x2c10u, 0u);
+    if (!call_guest(
+            kernel, "thmsgbx", 4u, {0x2c00u, 0u, 0u, 0u},
+            &result) || result == 0u)
+    {
+        return fail("mailbox creation failed");
+    }
+    const uint32_t mailbox = result;
+    if (!call_guest(
+            kernel, "thmsgbx", 9u,
+            {0x2c20u, mailbox, 0u, 0u}, &result) ||
+        result != static_cast<uint32_t>(-424) ||
+        !call_guest(
+            kernel, "thmsgbx", 6u,
+            {mailbox, 0x2c10u, 0u, 0u}, &result) ||
+        result != 0u ||
+        !call_guest(
+            kernel, "thmsgbx", 9u,
+            {0x2c20u, mailbox, 0u, 0u}, &result) ||
+        result != 0u ||
+        !kernel.cpu().read32(0x2c20u, &remaining) ||
+        remaining != 0x2c10u ||
+        !call_guest(
+            kernel, "thmsgbx", 5u,
+            {mailbox, 0u, 0u, 0u}, &result) ||
+        result != 0u)
+    {
+        return fail("guest mailbox polling, delivery or deletion failed");
+    }
+    if (!call_guest(
+            kernel, "heaplib", 4u, {0u, 0u, 0u, 0u}, &result) ||
+        result < iop::c_kernel::k_user_base)
+    {
+        return fail("heaplib create did not allocate a real object");
+    }
+    const uint32_t heap_id = result;
+    if (!call_guest(
+            kernel, "heaplib", 6u,
+            {heap_id, 128u, 0u, 0u}, &result) ||
+        result < iop::c_kernel::k_user_base ||
+        !kernel.owns_heap_span(result, 128u))
+    {
+        return fail("heaplib allocation did not reserve IOP memory");
+    }
+    const uint32_t block = result;
+    if (!call_guest(
+            kernel, "heaplib", 7u,
+            {heap_id, block, 0u, 0u}, &result) ||
+        result != 0u ||
+        kernel.owns_heap_span(block, 1u) ||
+        !call_guest(
+            kernel, "heaplib", 5u,
+            {heap_id, 0u, 0u, 0u}, &result) ||
+        result != 0u ||
+        kernel.owns_heap_span(heap_id, 1u))
+    {
+        return fail("heaplib free or delete failed");
+    }
+
     // SIO2 DMA MMIO request retains STR, but never invents a DMA
     // completion or sets IOP interrupt readiness.
     uint32_t request = 0u;
