@@ -45,6 +45,45 @@ int main()
     expect("pcpyud",  R(0x1c,4,5,6,0x0e,0x29), "pcpyud", V);
     // Verified from the US SDBZ ELF: PC 0x0018E154.
     expect("pcpyud SDBZ", 0x70491ba9u, "pcpyud", V);
+    {
+        // This exact SDBZ instruction was decoded VALID but lift() used
+        // to return LOP_UNSUPPORTED, producing a false coverage gap.
+        const auto ins = decode(0x0018e154u, 0x70491ba9u);
+        const bool ok = ins.valid == V &&
+                        lift(ins).kind == LOP_MMI_COPY_UPPER_D;
+        ok ? ++g_pass : ++g_fail;
+        if (!ok)
+        {
+            std::printf("FAIL SDBZ PCPYUD decode/lift/emitter classification\n");
+        }
+    }
+    // Every MMI encoding declared VALID must have a non-unsupported
+    // lifter kind; the LLVM emitter dispatches MMI using raw opcodes.
+    // Test both unary (rs=0) and binary (rs=4) forms exhaustively,
+    // including selector sub-opcodes that otherwise receive no unit test.
+    for (uint32_t funct = 0u; funct < 64u; ++funct)
+    {
+        for (uint32_t sa = 0u; sa < 32u; ++sa)
+        {
+            for (uint32_t rs : {0u, 4u})
+            {
+                const uint32_t word = R(0x1cu, rs, 5u, 6u, sa, funct);
+                const auto ins = decode(0x0018e154u, word);
+                if (ins.valid != V)
+                {
+                    continue;
+                }
+                const bool ok = lift(ins).kind != LOP_UNSUPPORTED;
+                ok ? ++g_pass : ++g_fail;
+                if (!ok)
+                {
+                    std::printf("FAIL VALID MMI unsupported by lifter: word=%08x "
+                                "funct=%02x sa=%02x rs=%u\n",
+                                word, funct, sa, rs);
+                }
+            }
+        }
+    }
     expect("mfhi1",   R(0x1c,0,0,6,0,0x10),    "mfhi1",  V);
     expect("mtlo1",   R(0x1c,4,0,0,0,0x13),    "mtlo1",  V);
     // Real ops that are NOT lowered exactly must never be VALID (previously a
