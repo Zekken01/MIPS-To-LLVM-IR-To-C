@@ -73,6 +73,34 @@ private:
         std::deque<s_mailbox_waiter> m_waiters;
     };
 
+    struct s_fixed_pool
+    {
+        uint32_t m_attr = 0u;
+        uint32_t m_option = 0u;
+        uint32_t m_base = 0u;
+        uint32_t m_block_size = 0u;
+        uint32_t m_block_count = 0u;
+        std::vector<uint32_t> m_free;
+        std::set<uint32_t> m_in_use;
+        std::deque<uint32_t> m_waiters;
+    };
+
+    struct s_variable_pool_waiter
+    {
+        uint32_t m_thread = 0u;
+        uint32_t m_size = 0u;
+    };
+
+    struct s_variable_pool
+    {
+        uint32_t m_attr = 0u;
+        uint32_t m_option = 0u;
+        uint32_t m_base = 0u;
+        uint32_t m_size = 0u;
+        std::map<uint32_t, uint32_t> m_blocks;
+        std::deque<s_variable_pool_waiter> m_waiters;
+    };
+
     bool read_string(uint32_t pointer, uint32_t maximum,
                      std::string* output) const;
     bool read_argument(uint32_t index, uint32_t* value) const;
@@ -82,6 +110,9 @@ private:
                      uint32_t mode) const;
     bool take_event(s_event& event, uint32_t bits, uint32_t mode,
                     uint32_t output);
+    uint32_t variable_pool_take(s_variable_pool& pool, uint32_t size);
+    bool handle_fixed_pool(uint32_t ordinal);
+    bool handle_variable_pool(uint32_t ordinal);
     bool handle_heaplib(uint32_t ordinal);
     bool handle_thmsgbx(uint32_t ordinal);
     bool handle_sysmem(uint32_t ordinal);
@@ -100,6 +131,8 @@ private:
     std::map<uint32_t, s_event> m_events;
     std::map<uint32_t, s_mailbox> m_mailboxes;
     std::map<uint32_t, std::set<uint32_t>> m_heaps;
+    std::map<uint32_t, s_fixed_pool> m_fixed_pools;
+    std::map<uint32_t, s_variable_pool> m_variable_pools;
     uint32_t m_dma_direction[16]{};
     uint32_t m_next_object = 1u;
     bool m_cpu_interrupts_suspended = false;
