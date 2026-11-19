@@ -774,6 +774,12 @@ if(EE_HAVE_LLVM_JIT_TEST)
                 --build-dir ${CMAKE_BINARY_DIR}
                 --work-dir ${CMAKE_BINARY_DIR}/ee-sif0-stop-test)
     set_tests_properties(ee_sif0_stop_dma PROPERTIES TIMEOUT 180)
+    add_test(NAME ee_memory_size_hle
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/tools/test_ee_memory_size.py
+                --build-dir ${CMAKE_BINARY_DIR}
+                --work-dir ${CMAKE_BINARY_DIR}/ee-memory-size-test)
+    set_tests_properties(ee_memory_size_hle PROPERTIES TIMEOUT 180)
 
     # Native Python integration tests select their own compatible linker:
     # Windows LLVM clang++ accepts the generated GNU-style driver flags,
