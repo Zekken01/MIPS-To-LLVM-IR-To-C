@@ -222,7 +222,7 @@ c_kernel_hle_bridge::c_kernel_hle_bridge(c_kernel& kernel)
 }
 
 void c_kernel_hle_bridge::attach_disc_source(
-    const c_folder_sector_source* source)
+    c_folder_sector_source* source)
 {
     m_ioman_files.clear();
     m_disc_source = source;
