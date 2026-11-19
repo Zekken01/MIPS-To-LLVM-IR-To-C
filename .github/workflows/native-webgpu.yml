@@ -44,18 +44,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Download pinned MSVC native WebGPU SDK
+      - name: Bootstrap pinned MSVC native WebGPU SDK
         shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          New-Item -ItemType Directory -Force -Path third_party/wgpu-native | Out-Null
-          $archive = Join-Path $env:RUNNER_TEMP 'wgpu-native.zip'
-          Invoke-WebRequest -Uri 'https://github.com/gfx-rs/wgpu-native/releases/download/v29.0.1.1/wgpu-windows-x86_64-msvc-release.zip' -OutFile $archive
-          $digest = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($digest -ne '7e67d7445c42aeb85e30f88930fd8d7d83ee769e3390aeb1ada75ebf3cf78132') {
-            throw 'wgpu-native binary archive checksum mismatch'
-          }
-          Expand-Archive -Path $archive -DestinationPath third_party/wgpu-native
+        run: python tools/ensure_wgpu_native.py --root third_party/wgpu-native
       - name: Activate installed MSVC toolchain
         uses: ilammy/msvc-dev-cmd@v1
         with:
