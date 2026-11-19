@@ -1876,3 +1876,14 @@ The production runner still lacks a real VIF1/VU1/GIF PATH2
 consumer. Until that consumer accepts the actual stream,
 channel 1 deliberately stays active and raises no interrupt.
 See [M2.5 VIF1 chain](M2_5_VIF1_SOURCE_CHAIN.md).
+
+
+## M2.6 — Native VIF1, VU1 memory and GIF PATH2 first implementation (19 November 2026)
+
+Following M2.5's valid source-chain transport but missing device sink, the native runtime now routes channel 1 to `c_ee_vif1`, channel 2 to the existing independent PATH3 parser, and VIF DIRECT/DIRECTHL GIF packets through a separate PATH2 parser into the same actual GS/WebGPU consumer. The decoder/state machine is adapted from `twist84/ps2-web-recomp:SDBZ/runtime/src/vif.cpp` under the MIT license, reformatted for the local `c_`/`s_`/`m_`, snake_case and Allman conventions.
+
+The transactional parser handles split 32-bit VIF commands, V4/V3/V2/V1 UNPACK with cycle fill/skip/mask/row/col, VU1 16 KiB code/data memory, MPG uploads, STCYCL/MODE/BASE/OFFSET/ITOP and physical VU1 memory windows. VIF FBRST preserves resident code/data as the primary reference does. It refuses unimplemented MSCAL/MSCALF/MSCNT, MSKPATH3 and unhandled VIF IRQ stalls without falsely retiring DMA. Rejected packets preserve channel-1 STR, source addresses and D_STAT; successful complete original chains still must pass DMAC source validation and device consumption to raise the guest's genuine channel-1 status.
+
+New `ee_vif1_device` regression exercises packet continuation, UNPACK, masking, micro uploads, physical apertures, PATH2 events and a real bounded synthetic source chain with TTE/TIE. **A synthetic DMA completion is not proof of native SDBZ boot.** The source bytes at `0x00771400` were not captured by the 13:53 user-owned boot, because it predates M2.5's raw source-prefix probe. VU1 micro execution and XGKICK/PATH1 require their own implementation and tests when actual commands are observed.
+
+See [M2.6 Native VIF1 Consumer](M2_6_NATIVE_VIF1_CONSUMER.md). Keep the existing branch/PR #142 draft and unmerged; revalidate exact-commit CI, and use only a new matched Windows boot batch for game progression claims.
