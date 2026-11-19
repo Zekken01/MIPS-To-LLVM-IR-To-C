@@ -344,13 +344,13 @@ int main()
 
     // An unsupported arithmetic opcode with mask=0 is still invalid:
     // a zero destination mask must not turn an unknown op into NOP.
-    const ee::s_ee_u128 masked_bad_pair{nop_lower, 0x00000008u};
+    const ee::s_ee_u128 masked_bad_pair{nop_lower, 0x00000030u};
     if (!check(ee::c_ee_vif1::mmio_write(
                    &vif1, ee::c_ee_vif1::k_vu1_code_base,
                    16u, &masked_bad_pair),
                "masked unknown-code MMIO failed") ||
         !check(!send(vif1, {0x14000000u, 0u, 0u, 0u}) &&
-               vif1.diagnostic().m_vu_upper == 0x00000008u &&
+               vif1.diagnostic().m_vu_upper == 0x00000030u &&
                capture.m_calls == after_kick,
                "masked unknown VU opcode silently executed"))
     {
@@ -385,6 +385,99 @@ int main()
                state.m_vf[1][3] == 0x40400000u &&
                no_gif.empty(),
                "VU1 dual-word arithmetic or E-bit delay-slot failed"))
+    {
+        return 1;
+    }
+
+
+    // PS2 reference FMAC arithmetic: MULA establishes ACC from VF2*VF3;
+    // MADD uses the same ACC, and both vector lanes commit after lower.
+    ee::s_ee_vu1_state mac_state{};
+    mac_state.m_initialized = true;
+    mac_state.m_vf[0][3] = 0x3f800000u;
+    for (uint32_t lane = 0u; lane < 4u; ++lane)
+    {
+        mac_state.m_vf[2][lane] = 0x3f800000u;
+        mac_state.m_vf[3][lane] = 0x40000000u;
+    }
+    code.fill(0u);
+    const uint32_t mula =
+        (15u << 21u) | (3u << 16u) | (2u << 11u) | 0x2beu;
+    const uint32_t madd =
+        (15u << 21u) | (3u << 16u) | (2u << 11u) | (1u << 6u) | 0x29u;
+    const uint32_t madd_e = madd | 0x40000000u;
+    std::memcpy(code.data(), &nop_lower, 4u);
+    std::memcpy(code.data() + 4u, &mula, 4u);
+    std::memcpy(code.data() + 8u, &nop_lower, 4u);
+    std::memcpy(code.data() + 12u, &madd_e, 4u);
+    std::memcpy(code.data() + 16u, &nop_lower, 4u);
+    std::memcpy(code.data() + 20u, &nop_upper, 4u);
+    if (!check(ee::c_ee_vu1::run(
+                   mac_state, code, data, 0u, 0u, 0u, no_gif, &issue) &&
+               issue.m_steps == 3u &&
+               mac_state.m_acc[0] == 0x40000000u &&
+               mac_state.m_vf[1][0] == 0x40800000u &&
+               mac_state.m_vf[1][3] == 0x40800000u &&
+               mac_state.m_mac == 0u,
+               "VU1 ACC/MADD PS2 reference arithmetic"))
+    {
+        return 1;
+    }
+
+    // FTOI4 converts exactly 1.0 to fixed 16 using the reference math;
+    // conversion must not modify the previous MAC/status flags.
+    const uint32_t ftoi4 =
+        0x40000000u | (8u << 21u) | (1u << 16u) |
+        (2u << 11u) | 0x17du;
+    code.fill(0u);
+    std::memcpy(code.data(), &nop_lower, 4u);
+    std::memcpy(code.data() + 4u, &ftoi4, 4u);
+    std::memcpy(code.data() + 8u, &nop_lower, 4u);
+    std::memcpy(code.data() + 12u, &nop_upper, 4u);
+    const uint32_t old_mac = mac_state.m_mac;
+    const uint32_t old_status = mac_state.m_status;
+    if (!check(ee::c_ee_vu1::run(
+                   mac_state, code, data, 0u, 0u, 0u, no_gif, &issue) &&
+               mac_state.m_vf[1][0] == 16u &&
+               mac_state.m_mac == old_mac &&
+               mac_state.m_status == old_status,
+               "VU1 FTOI4 conversion/flags"))
+    {
+        return 1;
+    }
+
+    // CLIP flag results are delayed four issued microinstructions before
+    // FCGET sees them. X=3 > W=2 and Y=-4 < -W each contribute a flag.
+    ee::s_ee_vu1_state clip_state{};
+    clip_state.m_initialized = true;
+    clip_state.m_vf[0][3] = 0x3f800000u;
+    clip_state.m_vf[2][0] = 0x40400000u;
+    clip_state.m_vf[2][1] = 0xc0800000u;
+    clip_state.m_vf[3][3] = 0x40000000u;
+    code.fill(0u);
+    const uint32_t clip_upper =
+        (2u << 11u) | (3u << 16u) | 0x1ffu;
+    const uint32_t fcget_early = (0x1cu << 25u) | (2u << 16u);
+    const uint32_t fcget_late = (0x1cu << 25u) | (3u << 16u);
+    const uint32_t e_nop = nop_upper | 0x40000000u;
+    auto micro_pair = [&](uint32_t pair, uint32_t lo, uint32_t hi)
+    {
+        std::memcpy(code.data() + pair * 8u, &lo, 4u);
+        std::memcpy(code.data() + pair * 8u + 4u, &hi, 4u);
+    };
+    micro_pair(0u, nop_lower, clip_upper);
+    micro_pair(1u, fcget_early, nop_upper);
+    micro_pair(2u, nop_lower, nop_upper);
+    micro_pair(3u, nop_lower, nop_upper);
+    micro_pair(4u, fcget_late, e_nop);
+    micro_pair(5u, nop_lower, nop_upper);
+    if (!check(ee::c_ee_vu1::run(
+                   clip_state, code, data, 0u, 0u, 0u, no_gif, &issue) &&
+               clip_state.m_clip == 9u &&
+               clip_state.m_vi[2] == 0u &&
+               clip_state.m_vi[3] == 9u &&
+               issue.m_steps == 6u,
+               "VU1 CLIP / FCGET four-cycle flag visibility"))
     {
         return 1;
     }
