@@ -145,6 +145,8 @@ public:
     bool owns_heap_span(uint32_t address, uint32_t size) const;
     uint32_t heap_max_free() const;
     uint32_t heap_total_free() const;
+    bool query_heap_block(uint32_t address, uint32_t* base,
+                          uint32_t* size) const;
 
     // Create an initially dormant R3000 thread. Priority 0 is highest.
     // A kernel will eventually publish proper thread APIs to IRX imports.
