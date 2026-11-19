@@ -1,6 +1,8 @@
 #include "ee_recomp.h"
 #include "module_builder.h"
+#include <cerrno>
 #include <cstdio>
+#include <set>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -14,10 +16,11 @@ static void print_usage(const char* argv0)
         "options:\n"
         "  --max-functions=N   Emit at most N functions (0 = unlimited)\n"
         "  --function=0xADDR   Emit only the function at guest address ADDR\n"
+        "  --functions=ADDR,...   Emit a bounded list of guest entry PCs in one pass\n"
         "  --opt-level=N       IR optimisations 0-3 (default 0):\n"
         "                        0/1 safe baseline, 2 +CSE, 3 +dead-temp\n"
 
-        "  --discovery-cache=FILE   Reuse matching full-ELF discovery for --function\n"
+        "  --discovery-cache=FILE   Reuse matching full-ELF discovery for explicit entries\n"
         "  -h, --help          Show this help\n",
         argv0);
 }
@@ -25,6 +28,50 @@ static void print_usage(const char* argv0)
 static uint32_t parse_u32(const std::string& s)
 {
     return (uint32_t)std::strtoul(s.c_str(), nullptr, 0);
+}
+
+static bool parse_function_addresses(const std::string& text,
+                                     std::vector<uint32_t>& addresses)
+{
+    if (text.empty())
+    {
+        return false;
+    }
+    std::set<uint32_t> seen;
+    size_t offset = 0;
+    do
+    {
+        const size_t separator = text.find(',', offset);
+        const std::string token = text.substr(
+            offset, separator == std::string::npos
+                ? std::string::npos : separator - offset);
+        if (token.empty() || token[0] == '-' || token[0] == '+')
+        {
+            return false;
+        }
+        errno = 0;
+        char* end = nullptr;
+        const unsigned long long value = std::strtoull(
+            token.c_str(), &end, 0);
+        if (errno != 0 || end == token.c_str() || *end != '\0' ||
+            value == 0 || value > UINT32_MAX || (value & 3u) != 0 ||
+            !seen.insert(static_cast<uint32_t>(value)).second)
+        {
+            return false;
+        }
+        addresses.push_back(static_cast<uint32_t>(value));
+        if (addresses.size() > 128u)
+        {
+            return false;
+        }
+        if (separator == std::string::npos)
+        {
+            break;
+        }
+        offset = separator + 1u;
+    }
+    while (true);
+    return true;
 }
 
 int main(int argc, char** argv)
@@ -52,6 +99,15 @@ int main(int argc, char** argv)
             opts.only_function = parse_u32(arg.substr(11));
             continue;
         }
+        if (arg.compare(0, 12, "--functions=") == 0) {
+            if (!opts.only_functions.empty() ||
+                !parse_function_addresses(arg.substr(12), opts.only_functions))
+            {
+                std::fprintf(stderr, "invalid --functions list (1..128 unique aligned PCs)\n");
+                return 2;
+            }
+            continue;
+        }
         if (arg.compare(0, 18, "--discovery-cache=") == 0) {
             opts.discovery_cache_path = arg.substr(18);
             continue;
@@ -76,12 +132,20 @@ int main(int argc, char** argv)
         print_usage(argv[0]);
         return 2;
     }
+    if (!opts.only_functions.empty() &&
+        (opts.only_function != 0u || opts.max_functions != 0u))
+    {
+        std::fprintf(stderr, "--functions cannot be combined with --function or --max-functions\n");
+        return 2;
+    }
 
     std::printf("ee_recomp: loading %s -> %s", elf_path, output_dir);
     if (opts.max_functions)
         std::printf(" (max-functions=%u)", opts.max_functions);
     if (opts.only_function)
         std::printf(" (function=0x%08x)", opts.only_function);
+    if (!opts.only_functions.empty())
+        std::printf(" (functions=%zu)", opts.only_functions.size());
     if (opts.opt_level)
         std::printf(" (opt-level=%d)", opts.opt_level);
     std::printf("\n");
