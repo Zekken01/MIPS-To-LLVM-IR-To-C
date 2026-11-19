@@ -395,6 +395,10 @@ target_link_libraries(ee_device_dma_test PRIVATE ee_core)
 add_executable(ee_gif_path3_test tests/smoke/ee_gif_path3_test.cpp)
 target_link_libraries(ee_gif_path3_test PRIVATE ee_core)
 
+add_executable(ee_vif1_chain_test tests/smoke/ee_vif1_chain_test.cpp)
+target_link_libraries(ee_vif1_chain_test PRIVATE ee_core)
+add_test(NAME ee_vif1_chain COMMAND ee_vif1_chain_test)
+
 add_executable(ee_sdbz_dma_wait_probe_test tests/smoke/ee_sdbz_dma_wait_probe_test.cpp)
 target_link_libraries(ee_sdbz_dma_wait_probe_test PRIVATE ee_core)
 add_test(NAME ee_sdbz_dma_wait_probe COMMAND ee_sdbz_dma_wait_probe_test)

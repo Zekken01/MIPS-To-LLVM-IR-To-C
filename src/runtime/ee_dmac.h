@@ -78,6 +78,20 @@ public:
     bool gif_trace_newest(uint32_t offset, s_gif_dma_write* result) const;
     e_gif_dma_reject gif_last_reject() const;
 
+    enum class e_vif1_chain_reject : uint32_t
+    {
+        none = 0u,
+        missing_memory_or_sink,
+        invalid_start_state,
+        invalid_tag_address,
+        unsupported_tag,
+        invalid_payload_span,
+        chain_qwc_limit,
+        chain_tag_limit,
+        rejected_by_sink
+    };
+    e_vif1_chain_reject vif1_chain_last_reject() const;
+
     void bind_cpu(s_ee_cpu_state* cpu);
     void bind_memory(ee_memory* memory);
 
@@ -150,6 +164,7 @@ private:
     bool write_spr_channel(uint32_t address, uint32_t value);
     bool transfer_device_normal(uint32_t channel);
     bool transfer_gif_source_chain();
+    bool transfer_vif1_source_chain();
     bool transfer_spr_normal(uint32_t channel);
     bool transfer_spr_interleave(uint32_t channel);
     bool transfer_from_spr_chain();
@@ -174,6 +189,8 @@ private:
     s_gif_dma_write m_gif_trace[k_gif_trace_capacity]{};
     uint64_t m_gif_trace_count = 0u;
     e_gif_dma_reject m_gif_last_reject = e_gif_dma_reject::none;
+    e_vif1_chain_reject m_vif1_chain_last_reject =
+        e_vif1_chain_reject::none;
     s_spr_channel m_device_channels[3]{}; // VIF0, VIF1, GIF PATH3
     s_spr_channel m_sif0_channel{}; // SIF0, guest IOP DMA9 producer
     bool m_sif0_chain_end = false;

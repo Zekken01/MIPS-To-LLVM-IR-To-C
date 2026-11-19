@@ -29,6 +29,10 @@ int main()
         return 1;
     }
 
+    const ee::s_ee_u128 first_tag{0x00000000a0000001ull,
+                                  0x1122334400000300ull};
+    memory.write128(0x2000u, &first_tag);
+
     // The two alternating guest slots must be sampled without changing
     // the value held in guest RAM or generating a device read.
     memory.write32(0x00502368u, 0u);
@@ -58,7 +62,12 @@ int main()
         probe.wait().m_vif1_madr != 0x1000u ||
         probe.wait().m_vif1_qwc != 1u ||
         probe.wait().m_vif1_tadr != 0x2000u ||
-        probe.wait().m_dmac_status != 0u)
+        probe.wait().m_dmac_status != 0u ||
+        !probe.wait().m_vif1_source_valid ||
+        probe.wait().m_vif1_source_words[0] != first_tag.m_lo ||
+        probe.wait().m_vif1_source_words[1] != first_tag.m_hi ||
+        probe.wait().m_vif1_chain_reject != static_cast<uint32_t>(
+            ee::c_ee_dmac::e_vif1_chain_reject::missing_memory_or_sink))
     {
         std::fputs("M2 SDBZ wait snapshot mismatch\n", stderr);
         return 1;
@@ -123,6 +132,7 @@ int main()
         std::strstr(data, "\"selected_slot\":0") == nullptr ||
         std::strstr(data, "\"pending_wait\":{") == nullptr ||
         std::strstr(data, "\"vif1\":{\"chcr\":261") == nullptr ||
+        std::strstr(data, "\"source_prefix_qwords\":[\"0x00000000a0000001\"") == nullptr ||
         std::strstr(data, "\"schema\":\"ee-sdbz-dma-wait-v1\"") == nullptr)
     {
         std::fputs("M2 SDBZ DMA wait JSON missing expected values\n", stderr);

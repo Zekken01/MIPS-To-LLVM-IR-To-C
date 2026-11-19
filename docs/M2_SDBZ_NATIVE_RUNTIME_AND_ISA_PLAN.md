@@ -309,3 +309,24 @@ then implement the necessary real VIF1 delivery and
 channel-1 completion semantics in a batch of independently
 verified tests. Never clear STR or pending flags merely to
 avoid the red fallback loop.
+
+
+### M2.5 — 13:53 VIF1 source-chain blocker (observed, then bounded implementation)
+
+Verified USA ELF: first wait dispatch 10,411 had opposite slot flag 0
+and VIF1 CHCR=0. First **pending** wait dispatch 10,495 had opposite
+slot flag 1, physical VIF1 CHCR=`0x1c5` (DIR/chain/TTE/TIE/STR),
+TADR=`0x00771400`, QWC=0, D_STAT channel-1 pending=0.
+At first red fallback dispatch 36,205 the state is **identical**.
+The 100,000-dispatch result still produces only the 2,275 red
+fallback sprites. This proves a started, unsupported VIF1 source
+chain, not a graphics display problem.
+
+This batch provides a bounded transactional VIF1 chain walker
+with TTE/TIE and real sink acceptance, source-span validation
+and explicit rejection reasons; it also captures the first
+64 bytes at the true DMA tag pointer in native wait snapshots.
+The production runner still lacks a real VIF1/VU1/GIF PATH2
+consumer. Until that consumer accepts the actual stream,
+channel 1 deliberately stays active and raises no interrupt.
+See [M2.5 VIF1 chain](M2_5_VIF1_SOURCE_CHAIN.md).

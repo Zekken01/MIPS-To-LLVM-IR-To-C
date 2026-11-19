@@ -41,6 +41,11 @@ public:
         uint32_t m_vif1_tadr = 0u;
         uint32_t m_dmac_status = 0u;
         uint32_t m_dmac_pending = 0u;
+        uint32_t m_vif1_chain_reject = 0u;
+        // Four adjacent physical source qwords, before any chain
+        // interpretation, for the first blocked guest DMA.
+        bool m_vif1_source_valid = false;
+        std::array<uint64_t, 8u> m_vif1_source_words{};
 
         uint32_t selected_slot() const
         {
@@ -116,6 +121,22 @@ public:
             sample.m_vif1_tadr = vif1.m_tadr;
             sample.m_dmac_status = dmac->status();
             sample.m_dmac_pending = dmac->pending();
+            sample.m_vif1_chain_reject = static_cast<uint32_t>(
+                dmac->vif1_chain_last_reject());
+            const uint32_t tadr = vif1.m_tadr;
+            if ((tadr & 0x80000000u) == 0u &&
+                memory->contains(tadr, 64u))
+            {
+                for (size_t i = 0u; i < 4u; ++i)
+                {
+                    s_ee_u128 quad{};
+                    memory->read128(tadr + static_cast<uint32_t>(i * 16u),
+                                    &quad);
+                    sample.m_vif1_source_words[2u * i] = quad.m_lo;
+                    sample.m_vif1_source_words[2u * i + 1u] = quad.m_hi;
+                }
+                sample.m_vif1_source_valid = true;
+            }
         }
         sample.m_observed = true;
         if (wait_needed)
@@ -211,10 +232,29 @@ private:
         {
             std::fprintf(output,
                 "{\"chcr\":%u,\"madr\":%u,\"qwc\":%u,\"tadr\":%u,"
-                "\"dmac_status\":%u,\"dmac_pending\":%u}",
+                "\"dmac_status\":%u,\"dmac_pending\":%u,"
+                "\"chain_reject\":%u}",
                 s.m_vif1_chcr, s.m_vif1_madr,
                 s.m_vif1_qwc, s.m_vif1_tadr,
-                s.m_dmac_status, s.m_dmac_pending);
+                s.m_dmac_status, s.m_dmac_pending,
+                s.m_vif1_chain_reject);
+        }
+        else
+        {
+            std::fputs("null", output);
+        }
+        std::fputs(",\"source_prefix_qwords\":", output);
+        if (s.m_vif1_source_valid)
+        {
+            std::fputs("[", output);
+            for (size_t i = 0u; i < s.m_vif1_source_words.size(); ++i)
+            {
+                std::fprintf(output, "%s\"0x%016llx\"",
+                    i ? "," : "",
+                    static_cast<unsigned long long>(
+                        s.m_vif1_source_words[i]));
+            }
+            std::fputs("]", output);
         }
         else
         {
