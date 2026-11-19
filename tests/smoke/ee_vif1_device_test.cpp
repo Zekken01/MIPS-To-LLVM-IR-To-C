@@ -201,6 +201,7 @@ int main()
     ee::c_ee_hw_bus hardware{};
     hardware.bind_vif1(&vif1);
     ee::s_ee_u128 quad{0x0000000001000101ull, 0u};
+    const ee::s_ee_u128 fbrst{1u, 0u};
     if (!check(ee::c_ee_hw_bus::mmio_write(
                    &hardware, ee::c_ee_vif1::k_fifo_base, 16u, &quad),
                "VIF1 FIFO did not accept a quadword") ||
@@ -208,7 +209,7 @@ int main()
                "VIF1 FIFO did not decode STCYCL") ||
         !check(ee::c_ee_hw_bus::mmio_write(
                    &hardware, ee::c_ee_vif1::k_register_base + 0x10u,
-                   4u, &ee::s_ee_u128{1u, 0u}),
+                   4u, &fbrst),
                "VIF1 FBRST MMIO rejected") ||
         !check(vif1.read_register(0x40u) == 0u,
                "VIF1 FBRST failed to reset command state"))
