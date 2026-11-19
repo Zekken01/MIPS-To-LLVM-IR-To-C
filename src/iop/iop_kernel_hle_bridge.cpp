@@ -37,8 +37,10 @@ constexpr s_export k_exports[] = {
     {"dmacman", 33u, 4u}, {"dmacman", 34u, 4u},
     {"dmacman", 35u, 4u},
     {"thbase", 4u, 5u}, {"thbase", 5u, 5u},
-    {"thbase", 6u, 5u}, {"thbase", 8u, 5u},
-    {"thbase", 10u, 5u}, {"thbase", 14u, 5u},
+    {"thbase", 6u, 5u}, {"thbase", 7u, 5u},
+    {"thbase", 8u, 5u}, {"thbase", 9u, 5u},
+    {"thbase", 10u, 5u}, {"thbase", 11u, 5u},
+    {"thbase", 14u, 5u},
     {"thbase", 15u, 5u}, {"thbase", 20u, 5u},
     {"thbase", 22u, 5u}, {"thbase", 23u, 5u},
     {"thbase", 24u, 5u}, {"thbase", 25u, 5u},
@@ -1345,18 +1347,30 @@ bool c_kernel_hle_bridge::handle_thbase(uint32_t ordinal)
         }
         cpu.m_gpr[2] = 0u;
         return true;
+    case 7u:
+        if (!m_kernel.start_thread_with_arguments(
+                cpu.m_gpr[4], cpu.m_gpr[5], cpu.m_gpr[6]))
+        {
+            return false;
+        }
+        cpu.m_gpr[2] = 0u;
+        return true;
     case 8u:
-        if (!m_kernel.exit_current_thread())
+    case 9u:
+        if (!m_kernel.exit_current_thread(ordinal == 9u))
         {
             return false;
         }
         cpu.m_gpr[2] = 0u;
         return true;
     case 10u:
+    case 11u:
     {
         const uint32_t id = cpu.m_gpr[4];
+        const s_kernel_thread* target = m_kernel.thread(id);
         if (id == m_kernel.current_thread_id() ||
-            m_kernel.thread(id) == nullptr)
+            target == nullptr ||
+            target->m_status == e_thread_status::faulted)
         {
             return false;
         }
