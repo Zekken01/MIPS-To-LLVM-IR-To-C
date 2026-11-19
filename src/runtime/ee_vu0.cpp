@@ -2086,9 +2086,14 @@ extern "C" uint32_t ee_vu0_macro_fmac(
         ((mac_flags & 0x00f0u) ? 2u : 0u) |
         ((mac_flags & 0x0f00u) ? 4u : 0u) |
         ((mac_flags & 0xf000u) ? 8u : 0u);
-    // Preserve D/I flags and the prior status for sticky Z/S/U/O.
-    vu0->m_status_flags = (vu0->m_status_flags & 0x0c30u) |
-        current | ((vu0->m_status_flags & 15u) << 6);
+    // VU User's Manual v6.0 section 3.3.2: SF[3:0] reflects the
+    // latest FMAC result; SF[9:6] accumulates sticky Z/S/U/O by OR.
+    // Retain existing I/D (bits 4/5) and all sticky flags, including
+    // IS/DS at 10/11. Do not derive sticky state from *old current*
+    // bits, because that loses historical exceptions on a later FMAC.
+    const uint32_t previous_status = vu0->m_status_flags;
+    vu0->m_status_flags = (previous_status & 0x0ff0u) |
+        current | (current << 6u);
     vu0->m_vi[16] = vu0->m_status_flags;
     return static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE);
 }
