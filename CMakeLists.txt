@@ -244,6 +244,9 @@ target_link_libraries(ee_recomp PRIVATE ee_core)
 
 # Standalone host for translated EE functions and optional, explicit
 # IOP IRX execution at SIF polling rendezvous points.
+add_executable(ee_hot_loop_diagnostics_test tests/smoke/ee_hot_loop_diagnostics_test.cpp)
+add_test(NAME ee_hot_loop_diagnostics COMMAND ee_hot_loop_diagnostics_test)
+
 add_executable(ee_game_runner src/tools/ee_game_runner_main.cpp)
 target_link_libraries(ee_game_runner PRIVATE ee_core iop_cpu ${CMAKE_DL_LIBS})
 

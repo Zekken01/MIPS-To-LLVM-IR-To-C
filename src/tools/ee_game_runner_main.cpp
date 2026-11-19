@@ -4,6 +4,7 @@
 #include "ee_ram_interpreter.h"
 #include "ee_hw_bus.h"
 #include "ee_host_timers.h"
+#include "ee_hot_loop_diagnostics.h"
 #include "ee_vsync_flags.h"
 #include "ee_gif.h"
 #include "ee_gs.h"
@@ -488,6 +489,7 @@ bool write_report(
     uint32_t status,
     const std::vector<s_dispatch_sample>& history,
     const std::vector<s_syscall_sample>& syscall_history,
+    const ee::c_ee_dispatch_hotspots& hotspots,
     bool in_progress
 )
 {
@@ -579,7 +581,10 @@ bool write_report(
             item.m_a0, item.m_a1, item.m_a2, item.m_a3,
             item.m_v0, item.m_returned ? "true" : "false");
     }
-    std::fputs(syscall_history.empty() ? "]\n}\n" : "\n  ]\n}\n", output);
+    std::fputs(syscall_history.empty() ? "]," : "\n  ],", output);
+    std::fputs("\n  \"m2_runtime\": ", output);
+    hotspots.write_json(output);
+    std::fputs("\n}\n", output);
     const bool no_write_error = std::ferror(output) == 0;
     const bool closed = std::fclose(output) == 0;
     const bool ok = no_write_error && closed;
@@ -1812,6 +1817,7 @@ int main(int argc, char** argv)
     // diagnostic/scheduling guard, never a synthetic signal.
     uint32_t iop_semaphore_wait_turns = 0u;
     uint64_t iop_semaphore_wait_last_sif0 = 0u;
+    ee::c_ee_dispatch_hotspots hotspots;
     std::vector<s_dispatch_sample> history;
     if (report_path != nullptr)
     {
@@ -1947,7 +1953,7 @@ int main(int argc, char** argv)
                 report_path, image, cpu, entry, dispatched,
                 runtime.m_guest_instruction_attempts,
                 runtime, hardware, vsync_flags,
-                reason, status, history, syscall_history, true
+                reason, status, history, syscall_history, hotspots, true
             );
             report_time_ms += std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - report_start
@@ -2213,6 +2219,16 @@ int main(int argc, char** argv)
                 history.erase(history.begin());
             }
             history.push_back({dispatched, from_pc, out_pc, reason, status});
+            // Host read-only observations, not synthetic guest events.
+            const ee::s_ee_hot_loop_state state{
+                current_thread_id,
+                cpu.m_cop0[12], cpu.m_cop0[13],
+                hardware.intc().status(), hardware.intc().mask(),
+                hardware.dmac().status(), hardware.dmac().pending(),
+                hardware.scanout().fields_started(), hardware.scanout().csr(),
+                last_iop_rpc_sequence
+            };
+            hotspots.record(dispatched, from_pc, out_pc, state);
         }
 
         if (report_path != nullptr &&
@@ -5060,7 +5076,7 @@ int main(int argc, char** argv)
         !write_report(report_path, image, cpu, entry, dispatched,
                       runtime.m_guest_instruction_attempts,
                       runtime, hardware, vsync_flags,
-                      reason, status, history, syscall_history, false))
+                      reason, status, history, syscall_history, hotspots, false))
     {
         return 1;
     }
