@@ -66,8 +66,9 @@ int main()
         }
     }
     uint32_t missing = 0u;
-    if (!check(!kernel.lookup_library("sysclib", 35u, &missing),
-               "stateful strtok must remain unimplemented"))
+    if (!check(kernel.lookup_library("sysclib", 35u, &missing) &&
+               missing != 0u,
+               "stateful strtok export must be registered"))
     {
         return 1;
     }
@@ -80,6 +81,34 @@ int main()
         !write_string(memory, 0x4500u, "bananb") ||
         !write_string(memory, 0x4600u, "") ||
         !write_string(memory, 0x4700u, "xx"))
+    {
+        return 1;
+    }
+
+    // strtok now implements stateful tokenization in bounded IOP RAM.
+    // Invalid guest delimiters must fail before mutating the input.
+    if (!write_string(memory, 0x4b00u, "  alpha,beta,,gamma") ||
+        !write_string(memory, 0x4b80u, " ,"))
+    {
+        return 1;
+    }
+    if (!check(!invoke(35u, 0x4b00u, 0x10000000u, 0u) &&
+               read_char(memory, 0x4b07u, ','),
+               "strtok must reject an invalid delimiter pointer") ||
+        !check(invoke(35u, 0x4b00u, 0x4b80u, 0u) &&
+               cpu.m_gpr[2] == 0x4b02u &&
+               read_char(memory, 0x4b07u, 0u),
+               "strtok must return first token and terminate in place") ||
+        !check(invoke(35u, 0u, 0x4b80u, 0u) &&
+               cpu.m_gpr[2] == 0x4b08u &&
+               read_char(memory, 0x4b0cu, 0u),
+               "strtok must continue from its saved guest cursor") ||
+        !check(invoke(35u, 0u, 0x4b80u, 0u) &&
+               cpu.m_gpr[2] == 0x4b0eu,
+               "strtok must skip repeated delimiters") ||
+        !check(invoke(35u, 0u, 0x4b80u, 0u) &&
+               cpu.m_gpr[2] == 0u,
+               "strtok must report exhaustion"))
     {
         return 1;
     }
@@ -193,8 +222,8 @@ int main()
         !check(!invoke(30u, 0x4800u, 0x4000u, 0xffffffffu) &&
                read_char(memory, 0x4800u, 'b'),
                "oversized strncpy must not touch destination") ||
-        !check(!invoke(35u, 0x4000u, 0x4100u, 0u),
-               "stateful strtok must fail closed"))
+        !check(!invoke(35u, 0x4000u, 0x10000000u, 0u),
+               "strtok must reject unsupported guest memory"))
     {
         return 1;
     }
