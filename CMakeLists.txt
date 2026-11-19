@@ -41,6 +41,7 @@ add_library(ee_core STATIC
     src/runtime/ee_intc.cpp
     src/runtime/ee_dmac.cpp
     src/runtime/ee_gif.cpp
+    src/runtime/ee_vif1.cpp
     src/runtime/ee_gs.cpp
     src/runtime/ee_gs_display.cpp
     src/runtime/ee_exceptions.cpp
@@ -398,6 +399,10 @@ target_link_libraries(ee_gif_path3_test PRIVATE ee_core)
 add_executable(ee_vif1_chain_test tests/smoke/ee_vif1_chain_test.cpp)
 target_link_libraries(ee_vif1_chain_test PRIVATE ee_core)
 add_test(NAME ee_vif1_chain COMMAND ee_vif1_chain_test)
+
+add_executable(ee_vif1_device_test tests/smoke/ee_vif1_device_test.cpp)
+target_link_libraries(ee_vif1_device_test PRIVATE ee_core)
+add_test(NAME ee_vif1_device COMMAND ee_vif1_device_test)
 
 add_executable(ee_sdbz_dma_wait_probe_test tests/smoke/ee_sdbz_dma_wait_probe_test.cpp)
 target_link_libraries(ee_sdbz_dma_wait_probe_test PRIVATE ee_core)
