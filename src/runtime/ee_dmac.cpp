@@ -5,6 +5,47 @@
 
 namespace ee
 {
+uint64_t c_ee_dmac::gif_trace_count() const
+{
+    return m_gif_trace_count;
+}
+
+bool c_ee_dmac::gif_trace_newest(
+    uint32_t offset, s_gif_dma_write* result) const
+{
+    if (result == nullptr || offset >= k_gif_trace_capacity ||
+        offset >= m_gif_trace_count)
+    {
+        return false;
+    }
+
+    *result = m_gif_trace[
+        (m_gif_trace_count - 1u - offset) % k_gif_trace_capacity];
+    return true;
+}
+
+c_ee_dmac::e_gif_dma_reject c_ee_dmac::gif_last_reject() const
+{
+    return m_gif_last_reject;
+}
+
+void c_ee_dmac::trace_gif_write(
+    uint32_t offset, uint32_t value, uint32_t previous)
+{
+    s_gif_dma_write& event =
+        m_gif_trace[m_gif_trace_count % k_gif_trace_capacity];
+    event = {};
+    event.m_sequence = ++m_gif_trace_count;
+    event.m_offset = offset;
+    event.m_value = value;
+    event.m_previous = previous;
+    event.m_chcr = m_device_channels[2u].m_chcr;
+    event.m_madr = m_device_channels[2u].m_madr;
+    event.m_qwc = m_device_channels[2u].m_qwc;
+    event.m_tadr = m_device_channels[2u].m_tadr;
+    event.m_reject = m_gif_last_reject;
+}
+
 void c_ee_dmac::sync_interrupt_line()
 {
     if (m_cpu == nullptr)
@@ -244,6 +285,12 @@ void c_ee_dmac::reset()
 {
     m_status = 0u;
     m_sqwc = 0u;
+    m_gif_trace_count = 0u;
+    m_gif_last_reject = e_gif_dma_reject::none;
+    for (s_gif_dma_write& event : m_gif_trace)
+    {
+        event = {};
+    }
     for (s_spr_channel& channel : m_device_channels)
     {
         channel = {};
@@ -476,13 +523,19 @@ bool c_ee_dmac::transfer_device_normal(uint32_t channel_index)
 bool c_ee_dmac::transfer_gif_source_chain()
 {
     s_spr_channel& channel = m_device_channels[2u];
-    if (m_memory == nullptr || m_device_transfer == nullptr ||
-        (channel.m_chcr & k_chcr_str) == 0u ||
+    m_gif_last_reject = e_gif_dma_reject::none;
+    if (m_memory == nullptr || m_device_transfer == nullptr)
+    {
+        m_gif_last_reject = e_gif_dma_reject::missing_memory_or_sink;
+        return false;
+    }
+    if ((channel.m_chcr & k_chcr_str) == 0u ||
         ((channel.m_chcr >> 2u) & 3u) != 1u ||
         (channel.m_chcr & 1u) == 0u ||
         (channel.m_chcr & 0x40u) != 0u ||
         channel.m_qwc != 0u)
     {
+        m_gif_last_reject = e_gif_dma_reject::invalid_start_state;
         return false;
     }
 
@@ -502,6 +555,7 @@ bool c_ee_dmac::transfer_gif_source_chain()
             tag_address + 16u > 0x02000000ull ||
             !m_memory->contains(static_cast<uint32_t>(tag_address), 16u))
         {
+            m_gif_last_reject = e_gif_dma_reject::invalid_tag_address;
             return false;
         }
 
@@ -537,6 +591,7 @@ bool c_ee_dmac::transfer_gif_source_chain()
         default:
             // REFS, CALL and RET require additional state and cannot
             // be treated as CNT, REF or a silently completed chain.
+            m_gif_last_reject = e_gif_dma_reject::unsupported_tag;
             return false;
         }
 
@@ -550,6 +605,7 @@ bool c_ee_dmac::transfer_gif_source_chain()
             static_cast<size_t>(qwc) >
                 k_max_chain_qwc - packet.size() / 16u)
         {
+            m_gif_last_reject = e_gif_dma_reject::invalid_payload_span;
             return false;
         }
 
@@ -577,11 +633,16 @@ bool c_ee_dmac::transfer_gif_source_chain()
              (tag & 0x80000000ull) != 0u);
     }
 
-    if (!completed ||
-        (!packet.empty() && !m_device_transfer(
-            m_device_user, 2u, packet.data(),
-            static_cast<uint32_t>(packet.size() / 16u))))
+    if (!completed)
     {
+        m_gif_last_reject = e_gif_dma_reject::chain_tag_limit;
+        return false;
+    }
+    if (!packet.empty() && !m_device_transfer(
+            m_device_user, 2u, packet.data(),
+            static_cast<uint32_t>(packet.size() / 16u)))
+    {
+        m_gif_last_reject = e_gif_dma_reject::rejected_by_sink;
         return false;
     }
 
@@ -1115,7 +1176,13 @@ bool c_ee_dmac::write_spr_channel(uint32_t address, uint32_t value)
     {
     case 0x00u:
     {
+        const uint32_t previous_chcr = channel->m_chcr;
         const bool was_running = (channel->m_chcr & k_chcr_str) != 0u;
+        if (channel_index == 2u && !was_running &&
+            (value & k_chcr_str) != 0u)
+        {
+            m_gif_last_reject = e_gif_dma_reject::none;
+        }
         channel->m_chcr = value;
         if (!was_running && (value & k_chcr_str) != 0u)
         {
@@ -1170,11 +1237,42 @@ bool c_ee_dmac::write_spr_channel(uint32_t address, uint32_t value)
                 (void)transfer_spr_normal(channel_index);
             }
         }
+        if (channel_index == 2u)
+        {
+            trace_gif_write(0x00u, value, previous_chcr);
+        }
         return true;
     }
-    case 0x10u: channel->m_madr = value; return true;
-    case 0x20u: channel->m_qwc = value & 0xffffu; return true;
-    case 0x30u: channel->m_tadr = value; return true;
+    case 0x10u:
+    {
+        const uint32_t previous = channel->m_madr;
+        channel->m_madr = value;
+        if (channel_index == 2u)
+        {
+            trace_gif_write(0x10u, value, previous);
+        }
+        return true;
+    }
+    case 0x20u:
+    {
+        const uint32_t previous = channel->m_qwc;
+        channel->m_qwc = value & 0xffffu;
+        if (channel_index == 2u)
+        {
+            trace_gif_write(0x20u, value, previous);
+        }
+        return true;
+    }
+    case 0x30u:
+    {
+        const uint32_t previous = channel->m_tadr;
+        channel->m_tadr = value;
+        if (channel_index == 2u)
+        {
+            trace_gif_write(0x30u, value, previous);
+        }
+        return true;
+    }
     case 0x40u: channel->m_asr[0] = value; return true;
     case 0x50u: channel->m_asr[1] = value; return true;
     case 0x80u:
