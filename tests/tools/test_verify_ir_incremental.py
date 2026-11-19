@@ -111,7 +111,8 @@ def test_append_only_emission():
         assert current["input_module_count"] == 2
         assert original_object.stat().st_mtime_ns == 1000000000000000000
         assert hashlib.sha256(original_object.read_bytes()).hexdigest() == old_sha
-        assert current["objects"][0]["sha256"] == old_sha
+        by_object = {item["object"]: item for item in current["objects"]}
+        assert by_object["old_guest.o"]["sha256"] == old_sha
 
         manifest_bytes = (obj_dir / "objects.json").read_bytes()
         duplicate = run_append(old)
