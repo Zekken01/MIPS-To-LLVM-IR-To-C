@@ -61,11 +61,26 @@ if errorlevel 1 (
     exit /b 1
 )
 
+rem Optional native WebGPU compute rendering: no browser, SDL or frontend.
+rem Set EE_WEBGPU_SNAPSHOT=1 and EE_WEBGPU_ROOT to a compatible wgpu-native SDK.
+set "EE_WEBGPU_RUN_ARG="
+if /I "%EE_WEBGPU_SNAPSHOT%"=="1" (
+    if not defined EE_WEBGPU_ROOT set "EE_WEBGPU_ROOT=%CD%\third_party\wgpu-native"
+    set "EE_WEBGPU_RUN_ARG=--gs-webgpu-snapshot=%WORK_DIR%\gs-webgpu.ppm"
+)
 echo === Configuring native host tools ===
-if exist "build\CMakeCache.txt" (
-    cmake -S . -B build
+if /I "%EE_WEBGPU_SNAPSHOT%"=="1" (
+    if exist "build\CMakeCache.txt" (
+        cmake -S . -B build -DEE_ENABLE_WEBGPU=ON "-DEE_WEBGPU_ROOT=%EE_WEBGPU_ROOT%"
+    ) else (
+        cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DEE_ENABLE_WEBGPU=ON "-DEE_WEBGPU_ROOT=%EE_WEBGPU_ROOT%"
+    )
 ) else (
-    cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+    if exist "build\CMakeCache.txt" (
+        cmake -S . -B build
+    ) else (
+        cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+    )
 )
 if errorlevel 1 exit /b 1
 
@@ -92,6 +107,7 @@ echo Expansion log: "%WORK_DIR%\expansion.log"
 echo Report: "%WORK_DIR%\first-boot.json"
 echo Guest display VRAM: "%WORK_DIR%\gs-display.ppm" (only if configured)
 echo GS texture upload: "%WORK_DIR%\gs-upload.ppm" (only if complete)
+if /I "%EE_WEBGPU_SNAPSHOT%"=="1" echo Native WebGPU raster: "%WORK_DIR%\gs-webgpu.ppm"
 python tools\run_boot_session.py "%GAME_ELF%" ^
     --disc-root "%DISC_ROOT%" ^
     --disc-folder "%DISC_ROOT%" ^
@@ -110,7 +126,7 @@ python tools\run_boot_session.py "%GAME_ELF%" ^
     --max-dispatches=100000 ^
     --loop-budget=1000000 ^
     --sif-poll-limit=%SIF_POLL_LIMIT% ^
-    --timeout-seconds=120 %CACHE_FLAG%
+    --timeout-seconds=120 %CACHE_FLAG% %EE_WEBGPU_RUN_ARG%
 set "EXIT_CODE=%ERRORLEVEL%"
 echo.
 echo Native HLE boot session exit code: %EXIT_CODE%
