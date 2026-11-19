@@ -45,10 +45,13 @@ void write_tag(ee::ee_memory& memory, uint32_t address,
                uint32_t qwc, uint32_t id, uint32_t irq,
                uint32_t external, uint64_t upper)
 {
+    // ADDR lives in bits 32..63 of the first 64-bit DMA tag word;
+    // TTE sends the second word as VIF payload independently.
     const uint64_t low = static_cast<uint64_t>(qwc) |
         (static_cast<uint64_t>(id & 7u) << 28u) |
-        (static_cast<uint64_t>(irq & 1u) << 31u);
-    const ee::s_ee_u128 quad{low, upper | external};
+        (static_cast<uint64_t>(irq & 1u) << 31u) |
+        (static_cast<uint64_t>(external & ~15u) << 32u);
+    const ee::s_ee_u128 quad{low, upper};
     memory.write128(address, &quad);
 }
 
@@ -122,6 +125,80 @@ int main()
                sink.m_packet[48] == 0x27u &&
                sink.m_packet[63] == 0x28u,
                "TTE/payload byte ordering mismatch"))
+    {
+        return 1;
+    }
+
+    // Regression from the real 2026-11-19 16:14 USA SDBZ trace.
+    // First tag was 0x0077144020000003: NEXT, QWC=3, ADDR=0x00771440.
+    // Its TTE half was 0x5000000313000000 (FLUSH + DIRECT(3)).
+    // Do NOT decode ADDR from that second word: it yields 0x13000000.
+    // Reproduce the same relative 0x40 jump in a small EE RAM fixture.
+    dmac.reset();
+    sink = {};
+    write_tag(memory, 0x100u, 3u, 2u, 0u, 0x140u,
+              0x5000000313000000ull);
+    const ee::s_ee_u128 direct_tag{0x1000000000008002ull, 0x000000000000000eull};
+    memory.write128(0x110u, &direct_tag);
+    memory.write128(0x120u, &first_data);
+    memory.write128(0x130u, &last_data);
+    write_tag(memory, 0x140u, 0u, 7u, 0u, 0u, 0u);
+    if (!check(begin(dmac, 0x100u), "SDBZ NEXT/TTE start refused") ||
+        !check(sink.m_calls == 1u && sink.m_channel == 1u &&
+               sink.m_packet.size() == 80u,
+               "SDBZ NEXT/TTE did not deliver complete chain once") ||
+        !check(sink.m_packet[8u] == 0x00u &&
+               sink.m_packet[11u] == 0x13u &&
+               sink.m_packet[12u] == 0x03u &&
+               sink.m_packet[15u] == 0x50u &&
+               sink.m_packet[16u] == 0x02u &&
+               sink.m_packet[24u] == 0x0eu,
+               "SDBZ NEXT/TTE VIF/GIF word separation changed") ||
+        !check(dmac.vif1_chain_last_reject() == reject::none &&
+               dmac.vif1_channel_state().m_tadr == 0x150u &&
+               dmac.vif1_channel_state().m_madr == 0x150u &&
+               (dmac.vif1_channel_state().m_chcr & 0x100u) == 0u &&
+               dmac.status() == 2u,
+               "SDBZ NEXT/TTE final DMAC registers incorrect"))
+    {
+        return 1;
+    }
+
+    // NEXT must honor ADDR even when it skips over inline continuation.
+    // The bytes after the first tag are not a new DMA tag.
+    dmac.reset();
+    sink = {};
+    write_tag(memory, 0x500u, 1u, 2u, 0u, 0x600u,
+              0x1122334400000000ull);
+    memory.write128(0x510u, &first_data);
+    write_tag(memory, 0x600u, 1u, 7u, 0u, 0u,
+              0x5566778800000000ull);
+    memory.write128(0x610u, &last_data);
+    if (!check(begin(dmac, 0x500u), "nonsequential NEXT start refused") ||
+        !check(sink.m_calls == 1u && sink.m_packet.size() == 64u &&
+               sink.m_packet[16u] == 0x17u &&
+               sink.m_packet[48u] == 0x27u &&
+               dmac.vif1_channel_state().m_tadr == 0x620u &&
+               dmac.status() == 2u,
+               "NEXT did not follow low-word ADDR"))
+    {
+        return 1;
+    }
+
+    // A rejected NEXT destination must preserve channel state, STR and
+    // D_STAT instead of committing the valid first tag.
+    dmac.reset();
+    sink = {};
+    write_tag(memory, 0x500u, 1u, 2u, 0u, 0x1300u,
+              0x5000000313000000ull);
+    if (!check(begin(dmac, 0x500u), "invalid NEXT start refused") ||
+        !check(dmac.vif1_chain_last_reject() == reject::invalid_tag_address &&
+               sink.m_calls == 0u &&
+               dmac.vif1_channel_state().m_chcr == 0x1c5u &&
+               dmac.vif1_channel_state().m_tadr == 0x500u &&
+               dmac.vif1_channel_state().m_madr == 0u &&
+               dmac.status() == 0u,
+               "invalid NEXT incorrectly retired DMA"))
     {
         return 1;
     }
