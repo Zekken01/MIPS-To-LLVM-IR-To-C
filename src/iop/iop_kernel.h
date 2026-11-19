@@ -47,6 +47,11 @@ struct s_kernel_thread
 {
     uint32_t m_id = 0u;
     uint32_t m_priority = 0u;
+    uint32_t m_initial_priority = 0u;
+    uint32_t m_entry = 0u;
+    uint32_t m_gp = 0u;
+    uint32_t m_wakeup_count = 0u;
+    uint32_t m_wait_type = 0u;
     uint32_t m_stack_base = 0u;
     uint32_t m_stack_size = 0u;
     uint64_t m_wake_cycle = 0u;
@@ -157,8 +162,14 @@ public:
     bool wake_thread(uint32_t id);
     bool wake_thread_with_result(uint32_t id, uint32_t result);
     bool stop_thread(uint32_t id);
+    bool delete_thread(uint32_t id);
+    bool exit_current_thread();
+    bool change_thread_priority(uint32_t id, uint32_t priority);
+    bool sleep_thread();
+    bool wakeup_thread(uint32_t id);
+    bool cancel_wakeup_thread(uint32_t id, uint32_t* previous);
     bool sleep_current(uint64_t delay_cycles);
-    bool block_current();
+    bool block_current(uint32_t wait_type = 0u);
     const s_kernel_thread* thread(uint32_t id) const;
     // Only scheduled guest work permits an HLE transport-triggered
     // IOP execution turn; absent modules cannot advance IOP time.
