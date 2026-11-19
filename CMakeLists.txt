@@ -250,14 +250,45 @@ target_link_libraries(ee_game_runner PRIVATE ee_core iop_cpu ${CMAKE_DL_LIBS})
 # Original native WebGPU compute renderer, extracted from ps2-web-recomp:SDBZ.
 # No Emscripten, browser host, game code, or SDL; headless builds unchanged.
 option(EE_ENABLE_WEBGPU "Enable native wgpu-native GS rendering" OFF)
-set(EE_WEBGPU_ROOT "" CACHE PATH "wgpu-native release root (include/ and lib/)")
+# Keep the SDK under the CMake build tree, never in the source checkout.
+# The usual Windows launcher uses build/_deps/wgpu-native.
+set(EE_WEBGPU_ROOT "${CMAKE_BINARY_DIR}/_deps/wgpu-native" CACHE PATH
+    "wgpu-native SDK root (include/ and lib/); defaults to build/_deps")
 if(EE_ENABLE_WEBGPU)
+    if(WIN32)
+        # A direct CMake configure (not only run_ps2_game.bat) must also
+        # provision the pinned SDK. Existing complete installs are reused.
+        find_package(Python3 COMPONENTS Interpreter REQUIRED)
+        execute_process(
+            COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_SOURCE_DIR}/tools/ensure_wgpu_native.py"
+                    --root "${EE_WEBGPU_ROOT}"
+            RESULT_VARIABLE EE_WEBGPU_BOOTSTRAP_RESULT
+            OUTPUT_VARIABLE EE_WEBGPU_BOOTSTRAP_OUTPUT
+            ERROR_VARIABLE EE_WEBGPU_BOOTSTRAP_ERROR)
+        if(NOT EE_WEBGPU_BOOTSTRAP_RESULT EQUAL 0)
+            message(FATAL_ERROR
+                "wgpu-native SDK bootstrap failed for ${EE_WEBGPU_ROOT}:\n"
+                "${EE_WEBGPU_BOOTSTRAP_OUTPUT}${EE_WEBGPU_BOOTSTRAP_ERROR}")
+        endif()
+        string(STRIP "${EE_WEBGPU_BOOTSTRAP_OUTPUT}"
+            EE_WEBGPU_BOOTSTRAP_MESSAGE)
+        if(EE_WEBGPU_BOOTSTRAP_MESSAGE)
+            message(STATUS "${EE_WEBGPU_BOOTSTRAP_MESSAGE}")
+        endif()
+    endif()
+    # Do not reuse cached paths from a previous SDK root (e.g. third_party).
+    # All three dependencies must come from the selected build/_deps tree.
+    unset(EE_WEBGPU_INCLUDE_DIR CACHE)
+    unset(EE_WGPU_EXTRAS_INCLUDE_DIR CACHE)
+    unset(EE_WGPU_NATIVE_LIBRARY CACHE)
+    unset(EE_WGPU_NATIVE_DLL CACHE)
     find_path(EE_WEBGPU_INCLUDE_DIR NAMES webgpu/webgpu.h
-        HINTS "${EE_WEBGPU_ROOT}/include" REQUIRED)
+        HINTS "${EE_WEBGPU_ROOT}/include" NO_DEFAULT_PATH REQUIRED)
     find_path(EE_WGPU_EXTRAS_INCLUDE_DIR NAMES webgpu/wgpu.h
-        HINTS "${EE_WEBGPU_ROOT}/include" REQUIRED)
+        HINTS "${EE_WEBGPU_ROOT}/include" NO_DEFAULT_PATH REQUIRED)
     find_library(EE_WGPU_NATIVE_LIBRARY NAMES wgpu_native
-        HINTS "${EE_WEBGPU_ROOT}/lib" REQUIRED)
+        HINTS "${EE_WEBGPU_ROOT}/lib" NO_DEFAULT_PATH REQUIRED)
     set(EE_NATIVE_WGSL_ROOT
         "${CMAKE_SOURCE_DIR}/src/runtime/ps2_webgpu/gs/gpu")
     foreach(shader IN ITEMS gs blit)
