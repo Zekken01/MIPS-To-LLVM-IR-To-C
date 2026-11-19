@@ -8,6 +8,9 @@
 #include "ee_gif.h"
 #include "ee_gs.h"
 #include "ee_gs_display.h"
+#ifdef EE_ENABLE_WEBGPU
+#include "ee_webgpu_bridge.h"
+#endif
 #include "elf_loader.h"
 #include "iop_kernel.h"
 #include "iop_cdvd.h"
@@ -324,6 +327,7 @@ void usage(const char* program)
         "  --iop-quantum=N      Max R3000 instructions per SIF poll (default 256)\n"
         "  --gs-snapshot=FILE   Read-only displayed GS VRAM PPM (not a frame)\n"
         "  --gs-upload-snapshot=FILE  Preview completed GIF upload VRAM PPM (not a frame)\n"
+        "  --gs-webgpu-snapshot=FILE  Render actual native WebGPU GS raster to PPM (opt-in)\n"
         "  --trace              Print guest PC, reason and dispatch count per step\n"
         "  --trace-entry=0xPC   Print arguments and pointed-to words at a guest entry\n"
         "  --watch-word=0xADDR  Report guest word changes between native dispatches\n"
@@ -694,6 +698,7 @@ int main(int argc, char** argv)
     const char* report_path = nullptr;
     const char* gs_snapshot_path = nullptr;
     const char* gs_upload_snapshot_path = nullptr;
+    const char* gs_webgpu_snapshot_path = nullptr;
     const char* instruction_trace_path = nullptr;
     uint32_t instruction_trace_first_pc = 0u;
     uint32_t instruction_trace_last_pc = 0xffffffffu;
@@ -785,6 +790,27 @@ int main(int argc, char** argv)
             }
             gs_upload_snapshot_path = argv[i] + 21;
             continue;
+        }
+        {
+            constexpr const char* k_prefix = "--gs-webgpu-snapshot=";
+            constexpr size_t k_prefix_len = sizeof("--gs-webgpu-snapshot=") - 1u;
+            if (argument.compare(0u, k_prefix_len, k_prefix) == 0)
+            {
+                if (argument.size() == k_prefix_len ||
+                    gs_webgpu_snapshot_path != nullptr)
+                {
+                    std::fprintf(stderr, "invalid or duplicate WebGPU snapshot path\n");
+                    return 2;
+                }
+#ifndef EE_ENABLE_WEBGPU
+                std::fprintf(stderr,
+                    "--gs-webgpu-snapshot requires -DEE_ENABLE_WEBGPU=ON "
+                    "and native wgpu-native\n");
+                return 2;
+#endif
+                gs_webgpu_snapshot_path = argv[i] + k_prefix_len;
+                continue;
+            }
         }
         if (argument.compare(0, 9, "--report=") == 0)
         {
@@ -1142,6 +1168,22 @@ int main(int argc, char** argv)
     gif_path3.bind_event_sink(&gs_state, &ee::c_ee_gs_state::gif_events);
     hardware.bind_device_transfer(&gif_path3, &ee::c_ee_gif_path3::dma_transfer);
     hardware.bind_device_download(&gs_state, &ee::c_ee_gs_state::dma_download);
+
+#ifdef EE_ENABLE_WEBGPU
+    ee::c_ee_webgpu_bridge webgpu_bridge{};
+    if (gs_webgpu_snapshot_path != nullptr)
+    {
+        if (!webgpu_bridge.init())
+        {
+            std::fprintf(stderr,
+                "native WebGPU adapter or shader initialization failed\n");
+            return 2;
+        }
+        gs_state.bind_committed_event_observer(
+            &webgpu_bridge, &ee::c_ee_webgpu_bridge::committed_gif_events);
+        std::printf("GS native WebGPU: enabled, offscreen readback requested\n");
+    }
+#endif
 
     // Optional real guest IOP execution. This is a deterministic polling
     // rendezvous, NOT EE/IOP hardware cycle synchronization: the native
@@ -4884,6 +4926,34 @@ int main(int argc, char** argv)
                 "guest-configured display circuit\n");
         }
     }
+
+#ifdef EE_ENABLE_WEBGPU
+    if (gs_webgpu_snapshot_path != nullptr)
+    {
+        std::vector<uint32_t> pixels;
+        uint32_t width = 0u;
+        uint32_t height = 0u;
+        std::remove(gs_webgpu_snapshot_path);
+        if (webgpu_bridge.readback(
+                hardware.gs_display_registers(), hardware.gs_crt_mode(),
+                pixels, width, height) &&
+            write_gs_ppm(gs_webgpu_snapshot_path, pixels, width, height))
+        {
+            std::printf(
+                "GS native WebGPU raster readback: %ux%u path=%s "
+                "draws=%llu (GPU-processed GS VRAM; not a present event)\n",
+                width, height, gs_webgpu_snapshot_path,
+                static_cast<unsigned long long>(
+                    webgpu_bridge.rendered_primitives()));
+        }
+        else
+        {
+            std::fprintf(stderr,
+                "GS WebGPU snapshot unavailable: failed render/readback "
+                "or unsupported guest display circuit\n");
+        }
+    }
+#endif
 
     if (gs_upload_snapshot_path != nullptr)
     {
