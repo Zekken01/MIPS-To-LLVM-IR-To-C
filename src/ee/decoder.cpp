@@ -890,9 +890,9 @@ s_ee_instruction decode(uint32_t pc, uint32_t word)
         insn.flow = e_ee_flow::FLOW_NONE;
         switch (insn.rs)
         {
-        // Transfer encodings use rd as the VU register index. The low
-        // eleven bits (sa/funct) are reserved and must be zero. These four
-        // forms now lower through synchronized runtime helpers.
+        // Transfers use rd as the VU register index. Bits 10..1 are
+        // reserved, but bit 0 is the architectural I (interlock) bit.
+        // .NI (0) and .I (1) share the same register transfer helper.
         case 0x01: // QMFC2: GPR rt <- VU0 VF[rd]
         case 0x02: // CFC2: GPR rt <- VU0 VI[rd]
         case 0x05: // QMTC2: VU0 VF[rd] <- GPR rt
@@ -903,9 +903,20 @@ s_ee_instruction decode(uint32_t pc, uint32_t word)
                 "qmtc2", "ctc2"
             };
             const uint32_t selector = insn.rs;
-            insn.valid = (insn.sa == 0 && insn.funct == 0)
+            insn.valid = (insn.sa == 0 && insn.funct <= 1u)
                 ? e_ee_valid::VALID : e_ee_valid::INVALID;
-            set_mnemonic(insn, names[selector - 1]);
+            // Preserve the interlock variant in diagnostic output.
+            if (insn.funct == 1u)
+            {
+                char mnemonic[16]{};
+                std::snprintf(mnemonic, sizeof(mnemonic),
+                              "%s.i", names[selector - 1]);
+                set_mnemonic(insn, mnemonic);
+            }
+            else
+            {
+                set_mnemonic(insn, names[selector - 1]);
+            }
             break;
         }
         case 0x08: // BC2F/T/FL/TL; the full rt field selects the table entry
