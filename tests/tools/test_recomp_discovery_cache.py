@@ -101,5 +101,92 @@ def test_discovery_cache(ee_recomp):
     print("PASS: fast EE discovery produces identical IR and rejects invalid caches")
 
 
+def make_25_function_elf(path):
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    image.extend(bytes(0x600 - len(image)))
+    struct.pack_into("<I", image, 52 + 16, 0x500)  # PT_LOAD filesz
+    struct.pack_into("<I", image, 52 + 20, 0x500)  # PT_LOAD memsz
+    for i in range(25):
+        offset = 0x180 + i * 0x10
+        struct.pack_into("<IIII", image, offset,
+                         0x24020000 + i,  # addiu v0,zero,i
+                         0x03e00008,      # jr ra
+                         0x00000000,      # delay slot
+                         0x00000000)
+    path.write_bytes(image)
+
+
+def test_batch_discovery(ee_recomp):
+    with tempfile.TemporaryDirectory(prefix="ee-recomp-batch-") as tmp:
+        root = Path(tmp)
+        elf = root / "functions25.elf"
+        make_25_function_elf(elf)
+        # Generate the immutable full-ELF discovery snapshot as an initial
+        # single-function translation, just like run_game.py.
+        first = compile_ir(ee_recomp, elf, root / "initial", 0x00100008)
+        assert first.returncode == 0, first.stdout + first.stderr
+        cache = root / "initial" / "ee_discovery_cache.bin"
+        assert cache.is_file()
+
+        addresses = [0x00100080 + i * 0x10 for i in range(25)]
+        selection = "--functions=" + ",".join(
+            f"0x{pc:08x}" for pc in addresses
+        )
+        cmd = [ee_recomp, str(elf), str(root / "batch"), selection,
+               f"--discovery-cache={cache}"]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert result.stdout.count("discovery cache:") == 1, result.stdout
+        assert "(functions=25)" in result.stdout, result.stdout
+
+        metadata = json.loads((root / "batch" / "ee_functions.json").read_text())
+        assert metadata["function_count"] == 25, metadata
+        assert [int(f["vaddr"], 0) for f in metadata["functions"]] == addresses
+        symbols = [f["host_symbol"] for f in metadata["functions"]]
+        assert len(set(symbols)) == 25, symbols
+        assert all(int(f["vaddr"], 0) in
+                   {int(pc, 0) for pc in f["block_pcs"]}
+                   for f in metadata["functions"]), metadata
+        for f in metadata["functions"]:
+            assert Path(f["ir_path"]).is_file(), f
+
+        # The batched cache path must match the same batch when full
+        # discovery is performed from the original ELF.
+        full = subprocess.run(
+            [ee_recomp, str(elf), str(root / "full-batch"), selection],
+            capture_output=True, text=True
+        )
+        assert full.returncode == 0, full.stdout + full.stderr
+        other = json.loads(
+            (root / "full-batch" / "ee_functions.json").read_text()
+        )
+        assert other["function_count"] == 25
+        for a, b in zip(metadata["functions"], other["functions"]):
+            assert a["vaddr"] == b["vaddr"]
+            assert a["block_pcs"] == b["block_pcs"]
+            assert Path(a["ir_path"]).read_bytes() == Path(b["ir_path"]).read_bytes()
+
+        for invalid in (
+            "--functions=0x00100080,0x00100080",  # duplicate
+            "--functions=0x00100080,0x00100081",  # not aligned
+            "--functions=0x00100080,",           # dangling comma
+            "--functions=oops",                  # malformed
+        ):
+            denied = subprocess.run(
+                [ee_recomp, str(elf), str(root / "denied"), invalid],
+                capture_output=True, text=True
+            )
+            assert denied.returncode != 0, (invalid, denied.stdout, denied.stderr)
+
+        denied = subprocess.run([
+            ee_recomp, str(elf), str(root / "conflict"), selection,
+            "--function=0x00100008"
+        ], capture_output=True, text=True)
+        assert denied.returncode != 0, denied.stdout + denied.stderr
+    print("PASS: 25 functions emitted with one discovery; cache/full parity")
+
+
 if __name__ == "__main__":
     test_discovery_cache(sys.argv[1])
+    test_batch_discovery(sys.argv[1])
