@@ -837,11 +837,31 @@ bool c_kernel::start_thread_with_argument(
     uint32_t id, uint32_t argument
 )
 {
+    return start_thread_with_arguments(id, argument, 0u);
+}
+
+bool c_kernel::start_thread_with_arguments(
+    uint32_t id, uint32_t a0, uint32_t a1
+)
+{
     if (!start_thread(id))
     {
         return false;
     }
-    m_threads.at(id).m_cpu.m_gpr[4] = argument;
+    s_kernel_thread& thread = m_threads.at(id);
+    s_cpu_state initial{};
+    initial.m_pc = thread.m_entry;
+    initial.m_next_pc = thread.m_entry + 4u;
+    initial.m_gpr[28] = thread.m_gp;
+    initial.m_gpr[29] =
+        thread.m_stack_base + thread.m_stack_size - 16u;
+    initial.m_gpr[4] = a0;
+    initial.m_gpr[5] = a1;
+    thread.m_cpu = initial;
+    thread.m_priority = thread.m_initial_priority;
+    thread.m_wakeup_count = 0u;
+    thread.m_wait_type = 0u;
+    thread.m_delete_on_exit = false;
     return true;
 }
 
@@ -898,7 +918,7 @@ bool c_kernel::delete_thread(uint32_t id)
     return true;
 }
 
-bool c_kernel::exit_current_thread()
+bool c_kernel::exit_current_thread(bool delete_on_exit)
 {
     const auto found = m_threads.find(m_current_thread_id);
     if (found == m_threads.end() ||
@@ -909,6 +929,7 @@ bool c_kernel::exit_current_thread()
     found->second.m_status = e_thread_status::dormant;
     found->second.m_wake_cycle = 0u;
     found->second.m_wait_type = 0u;
+    found->second.m_delete_on_exit = delete_on_exit;
     return true;
 }
 
@@ -1280,7 +1301,13 @@ s_kernel_run_result c_kernel::run(
         }
 
         thread.m_cpu = m_cpu.state();
-        if (thread.m_status == e_thread_status::running)
+        if (thread.m_status == e_thread_status::dormant &&
+            thread.m_delete_on_exit)
+        {
+            m_allocations.erase(thread.m_stack_base);
+            m_threads.erase(id);
+        }
+        else if (thread.m_status == e_thread_status::running)
         {
             thread.m_status = e_thread_status::ready;
         }
