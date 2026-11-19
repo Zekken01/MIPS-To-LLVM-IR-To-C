@@ -59,7 +59,7 @@ int main()
         }
     }
     uint32_t unsupported_entry = 0u;
-    if (!check(!kernel.lookup_library("sysclib", 9u, &unsupported_entry),
+    if (!check(!kernel.lookup_library("sysclib", 18u, &unsupported_entry),
                "unsupported SYSCLIB ordinal unexpectedly registered"))
     {
         return 1;
@@ -156,7 +156,7 @@ int main()
     if (!check(invoke(12u, 0xdeadbeefu, 0xffffffffu, 0u) &&
                kernel.cpu().state().m_gpr[2] == 0xdeadbeefu,
                "zero-byte memcpy must not dereference addresses") ||
-        !check(!invoke(9u, 0x3000u, 0u, 0u),
+        !check(!invoke(18u, 0x3000u, 0u, 0u),
                "unknown SYSCLIB ordinal must fail closed"))
     {
         return 1;
