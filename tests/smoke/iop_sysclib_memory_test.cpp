@@ -58,7 +58,8 @@ int main()
             return 1;
         }
     }
-    if (!check(!kernel.lookup_library("sysclib", 9u, nullptr),
+    uint32_t unsupported_entry = 0u;
+    if (!check(!kernel.lookup_library("sysclib", 9u, &unsupported_entry),
                "unsupported SYSCLIB ordinal unexpectedly registered"))
     {
         return 1;
