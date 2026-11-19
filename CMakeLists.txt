@@ -246,6 +246,61 @@ target_link_libraries(ee_recomp PRIVATE ee_core)
 # IOP IRX execution at SIF polling rendezvous points.
 add_executable(ee_game_runner src/tools/ee_game_runner_main.cpp)
 target_link_libraries(ee_game_runner PRIVATE ee_core iop_cpu ${CMAKE_DL_LIBS})
+
+# Original native WebGPU compute renderer, extracted from ps2-web-recomp:SDBZ.
+# No Emscripten, browser host, game code, or SDL; headless builds unchanged.
+option(EE_ENABLE_WEBGPU "Enable native wgpu-native GS rendering" OFF)
+set(EE_WEBGPU_ROOT "" CACHE PATH "wgpu-native release root (include/ and lib/)")
+if(EE_ENABLE_WEBGPU)
+    find_path(EE_WEBGPU_INCLUDE_DIR NAMES webgpu/webgpu.h
+        HINTS "${EE_WEBGPU_ROOT}/include" REQUIRED)
+    find_path(EE_WGPU_EXTRAS_INCLUDE_DIR NAMES webgpu/wgpu.h
+        HINTS "${EE_WEBGPU_ROOT}/include" REQUIRED)
+    find_library(EE_WGPU_NATIVE_LIBRARY NAMES wgpu_native
+        HINTS "${EE_WEBGPU_ROOT}/lib" REQUIRED)
+    set(EE_NATIVE_WGSL_ROOT
+        "${CMAKE_SOURCE_DIR}/src/runtime/ps2_webgpu/gs/gpu")
+    foreach(shader IN ITEMS gs blit)
+        set(out "${CMAKE_CURRENT_BINARY_DIR}/ee_webgpu_${shader}_wgsl.cpp")
+        set(path "${EE_NATIVE_WGSL_ROOT}/${shader}.wgsl")
+        if(shader STREQUAL "gs")
+            set(symbol "kGsShader")
+        else()
+            set(symbol "kBlitShader")
+        endif()
+        add_custom_command(OUTPUT "${out}"
+            COMMAND "${CMAKE_COMMAND}"
+                "-DSRC=${path}" "-DOUT=${out}" "-DNAME=${symbol}"
+                -P "${CMAKE_SOURCE_DIR}/cmake/embed_native_wgsl.cmake"
+            DEPENDS "${path}" "${CMAKE_SOURCE_DIR}/cmake/embed_native_wgsl.cmake"
+            VERBATIM)
+        list(APPEND EE_NATIVE_WGSL_SOURCES "${out}")
+    endforeach()
+    add_library(ee_webgpu_native STATIC
+        src/runtime/ps2_webgpu/gs/gpu/gpu.cpp
+        src/runtime/ps2_webgpu/gs/swizzle.cpp
+        src/runtime/ee_webgpu_bridge.cpp
+        ${EE_NATIVE_WGSL_SOURCES})
+    target_compile_features(ee_webgpu_native PRIVATE cxx_std_20)
+    target_include_directories(ee_webgpu_native PRIVATE
+        "${EE_WEBGPU_INCLUDE_DIR}"
+        "${EE_WGPU_EXTRAS_INCLUDE_DIR}"
+        "${CMAKE_SOURCE_DIR}/src/runtime")
+    target_link_libraries(ee_webgpu_native PUBLIC "${EE_WGPU_NATIVE_LIBRARY}")
+    target_compile_definitions(ee_game_runner PRIVATE EE_ENABLE_WEBGPU=1)
+    target_link_libraries(ee_game_runner PRIVATE ee_webgpu_native)
+    if(WIN32)
+        find_file(EE_WGPU_NATIVE_DLL NAMES wgpu_native.dll
+            HINTS "${EE_WEBGPU_ROOT}/lib" "${EE_WEBGPU_ROOT}/bin")
+        if(EE_WGPU_NATIVE_DLL)
+            add_custom_command(TARGET ee_game_runner POST_BUILD
+                COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                    "${EE_WGPU_NATIVE_DLL}" "$<TARGET_FILE_DIR:ee_game_runner>"
+                VERBATIM)
+        endif()
+    endif()
+endif()
+
 if(MSVC)
     # This diagnostic runner has a large monolithic dispatch frame. Keep its
     # host stack reserve explicit instead of depending on the 1 MiB PE default.
