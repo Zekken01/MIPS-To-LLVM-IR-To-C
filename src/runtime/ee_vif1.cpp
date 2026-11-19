@@ -455,13 +455,15 @@ bool c_ee_vif1::write_register(uint32_t offset, uint32_t value)
     case 0x10u: // FBRST
         if ((value & 1u) != 0u)
         {
-            uint32_t row[4]{};
-            uint32_t col[4]{};
-            std::memcpy(row, m_machine.m_row, sizeof(row));
-            std::memcpy(col, m_machine.m_col, sizeof(col));
-            reset();
-            std::memcpy(m_machine.m_row, row, sizeof(row));
-            std::memcpy(m_machine.m_col, col, sizeof(col));
+            // VIF FBRST resets command state, not the VU1's resident
+            // code/data. ROW/COL also survive this reset in the reference.
+            s_machine next{};
+            std::memcpy(next.m_row, m_machine.m_row, sizeof(next.m_row));
+            std::memcpy(next.m_col, m_machine.m_col, sizeof(next.m_col));
+            next.m_vu1_data = m_machine.m_vu1_data;
+            next.m_vu1_code = m_machine.m_vu1_code;
+            m_machine = std::move(next);
+            m_diagnostic = {};
         }
         if ((value & 8u) != 0u)
         {
@@ -497,15 +499,54 @@ bool c_ee_vif1::dma_transfer(void* user, uint32_t channel,
 bool c_ee_vif1::mmio_read(void* user, uint32_t address,
                           uint32_t width, s_ee_u128* value)
 {
-    if (user == nullptr || value == nullptr || width != 4u ||
-        address < k_register_base || address >= k_register_base + 0x400u ||
-        (address & 3u) != 0u)
+    if (user == nullptr || value == nullptr)
     {
         return false;
     }
-    value->m_lo = static_cast<c_ee_vif1*>(user)->read_register(
-        address - k_register_base);
-    value->m_hi = 0u;
+    c_ee_vif1* vif1 = static_cast<c_ee_vif1*>(user);
+    if (width == 4u && (address & 3u) == 0u &&
+        address >= k_register_base && address < k_register_base + 0x400u)
+    {
+        value->m_lo = vif1->read_register(address - k_register_base);
+        value->m_hi = 0u;
+        return true;
+    }
+
+    const uint8_t* source = nullptr;
+    uint32_t offset = 0u;
+    if (address >= k_vu1_code_base &&
+        address < k_vu1_code_base + k_vu1_memory_size)
+    {
+        offset = address - k_vu1_code_base;
+        source = vif1->m_machine.m_vu1_code.data();
+    }
+    else if (address >= k_vu1_data_base &&
+             address < k_vu1_data_base + k_vu1_memory_size)
+    {
+        offset = address - k_vu1_data_base;
+        source = vif1->m_machine.m_vu1_data.data();
+    }
+    if (source == nullptr ||
+        (width != 1u && width != 2u && width != 4u &&
+         width != 8u && width != 16u) ||
+        width > k_vu1_memory_size - offset)
+    {
+        return false;
+    }
+    *value = {};
+    for (uint32_t lane = 0u; lane < width; ++lane)
+    {
+        if (lane < 8u)
+        {
+            value->m_lo |= static_cast<uint64_t>(source[offset + lane])
+                << (lane * 8u);
+        }
+        else
+        {
+            value->m_hi |= static_cast<uint64_t>(source[offset + lane])
+                << ((lane - 8u) * 8u);
+        }
+    }
     return true;
 }
 
@@ -537,6 +578,35 @@ bool c_ee_vif1::mmio_write(void* user, uint32_t address,
         }
         return vif1->consume(quad, 1u);
     }
-    return false;
+
+    uint8_t* destination = nullptr;
+    uint32_t offset = 0u;
+    if (address >= k_vu1_code_base &&
+        address < k_vu1_code_base + k_vu1_memory_size)
+    {
+        offset = address - k_vu1_code_base;
+        destination = vif1->m_machine.m_vu1_code.data();
+    }
+    else if (address >= k_vu1_data_base &&
+             address < k_vu1_data_base + k_vu1_memory_size)
+    {
+        offset = address - k_vu1_data_base;
+        destination = vif1->m_machine.m_vu1_data.data();
+    }
+    if (destination == nullptr ||
+        (width != 1u && width != 2u && width != 4u &&
+         width != 8u && width != 16u) ||
+        width > k_vu1_memory_size - offset)
+    {
+        return false;
+    }
+    for (uint32_t lane = 0u; lane < width; ++lane)
+    {
+        const uint64_t source = lane < 8u
+            ? value->m_lo : value->m_hi;
+        destination[offset + lane] = static_cast<uint8_t>(
+            source >> ((lane & 7u) * 8u));
+    }
+    return true;
 }
 } // namespace ee
