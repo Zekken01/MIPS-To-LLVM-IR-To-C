@@ -300,7 +300,8 @@ int main()
     {
         return 1;
     }
-    const ee::s_ee_u128 kick_tag{0x8001u, 0xeu};
+    // GIFtag NREG=1 (NREG=0 would mean sixteen payload registers).
+    const ee::s_ee_u128 kick_tag{0x1000000000008001ull, 0xeu};
     const ee::s_ee_u128 kick_body{0x06u, 0u};
     if (!check(ee::c_ee_vif1::mmio_write(
                    &vif1, ee::c_ee_vif1::k_vu1_data_base + 32u,
