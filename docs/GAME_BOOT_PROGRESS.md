@@ -2045,3 +2045,16 @@ This source change is **not** evidence of a new Windows guest progression.
 A later matched run must confirm that this actual RAM handler completes,
 the prior `MCMAN.IRX` import failure is cleared, and the next stop is
 diagnosed without inventing a working boot or GS frame.
+
+### Windows WebGPU SDK startup repair
+
+The user's 19 November 2026 Windows launcher initially aborted with
+`[wgpu-native] SDK directory exists but is incomplete:
+C:\\Dev\\MIPS-To-LLVM-IR-To-C`. The validator correctly refused to
+overwrite user files; the actual fault was in `run_ps2_game.bat`.
+`cmd.exe` expands percent variables before executing a parenthesized block,
+so assigning `EE_WEBGPU_ROOT` and reading `%EE_WEBGPU_ROOT%` inside the
+same block passed an empty `--root`, resolving to the repository directory.
+Assigning it immediately *before* the installer block now passes
+`build\\_deps\\wgpu-native` and preserves a user-provided SDK path.
+This fixes fresh setups without removing the SDK path safety check.
