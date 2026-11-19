@@ -991,7 +991,7 @@ void profile_submit() {
         std::size_t info = 0;
         for (std::uint32_t i = 0; t && i < n; ++i) {
             while (info < g_command_info.size() && g_command_info[info].index < i) ++info;
-            std::fprintf(g_profile_out, "%llu %u %s %llu %u %u", static_cast<unsigned long long>(frame_count()), i, kEntryPoints[g_commands[i].pipeline],
+            std::fprintf(g_profile_out, "%llu %u %s %llu %u %u", static_cast<unsigned long long>(g_serial), i, kEntryPoints[g_commands[i].pipeline],
                          static_cast<unsigned long long>(t[i * 2 + 1] > t[i * 2] ? t[i * 2 + 1] - t[i * 2] : 0), g_commands[i].x, g_commands[i].y);
             if (info < g_command_info.size() && g_command_info[info].index == i)
                 for (std::uint32_t v : g_command_info[info].values) std::fprintf(g_profile_out, " %u", v);
@@ -1011,7 +1011,7 @@ void profile_submit() {
 // Browsers copy writes above about 1 MiB through a slower path, so large uploads go in pieces.
 void submit(WGPUTextureView present_view = nullptr) {
     if (g_commands.empty() && !present_view) return;
-    if (g_profile_out && !present_view && g_timestamps && frame_count() >= g_profile_from && frame_count() < g_profile_to) {
+    if (g_profile_out && !present_view && g_timestamps && g_serial >= g_profile_from && g_serial < g_profile_to) {
         profile_submit();
         return;
     }
@@ -1297,7 +1297,11 @@ bool init(Mode m) {
 #else
     WGPUInstanceExtras extras = {};
     extras.chain.sType = static_cast<WGPUSType>(WGPUSType_InstanceExtras);
+#if defined(_WIN32)
     extras.backends = WGPUInstanceBackend_DX12;
+#else
+    extras.backends = WGPUInstanceBackend_Vulkan;
+#endif
     WGPUInstanceDescriptor id = WGPU_INSTANCE_DESCRIPTOR_INIT;
     id.nextInChain = &extras.chain;
     g_instance = wgpuCreateInstance(&id);
@@ -1443,7 +1447,8 @@ int native_slot(std::uint32_t index, std::uint32_t width,
     std::uint32_t height, const std::uint8_t *rgba)
 {
     if (!g_native_atlases || !rgba
-        || !native_texture::valid_atlas_size(index, width, height))
+        || width == 0u || height == 0u ||
+        width > kNativeAtlasSide || height > kNativeAtlasSide)
         return -1;
     const auto existing = g_native_slot_by_texture.find(index);
     if (existing != g_native_slot_by_texture.end())
