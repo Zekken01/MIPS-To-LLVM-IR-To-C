@@ -598,6 +598,9 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME iop_disc_catalog
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_iop_disc_catalog.py)
+    add_test(NAME iop_irx_import_scan
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/tools/test_iop_irx_imports.py)
     add_test(NAME ps2_system_cnf_boot
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_ps2_boot_elf.py)
