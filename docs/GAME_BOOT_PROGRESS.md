@@ -1,5 +1,7 @@
 # Native game boot research — Super Dragon Ball Z (USA)
 
+> **Current M2 implementation plan:** [SDBZ runtime progression, GS/VIF/VU and EE ISA coverage](M2_SDBZ_NATIVE_RUNTIME_AND_ISA_PLAN.md). This plan supersedes earlier static-gap priority assumptions where the 2026-11-19 07:27 boot provides newer runtime evidence.
+
 This is a **bounded, experimental EE native-code runner**, not a PS2
 emulator and not yet a playable game. No copyrighted game ELF is stored here.
 
