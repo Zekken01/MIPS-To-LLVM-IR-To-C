@@ -330,3 +330,14 @@ The production runner still lacks a real VIF1/VU1/GIF PATH2
 consumer. Until that consumer accepts the actual stream,
 channel 1 deliberately stays active and raises no interrupt.
 See [M2.5 VIF1 chain](M2_5_VIF1_SOURCE_CHAIN.md).
+
+
+## M2.6 — VIF1 native consumer (19 November 2026; partial)
+
+The authoritative next milestone is [M2.6 Native VIF1 Consumer](M2_6_NATIVE_VIF1_CONSUMER.md). The native runtime now ports VIF1 command parsing, STCYCL/MODE/BASE/OFFSET/ITOP/ROW/COL/MASK, UNPACK, MPG and DIRECT/DIRECTHL semantics from `twist84/ps2-web-recomp:SDBZ`. Commands and VU1 memory changes are transactional, and split-packet tails persist across DMA starts. Channel 1 now routes to VIF1 rather than the GIF PATH3 sink; GIF PATH2 uses a separate parser and the existing committed GS consumer. Original 16 KiB VU1 code/data memory is visible through its physical EE apertures and survives VIF FBRST.
+
+A standalone `ee_vif1_device` CTest regression checks device parse, data/code uploads, PATH2, FIFO, split packets, refusal/rollback, and successful *synthetic* source-chain TTE/DMAC1 completion. All user coding standards (Allman, snake_case, `c_`/`s_`/`m_`) are retained; MIT upstream attribution is kept in the source.
+
+**Not yet accepted:** VU1 MSCAL/MSCALF/MSCNT micro execution, XGKICK/PATH1, VIF IRQ/stall/resume and MSKPATH3 arbitration remain fail-closed. In particular, this batch is not evidence of original SDBZ DMA completion, natural release of the guest pending flag, a new displayed frame or disappearance of the red fallback. The only confirmed 13:53 boot predates the raw source-prefix probe and does not contain the tag bytes at `0x00771400`. The next same-invocation Windows log is needed to select the next reference-derived implementation batch, not to justify a shortcut.
+
+Preserve existing M2/M1-A clocks, GIF PATH3, WebGPU, SIF, IOP and EE ISA behavior. Complete CI on the exact post-documentation commit before requesting local validation. Keep [PR #142](https://github.com/twist84/MIPS-To-LLVM-IR-To-C/pull/142) draft and unmerged.
