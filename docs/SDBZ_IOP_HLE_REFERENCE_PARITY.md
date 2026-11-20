@@ -2148,3 +2148,15 @@ every controller request. In the next retail batch, zeros
 indicate the device path was never used and nonzero values can
 be correlated with PADMAN worker state. Neither outcome is
 assumed here.
+
+**CTest fixture clarification:** The real R3000 self-restart was
+already functioning: the first `fast-2` diagnostic showed a genuine
+`BREAK` at `0x00005034`, 19 executed instructions, persistent
+marker 1 (old post-call store skipped), and correct exit RA
+`0x00013fc0`. The test incorrectly expected `a1=0x37`, but
+`StartThread(thread_id, arg)` passes the second API argument
+as the restarted thread's **a0**, with **a1=0**; the implementation
+correctly calls `start_thread_with_argument(id,arg)` which stores
+`m_gpr[4]=arg`. Corrected the fixture to assert a0=0x37
+and a1=0. No runtime semantic change is justified by this
+synthetic test failure.
