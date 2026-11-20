@@ -91,6 +91,7 @@ void c_kernel::reset()
     m_next_alarm_id = 1u;
     m_last_scheduled_id = 0u;
     m_current_thread_id = 0u;
+    m_restart_current_thread = false;
 }
 
 bool c_kernel::start_rom0_boot(const std::vector<uint8_t>& image)
@@ -1013,9 +1014,29 @@ bool c_kernel::start_thread_with_arguments(
     uint32_t id, uint32_t a0, uint32_t a1
 )
 {
-    if (!start_thread(id))
+    // ps2-web-recomp/SDBZ resolves thbase StartThread(0) to current().
+    // A self restart is legal while RUNNING. It must preserve the new
+    // entry context across this syscall; an ordinary dormant target
+    // still uses the existing start_thread() path.
+    const auto found = m_threads.find(id);
+    const bool restart_current =
+        id != 0u && id == m_current_thread_id &&
+        found != m_threads.end() &&
+        found->second.m_status == e_thread_status::running;
+    if (!restart_current && !start_thread(id))
     {
         return false;
+    }
+    if (restart_current)
+    {
+        if (!m_cpu.write32(k_thread_return_pc, 0x0000000du))
+        {
+            return false;
+        }
+        found->second.m_status = e_thread_status::ready;
+        found->second.m_module_entry_returned = false;
+        found->second.m_module_entry_result = 0u;
+        found->second.m_interrupts_suspended = false;
     }
     s_kernel_thread& thread = m_threads.at(id);
     s_cpu_state initial{};
@@ -1039,6 +1060,10 @@ bool c_kernel::start_thread_with_arguments(
     thread.m_wakeup_count = 0u;
     thread.m_wait_type = 0u;
     thread.m_delete_on_exit = false;
+    if (restart_current)
+    {
+        m_restart_current_thread = true;
+    }
     return true;
 }
 
@@ -1490,6 +1515,7 @@ s_kernel_run_result c_kernel::run(
         quantum = 1u;
     }
     m_current_thread_id = 0u;
+    m_restart_current_thread = false;
 
     // Unlike an IRX entrypoint, the actual IOP firmware begins at the
     // R3000 reset vector. Execute its own instruction stream directly.
@@ -1827,7 +1853,18 @@ s_kernel_run_result c_kernel::run(
                 m_current_thread_id = 0u;
                 return result;
             }
-            m_cpu.resume_syscall();
+            if (m_restart_current_thread)
+            {
+                // start_thread_with_arguments installed a genuine
+                // original entry context in the running thread. The
+                // syscall continuation may not overwrite that state.
+                m_cpu.state() = thread.m_cpu;
+                m_restart_current_thread = false;
+            }
+            else
+            {
+                m_cpu.resume_syscall();
+            }
             ++m_cycles;
             m_hardware.advance_cycles(1u);
             ++result.m_executed;

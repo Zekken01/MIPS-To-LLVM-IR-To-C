@@ -2077,3 +2077,54 @@ This is a transport gap fix with inferred boot relevance. The next
 real SDBZ replay must independently establish whether PADMAN
 actually reaches this bus path and whether ARKD token 15 completes;
 neither is claimed as already verified.
+
+
+## 2026-11-20 — 13:06 quick-probe: original StartThread(0) semantics
+
+Matched `ps2-game-hle(20261120-130603).zip` contains
+`quick-probe.log` (2,426,359 bytes) and its last-replay
+`quick-probe.json`. This is a **single replay**, not an
+expansion sequence: zero new IR functions; 830 already-compiled
+functions; **4,000,000** EE dispatches; **84,007,184** guest
+instruction attempts; 16 GS fields; final DISPATCH/budget stop
+at `0x00178de8` (same as preceding 12:18 run).
+CDVDFSV RTC RPC sequence 41 still succeeds; PADMAN RPC token
+14 returns. ARKD RPC token 15 (`0x501` method 18) queues but
+does not enter the guest server's original handler. The final
+IOP has 7 ready, 16 blocked and 0 faulted threads.
+
+The first 12 bounded `thbase#6 StartThread(0)` logs, interleaved
+from PADMAN threads 57 and 63, all incorrectly returned -407
+(`unknown_thread`). **No `CreateThread rejected` lines**
+appear; the earlier assumption that zero necessarily resulted
+from a failed allocation was unsupported.
+
+Reference inspection:
+- `twist84/ps2-web-recomp/SDBZ/runtime/src/iop/kernel.cpp`,
+  `Thread* thread(int id)`: **id==0 maps to current()**.
+- `runtime/src/iop/libs.cpp`, `thbase#6/#7`: calls
+  `thread(arg0)` then `start_thread(t->id,...)` on that
+  actual current guest, returning 0 for a found thread.
+- `start_thread` resets the guest CPU entry context (PC,
+  next PC, args, stack, RA and GP), restores initial priority
+  and makes it ready. Thus zero is **not** an unknown thread
+  while called inside a real IOP guest thread.
+
+The native kernel now distinguishes an actual self restart
+(`id==current_thread_id`, target status RUNNING) from
+unknown IDs and attempts to start another non-dormant
+thread. It reconstructs the original target's guest
+entrypoint/stack context through `start_thread_with_arguments`
+and defers loading the newly restarted context into the CPU
+until the syscall boundary, preventing the existing native
+R3000 run loop from overwriting the restarted context with
+the old post-syscall continuation. Missing IDs still return
+-407 and non-current non-dormant targets -414. A real R3000
+test calls thbase StartThread(0), proves that the subsequent
+old-code store never executes, and verifies entry arguments
+are restored after self restart. No extra thread or synthetic
+guest RPC completion is created.
+
+This is a verified original-semantic discrepancy. Whether
+PADMAN's original worker becomes blocked correctly and ARKD
+RPC token 15 completes must be verified by a new retail run.

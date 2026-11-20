@@ -285,5 +285,9 @@ private:
     uint32_t m_next_alarm_id = 1u;
     uint32_t m_last_scheduled_id = 0u;
     uint32_t m_current_thread_id = 0u;
+    // A genuine StartThread(0) may restart its own running guest
+    // thread. Apply the new R3000 context after the syscall handler,
+    // not the old post-syscall continuation.
+    bool m_restart_current_thread = false;
 };
 } // namespace iop

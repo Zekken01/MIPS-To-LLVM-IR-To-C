@@ -2090,21 +2090,72 @@ int main()
         return fail("StartThreadArgs guest was not actually scheduled");
     }
 
-    // PADMAN's original worker can call StartThread(0) after a
-    // failed CreateThread. This is an invalid thread ID, not an
-    // unsupported import and not permission to start the current
-    // guest thread. A negative kernel error must be returned normally.
+    // Unknown thread IDs remain a guest-level negative error.
+    // Zero instead denotes the currently running R3000 thread, as
+    // in the ps2-web-recomp/SDBZ kernel's thread(0)=current() lookup.
     for (uint16_t ordinal : {6u, 7u})
     {
-        for (uint32_t target : {0u, 0xffffffffu})
+        if (!call_guest(kernel, "thbase", ordinal,
+                        {0xffffffffu, 0u, 0u, 0u}, &result) ||
+            result != static_cast<uint32_t>(-407))
         {
-            if (!call_guest(kernel, "thbase", ordinal,
-                            {target, 0u, 0u, 0u}, &result) ||
-                result != static_cast<uint32_t>(-407))
-            {
-                return fail("invalid StartThread guest error ABI");
-            }
+            return fail("unknown StartThread guest error ABI");
         }
+    }
+    // Exercise the original import via actual R3000 instructions:
+    // StartThread(0, 0x37) must restart the calling guest thread at
+    // its entry, with a clean register context, not execute the old
+    // post-syscall continuation and not spawn a synthetic thread.
+    constexpr uint32_t restart_entry = 0x00005000u;
+    constexpr uint32_t restart_marker = 0x00005f80u;
+    uint32_t restart_import = 0u;
+    if (!kernel.lookup_library("thbase", 6u, &restart_import) ||
+        !kernel.cpu().write32(restart_marker, 0u))
+    {
+        return fail("cannot stage real StartThread(0) guest fixture");
+    }
+    const uint32_t restart_code[] = {
+        0x3c080000u, // lui t0, 0
+        0x35085f80u, // ori t0,t0,0x5f80
+        0x8d090000u, // lw t1,0(t0)
+        0x15200009u, // bne t1,zero,finished
+        0u,          // delay slot
+        0x24090001u, // addiu t1,zero,1
+        0xad090000u, // sw t1,0(t0)
+        0x24040000u, // addiu a0,zero,0 (current thread)
+        0x24050037u, // addiu a1,zero,0x37
+        0x0c000000u | ((restart_import >> 2u) & 0x03ffffffu),
+        0u,          // JAL delay slot
+        0x24090002u, // must not execute after a self restart
+        0xad090000u, // must not overwrite the persistent marker
+        0x0000000du // finished: BREAK
+    };
+    for (uint32_t index = 0u;
+         index < sizeof(restart_code) / sizeof(restart_code[0]); ++index)
+    {
+        if (!kernel.cpu().write32(
+                restart_entry + index * 4u, restart_code[index]))
+        {
+            return fail("cannot write self-restart R3000 program");
+        }
+    }
+    const uint32_t restart_id = kernel.create_thread(
+        restart_entry, 0u, 1u, 0x400u);
+    if (restart_id == 0u || !kernel.start_thread(restart_id))
+    {
+        return fail("cannot start genuine self-restart guest thread");
+    }
+    const iop::s_kernel_run_result restart_run = kernel.run(128u, 8u);
+    uint32_t marker_value = 0u;
+    const iop::s_kernel_thread* restarted = kernel.thread(restart_id);
+    if (restart_run.m_stop != iop::e_kernel_stop::breakpoint ||
+        restart_run.m_guest_pc != restart_entry + 52u ||
+        !kernel.cpu().read32(restart_marker, &marker_value) ||
+        marker_value != 1u || restarted == nullptr ||
+        restarted->m_cpu.m_gpr[5] != 0x37u ||
+        restarted->m_cpu.m_gpr[31] != iop::c_kernel::k_thread_return_pc)
+    {
+        return fail("StartThread(0) failed to restart its real guest CPU");
     }
     // A valid descriptor with impossible stack size must fail with
     // KE_NO_MEMORY rather than creating a fake thread or faulting

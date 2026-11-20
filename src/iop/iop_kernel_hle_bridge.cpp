@@ -1377,25 +1377,33 @@ bool c_kernel_hle_bridge::handle_thbase(uint32_t ordinal)
     case 6u:
     case 7u:
     {
-        const uint32_t id = cpu.m_gpr[4];
+        const uint32_t requested_id = cpu.m_gpr[4];
+        // Original SDBZ reference: kernel::thread(0) returns current().
+        // This is an actual self-restart request, not an invalid ID.
+        const uint32_t id = requested_id == 0u
+            ? m_kernel.current_thread_id() : requested_id;
         const s_kernel_thread* thread = m_kernel.thread(id);
-        if (id == 0u || thread == nullptr ||
-            thread->m_status != e_thread_status::dormant)
+        const bool self_restart =
+            id != 0u && id == m_kernel.current_thread_id() &&
+            thread != nullptr &&
+            thread->m_status == e_thread_status::running;
+        if (thread == nullptr ||
+            (thread->m_status != e_thread_status::dormant &&
+             !self_restart))
         {
-            // ps2-web-recomp/SDBZ thbase StartThread returns
-            // KE_UNKNOWN_THID (-407) for an unknown ID, rather than
-            // raising an unhandled IOP syscall. Existing but active
-            // threads are not eligible to be started a second time.
+            // Unknown IDs fail with -407; other non-dormant threads
+            // cannot be started unless they are the current caller.
             cpu.m_gpr[2] = static_cast<uint32_t>(
-                id == 0u || thread == nullptr ? -407 : -414);
+                thread == nullptr ? -407 : -414);
             if (m_thread_failure_trace_events < 12u)
             {
                 std::fprintf(stderr,
                     "IOP HLE StartThread rejected: ordinal=%u "
                     "caller=%u target=%u reason=%s result=%d "
                     "cycles=%llu\n",
-                    ordinal, m_kernel.current_thread_id(), id,
-                    id == 0u || thread == nullptr
+                    ordinal, m_kernel.current_thread_id(),
+                    requested_id,
+                    thread == nullptr
                         ? "unknown_thread" : "thread_not_dormant",
                     static_cast<int32_t>(cpu.m_gpr[2]),
                     static_cast<unsigned long long>(m_kernel.cycles()));
