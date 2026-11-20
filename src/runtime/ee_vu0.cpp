@@ -2029,9 +2029,10 @@ extern "C" uint32_t ee_vu0_macro_fmac(
     const bool broadcast_y = funct == 0x01u;
     const bool broadcast_z = funct == 0x02u;
     const bool broadcast_q = funct == 0x20u;
+    const bool multiply_q = funct == 0x1cu;
     if (!multiply_acc && !accumulate_y && !accumulate_z &&
         !store_w && !elementwise_mul && !broadcast_y &&
-        !broadcast_z && !broadcast_q)
+        !broadcast_z && !broadcast_q && !multiply_q)
     {
         return static_cast<uint32_t>(e_ee_vu0_sync_result::INVALID_ARGUMENT);
     }
@@ -2051,20 +2052,20 @@ extern "C" uint32_t ee_vu0_macro_fmac(
     const uint32_t fd = (word >> 6) & 31u;
     const uint32_t mask = (word >> 21) & 15u;
     s_ee_vu0_state* vu0 = rt->m_vu0_state;
-    if (broadcast_q && vu0->m_q_pending != 0u)
+    if ((broadcast_q || multiply_q) && vu0->m_q_pending != 0u)
     {
-        // Do not consume an in-flight Q result. The original retail
-        // guest executes VWAITQ before the reached VADDq.
+        // VADDq and VMULq cannot read an in-flight Q result.
+        // The original retail guest executes VWAITQ first.
         return static_cast<uint32_t>(e_ee_vu0_sync_result::UNAVAILABLE);
     }
     const uint32_t bc = multiply_acc ? 0u : accumulate_y ? 1u :
         accumulate_z ? 2u : broadcast_y ? 1u :
         broadcast_z ? 2u : 3u;
-    const float broadcast = broadcast_q
+    const float broadcast = (broadcast_q || multiply_q)
         ? vu0_fmac_operand(static_cast<uint32_t>(vu0->m_q.m_lo))
         : vu0_fmac_operand(vu0_fmac_read_vf(cpu, ft, bc));
     const bool store_vf = store_w || elementwise_mul || broadcast_y ||
-        broadcast_z || broadcast_q;
+        broadcast_z || broadcast_q || multiply_q;
     const bool accumulate = accumulate_y || accumulate_z || store_w;
 
     // Stage a separate result: VMUL can have fs==ft==fd and must read
@@ -2086,7 +2087,7 @@ extern "C" uint32_t ee_vu0_macro_fmac(
         const float answer = accumulate
             ? vu0_fmac_operand(vu0_fmac_lane(vu0->m_acc, lane)) +
                   static_cast<float>(product)
-            : (multiply_acc || elementwise_mul)
+            : (multiply_acc || elementwise_mul || multiply_q)
                 ? static_cast<float>(product)
                 : fs_value + ft_value;
         const uint32_t result_bits = vu0_fmac_result_bits(
@@ -2140,7 +2141,7 @@ extern "C" uint32_t ee_vu0_macro_scalar(
         return static_cast<uint32_t>(e_ee_vu0_sync_result::INVALID_ARGUMENT);
     }
     const uint32_t special2 = (word & 3u) | ((word >> 4u) & 0x7cu);
-    if (special2 != 0x39u && special2 != 0x3bu)
+    if (special2 != 0x39u && special2 != 0x3au && special2 != 0x3bu)
     {
         return static_cast<uint32_t>(e_ee_vu0_sync_result::INVALID_ARGUMENT);
     }
@@ -2159,9 +2160,8 @@ extern "C" uint32_t ee_vu0_macro_scalar(
     {
         if (vu0->m_q_pending != 0u)
         {
-            // R5900 VU scalar SQRT latency is seven VU0 cycles. We
-            // advance VU0 virtual time only; EE cycle timestamps and
-            // interrupt readiness are not manufactured from this wait.
+            // SQRT has a seven-cycle Q latency, RSQRT thirteen cycles.
+            // Retire in VU0 virtual time only, never from EE wall time.
             if (vu0->m_cycle < vu0->m_q_ready_cycle)
             {
                 vu0->m_cycle = vu0->m_q_ready_cycle;
@@ -2176,28 +2176,75 @@ extern "C" uint32_t ee_vu0_macro_scalar(
         return static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE);
     }
 
+    const bool reciprocal = special2 == 0x3au;
+    const uint32_t latency = reciprocal ? 13u : 7u;
     if (vu0->m_q_pending != 0u ||
-        vu0->m_cycle > UINT64_MAX - 7u)
+        vu0->m_cycle > UINT64_MAX - latency)
     {
         // Reject overlapping scalar producers rather than overwriting
         // an in-flight Q result or wrapping its readiness deadline.
         return static_cast<uint32_t>(e_ee_vu0_sync_result::UNAVAILABLE);
     }
 
+    // The selectors are separate: fsf uses bits 22:21, ftf bits 24:23.
+    // This retail RSQRT uses VF0.w / sqrt(VF5.x).
     const uint32_t ft = (word >> 16u) & 31u;
-    const uint32_t lane = (word >> 23u) & 3u;
-    const float source = vu0_fmac_operand(vu0_fmac_read_vf(cpu, ft, lane));
-    // PS2 VU SQRT uses abs(source) and sets I / sticky IS when negative.
-    const bool invalid = source < 0.0f;
-    const float value = std::sqrt(std::fabs(source));
+    const uint32_t fs = (word >> 11u) & 31u;
+    const uint32_t ft_lane = (word >> 23u) & 3u;
+    const uint32_t fs_lane = (word >> 21u) & 3u;
+    const uint32_t ft_bits = vu0_fmac_read_vf(cpu, ft, ft_lane);
+    const uint32_t fs_bits = vu0_fmac_read_vf(cpu, fs, fs_lane);
+    const float denominator = vu0_fmac_operand(ft_bits);
+    const float numerator = vu0_fmac_operand(fs_bits);
+
+    uint32_t current_flags = 0u;
     uint32_t result_bits = 0u;
-    std::memcpy(&result_bits, &value, sizeof(result_bits));
+    if (reciprocal && denominator == 0.0f)
+    {
+        // PCSX2 _vuRSQRT: division by zero sets D; zero over zero
+        // additionally sets I. The sign uses the ORIGINAL raw VF
+        // operands, preserving negative-zero behavior.
+        const uint32_t sign = (ft_bits ^ fs_bits) & 0x80000000u;
+        current_flags = 0x20u;
+        if (numerator == 0.0f)
+        {
+            current_flags |= 0x10u;
+            result_bits = sign;
+        }
+        else
+        {
+            result_bits = sign | 0x7f7fffffu;
+        }
+    }
+    else
+    {
+        if (denominator < 0.0f)
+        {
+            current_flags |= 0x10u;
+        }
+        const float root = std::sqrt(std::fabs(denominator));
+        const float value = reciprocal ? numerator / root : root;
+        std::memcpy(&result_bits, &value, sizeof(result_bits));
+        const uint32_t exponent = result_bits & 0x7f800000u;
+        // Normalize scalar Q like VU floating-point operands:
+        // subnormal -> signed zero, exponent 255 -> finite max.
+        if (exponent == 0u)
+        {
+            result_bits &= 0x80000000u;
+        }
+        else if (exponent == 0x7f800000u)
+        {
+            result_bits = (result_bits & 0x80000000u) | 0x7f7fffffu;
+        }
+    }
+
     vu0->m_q_pending_bits = result_bits;
-    vu0->m_q_ready_cycle = vu0->m_cycle + 7u;
+    vu0->m_q_ready_cycle = vu0->m_cycle + latency;
     vu0->m_q_pending = 1u;
+    // I/D are current flags; IS/DS must remain sticky.
     vu0->m_status_flags =
         (vu0->m_status_flags & ~0x30u) |
-        (invalid ? 0x410u : 0u);
+        current_flags | (current_flags << 6u);
     vu0->m_vi[16] = vu0->m_status_flags;
     return static_cast<uint32_t>(e_ee_vu0_sync_result::COMPLETE);
 }
