@@ -2155,6 +2155,19 @@ int main()
         restarted->m_cpu.m_gpr[5] != 0x37u ||
         restarted->m_cpu.m_gpr[31] != 0x00013fc0u)
     {
+        std::fprintf(stderr,
+            "StartThread(0) diagnostic: stop=%u guest_pc=0x%08x "
+            "executed=%llu marker=%u thread=%u status=%u "
+            "pc=0x%08x a1=0x%08x ra=0x%08x\\n",
+            static_cast<uint32_t>(restart_run.m_stop),
+            restart_run.m_guest_pc,
+            static_cast<unsigned long long>(restart_run.m_executed),
+            marker_value, restart_id,
+            restarted == nullptr ? 0xffffffffu :
+                static_cast<uint32_t>(restarted->m_status),
+            restarted == nullptr ? 0u : restarted->m_cpu.m_pc,
+            restarted == nullptr ? 0u : restarted->m_cpu.m_gpr[5],
+            restarted == nullptr ? 0u : restarted->m_cpu.m_gpr[31]);
         return fail("StartThread(0) failed to restart its real guest CPU");
     }
     // A valid descriptor with impossible stack size must fail with
