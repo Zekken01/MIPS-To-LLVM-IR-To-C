@@ -284,7 +284,7 @@ bool c_sifcmd_bridge::handle_rpc_syscall(uint32_t ordinal)
             found == m_rpc_clients.end() ||
             !found->second.m_bound || found->second.m_pending ||
             !guest_ram_span(argument, 40u) ||
-            !guest_ram_span(sp + 16u, 20u) ||
+            !guest_ram_span(sp, 36u) ||
             !m_kernel.cpu().read32(sp + 16u, &send_size) ||
             !m_kernel.cpu().read32(sp + 20u, &receive) ||
             !m_kernel.cpu().read32(sp + 24u, &recv_size) ||
