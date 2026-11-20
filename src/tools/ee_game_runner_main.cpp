@@ -3711,6 +3711,26 @@ int main(int argc, char** argv)
                                             progressed.m_opcode,
                                             static_cast<unsigned long long>(
                                                 progressed.m_executed));
+                                        if (progressed.m_stop ==
+                                            iop::e_kernel_stop::memory_fault)
+                                        {
+                                            const iop::s_memory_fault& fault =
+                                                iop_kernel->cpu().last_memory_fault();
+                                            const iop::s_cpu_state& guest =
+                                                iop_kernel->cpu().state();
+                                            std::fprintf(stderr,
+                                                "WaitSema HLE IOP memory fault: "
+                                                "address=0x%08x width=%u "
+                                                "write=%u valid=%u "
+                                                "ra=0x%08x gp=0x%08x "
+                                                "sp=0x%08x\n",
+                                                fault.m_address, fault.m_width,
+                                                fault.m_write ? 1u : 0u,
+                                                fault.m_valid ? 1u : 0u,
+                                                guest.m_gpr[31],
+                                                guest.m_gpr[28],
+                                                guest.m_gpr[29]);
+                                        }
                                         break;
                                     }
                                     // Delivery still requires guest
