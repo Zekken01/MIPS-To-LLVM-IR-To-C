@@ -476,3 +476,46 @@ and verify the guest resumes and reaches its own breakpoint after
 the matching edge. Link eligibility has advanced in synthetic tests;
 only a new matched Windows archive can establish actual CRI link
 and startup outcomes.
+
+## 2026-11-20 — archive 8: ARKD_DVD CDVDMAN + LIBSD SPU2 SSBUS
+
+Archive `ps2-game-hle(8).zip` contains a matched USA retail final replay,
+five JSON/log diagnostic artifacts and three black PPM captures. SHA-256
+`1b213a85a2c305dc0f893c007a502c93e0851d1bb7db6164f9e0b72adb074a16`
+and the mounted disc root both match the baseline.
+Final replay: **11,295 dispatches**, 3,529 cache entries, **three new
+translated functions** discovered during auto-expansion.
+Unlike archive 7, `CRI_ADXI.IRX` really linked and started:
+committed LOADFILE request 17 returned module 5/thread 7, zero link error.
+Request 18 attempted `ARKD_DVD.IRX` but failed to link with
+`cdvdman#5` (`sceCdStandby`); no module or thread was created.
+Separately the genuine `LIBSD.IRX` thread 5 faulted on a 32-bit
+write to `0xBF801404` (PC `0x00059774`), a SPU2 SSBUS
+configuration register. This is not an audio sample or DMA transfer.
+The terminal EE condition also changed to exception code 8 at
+EPC `0x00175064`; it is not the earlier KExit. GS accepted 37
+batches, but all three PPMs contain zero nonblack pixels.
+
+Based on `ps2-web-recomp/runtime/src/iop/cdvd.cpp` and PS2SDK's
+`cdvdman.h`, `cdvdman#5 sceCdStandby` is an idempotent
+standby request for the already mounted extracted-disc backend.
+`cdvdman#11 sceCdSync` returns the idle queue state; it does
+not complete physical N-commands, DMA, callbacks or a spindle
+transition. These two handlers have executable guest import stubs;
+unknown CDVDMAN commands remain unregistered.
+
+Following PS2SDK's `ssbusc.c` and PCSX2's IOP hardware map,
+IOP MMIO now retains 32-bit SPU2 SSBUS base-address and
+delay registers at `0x1F801404`, `0x1F80140C`,
+`0x1F801014` and `0x1F801414`. They reset with the
+IOP and reject unsupported widths. They do not expose SPU2
+audio RAM, generate sound, launch DMA or assert interrupts.
+Regression tests exercise direct guest-KSEG1 CPU access,
+readback, rejection of unimplemented MMIO, reset behavior and
+the newly linked `sceCdStandby` R3000 import.
+
+**Important:** the LIBSD guest MMIO repair and ARKD_DVD module
+link eligibility are synthetic/structural claims only until the next
+Windows replay. The lower EE dispatch count is not evidence of
+regression by itself; the new path terminates at an entirely
+different EE EPC and new IOP guest fault.

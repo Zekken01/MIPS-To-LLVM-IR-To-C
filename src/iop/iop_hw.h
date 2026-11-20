@@ -28,6 +28,12 @@ public:
     static constexpr uint32_t k_i_mask = 0x1f801074u;
     static constexpr uint32_t k_i_ctrl = 0x1f801078u;
     static constexpr uint32_t k_cache_control = 0xfffe0130u;
+    // PS2SDK SSBUSC SPU2 memory window and bus delay configuration.
+    // These registers select bus windows; they are not SPU2 voices or RAM.
+    static constexpr uint32_t k_ssbus_spu2_addr = 0x1f801404u;
+    static constexpr uint32_t k_ssbus_spu2_addr1 = 0x1f80140cu;
+    static constexpr uint32_t k_ssbus_spu2_delay = 0x1f801014u;
+    static constexpr uint32_t k_ssbus_spu2_delay1 = 0x1f801414u;
     // SIO2 serial-interface control. Firmware resets/configures this
     // register while loading IOP modules; transfer emulation is separate.
     static constexpr uint32_t k_sio2_send3_base = 0x1f808200u;
@@ -157,6 +163,10 @@ private:
     uint32_t m_i_mask = 0u;
     uint32_t m_i_ctrl = 1u;
     uint32_t m_cache_control = 0u;
+    uint32_t m_ssbus_spu2_addr = 0u;
+    uint32_t m_ssbus_spu2_addr1 = 0u;
+    uint32_t m_ssbus_spu2_delay = 0u;
+    uint32_t m_ssbus_spu2_delay1 = 0u;
     uint32_t m_sio2_ctrl = 0u;
     uint32_t m_sio2_send3[16]{};
     uint32_t m_sio2_port[8]{};

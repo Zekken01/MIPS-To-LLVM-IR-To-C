@@ -60,8 +60,8 @@ bool c_cdvdman_bridge::install()
 
     // Keep the original #10 address stable. Other CDVDMAN services have
     // distinct executable stubs in the reserved IOP kernel area.
-    constexpr std::array<uint16_t, 7u> ordinals = {
-        4u, 8u, 10u, 12u, 13u, 24u, 28u
+    constexpr std::array<uint16_t, 9u> ordinals = {
+        4u, 5u, 8u, 10u, 11u, 12u, 13u, 24u, 28u
     };
     for (uint16_t ordinal : ordinals)
     {
@@ -216,8 +216,25 @@ bool c_cdvdman_bridge::handle_syscall(
         state.m_gpr[2] = 1u;
         return true;
 
+    case k_service_base + 5u: // sceCdStandby
+        // An extracted, already-mounted DVD requires no physical
+        // spindle transition. Acknowledge that idempotent operation,
+        // without setting a pending N-command, raising an interrupt,
+        // or completing DMA on behalf of the guest.
+        state.m_gpr[2] = m_source.valid() &&
+            m_source.sector_count() != 0u ? 1u : 0u;
+        return true;
+
     case k_service_base + 8u: // sceCdGetError
         state.m_gpr[2] = m_last_error;
+        return true;
+
+    case k_service_base + 11u: // sceCdSync
+        // No asynchronous CDVDMAN command exists in this extracted-
+        // disc HLE. Sync therefore observes the idle command queue:
+        // polling (modes 1/17) and ordinary waiting both return zero.
+        // This does not complete any physical CDVD/N-command request.
+        state.m_gpr[2] = 0u;
         return true;
 
     case k_service_base + 12u: // sceCdGetDiskType

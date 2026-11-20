@@ -302,7 +302,7 @@ int main()
     // Clock and mounted-disc state are actual guest-callable imports,
     // not merely synthetic static registration. No unsupported read,
     // seek, interrupt, or callback completion may be registered.
-    for (uint16_t ordinal : {4u, 8u, 10u, 12u, 13u, 24u, 28u})
+    for (uint16_t ordinal : {4u, 5u, 8u, 10u, 11u, 12u, 13u, 24u, 28u})
     {
         uint32_t entry = 0u;
         uint32_t instruction = 0u;
@@ -320,6 +320,56 @@ int main()
         {
             return fail("unsupported CDVDMAN command falsely registered");
         }
+    }
+
+    // Exercise the first new ARKD_DVD dependency as a real linked
+    // R3000 import, not just through a manually invoked host handler.
+    iop::c_kernel standby_kernel;
+    iop::c_cdvdman_bridge standby_bridge(standby_kernel, media);
+    if (!standby_bridge.install() ||
+        standby_kernel.load_module(make_irx(5u)).m_status !=
+            iop::e_irx_load_result::success)
+    {
+        return fail("ARKD_DVD sceCdStandby import did not link");
+    }
+    const uint32_t standby_thread =
+        standby_kernel.create_module_thread(1u, 1u);
+    if (standby_thread == 0u ||
+        !standby_kernel.start_thread(standby_thread))
+    {
+        return fail("sceCdStandby guest thread did not start");
+    }
+    standby_kernel.bind_syscall([&](iop::c_kernel& active, uint32_t service)
+    {
+        return standby_bridge.handle_syscall(active, service);
+    });
+    const iop::s_kernel_run_result standby_run =
+        standby_kernel.run(64u, 64u);
+    const iop::s_kernel_thread* standby_guest =
+        standby_kernel.thread(standby_thread);
+    if (standby_run.m_stop != iop::e_kernel_stop::budget_exhausted ||
+        standby_guest == nullptr || standby_guest->m_cpu.m_gpr[2] != 1u ||
+        standby_kernel.hardware().pending_interrupts() != 0u ||
+        standby_kernel.hardware().cdvd_ncmd_pending())
+    {
+        return fail("sceCdStandby fabricated CDVD completion or failed");
+    }
+    for (uint32_t mode : {0u, 1u, 17u})
+    {
+        standby_kernel.cpu().state().m_gpr[4] = mode;
+        if (!standby_bridge.handle_syscall(
+                standby_kernel,
+                iop::c_cdvdman_bridge::k_service_base + 11u) ||
+            standby_kernel.cpu().state().m_gpr[2] != 0u ||
+            standby_kernel.hardware().cdvd_ncmd_pending())
+        {
+            return fail("idle sceCdSync incorrectly completed a command");
+        }
+    }
+    if (standby_kernel.load_module(make_irx(11u)).m_status !=
+            iop::e_irx_load_result::success)
+    {
+        return fail("sceCdSync guest import did not link");
     }
 
     // Isolate a second authentic guest IRX import for sceCdReadClock.
@@ -377,9 +427,10 @@ int main()
     }
     // Observe immutable mounted media and absence of pending CDVDMAN
     // commands; these queries cannot fabricate a DMA completion.
-    for (const auto& query : std::array<std::array<uint32_t, 2u>, 5u>{{
-        {{4u, 1u}}, {{8u, 0u}}, {{12u, 0x14u}},
-        {{13u, 2u}}, {{28u, 0x0au}}
+    for (const auto& query : std::array<std::array<uint32_t, 2u>, 7u>{{
+        {{4u, 1u}}, {{5u, 1u}}, {{8u, 0u}},
+        {{11u, 0u}}, {{12u, 0x14u}}, {{13u, 2u}},
+        {{28u, 0x0au}}
     }})
     {
         if (!clock_bridge.handle_syscall(

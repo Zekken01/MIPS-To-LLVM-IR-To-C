@@ -1,6 +1,7 @@
 #include "iop_hw.h"
 #include "iop_kernel.h"
 
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <vector>
@@ -66,6 +67,55 @@ int main()
         hardware.write(0x1f8010fcu, 4u, 1u))
     {
         return fail("scratchpad size, subword access or unknown MMIO safety");
+    }
+
+    // The real LIBSD.IRX thread writes the SPU2 SSBUS window base
+    // through KSEG1 (0xBF801404). These are bus configuration latches,
+    // not audio writes, DMA completion or successful SPU2 startup.
+    for (const auto& entry : std::array<std::array<uint32_t, 2u>, 4u>{{
+        {{iop::c_hw::k_ssbus_spu2_addr, 0xbf900000u}},
+        {{iop::c_hw::k_ssbus_spu2_addr1, 0xbf900800u}},
+        {{iop::c_hw::k_ssbus_spu2_delay, 0x200b31e1u}},
+        {{iop::c_hw::k_ssbus_spu2_delay1, 0x200b31e1u}}
+    }})
+    {
+        if (!hardware.write(entry[0], 4u, entry[1]) ||
+            !hardware.read(entry[0], 4u, &actual) ||
+            actual != entry[1] ||
+            hardware.write(entry[0], 2u, 0u) ||
+            hardware.read(entry[0], 2u, &actual))
+        {
+            return fail("SPU2 SSBUS register latch or access width");
+        }
+    }
+    if (hardware.write(0x1f801424u, 4u, 0u) ||
+        hardware.read(0x1f801424u, 4u, &actual) ||
+        hardware.pending_interrupts() != 0u)
+    {
+        return fail("unmapped SSBUS register or false SPU2 interrupt");
+    }
+    hardware.reset();
+    for (uint32_t address : {
+             iop::c_hw::k_ssbus_spu2_addr,
+             iop::c_hw::k_ssbus_spu2_addr1,
+             iop::c_hw::k_ssbus_spu2_delay,
+             iop::c_hw::k_ssbus_spu2_delay1})
+    {
+        if (!hardware.read(address, 4u, &actual) || actual != 0u)
+        {
+            return fail("SPU2 SSBUS configuration survived reset");
+        }
+    }
+
+    // CPU aliases must reach the same physical SSBUS registers.
+    iop::c_kernel audio_kernel;
+    if (!audio_kernel.attach_hle_hardware() ||
+        !audio_kernel.cpu().write32(0xbf801404u, 0xbf900000u) ||
+        !audio_kernel.cpu().read32(0xbf801404u, &actual) ||
+        actual != 0xbf900000u ||
+        audio_kernel.hardware().pending_interrupts() != 0u)
+    {
+        return fail("LIBSD guest KSEG1 SPU2 bus write failed");
     }
 
     // Official OpenPS2BIOS stores zero to $at=0xBF8010B8 at

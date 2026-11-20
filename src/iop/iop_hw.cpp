@@ -30,6 +30,10 @@ void c_hw::reset()
     m_i_mask = 0u;
     m_i_ctrl = 1u;
     m_cache_control = 0u;
+    m_ssbus_spu2_addr = 0u;
+    m_ssbus_spu2_addr1 = 0u;
+    m_ssbus_spu2_delay = 0u;
+    m_ssbus_spu2_delay1 = 0u;
     m_sio2_ctrl = 0u;
     std::fill(m_sio2_send3, m_sio2_send3 + 16u, 0u);
     std::fill(m_sio2_port, m_sio2_port + 8u, 0u);
@@ -261,6 +265,18 @@ bool c_hw::read(
     }
     switch (address)
     {
+    case k_ssbus_spu2_addr:
+        *value = m_ssbus_spu2_addr;
+        return true;
+    case k_ssbus_spu2_addr1:
+        *value = m_ssbus_spu2_addr1;
+        return true;
+    case k_ssbus_spu2_delay:
+        *value = m_ssbus_spu2_delay;
+        return true;
+    case k_ssbus_spu2_delay1:
+        *value = m_ssbus_spu2_delay1;
+        return true;
     case k_sif_mscom:
         *value = m_sif_mscom;
         return true;
@@ -503,6 +519,18 @@ bool c_hw::write(
     }
     switch (address)
     {
+    case k_ssbus_spu2_addr:
+        m_ssbus_spu2_addr = value;
+        return true;
+    case k_ssbus_spu2_addr1:
+        m_ssbus_spu2_addr1 = value;
+        return true;
+    case k_ssbus_spu2_delay:
+        m_ssbus_spu2_delay = value;
+        return true;
+    case k_ssbus_spu2_delay1:
+        m_ssbus_spu2_delay1 = value;
+        return true;
     case k_sif_smcom:
         m_sif_smcom = value;
         return true;
