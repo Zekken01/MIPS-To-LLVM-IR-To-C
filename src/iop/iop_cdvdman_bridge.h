@@ -38,6 +38,9 @@ private:
     uint32_t m_read_destination = 0u;
     std::vector<uint8_t> m_read_data;
     std::vector<uint32_t> m_sync_waiters;
+    uint32_t m_callback = 0u;
+    uint32_t m_callback_gp = 0u;
+    uint32_t m_requested_media_mode = 0u;
     bool m_initialized = false;
     uint32_t m_last_error = 0u;
 };

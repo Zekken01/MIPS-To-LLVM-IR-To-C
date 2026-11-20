@@ -61,8 +61,9 @@ bool c_cdvdman_bridge::install()
 
     // Keep the original #10 address stable. Other CDVDMAN services have
     // distinct executable stubs in the reserved IOP kernel area.
-    constexpr std::array<uint16_t, 10u> ordinals = {
-        4u, 5u, 6u, 8u, 10u, 11u, 12u, 13u, 24u, 28u
+    constexpr std::array<uint16_t, 14u> ordinals = {
+        4u, 5u, 6u, 8u, 10u, 11u, 12u, 13u,
+        15u, 24u, 28u, 37u, 38u, 75u
     };
     for (uint16_t ordinal : ordinals)
     {
@@ -79,6 +80,9 @@ bool c_cdvdman_bridge::install()
     m_read_destination = 0u;
     m_read_data.clear();
     m_sync_waiters.clear();
+    m_callback = 0u;
+    m_callback_gp = 0u;
+    m_requested_media_mode = 0u;
     m_initialized = false;
     m_last_error = 0u;
     return true;
@@ -226,6 +230,18 @@ void c_cdvdman_bridge::complete_read()
         }
     }
     m_sync_waiters.clear();
+
+    // The original guest callback is scheduled only after an actual
+    // mounted-sector transfer completed, with the PS2 CDVD READ reason.
+    // It executes as an R3000 guest function and returns via a bounded
+    // one-shot kernel trampoline. Never claim a callback was delivered
+    // if its guest entry cannot be scheduled.
+    if (m_callback != 0u &&
+        !m_kernel.start_guest_callback(
+            m_callback, m_callback_gp, 1u))
+    {
+        m_last_error = 1u;
+    }
 }
 
 bool c_cdvdman_bridge::handle_syscall(
@@ -343,6 +359,13 @@ bool c_cdvdman_bridge::handle_syscall(
             m_source.sector_count() != 0u ? 2u : 0u;
         return true;
 
+    case k_service_base + 15u: // sceCdStop
+        // The extracted DVD is already mounted: this acknowledges an
+        // idempotent physical spindle request without stopping or
+        // completing a previously accepted file-backed read.
+        state.m_gpr[2] = m_source.valid() ? 1u : 0u;
+        return true;
+
     case k_service_base + 24u: // sceCdReadClock
         if (!handle_read_clock(state.m_gpr[4]))
         {
@@ -357,6 +380,50 @@ bool c_cdvdman_bridge::handle_syscall(
         state.m_gpr[2] = m_read_pending ? 0x06u :
             (m_source.valid() && m_source.sector_count() != 0u
                 ? 0x0au : 0u);
+        return true;
+
+    case k_service_base + 37u: // sceCdCallback
+    {
+        // ABI: a0 is the new guest callback pointer, v0 returns old.
+        // Save the registering thread's global pointer so the guest
+        // callback can access its own module data when read completes.
+        const uint32_t callback = state.m_gpr[4];
+        uint32_t opcode = 0u;
+        if (callback != 0u)
+        {
+            const uint32_t region = callback & 0xe0000000u;
+            const uint32_t physical = callback & 0x1fffffffu;
+            if ((callback & 3u) != 0u ||
+                (region != 0u && region != 0x80000000u &&
+                 region != 0xa0000000u) ||
+                physical >= c_cpu::k_ram_size ||
+                !m_kernel.cpu().read32(callback, &opcode))
+            {
+                return false;
+            }
+        }
+        const uint32_t previous = m_callback;
+        m_callback = callback;
+        m_callback_gp = callback != 0u ? state.m_gpr[28] : 0u;
+        state.m_gpr[2] = previous;
+        return true;
+    }
+
+    case k_service_base + 38u: // sceCdPause
+        // Same physical-drive compatibility contract as sceCdStop.
+        state.m_gpr[2] = m_source.valid() ? 1u : 0u;
+        return true;
+
+    case k_service_base + 75u: // sceCdMmode
+        // The only mounted medium is a DVD. 0 selects auto and 2
+        // selects DVD; CD-only mode 1 cannot change this source.
+        if (state.m_gpr[4] != 0u && state.m_gpr[4] != 2u)
+        {
+            state.m_gpr[2] = 0u;
+            return true;
+        }
+        m_requested_media_mode = state.m_gpr[4];
+        state.m_gpr[2] = m_source.valid() ? 1u : 0u;
         return true;
 
     case k_search_file_syscall:
