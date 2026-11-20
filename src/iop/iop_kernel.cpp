@@ -13,6 +13,8 @@ namespace
 {
 constexpr uint32_t k_alarm_return_pc = 0x00013ff0u;
 constexpr uint32_t k_hle_callback_return_pc = 0x00013fe0u;
+// Reserved guest HLE trampoline immediately below the other return stubs.
+constexpr uint32_t k_module_return_pc = 0x00013fd0u;
 
 bool valid_range(size_t size, uint64_t offset, uint64_t length)
 {
@@ -715,15 +717,25 @@ uint32_t c_kernel::create_module_thread(
 )
 {
     const s_kernel_module* loaded = module(module_id);
-    if (loaded == nullptr)
+    if (loaded == nullptr ||
+        !m_cpu.write32(k_module_return_pc, 0x0000000du))
     {
         return 0u;
     }
-    return create_thread(
+
+    const uint32_t id = create_thread(
         loaded->m_irx.m_entry,
         loaded->m_irx.m_gp,
         priority, stack_size
     );
+    if (id != 0u)
+    {
+        s_kernel_thread& thread = m_threads.at(id);
+        thread.m_module_entry = true;
+        thread.m_module_id = module_id;
+        thread.m_cpu.m_gpr[31] = k_module_return_pc;
+    }
+    return id;
 }
 
 const s_kernel_thread* c_kernel::thread(uint32_t id) const
@@ -912,6 +924,13 @@ bool c_kernel::start_thread_with_arguments(
         thread.m_stack_base + thread.m_stack_size - 16u;
     initial.m_gpr[4] = a0;
     initial.m_gpr[5] = a1;
+    if (thread.m_module_entry)
+    {
+        // The guest _start(argc, argv) returns through $ra. Preserve
+        // this real MIPS return path even when StartThreadArgs rebuilds
+        // its CPU context; do not let JR $ra fall into address zero.
+        initial.m_gpr[31] = k_module_return_pc;
+    }
     thread.m_cpu = initial;
     thread.m_priority = thread.m_initial_priority;
     thread.m_wakeup_count = 0u;
@@ -1381,6 +1400,25 @@ s_kernel_run_result c_kernel::run(
         m_cycles += step_result.m_instructions;
         result.m_executed += step_result.m_instructions;
         remaining -= step_result.m_instructions;
+
+        // Module _start has returned its original V0 through the
+        // installed $ra sentinel. Only the actual guest BREAK at that
+        // reserved address can complete this startup thread; no time-
+        // based or LOADFILE-triggered fake completion is permitted.
+        if (step_result.m_result == e_step_result::breakpoint &&
+            step_result.m_pc == k_module_return_pc &&
+            thread.m_module_entry)
+        {
+            thread.m_cpu = m_cpu.state();
+            thread.m_status = e_thread_status::dormant;
+            std::printf(
+                "IOP guest module entry returned: module=%u thread=%u "
+                "result=0x%08x cycles=%llu\n",
+                thread.m_module_id, id, m_cpu.state().m_gpr[2],
+                static_cast<unsigned long long>(m_cycles));
+            m_current_thread_id = 0u;
+            continue;
+        }
 
         // A hosted CDVD completion invokes a real guest callback.
         // Once the original R3000 function returns through $ra, retire
