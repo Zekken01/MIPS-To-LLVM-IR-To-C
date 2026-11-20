@@ -2381,11 +2381,18 @@ The uploaded `ps2-game-hle(20261120-162811).zip` contains
 It executed **55 expansion replay passes**, indices
 0–54. The final footer reports
 `replay=54 new_functions=62 dispatches=3654765
-stop=0x00106988 exit=3`: the linked function
-count advanced from **908 to 970** across the
-batch. The JSON is paired with the last replay
-only; never aggregate its counters across
-restart attempts.
+stop=0x00106988 exit=3`. Independently, the
+actual uploaded translation-cache manifests contain
+**908 IR hash entries** in the preceding 14:04
+archive and **1,087** in this 16:28 archive: **180
+new keys and one removed key, or +179 net**.
+The footer's `new_functions=62` is not a
+total cache-delta statistic and must not be
+substituted for the manifest counts. Neither
+cache inventory alone proves how many functions
+executed. The final JSON is paired only with
+the last replay; never aggregate its counters
+across restart attempts.
 
 The last JSON reports `UNSUPPORTED` at
 `0x00106988`, opcode `0x4a6503be` (VU0
