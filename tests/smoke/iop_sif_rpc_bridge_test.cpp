@@ -1044,6 +1044,7 @@ bool test_guest_sifcmd_send(const std::filesystem::path& disc_root)
             return fail_at(__LINE__);
         }
         const uint32_t instructions[] = {
+            0x27bdffc0u, // addiu sp,sp,-64: own an O32 call frame
             0x34060018u, // ori a2, zero, 24-byte packet
             0x3c070002u, // lui a3, 2
             0x34e78000u, // ori a3, a3, 0x8000
@@ -1051,7 +1052,7 @@ bool test_guest_sifcmd_send(const std::filesystem::path& disc_root)
             0u,          // delay slot
             0x0000000du // break after returning from the import
         };
-        for (uint32_t i = 0u; i < 6u; ++i)
+        for (uint32_t i = 0u; i < 7u; ++i)
         {
             if (!kernel.cpu().write32(
                     guest_program + 4u * i, instructions[i]))
@@ -1067,8 +1068,12 @@ bool test_guest_sifcmd_send(const std::filesystem::path& disc_root)
             return fail_at(__LINE__);
         }
         const iop::s_kernel_thread* thread = kernel.thread(id);
-        const uint32_t sp = thread->m_cpu.m_gpr[29];
-        if (!kernel.cpu().write32(sp + 16u, k_extra_destination) ||
+        // The guest prologue subtracts 64 before passing stack args.
+        // Writing at initial sp+16 would be past the owned stack's
+        // upper boundary when high-RAM stacks reach 0x00200000.
+        const uint32_t sp = thread->m_cpu.m_gpr[29] - 64u;
+        if (sp < thread->m_stack_base ||
+            !kernel.cpu().write32(sp + 16u, k_extra_destination) ||
             !kernel.cpu().write32(sp + 20u, 4u) ||
             !kernel.start_thread(id))
         {
@@ -1077,7 +1082,7 @@ bool test_guest_sifcmd_send(const std::filesystem::path& disc_root)
         const iop::s_kernel_run_result ran = kernel.run(64u);
         thread = kernel.thread(id);
         if (ran.m_stop != iop::e_kernel_stop::breakpoint ||
-            ran.m_guest_pc != guest_program + 20u ||
+            ran.m_guest_pc != guest_program + 24u ||
             thread == nullptr || thread->m_cpu.m_gpr[2] != 1u ||
             rpc.pending_replies() != 1u ||
             memory.read32(k_receive + 8u) ==
@@ -1088,7 +1093,7 @@ bool test_guest_sifcmd_send(const std::filesystem::path& disc_root)
                 "SIFCMD send #%u: stop=%u pc=%08x expected=%08x v0=%08x "
                 "queued=%zu cid=%08x extra=%08x\n",
                 ordinal, static_cast<uint32_t>(ran.m_stop),
-                ran.m_guest_pc, guest_program + 20u,
+                ran.m_guest_pc, guest_program + 24u,
                 thread != nullptr ? thread->m_cpu.m_gpr[2] : 0xffffffffu,
                 rpc.pending_replies(),
                 memory.read32(k_receive + 8u),

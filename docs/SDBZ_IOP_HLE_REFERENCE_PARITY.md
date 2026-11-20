@@ -1943,3 +1943,24 @@ original R3000 guest import calls, and finite no-memory
 CreateThread returns. No EE DMA, SIF RPC, semaphore, IRQ or
 callback success is fabricated. A new retail run is required to
 establish whether the PADMAN token-14 guest handler completes.
+
+
+### CTest fixture correction: SIFCMD guest O32 stack arguments
+
+The first CI for upper-RAM stacks on
+`fa05655de197ad12e6c794b951cf4ff0f06a81ed` failed
+only `iop_sif_rpc_bridge` in CTest `fast-1`. Its synthetic
+SIFCMD #12 guest test wrote fifth and sixth O32 arguments at
+`initial_sp + 16/20` without an original guest stack-frame
+prologue. When the new reference-parity stack allocator gave the
+first thread the highest IOP RAM stack ending at `0x00200000`,
+those writes landed outside physical RAM. The downstream SIFCMD
+transport correctly rejected the resulting absent stack arguments.
+
+Fix the *test* by adding a real R3000 `addiu sp,sp,-64`
+prologue before the import `jal`, place the stacked arguments at
+`initial_sp - 64 + 16/20`, and update the intended BREAK PC
+from program+20 to program+24. The guest now actually owns its
+O32 call frame. Do not weaken bounded IOP memory writes or move
+the allocation policy back to low RAM. CI retests all workflows
+on the updated commit.
