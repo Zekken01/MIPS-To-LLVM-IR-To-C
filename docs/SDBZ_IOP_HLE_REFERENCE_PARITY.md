@@ -1015,3 +1015,64 @@ pulling the unchanged PR branch. Revisit the IOP scheduler,
 record whether the original SPU2 store now executes, and identify
 the next guest SPU2 status/DMA operation or real
 `sceSifRegisterRpc(0x500)` call. No game boot success is implied.
+
+## 2026-11-20 05:09:58 — ARKD guest RPC server registered; thsemap #8 error
+
+Matched Windows replay `ps2-game-hle(20261120-050958).zip` contains
+`boot.log`, `expansion.log`, `first-boot.json`, the two native
+WebGPU/GS diagnostic snapshots plus upload PPM,
+`iop-disc-catalog.json` and `translation-cache.json`.
+The SPU2 register failure from the preceding 04:56:35 batch has
+cleared: the final replay reaches 11,773 EE dispatches, 16,030,642
+guest instruction attempts, 421 recorded LLVM IR files, 29 committed
+IOP SIF RPC requests and all six original module-start returns.
+All three PPM captures remain entirely black.
+
+**Positive milestone**: the genuine ARKD guest worker registers
+SIF RPC server `0x00000500`, releasing the one previously deferred
+bind for EE client `0x005A9330`. The EE then binds the other
+ARKD servers `0x501`, `0x502`, `0x503`, issues method `0x12`,
+method `0x11`, and requests method `0x01` on `0x500`.
+This is real IOP guest registration and attempted RPC dispatch,
+not an invented ready flag or host-owned success response.
+No end-to-end method return, DMA5 reply, or game rendering is yet
+verified; the final EE exception at `0x80000180` is a stop caused
+by the IOP service failure.
+
+**New blocker**: when the guest RPC queue calls method `1`, IOP
+thread 9 stops after 81 executed instructions at `0x000147A8`,
+opcode `0x0000000C`, `e_kernel_stop::unhandled_syscall = 2`.
+The exact HLE syscall stub offset
+`0x147A8 - 0x14000 - 8 = 61 * 0x20` identifies export table
+index 61, `thsemap` ordinal `8` / `WaitSema`. This is a
+*handled, documented IOP library function*; the bridge incorrectly
+returned false for an unknown guest semaphore ID, converting a
+guest API error into a terminal host syscall failure. Without the
+guest `a0` value in this batch, the reason the requested semaphore
+ID is missing remains unverified.
+
+**Primary reference**: `ps2-web-recomp/SDBZ/runtime/src/iop/libs.cpp`
+defines unknown semaphore `-408`, unknown event flag `-409`,
+unknown mailbox `-410`, unknown variable pool `-411`, and unknown
+fixed pool `-412`. These errors are genuine negative guest return
+values, *not* successful waits or fabricated kernel objects.
+The original reference `WaitSema` explicitly returns `-408`
+when its ID does not exist.
+
+**PR #145 implementation**: the five corresponding guest HLE
+kernel families return reference errors for *known imported
+operations* targeting missing IDs, while unsupported ordinals and
+unexpected internal failures remain fail-closed. Invalid
+`thsemap` #8 requests emit a once-per-unknown-ID diagnostic
+containing requested ID, guest thread, PC, RA and currently
+registered semaphore counts/IDs. The unknown-ID diagnostic set
+is cleared on IOP reboot. Regression tests execute real R3000
+HLE import stubs after deleting a known semaphore/event and
+check all five negative error code families; unknown IDs do
+not allocate, wake, signal or fake a completion.
+
+**Next matched replay**: inspect `IOP HLE WaitSema unknown id`
+and the actual guest response after `-408`; determine whether
+the RPC method handles it or needs further authentic producer/
+allocator investigation. Keep SIF0/DMA5 and guest RPC completion
+evidence separate from successful server registration.
