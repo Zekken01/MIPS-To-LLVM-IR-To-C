@@ -17,6 +17,7 @@ rem EXPANSION_PER_PASS: 1..128, newly emitted functions per pass (default 128).
 rem Stop early at genuine guest blockers; never fabricate completion.
 if not defined EXPANSION_PASSES set "EXPANSION_PASSES=8"
 if not defined EXPANSION_PER_PASS set "EXPANSION_PER_PASS=128"
+if not defined SDBZ_REPORT_SNAPSHOT_MS set "SDBZ_REPORT_SNAPSHOT_MS=2000"
 
 where python >nul 2>nul
 if errorlevel 1 (
@@ -131,12 +132,25 @@ if exist "%WORK_DIR%\translation-cache.json" (
 )
 
 echo === Starting extracted-disc HLE boot session ===
+set "SESSION_ARGS=--quick-probe --no-iop-catalog"
+set "REPORT_NAME=quick-probe.json"
+if not defined CACHE_FLAG set "SESSION_ARGS="
+if /I "%~1"=="--full" set "SESSION_ARGS="
+if "%EE_WEBGPU_MODE%"=="ON" set "SESSION_ARGS="
+if defined SESSION_ARGS (
+    echo Using the cached HLE quick probe.
+    echo Boot log: "%WORK_DIR%\quick-probe.log"
+) else (
+    set "REPORT_NAME=first-boot.json"
+    set "SESSION_ARGS=--ll-progress --gs-snapshot=%WORK_DIR%\gs-display.ppm --gs-upload-snapshot=%WORK_DIR%\gs-upload.ppm"
+    echo Using the full traced HLE boot session.
+    echo Boot log: "%WORK_DIR%\boot.log"
+    echo Expansion log: "%WORK_DIR%\expansion.log"
+    echo Guest display VRAM if configured: "%WORK_DIR%\gs-display.ppm"
+    echo GS texture upload if complete: "%WORK_DIR%\gs-upload.ppm"
+)
 echo Expansion budget: %EXPANSION_PASSES% passes, %EXPANSION_PER_PASS% new functions per pass
-echo Boot log: "%WORK_DIR%\boot.log"
-echo Expansion log: "%WORK_DIR%\expansion.log"
-echo Report: "%WORK_DIR%\first-boot.json"
-echo Guest display VRAM: "%WORK_DIR%\gs-display.ppm" (only if configured)
-echo GS texture upload: "%WORK_DIR%\gs-upload.ppm" (only if complete)
+echo Report: "%WORK_DIR%\%REPORT_NAME%"
 if /I "%EE_WEBGPU_SNAPSHOT%"=="1" echo Native WebGPU raster: "%WORK_DIR%\gs-webgpu.ppm"
 if /I "%EE_WEBGPU_WINDOW%"=="1" echo Native WebGPU presentation: raylib Win32 window in final replay
 python tools\run_boot_session.py "%GAME_ELF%" ^
@@ -145,12 +159,9 @@ python tools\run_boot_session.py "%GAME_ELF%" ^
     --build-dir build ^
     --config Release ^
     --work-dir "%WORK_DIR%" ^
-    --report "%WORK_DIR%\first-boot.json" ^
-    --gs-snapshot "%WORK_DIR%\gs-display.ppm" ^
-    --gs-upload-snapshot "%WORK_DIR%\gs-upload.ppm" ^
+    --report "%WORK_DIR%\%REPORT_NAME%" ^
     --expansion-passes=%EXPANSION_PASSES% ^
     --expansion-per-pass=%EXPANSION_PER_PASS% ^
-    --ll-progress ^
     --hle-startup ^
     --kseg-ram ^
     --emit-jobs=%EMIT_JOBS% ^
@@ -158,7 +169,7 @@ python tools\run_boot_session.py "%GAME_ELF%" ^
     --max-dispatches=100000 ^
     --loop-budget=1000000 ^
     --sif-poll-limit=%SIF_POLL_LIMIT% ^
-    --timeout-seconds=120 %CACHE_FLAG% %EE_WEBGPU_RUN_ARG% %EE_WEBGPU_WINDOW_ARG%
+    --timeout-seconds=120 %CACHE_FLAG% %SESSION_ARGS% %EE_WEBGPU_RUN_ARG% %EE_WEBGPU_WINDOW_ARG%
 set "EXIT_CODE=%ERRORLEVEL%"
 echo.
 echo Native HLE boot session exit code: %EXIT_CODE%

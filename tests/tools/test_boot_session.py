@@ -21,13 +21,16 @@ SPEC.loader.exec_module(SESSION)
 
 def run_case(passes, initial_reuse=False, diagnostics=False,
              initial_function_count=None, expansion_per_pass=2,
-             snapshots=False):
+             snapshots=False, quick_probe=False):
     with tempfile.TemporaryDirectory(prefix="ee-boot-session-") as temp:
         work = Path(temp) / "work"
         report = work / "first-boot.json"
         elf = Path(temp) / "synthetic.elf"
         elf.write_bytes(b"synthetic test input, never executed")
         calls = []
+        if quick_probe:
+            work.mkdir(parents=True)
+            (work / "boot.log").write_text("previous full trace", encoding="utf-8")
         metadata = work / "ir" / "ee_functions.json"
         if initial_function_count is not None:
             metadata.parent.mkdir(parents=True, exist_ok=True)
@@ -83,6 +86,8 @@ def run_case(passes, initial_reuse=False, diagnostics=False,
         ]
         if initial_reuse:
             argv.append("--no-recompile")
+        if quick_probe:
+            argv.extend(("--quick-probe", "--no-iop-catalog"))
         if snapshots:
             work.mkdir(parents=True, exist_ok=True)
             display = work / "gs-display.ppm"
@@ -104,6 +109,12 @@ def run_case(passes, initial_reuse=False, diagnostics=False,
             code = SESSION.main(argv)
         assert len(calls) == len(passes), calls
         assert all("--trace" not in call for call in calls[:-1]), calls
+        if quick_probe:
+            assert all("--trace" not in call for call in calls), calls
+            assert report.is_file()
+            assert (work / "boot.log").read_text() == "previous full trace"
+            log = (work / "quick-probe.log").read_text()
+            return code, calls, log, log
         if len(passes) > 1:
             assert "--trace" in calls[-1], calls
         if initial_reuse:
@@ -226,6 +237,22 @@ def test_windows_launcher_preserves_guest_cache():
 def main():
     test_windows_launcher_preserves_guest_cache()
     test_ll_counter()
+    code, calls, expansion, boot = run_case([
+        {"trace": False, "replay": 0, "exit_reason": 0, "dispatch_status": 1,
+         "code": 4, "message": "DISPATCH LIMIT"},
+    ], initial_reuse=True, initial_function_count=421, quick_probe=True)
+    assert code == 4 and len(calls) == 1
+    assert "--no-recompile" in calls[0] and "--auto-expand=2" in calls[0]
+    assert "new_functions=0" in expansion and "DISPATCH LIMIT" in boot
+
+    code, calls, expansion, boot = run_case([
+        {"trace": False, "replay": 2, "function_count": 423, "message": "CAP"},
+        {"trace": False, "replay": 1, "function_count": 424, "exit_reason": 5,
+         "message": "LOOP_BUDGET"},
+    ], initial_reuse=True, initial_function_count=421, quick_probe=True)
+    assert code == 3 and len(calls) == 2
+    assert "new_functions=2" in expansion and "LOOP_BUDGET" in boot
+
     # First pass consumes its expansion cap; the second finds a real
     # non-DISPATCH blocker and the final run emits the useful trace.
     code, calls, expansion, boot = run_case([

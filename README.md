@@ -80,6 +80,11 @@ It neither requires a raw ISO nor downloads/executes ROM0, and does not
 change your Git branch. Logs and the JSON report go to
 `build/ps2-game-hle/`. `PS2_GAME/` is gitignored.
 
+With a verified translation cache, `run_ps2_game.bat` stops after the
+bounded coverage probe and writes `quick-probe.json` and `quick-probe.log`.
+Run `run_ps2_game.bat --full` for the full dispatch trace, IOP catalog, and
+GS snapshots. Cold builds and explicit WebGPU requests also use the full path.
+
 You may run `set PS2_GAME_RESOLVE_ONLY=1` first to verify the BOOT2
 resolution without building or running the game. Optional
 `EMIT_JOBS` and `SIF_POLL_LIMIT` environment variables adjust the

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run bounded auto-expansion sessions, then capture one diagnostic boot trace.
+"""Run bounded auto-expansion sessions with an optional final boot trace.
 
 Keep this wrapper separate from run_game.py: changing the translation driver
 invalidates its ELF/object provenance cache, while changing orchestration
@@ -158,6 +158,10 @@ def main(argv=None):
     parser.add_argument("--expansion-per-pass", type=int, default=128)
     parser.add_argument("--no-recompile", action="store_true")
     parser.add_argument(
+        "--quick-probe", action="store_true",
+        help="Use the last expansion pass as the final report, with no traced replay",
+    )
+    parser.add_argument(
         "--ll-progress", action="store_true",
         help="Show live in-place [completed/expected] .ll file count on a terminal",
     )
@@ -186,6 +190,9 @@ def main(argv=None):
         parser.error("--expansion-passes must be between 1 and 64")
     if not 1 <= args.expansion_per_pass <= 128:
         parser.error("--expansion-per-pass must be between 1 and 128")
+    if args.quick_probe and (args.gs_snapshot or args.gs_upload_snapshot or
+                             args.gs_webgpu_snapshot or args.gs_webgpu_window):
+        parser.error("GS snapshots and the WebGPU window require a full boot session")
     if any(item == "--trace" or item == "--link-only" or
            item == "--auto-expand" or item.startswith("--auto-expand=") or
            item == "--no-recompile" for item in forwarded):
@@ -197,7 +204,8 @@ def main(argv=None):
     report = args.report.resolve()
     work.mkdir(parents=True, exist_ok=True)
     report.parent.mkdir(parents=True, exist_ok=True)
-    catalog_path = work / "iop-disc-catalog.json"
+    catalog_path = work / ("quick-probe-iop-disc-catalog.json" if args.quick_probe
+                           else "iop-disc-catalog.json")
     if args.no_iop_catalog and args.iop_auto_irx:
         parser.error("--iop-auto-irx requires disc catalog discovery")
     if args.iop_auto_irx and any(
@@ -261,8 +269,8 @@ def main(argv=None):
     # feature was explicitly requested. Diagnostic tools and tests use the
     # existing three-argument interface without a progress keyword.
     progress_kwargs = {"progress": progress} if progress is not None else {}
-    expansion_log = work / "expansion.log"
-    boot_log = work / "boot.log"
+    boot_log = work / ("quick-probe.log" if args.quick_probe else "boot.log")
+    expansion_log = boot_log if args.quick_probe else work / "expansion.log"
     metadata_path = work / "ir" / "ee_functions.json"
     snapshots = [
         ("--gs-snapshot", args.gs_snapshot),
@@ -330,7 +338,8 @@ def main(argv=None):
             log.write("# " + summary + "\n")
 
         if code not in (0, 3, 4):
-            shutil.copyfile(expansion_log, boot_log)
+            if not args.quick_probe:
+                shutil.copyfile(expansion_log, boot_log)
             print(
                 f"Expansion failed; diagnostics are in {boot_log}",
                 file=sys.stderr, flush=True,
@@ -363,6 +372,8 @@ def main(argv=None):
                 "Session expansion budget reached; compiled functions "
                 "are preserved for the next local run.", flush=True,
             )
+        if args.quick_probe:
+            return code
         break
 
     # Emit the *full* guest trace once. Intermediate replays don't need
