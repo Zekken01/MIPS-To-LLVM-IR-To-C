@@ -1524,7 +1524,7 @@ int main(int argc, char** argv)
                 return 1;
             }
             iop_sifcmd = std::make_unique<iop::c_sifcmd_bridge>(
-                *iop_kernel, hardware.sif()
+                *iop_kernel, hardware.sif(), memory.get()
             );
             if (!iop_sifcmd->install())
             {
