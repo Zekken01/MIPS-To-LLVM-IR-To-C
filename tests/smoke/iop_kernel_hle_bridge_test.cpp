@@ -1851,6 +1851,13 @@ int main()
     constexpr uint32_t k_printf_text = 0x36e0u;
     uint32_t printf_result = 0u;
     const std::string expected_printf = "blk:buf   /0x00002a/-7\n";
+    // The test kernel was deliberately unattached during import/link
+    // checks. Guest printf writes the real IOP debug-console MMIO,
+    // which requires the normal HLE hardware binding.
+    if (!kernel.attach_hle_hardware())
+    {
+        return fail("could not attach real IOP debug console for STDIO");
+    }
     if (!write_guest_string(k_printf_format,
             "blk:%-6.3s/%#08x/%+ld\n") ||
         !write_guest_string(k_printf_text, "buffers") ||
@@ -1861,11 +1868,23 @@ int main()
     {
         return fail("STDIO printf guest flags/precision/long formatting failed");
     }
+    const std::string& printed = kernel.hardware().debug_console();
+    if (printed.size() < expected_printf.size() ||
+        printed.compare(printed.size() - expected_printf.size(),
+                        expected_printf.size(), expected_printf) != 0)
+    {
+        return fail("STDIO printf did not emit expected guest debug text");
+    }
     // O32 long long varargs consume an aligned 32-bit argument pair.
     if (!write_guest_string(k_printf_format, "%08llX") ||
         !call_guest(kernel, "stdio", 4u,
             {k_printf_format, 0xabcdef01u, 0x89abcdefu, 0x12345678u},
-            &printf_result) || printf_result != 16u)
+            &printf_result) || printf_result != 16u ||
+        kernel.hardware().debug_console().size() <
+            expected_printf.size() + 16u ||
+        kernel.hardware().debug_console().substr(
+            kernel.hardware().debug_console().size() - 16u) !=
+                "1234567889ABCDEF")
     {
         return fail("STDIO printf O32 64-bit vararg alignment failed");
     }
