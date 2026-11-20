@@ -784,7 +784,8 @@ void c_sif_rpc_bridge::commit_command(const s_request& request)
         {
             ++m_load_requests;
             const s_disc_load_result loaded = m_loader.load_requested(
-                request.m_guest_path, true, 1u,
+                request.m_guest_path, true,
+                c_kernel::k_default_module_priority,
                 request.m_module_arguments
             );
             observed.m_load_status = loaded.m_result;
