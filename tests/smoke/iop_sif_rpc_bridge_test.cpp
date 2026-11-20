@@ -418,6 +418,13 @@ bool test_iop_to_ee_rpc(const std::filesystem::path& disc_root)
 {
     // IOP-originated BIND/CALL must traverse an armed EE SIF0 DMAC,
     // and only a matching EE SIF1 Rend may wake the guest caller.
+    const auto fail_stage = [](int line) -> bool
+    {
+        std::fprintf(stderr,
+                     "IOP reverse SIFRPC stage failed at line %d\\n",
+                     line);
+        return false;
+    };
     constexpr uint32_t list = 0x10000u;
     constexpr uint32_t packet_source = 0x12000u;
     constexpr uint32_t data_source = 0x14000u;
@@ -447,7 +454,7 @@ bool test_iop_to_ee_rpc(const std::filesystem::path& disc_root)
         memory, kernel.cpu(), dmac, &cmd, &rpc);
     if (!sectors.valid() || !cmd.install())
     {
-        return false;
+        return fail_stage(__LINE__);
     }
     kernel.bind_syscall(
         [&](iop::c_kernel& active, uint32_t service)
@@ -456,7 +463,7 @@ bool test_iop_to_ee_rpc(const std::filesystem::path& disc_root)
         });
     if (!init_sifcmd_guest(kernel))
     {
-        return false;
+        return fail_stage(__LINE__);
     }
 
     uint32_t init_stub = 0u;
@@ -470,7 +477,7 @@ bool test_iop_to_ee_rpc(const std::filesystem::path& disc_root)
             !kernel.cpu().read32(entry + 8u, &instruction) ||
             instruction != 0x0000000cu)
         {
-            return false;
+            return fail_stage(__LINE__);
         }
         if (ordinal == 14u)
         {
@@ -502,14 +509,14 @@ bool test_iop_to_ee_rpc(const std::filesystem::path& disc_root)
     };
     if (!make_call(init_pc, init_stub, false))
     {
-        return false;
+        return fail_stage(__LINE__);
     }
     const uint32_t init_thread = kernel.create_thread(
         init_pc, 0u, 1u, 0x400u);
     if (init_thread == 0u || !kernel.start_thread(init_thread) ||
         kernel.run(64u).m_stop != iop::e_kernel_stop::breakpoint)
     {
-        return false;
+        return fail_stage(__LINE__);
     }
 
     // EE publishes a genuine SIF0 receive buffer via SIF1.
@@ -522,7 +529,7 @@ bool test_iop_to_ee_rpc(const std::filesystem::path& disc_root)
     if (!sif1.set_dma(list, 1u, &dma_id) ||
         cmd.ee_receive_address() != ee_receive)
     {
-        return false;
+        return fail_stage(__LINE__);
     }
     dmac.acknowledge(6u);
 
@@ -531,7 +538,7 @@ bool test_iop_to_ee_rpc(const std::filesystem::path& disc_root)
     constexpr uint32_t bind_pc = 0x00024040u;
     if (!make_call(bind_pc, bind_stub, false))
     {
-        return false;
+        return fail_stage(__LINE__);
     }
     const uint32_t bind_thread = kernel.create_thread(
         bind_pc, 0u, 1u, 0x400u, client, server_id);
@@ -542,7 +549,7 @@ bool test_iop_to_ee_rpc(const std::filesystem::path& disc_root)
         rpc.pending_replies() != 1u ||
         memory.read32(ee_receive + 8u) != 0u)
     {
-        return false;
+        return fail_stage(__LINE__);
     }
     const ee::s_ee_u128 armed{0x184u, 0u};
     if (!ee::c_ee_dmac::mmio_write(
@@ -553,14 +560,14 @@ bool test_iop_to_ee_rpc(const std::filesystem::path& disc_root)
         memory.read32(ee_receive + 32u) != server_id ||
         (dmac.status() & (1u << 5u)) == 0u)
     {
-        return false;
+        return fail_stage(__LINE__);
     }
 
     uint32_t packet_id = 0u;
     if (!kernel.cpu().read32(client + 4u, &packet_id) ||
         packet_id == 0u)
     {
-        return false;
+        return fail_stage(__LINE__);
     }
     const std::vector<uint32_t> bind_reply = {
         48u, 0u, iop::c_sif_rpc_bridge::k_reply_cid, 0u,
@@ -579,7 +586,7 @@ bool test_iop_to_ee_rpc(const std::filesystem::path& disc_root)
         kernel.thread(bind_thread)->m_status !=
             iop::e_thread_status::blocked)
     {
-        return false;
+        return fail_stage(__LINE__);
     }
     packet(memory, packet_source, bind_reply);
     if (!sif1.set_dma(list, 1u, &dma_id) ||
@@ -587,7 +594,7 @@ bool test_iop_to_ee_rpc(const std::filesystem::path& disc_root)
             iop::e_thread_status::ready ||
         kernel.run(64u).m_stop != iop::e_kernel_stop::breakpoint)
     {
-        return false;
+        return fail_stage(__LINE__);
     }
     uint32_t bound_server = 0u;
     uint32_t bound_buffer = 0u;
@@ -598,7 +605,7 @@ bool test_iop_to_ee_rpc(const std::filesystem::path& disc_root)
         bound_server != ee_server || bound_buffer != ee_buffer ||
         status != 0u)
     {
-        return false;
+        return fail_stage(__LINE__);
     }
 
     // Real R3000 sceSifCallRpc, with five stack-passed arguments,
@@ -621,14 +628,14 @@ bool test_iop_to_ee_rpc(const std::filesystem::path& disc_root)
         !kernel.cpu().write32(iop_result, 0xdeadbeefu) ||
         !kernel.cpu().write32(data_source, 42u))
     {
-        return false;
+        return fail_stage(__LINE__);
     }
     const uint32_t call_thread = kernel.create_thread(
         call_pc, 0u, 1u, 0x400u, client, 3u);
     const iop::s_kernel_thread* caller = kernel.thread(call_thread);
     if (call_thread == 0u || caller == nullptr)
     {
-        return false;
+        return fail_stage(__LINE__);
     }
     const uint32_t frame_sp = caller->m_cpu.m_gpr[29] - 64u;
     if (!kernel.cpu().write32(frame_sp + 16u, 4u) ||
@@ -638,7 +645,7 @@ bool test_iop_to_ee_rpc(const std::filesystem::path& disc_root)
         !kernel.cpu().write32(frame_sp + 32u, 0u) ||
         !kernel.start_thread(call_thread))
     {
-        return false;
+        return fail_stage(__LINE__);
     }
     dmac.acknowledge(5u);
     dmac.acknowledge(6u);
@@ -652,13 +659,13 @@ bool test_iop_to_ee_rpc(const std::filesystem::path& disc_root)
         memory.read32(ee_buffer) != 41u ||
         (dmac.status() & (1u << 5u)) == 0u)
     {
-        return false;
+        return fail_stage(__LINE__);
     }
     uint32_t call_id = 0u;
     if (!kernel.cpu().read32(client + 4u, &call_id) ||
         call_id == packet_id)
     {
-        return false;
+        return fail_stage(__LINE__);
     }
     const std::vector<uint32_t> call_reply = {
         48u, 0u, iop::c_sif_rpc_bridge::k_reply_cid, 0u,
@@ -682,7 +689,7 @@ bool test_iop_to_ee_rpc(const std::filesystem::path& disc_root)
             iop::e_thread_status::blocked ||
         dmac.status() != 0u)
     {
-        return false;
+        return fail_stage(__LINE__);
     }
     packet(memory, packet_source, call_reply);
     if (!sif1.set_dma(list, 2u, &dma_id) ||
@@ -693,7 +700,7 @@ bool test_iop_to_ee_rpc(const std::filesystem::path& disc_root)
         kernel.run(64u).m_stop != iop::e_kernel_stop::breakpoint ||
         !kernel.cpu().read32(client, &status) || status != 0u)
     {
-        return false;
+        return fail_stage(__LINE__);
     }
     // A previously completed Rend may not be replayed as a second
     // callback or a new IOP DMA completion.
@@ -701,7 +708,7 @@ bool test_iop_to_ee_rpc(const std::filesystem::path& disc_root)
     if (sif1.set_dma(list + 16u, 1u, &dma_id) ||
         (dmac.status() & (1u << 6u)) != 0u)
     {
-        return false;
+        return fail_stage(__LINE__);
     }
     return true;
 }
