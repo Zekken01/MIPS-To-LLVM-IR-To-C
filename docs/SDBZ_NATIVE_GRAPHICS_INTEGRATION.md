@@ -124,3 +124,35 @@ let translation provenance invalidate affected IR.
 translation cache as authorization to investigate. Identify replay
 boundaries and never sum final-JSON counters across replays. Prioritize
 causal graphics findings without regressing authentic EE/IOP execution.
+
+## Implemented Batch 1: read-only graphics provenance
+
+The draft PR now introduces:
+
+- `c_ee_gif_path3::counters()`: parser-local accepted/rejected batch
+  counts, committed GIF tag/primitive/packed/reglist/image event counts,
+  and accepted input/image QWC. Counters increment **only after the GS
+  event sink accepts** input; resetting a parser also resets its counters.
+- `m2_gif_paths` in the matched runner report: distinct VU1 XGKICK/PATH1,
+  VIF1 DIRECT/PATH2, and GIF DMA/PATH3 parsers. A VIF1 DMA without
+  generated GIF traffic does not count as PATH1 or PATH2.
+- `m2_gs_presentation` in the same report: guest fields from the
+  scanout clock; real raylib/WebGPU presentation attempts and successes;
+  supported source attempts; fields skipped by host polling; committed
+  GPU draws; and raw privileged GS display registers.
+- Independent CPU GS display, native WebGPU display and completed upload
+  capture metadata: requested/readback/file-written states, dimensions,
+  nonblack RGB pixel counts and FNV-1a RGBA checksums. CPU/GPU digests
+  are compared only if both used the **same original** PMODE, SMODE2,
+  DISPFB1/2, DISPLAY1/2 and CRT mode. Checksums are diagnostics, not
+  a mathematical proof of pixel equality.
+
+Regressions: `ee_gif_path3` verifies committed parser counters,
+rejection rollback and retry; `ee_gs_presentation_probe` verifies
+field gating, host-poll gaps, source matching, capture validation and
+JSON. Its checks run in Release builds as well.
+
+This instrumentation neither creates a GS draw nor changes guest DMA,
+interrupts, VBlank, RPC, or scheduling. It does **not** prove that
+the game has rendered its first visible frame. No post-fix local retail
+replay beyond VU0 `VRSQRT`/`VMULq` has been supplied.
