@@ -118,6 +118,115 @@ int main()
         return fail("LIBSD guest KSEG1 SPU2 bus write failed");
     }
 
+    // The matched SDBZ LIBSD worker originally faulted on a real
+    // R3000 SH at PC 0x0005C8E8, physical SPU2 master register 0x760.
+    // Execute that same opcode through KSEG1, not a host-side bypass.
+    if (!audio_kernel.cpu().write32(0x1000u, 0xa4450000u))
+    {
+        return fail("cannot stage LIBSD SPU2 store instruction");
+    }
+    iop::s_cpu_state& audio_cpu = audio_kernel.cpu().state();
+    audio_cpu.m_pc = 0x1000u;
+    audio_cpu.m_next_pc = 0x1004u;
+    audio_cpu.m_gpr[2] = 0xbf900760u;
+    audio_cpu.m_gpr[5] = 0x1234u;
+    if (audio_kernel.cpu().step() != iop::e_step_result::completed ||
+        !audio_kernel.hardware().read(
+            iop::c_spu2::k_base + 0x760u, 2u, &actual) ||
+        actual != 0x1234u ||
+        audio_kernel.cpu().last_memory_fault().m_valid ||
+        audio_kernel.hardware().pending_interrupts() != 0u)
+    {
+        return fail("guest LIBSD SH to SPU2 master volume failed");
+    }
+
+    const uint32_t spu2 = iop::c_spu2::k_base;
+    if (!hardware.read(spu2 + 0x760u, 2u, &actual) ||
+        actual != 0x3fffu ||
+        !hardware.read(spu2 + 0x788u, 2u, &actual) ||
+        actual != 0x3fffu ||
+        !hardware.read(spu2 + 0x768u, 2u, &actual) ||
+        actual != 0x7fffu ||
+        !hardware.write(spu2 + 0x760u, 4u, 0x55667788u) ||
+        !hardware.read(spu2 + 0x760u, 4u, &actual) ||
+        actual != 0x55667788u ||
+        !hardware.read(spu2 + 0x788u, 2u, &actual) ||
+        actual != 0x3fffu ||
+        !hardware.write(spu2 + 0x7c6u, 2u, 0x4321u) ||
+        !hardware.read(spu2 + 0x7c6u, 2u, &actual) ||
+        actual != 0x4321u ||
+        hardware.write(spu2 + 0x760u, 1u, 0x77u) ||
+        hardware.read(spu2 + 0x760u, 1u, &actual) ||
+        hardware.read(spu2 + 0x7c4u, 2u, &actual) ||
+        hardware.write(spu2 + 0x800u, 2u, 0u) ||
+        hardware.pending_interrupts() != 0u)
+    {
+        return fail("SPU2 master, core isolation, SPDIF or MMIO widths");
+    }
+
+    // Reference core STATX settles for sixteen polls following an
+    // enabled ATTR rising edge. SPU RAM port writes advance TSA and
+    // assert IRQ9 only on an actual guest-selected IRQA hit.
+    if (!hardware.write(spu2 + 0x19au, 2u, 0x8040u))
+    {
+        return fail("cannot enable reference SPU2 core");
+    }
+    for (uint32_t index = 0u; index < 16u; ++index)
+    {
+        if (!hardware.read(spu2 + 0x344u, 2u, &actual) ||
+            actual != 0u)
+        {
+            return fail("SPU2 STATX settled before reference delay");
+        }
+    }
+    if (!hardware.read(spu2 + 0x344u, 2u, &actual) ||
+        actual != 0x80u ||
+        !hardware.write(spu2 + 0x1a8u, 2u, 0u) ||
+        !hardware.write(spu2 + 0x1aau, 2u, 0x800u) ||
+        !hardware.write(spu2 + 0x1acu, 2u, 0x55aau) ||
+        !hardware.read(spu2 + 0x1aau, 2u, &actual) ||
+        actual != 0x801u ||
+        !hardware.read(spu2 + 0x7c2u, 2u, &actual) ||
+        actual != 4u ||
+        !hardware.read(iop::c_hw::k_i_stat, 4u, &actual) ||
+        (actual & (1u << iop::c_spu2::k_irq_line)) == 0u ||
+        !hardware.write(iop::c_hw::k_i_stat, 4u,
+                        ~(1u << iop::c_spu2::k_irq_line)) ||
+        !hardware.write(spu2 + 0x19au, 2u, 0u) ||
+        !hardware.read(spu2 + 0x7c2u, 2u, &actual) ||
+        actual != 0u ||
+        hardware.pending_interrupts() != 0u)
+    {
+        return fail("SPU2 STATX, TSA, explicit data-port IRQ or reset");
+    }
+
+    // Voice parameter writes are real register state, but playback
+    // envelopes require the currently missing audio clock. Do not
+    // synthesize a voice position or an IRQ just because it was keyed.
+    if (!hardware.write(spu2 + 0x4u, 2u, 0x1010u) ||
+        !hardware.read(spu2 + 0x4u, 2u, &actual) ||
+        actual != 0x1010u ||
+        !hardware.write(spu2 + 0x1a0u, 2u, 1u) ||
+        hardware.read(spu2 + 0x0au, 2u, &actual) ||
+        hardware.read(spu2 + 0x1c8u, 2u, &actual) ||
+        !hardware.write(spu2 + 0x1a4u, 2u, 1u) ||
+        !hardware.read(spu2 + 0x0au, 2u, &actual) ||
+        actual != 0u)
+    {
+        return fail("SPU2 voice programming or dynamic read guard");
+    }
+    hardware.reset();
+    if (!hardware.read(spu2 + 0x760u, 2u, &actual) ||
+        actual != 0x3fffu ||
+        !hardware.read(spu2 + 0x7c6u, 2u, &actual) ||
+        actual != 0u ||
+        !hardware.read(spu2 + 0x7c2u, 2u, &actual) ||
+        actual != 0u ||
+        hardware.pending_interrupts() != 0u)
+    {
+        return fail("SPU2 core/master/SPDIF state survived reset");
+    }
+
     // Official OpenPS2BIOS stores zero to $at=0xBF8010B8 at
     // PC 0x0001CA00: primary DMA3/CD-ROM CHCR through KSEG1.
     // Register programming is not an implicit DMA completion.
