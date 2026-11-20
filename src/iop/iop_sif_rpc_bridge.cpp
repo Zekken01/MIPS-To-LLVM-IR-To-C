@@ -1057,7 +1057,7 @@ bool c_sif_rpc_bridge::queue_iop_guest_command(
         (words[0] & 0xffu) != words.size() * 4u ||
         (words[0] >> 8u) != payload.size() ||
         words[1] != (payload.empty() ? 0u : ee_payload_destination) ||
-        words[2] == 0u || words[3] != 0u ||
+        words[2] == 0u ||
         m_replies.size() + m_guest_pending.size() >= 64u ||
         payload.size() > 4096u ||
         (!payload.empty() &&

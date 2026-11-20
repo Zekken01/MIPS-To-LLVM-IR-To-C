@@ -33,6 +33,14 @@ public:
     void attach_disc_source(c_folder_sector_source* source);
 
 private:
+    struct s_vblank_handler
+    {
+        uint32_t m_edge = 0u;
+        uint32_t m_handler = 0u;
+        uint32_t m_argument = 0u;
+        uint32_t m_gp = 0u;
+    };
+
     struct s_interrupt
     {
         uint32_t m_mode = 0u;
@@ -154,6 +162,7 @@ private:
     std::map<uint32_t, s_variable_pool> m_variable_pools;
     std::vector<uint32_t> m_vblank_start_waiters;
     std::vector<uint32_t> m_vblank_end_waiters;
+    std::vector<s_vblank_handler> m_vblank_handlers;
     uint32_t m_dma_direction[16]{};
     uint32_t m_strtok_next = 0u;
     uint32_t m_check_kelf_path_callback = 0u;

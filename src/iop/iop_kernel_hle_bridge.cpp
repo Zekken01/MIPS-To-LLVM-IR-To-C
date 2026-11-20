@@ -104,7 +104,8 @@ constexpr s_export k_exports[] = {
     {"secrman", 4u, 16u}, {"secrman", 5u, 16u},
     {"secrman", 6u, 16u},
     {"vblank", 4u, 17u}, {"vblank", 5u, 17u},
-    {"vblank", 6u, 17u}, {"vblank", 7u, 17u}
+    {"vblank", 6u, 17u}, {"vblank", 7u, 17u},
+    {"vblank", 8u, 17u}, {"vblank", 9u, 17u}
 };
 
 // SYSCLIB byte-memory functions operate on IOP RAM, including KSEG0/1
@@ -276,6 +277,7 @@ void c_kernel_hle_bridge::reset_for_reboot()
     m_variable_pools.clear();
     m_vblank_start_waiters.clear();
     m_vblank_end_waiters.clear();
+    m_vblank_handlers.clear();
     std::fill(std::begin(m_dma_direction),
               std::end(m_dma_direction), 0u);
     m_strtok_next = 0u;
@@ -310,6 +312,19 @@ void c_kernel_hle_bridge::signal_vblank_edge(bool start)
         }
     }
     waiters.clear();
+    // A registered handler is not an event. Only the actual scanout
+    // edge producer can dispatch these guest R3000 callbacks.
+    // Snapshot the registration table so a handler can unregister
+    // itself without invalidating the producer's iteration.
+    const std::vector<s_vblank_handler> handlers = m_vblank_handlers;
+    for (const s_vblank_handler& handler : handlers)
+    {
+        if ((handler.m_edge == 0u) == start)
+        {
+            (void)m_kernel.start_guest_callback(
+                handler.m_handler, handler.m_gp, handler.m_argument);
+        }
+    }
 }
 
 bool c_kernel_hle_bridge::read_argument(
@@ -2646,9 +2661,56 @@ bool c_kernel_hle_bridge::handle_secrman(uint32_t ordinal)
 
 bool c_kernel_hle_bridge::handle_vblank(uint32_t ordinal)
 {
-    // PS2SDK vblank ABI: 4/6 wait for start, 5/7 wait for end.
-    // The original caller's R3000 thread remains blocked until its
-    // matching edge is explicitly delivered; no fake success or frame.
+    // PS2SDK vblank ABI: #8 registers an edge callback, #9 removes
+    // a matching edge/function pair. Edge 0 is the start event;
+    // edge 1 is the end event. No registration fabricates an edge.
+    if (ordinal == 8u)
+    {
+        s_cpu_state& state = m_kernel.cpu().state();
+        const uint32_t edge = state.m_gpr[4];
+        const uint32_t callback = state.m_gpr[6];
+        const uint32_t argument = state.m_gpr[7];
+        const uint32_t region = callback & 0xe0000000u;
+        const uint32_t physical = callback & 0x1fffffffu;
+        uint32_t opcode = 0u;
+        if (edge > 1u || callback == 0u ||
+            (callback & 3u) != 0u ||
+            (region != 0u && region != 0x80000000u &&
+             region != 0xa0000000u) ||
+            physical >= c_cpu::k_ram_size ||
+            !m_kernel.cpu().read32(callback, &opcode) ||
+            m_vblank_handlers.size() >= 64u)
+        {
+            state.m_gpr[2] = static_cast<uint32_t>(-1);
+            return true;
+        }
+        m_vblank_handlers.push_back({
+            edge, callback, argument, state.m_gpr[28]});
+        state.m_gpr[2] = 0u;
+        return true;
+    }
+    if (ordinal == 9u)
+    {
+        const uint32_t edge = m_kernel.cpu().state().m_gpr[4];
+        const uint32_t callback = m_kernel.cpu().state().m_gpr[5];
+        if (edge > 1u)
+        {
+            m_kernel.cpu().state().m_gpr[2] =
+                static_cast<uint32_t>(-1);
+            return true;
+        }
+        m_vblank_handlers.erase(std::remove_if(
+            m_vblank_handlers.begin(), m_vblank_handlers.end(),
+            [edge, callback](const s_vblank_handler& handler)
+            {
+                return handler.m_edge == edge &&
+                       handler.m_handler == callback;
+            }), m_vblank_handlers.end());
+        m_kernel.cpu().state().m_gpr[2] = 0u;
+        return true;
+    }
+    // Waits #4/#6 wait for start, #5/#7 wait for end.
+    // The original caller remains blocked until the matching edge.
     if (ordinal < 4u || ordinal > 7u)
     {
         return false;
