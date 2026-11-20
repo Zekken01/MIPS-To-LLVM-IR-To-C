@@ -928,6 +928,65 @@ int main()
         return fail("semaphore polling, status or delete failed");
     }
 
+    // The primary ps2-web-recomp/SDBZ IOP kernel returns precise
+    // unknown-object errors for real imported services, including the
+    // thsemap #8 WaitSema reached by the ARKD_DVD guest RPC worker.
+    // These are guest API failures, not unsupported host syscalls.
+    // A missing object must not be created, signalled or waited on.
+    struct s_missing_object_case
+    {
+        const char* m_library;
+        uint16_t m_ordinal;
+        std::array<uint32_t, 4> m_args;
+        uint32_t m_error;
+    };
+    const s_missing_object_case missing_objects[] =
+    {
+        {"thsemap", 5u, {2u, 0u, 0u, 0u},
+            static_cast<uint32_t>(-408)},
+        {"thsemap", 6u, {2u, 0u, 0u, 0u},
+            static_cast<uint32_t>(-408)},
+        {"thsemap", 7u, {2u, 0u, 0u, 0u},
+            static_cast<uint32_t>(-408)},
+        {"thsemap", 8u, {2u, 0u, 0u, 0u},
+            static_cast<uint32_t>(-408)},
+        {"thsemap", 9u, {2u, 0u, 0u, 0u},
+            static_cast<uint32_t>(-408)},
+        {"thsemap", 11u, {2u, 0x2740u, 0u, 0u},
+            static_cast<uint32_t>(-408)},
+        {"thsemap", 12u, {2u, 0x2740u, 0u, 0u},
+            static_cast<uint32_t>(-408)},
+        {"thevent", 6u, {1u, 0x20u, 0u, 0u},
+            static_cast<uint32_t>(-409)},
+        {"thevent", 10u, {1u, 0x20u, 0u, 0x2620u},
+            static_cast<uint32_t>(-409)},
+        {"thevent", 13u, {1u, 0x2680u, 0u, 0u},
+            static_cast<uint32_t>(-409)},
+        {"thmsgbx", 5u, {0xfffffffeu, 0u, 0u, 0u},
+            static_cast<uint32_t>(-410)},
+        {"thmsgbx", 8u, {0x2400u, 0xfffffffeu, 0u, 0u},
+            static_cast<uint32_t>(-410)},
+        {"thvpool", 6u, {0xfffffffeu, 16u, 0u, 0u},
+            static_cast<uint32_t>(-411)},
+        {"thvpool", 11u, {0xfffffffeu, 0x2680u, 0u, 0u},
+            static_cast<uint32_t>(-411)},
+        {"thfpool", 6u, {0xfffffffeu, 0u, 0u, 0u},
+            static_cast<uint32_t>(-412)},
+        {"thfpool", 9u, {0xfffffffeu, 0x2500u, 0u, 0u},
+            static_cast<uint32_t>(-412)}
+    };
+    for (const s_missing_object_case& item : missing_objects)
+    {
+        if (!call_guest(
+                kernel, item.m_library, item.m_ordinal,
+                item.m_args, &result) ||
+            result != item.m_error ||
+            kernel.hardware().pending_interrupts() != 0u)
+        {
+            return fail("unknown IOP object did not return guest error");
+        }
+    }
+
     // Cross-check the additional reference-backed families against
     // the actual guest-visible IOP allocation and thread state.
     uint32_t total_free = 0u;
