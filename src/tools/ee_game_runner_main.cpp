@@ -132,6 +132,66 @@ bool validate_hle_iop_reboot(
     return true;
 }
 
+
+// Inspect guest IOP contexts only at bounded EE WaitSema checkpoints.
+// A loaded IRX's module/thread "started" bit does not prove the
+// scheduler ever entered its code or reached sceSifRegisterRpc.
+void dump_iop_rpc_wait_threads(
+    const iop::c_kernel& kernel, uint32_t semaphore_id, uint32_t turn
+)
+{
+    std::fprintf(stderr,
+        "IOP RPC wait snapshot: sema=%u turn=%u cycles=%llu "
+        "threads=%zu modules=%zu\n",
+        semaphore_id, turn,
+        static_cast<unsigned long long>(kernel.cycles()),
+        kernel.threads().size(), kernel.modules().size());
+
+    for (const auto& item : kernel.threads())
+    {
+        const iop::s_kernel_thread& thread = item.second;
+        const uint32_t pc = thread.m_cpu.m_pc;
+        const uint32_t region = pc & 0xe0000000u;
+        const uint32_t physical = pc & 0x1fffffffu;
+        const bool ram_pc =
+            (region == 0u || region == 0x80000000u ||
+             region == 0xa0000000u) &&
+            (pc & 3u) == 0u &&
+            physical < iop::c_cpu::k_ram_mirror_size;
+        const uint32_t backing =
+            physical & (iop::c_cpu::k_ram_size - 1u);
+        uint32_t module_id = 0u;
+        if (ram_pc)
+        {
+            for (const auto& module : kernel.modules())
+            {
+                const iop::s_irx_module& irx = module.second.m_irx;
+                if (backing >= irx.m_base &&
+                    backing - irx.m_base < irx.m_size)
+                {
+                    module_id = module.first;
+                    break;
+                }
+            }
+        }
+        uint32_t opcode = 0u;
+        const bool fetched = ram_pc && kernel.cpu().read32(pc, &opcode);
+        std::fprintf(stderr,
+            "IOP RPC wait thread: id=%u status=%u priority=%u "
+            "wait=%u wake=%llu entry=0x%08x "
+            "pc=0x%08x next=0x%08x backing=0x%08x "
+            "opcode=0x%08x fetch=%u image_module=%u "
+            "ra=0x%08x gp=0x%08x sp=0x%08x\n",
+            item.first, static_cast<uint32_t>(thread.m_status),
+            thread.m_priority, thread.m_wait_type,
+            static_cast<unsigned long long>(thread.m_wake_cycle),
+            thread.m_entry, pc, thread.m_cpu.m_next_pc, backing,
+            opcode, fetched ? 1u : 0u, module_id,
+            thread.m_cpu.m_gpr[31], thread.m_cpu.m_gpr[28],
+            thread.m_cpu.m_gpr[29]);
+    }
+}
+
 using t_game_run = uint32_t (*)(
 
     ee::s_ee_cpu_state*,
@@ -3673,6 +3733,12 @@ int main(int argc, char** argv)
                                     iop_rpc->has_waiting_bind_guest_work();
                                 if (guest_rpc_wait)
                                 {
+                                    if (trace &&
+                                        iop_semaphore_wait_turns == 0u)
+                                    {
+                                        dump_iop_rpc_wait_threads(
+                                            *iop_kernel, semaphore_id, 0u);
+                                    }
                                     if (iop_semaphore_wait_turns >=
                                         sif_poll_limit)
                                     {
@@ -3731,6 +3797,9 @@ int main(int argc, char** argv)
                                                 guest.m_gpr[28],
                                                 guest.m_gpr[29]);
                                         }
+                                        dump_iop_rpc_wait_threads(
+                                            *iop_kernel, semaphore_id,
+                                            iop_semaphore_wait_turns);
                                         break;
                                     }
                                     // Delivery still requires guest
@@ -3759,6 +3828,21 @@ int main(int argc, char** argv)
                                             iop_rpc->pending_replies(),
                                             (hardware.dmac().pending() &
                                                 (1u << 5u)) != 0u ? 1u : 0u);
+                                    }
+                                    // A handful of read-only snapshots
+                                    // distinguish guest thread starvation,
+                                    // a runaway NOP path and genuine server
+                                    // initialization without a 2048-turn log.
+                                    if (trace &&
+                                        (iop_semaphore_wait_turns == 1u ||
+                                         iop_semaphore_wait_turns == 64u ||
+                                         iop_semaphore_wait_turns == 512u ||
+                                         iop_semaphore_wait_turns ==
+                                             sif_poll_limit))
+                                    {
+                                        dump_iop_rpc_wait_threads(
+                                            *iop_kernel, semaphore_id,
+                                            iop_semaphore_wait_turns);
                                     }
                                     // The normal top-of-loop interrupt
                                     // delivery executes the original guest
