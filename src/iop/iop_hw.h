@@ -1,5 +1,7 @@
 #pragma once
 
+#include "iop_spu2.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -150,6 +152,8 @@ private:
     uint32_t update_dma_icr(uint32_t previous, uint32_t value);
     void assert_dma_irq(uint32_t& control, bool sif_channel);
 
+    // Guest SPU2 register bank is separate from SSBUS configuration.
+    c_spu2 m_spu2;
     uint8_t m_scratchpad[k_scratchpad_size]{};
     // No CDVD command backend is connected yet, so no command may set
     // interrupt reasons spontaneously. Acknowledge writes clear bits.
