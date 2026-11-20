@@ -605,7 +605,18 @@ bool test_iop_to_ee_rpc(const std::filesystem::path& disc_root)
     // copies a guest payload into the EE buffer when SIF0 is armed.
     // Its calling thread remains blocked until a *matched* EE Rend.
     constexpr uint32_t call_pc = 0x00024100u;
+    // The caller's fifth and later parameters live at sp+16.
+    // Explicitly populate a3 with the IOP source buffer as a
+    // guest instruction, rather than modifying a saved CPU snapshot.
     if (!make_call(call_pc, call_stub, true) ||
+        !kernel.cpu().write32(call_pc, 0x3c070002u) ||
+        !kernel.cpu().write32(call_pc + 4u, 0x34e78200u) ||
+        !kernel.cpu().write32(call_pc + 8u, 0x27bdffc0u) ||
+        !kernel.cpu().write32(
+            call_pc + 12u,
+            0x0c000000u | ((call_stub >> 2u) & 0x03ffffffu)) ||
+        !kernel.cpu().write32(call_pc + 16u, 0u) ||
+        !kernel.cpu().write32(call_pc + 20u, 0x0000000du) ||
         !kernel.cpu().write32(iop_payload, 41u) ||
         !kernel.cpu().write32(iop_result, 0xdeadbeefu) ||
         !kernel.cpu().write32(data_source, 42u))
