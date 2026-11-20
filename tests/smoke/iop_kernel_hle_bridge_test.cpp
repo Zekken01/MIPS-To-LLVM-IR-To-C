@@ -417,6 +417,94 @@ bool test_registered_dma_guest_interrupt()
            (mask & (1u << 9u)) == 0u;
 }
 
+bool test_cpu_suspend_pins_original_guest_thread()
+{
+    iop::c_kernel kernel;
+    iop::c_kernel_hle_bridge hle(kernel);
+    if (!hle.install())
+    {
+        return false;
+    }
+    kernel.bind_syscall([&](iop::c_kernel& current, uint32_t service)
+    {
+        return hle.handle_syscall(current, service);
+    });
+    uint32_t suspend_pc = 0u;
+    uint32_t resume_pc = 0u;
+    if (!kernel.lookup_library("intrman", 17u, &suspend_pc) ||
+        !kernel.lookup_library("intrman", 18u, &resume_pc))
+    {
+        return false;
+    }
+    constexpr uint32_t original_pc = 0x00044000u;
+    constexpr uint32_t peer_pc = 0x00045000u;
+    constexpr uint32_t marker = 0x00047000u;
+    const uint32_t original[] = {
+        0x24040000u, // addiu a0,zero,0
+        0x0c000000u | ((suspend_pc >> 2u) & 0x03ffffffu),
+        0u,          // JAL delay slot
+        0x3c080004u, // lui t0,4
+        0x35087000u, // ori t0,t0,0x7000
+        0x24090001u, // addiu t1,zero,1
+        0xad090000u, // sw t1,0(t0)
+        0x24040001u, // resume interrupts enabled
+        0x0c000000u | ((resume_pc >> 2u) & 0x03ffffffu),
+        0u,          // JAL delay slot
+        0x3c0a0001u, // lui t2,1
+        0x354a3fc0u, // ori t2,t2,thread return trampoline
+        0x01400008u, // jr t2
+        0u
+    };
+    const uint32_t peer[] = {
+        0x3c080004u, // lui t0,4
+        0x35087000u, // ori t0,t0,0x7000
+        0x8d090000u, // lw t1,0(t0)
+        0xad090004u, // sw t1,4(t0): record what peer observed
+        0x03e00008u, // jr ra
+        0u
+    };
+    for (uint32_t i = 0u;
+         i < sizeof(original) / sizeof(original[0]); ++i)
+    {
+        if (!kernel.cpu().write32(original_pc + 4u * i, original[i]))
+        {
+            return false;
+        }
+    }
+    for (uint32_t i = 0u;
+         i < sizeof(peer) / sizeof(peer[0]); ++i)
+    {
+        if (!kernel.cpu().write32(peer_pc + 4u * i, peer[i]))
+        {
+            return false;
+        }
+    }
+    const uint32_t first = kernel.create_thread(
+        original_pc, 0u, 8u, 0x400u);
+    const uint32_t second = kernel.create_thread(
+        peer_pc, 0u, 8u, 0x400u);
+    if (first == 0u || second == 0u ||
+        !kernel.cpu().write32(marker, 0u) ||
+        !kernel.cpu().write32(marker + 4u, 0xffffffffu) ||
+        !kernel.start_thread(first) || !kernel.start_thread(second))
+    {
+        return false;
+    }
+    const iop::s_kernel_run_result done = kernel.run(256u, 8u);
+    uint32_t value = 0u;
+    uint32_t observed = 0u;
+    const iop::s_kernel_thread* first_thread = kernel.thread(first);
+    const iop::s_kernel_thread* peer_thread = kernel.thread(second);
+    return done.m_stop == iop::e_kernel_stop::idle &&
+           first_thread != nullptr && peer_thread != nullptr &&
+           first_thread->m_status == iop::e_thread_status::dormant &&
+           peer_thread->m_status == iop::e_thread_status::dormant &&
+           kernel.cpu().read32(marker, &value) && value == 1u &&
+           kernel.cpu().read32(marker + 4u, &observed) &&
+           observed == 1u &&
+           !kernel.interrupts_suspended();
+}
+
 } // namespace
 
 int main()
@@ -495,6 +583,10 @@ int main()
         }
     }
 
+    if (!test_cpu_suspend_pins_original_guest_thread())
+    {
+        return fail("CpuSuspendIntr allowed peer scheduling before resume");
+    }
     if (!test_registered_dma_guest_interrupt())
     {
         return fail("real DMA interrupt guest handler / IRQ context");
