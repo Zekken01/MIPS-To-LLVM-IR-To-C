@@ -192,6 +192,9 @@ int main()
         (actual & (1u << iop::c_spu2::k_irq_line)) == 0u ||
         !hardware.write(iop::c_hw::k_i_stat, 4u,
                         ~(1u << iop::c_spu2::k_irq_line)) ||
+        !hardware.write(spu2 + 0x1acu, 2u, 0x55abu) ||
+        !hardware.read(iop::c_hw::k_i_stat, 4u, &actual) ||
+        (actual & (1u << iop::c_spu2::k_irq_line)) != 0u ||
         !hardware.write(spu2 + 0x19au, 2u, 0u) ||
         !hardware.read(spu2 + 0x7c2u, 2u, &actual) ||
         actual != 0u ||
