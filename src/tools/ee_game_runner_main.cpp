@@ -816,6 +816,57 @@ void write_gs_diagnostics_json(FILE* output, const ee::s_ee_gs_state& gs)
         "\"current_primitive_and_transfer_counters_reset\"]\n  }", output);
 }
 
+// Parser instances are distinct: VU1 XGKICK -> PATH1, VIF1 DIRECT ->
+// PATH2, and GIF DMA channel 2 -> PATH3. A valid VIF1 DMA without a
+// resulting GIF packet does not increment either PATH1 or PATH2.
+void write_gif_path_counters_json(
+    FILE* output, const char* name,
+    const ee::s_ee_gif_path_counters& counters, bool comma)
+{
+    std::fprintf(output,
+        "%s\n      \"%s\": {"
+        "\"accepted_batches\": %llu, \"rejected_batches\": %llu, "
+        "\"accepted_input_qwc\": %llu, "
+        "\"committed_tags\": %llu, "
+        "\"committed_prim_events\": %llu, "
+        "\"committed_packed_events\": %llu, "
+        "\"committed_reglist_events\": %llu, "
+        "\"committed_image_events\": %llu, "
+        "\"committed_image_qwc\": %llu}",
+        comma ? "," : "", name,
+        static_cast<unsigned long long>(counters.m_accepted_batches),
+        static_cast<unsigned long long>(counters.m_rejected_batches),
+        static_cast<unsigned long long>(counters.m_input_qwc),
+        static_cast<unsigned long long>(counters.m_tags),
+        static_cast<unsigned long long>(counters.m_primitive_events),
+        static_cast<unsigned long long>(counters.m_packed_events),
+        static_cast<unsigned long long>(counters.m_reglist_events),
+        static_cast<unsigned long long>(counters.m_image_events),
+        static_cast<unsigned long long>(counters.m_image_qwc));
+}
+
+void write_gif_paths_json(
+    FILE* output, const ee::c_ee_gif_path3& path1,
+    const ee::c_ee_gif_path3& path2, const ee::c_ee_gif_path3& path3)
+{
+    std::fputs(
+        "{\n    \"schema\": \"ee-gif-path-provenance-v1\","
+        "\n    \"scope\": \"parser_accepted_committed_gs_sink_events\","
+        "\n    \"paths\": {", output);
+    write_gif_path_counters_json(output, "vu1_xgkick_path1",
+        path1.counters(), false);
+    write_gif_path_counters_json(output, "vif1_direct_path2",
+        path2.counters(), true);
+    write_gif_path_counters_json(output, "gif_dma_path3",
+        path3.counters(), true);
+    std::fputs(
+        "\n    },\n    \"limitations\": ["
+        "\"accepted_batches_are_parser_consume_calls_not_complete_packets\", "
+        "\"input_qwc_is_consumed_gif_bytes_not_whole_vif_dma\", "
+        "\"zero_counts_do_not_imply_guest_never_attempted_path\"]\n  }",
+        output);
+}
+
 bool write_report(
     const char* path,
     const ee::elf_loader& image,
@@ -831,6 +882,9 @@ bool write_report(
     const std::vector<s_dispatch_sample>& history,
     const std::vector<s_syscall_sample>& syscall_history,
     const ee::s_ee_gs_state& gs,
+    const ee::c_ee_gif_path3& gif_path1,
+    const ee::c_ee_gif_path3& gif_path2,
+    const ee::c_ee_gif_path3& gif_path3,
     const ee::c_ee_gs_presentation_probe& graphics_probe,
     const ee::c_ee_sdbz_dma_wait_probe& dma_wait_probe,
     const ee::c_ee_dispatch_hotspots& hotspots,
@@ -930,6 +984,8 @@ bool write_report(
     hotspots.write_json(output);
     std::fputs(",\n  \"m2_gif_gs\": ", output);
     write_gs_diagnostics_json(output, gs);
+    std::fputs(",\n  \"m2_gif_paths\": ", output);
+    write_gif_paths_json(output, gif_path1, gif_path2, gif_path3);
     std::fputs(",\n  \"m2_gs_presentation\": ", output);
     graphics_probe.write_json(output, hardware.scanout().fields_started());
     std::fputs(",\n  \"m2_sdbz_dma_wait\": ", output);
@@ -2524,6 +2580,7 @@ int main(int argc, char** argv)
                 runtime.m_guest_instruction_attempts,
                 runtime, hardware, vsync_flags,
                 reason, status, history, syscall_history, gs_state.state(),
+                gif_path1, gif_path2, gif_path3,
                 graphics_probe, dma_wait_probe, hotspots, true
             );
             report_time_ms += std::chrono::duration<double, std::milli>(
@@ -5958,6 +6015,7 @@ int main(int argc, char** argv)
                       runtime.m_guest_instruction_attempts,
                       runtime, hardware, vsync_flags,
                       reason, status, history, syscall_history, gs_state.state(),
+                      gif_path1, gif_path2, gif_path3,
                       graphics_probe, dma_wait_probe, hotspots, false))
     {
         return 1;
