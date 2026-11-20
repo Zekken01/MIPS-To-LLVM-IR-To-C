@@ -62,6 +62,14 @@ public:
     // Primary IOP DMA3 (CD-ROM) register bank, observed through KSEG1.
     static constexpr uint32_t k_cdrom_dma_base = 0x1f8010b0u;
     static constexpr uint32_t k_cdrom_dma_chcr = k_cdrom_dma_base + 8u;
+    // SPU2 core 0 DMA4 and core 1 DMA7. Original PS2 IOP DMAC
+    // channel slots: MADR, BCR, CHCR, TADR (16-byte register stride).
+    // Control register storage alone never starts/completes sound DMA.
+    static constexpr uint32_t k_spu2_dma4_base = 0x1f8010c0u;
+    static constexpr uint32_t k_spu2_dma7_base = 0x1f801500u;
+    static constexpr uint32_t k_spu2_dma_register_size = 0x10u;
+    static constexpr uint32_t k_spu2_dma_chcr_offset = 8u;
+    static constexpr uint32_t k_spu2_dma_str_bit = 0x01000000u;
     static constexpr uint32_t k_dma_pcr = 0x1f8010f0u;
     static constexpr uint32_t k_dma_pcr2 = 0x1f801570u;
     // Secondary DMA global-enable control, used by the firmware's SIF.
@@ -154,6 +162,8 @@ private:
     bool scratchpad_range(uint32_t address, uint32_t width) const;
     bool sif_dma_register(uint32_t address, uint32_t* channel,
                           uint32_t* reg) const;
+    bool spu2_dma_register(uint32_t address, uint32_t* core,
+                           uint32_t* reg) const;
     uint32_t update_dma_icr(uint32_t previous, uint32_t value);
     void assert_dma_irq(uint32_t& control, bool sif_channel);
 
@@ -188,6 +198,9 @@ private:
     bool m_timer5_irq_armed = true;
     // MADR/BCR/CHCR; no CD-ROM transfer backend exists yet.
     uint32_t m_cdrom_dma[3]{};
+    // DMA4/DMA7 owned by the two distinct SPU2 cores. The guest may
+    // program these registers, but no fake DMA data or finish is made.
+    uint32_t m_spu2_dma[2][4]{};
     uint32_t m_dma_pcr = 0u;
     uint32_t m_dma_pcr2 = 0u;
     uint32_t m_dma_global_enable = 0u;

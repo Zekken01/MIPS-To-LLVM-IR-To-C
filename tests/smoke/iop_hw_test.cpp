@@ -226,6 +226,86 @@ int main()
         return fail("guest LIBSD SPDIF init fabricated state or faulted");
     }
 
+    // In SDBZ's 05:57:06 replay, LIBSD's original instruction
+    // at 0x0005B450 is lw v0, 0(s3), s3=0xBF8010C8. The physical
+    // address is DMA4.CHCR. Run that exact R3000 load via KSEG1,
+    // after checking the matching primary/secondary DMA register
+    // bank storage. These are requests, never synthetic transfers.
+    constexpr uint32_t dma4 = iop::c_hw::k_spu2_dma4_base;
+    constexpr uint32_t dma7 = iop::c_hw::k_spu2_dma7_base;
+    for (uint32_t base : {dma4, dma7})
+    {
+        for (uint32_t index = 0u; index < 4u; ++index)
+        {
+            if (!hardware.read(base + index * 4u, 4u, &actual) ||
+                actual != 0u)
+            {
+                return fail("SPU2 DMA4/7 registers not reset to zero");
+            }
+        }
+    }
+    if (!hardware.write(dma4, 4u, 0x00024000u) ||
+        !hardware.write(dma4 + 4u, 4u, 0x00010020u) ||
+        !hardware.write(dma4 + 8u, 4u, 0x01000201u) ||
+        !hardware.write(dma4 + 12u, 4u, 0x0002a000u) ||
+        !hardware.write(dma7, 4u, 0x00028000u) ||
+        !hardware.write(dma7 + 4u, 4u, 0x00020010u) ||
+        !hardware.write(dma7 + 8u, 4u, 0x01000200u) ||
+        !hardware.write(dma7 + 12u, 4u, 0x0002c000u) ||
+        !hardware.read(dma4 + 8u, 4u, &actual) ||
+        actual != 0x01000201u ||
+        !hardware.read(dma7 + 8u, 4u, &actual) ||
+        actual != 0x01000200u ||
+        !hardware.read(dma4 + 12u, 4u, &actual) ||
+        actual != 0x0002a000u ||
+        !hardware.read(dma7 + 12u, 4u, &actual) ||
+        actual != 0x0002c000u ||
+        !hardware.read(iop::c_hw::k_dma_icr, 4u, &actual) ||
+        actual != 0u ||
+        !hardware.read(iop::c_hw::k_dma_icr2, 4u, &actual) ||
+        actual != 0u ||
+        !hardware.read(iop::c_hw::k_i_stat, 4u, &actual) ||
+        actual != 0u ||
+        hardware.pending_interrupts() != 0u ||
+        hardware.write(dma4 + 8u, 2u, 0u) ||
+        hardware.read(dma4 + 8u, 2u, &actual) ||
+        hardware.write(dma7 + 0x10u, 4u, 0u) ||
+        hardware.read(dma7 + 0x10u, 4u, &actual))
+    {
+        return fail("SPU2 DMA register banks or no-fake-DMA invariant");
+    }
+
+    if (!audio_kernel.cpu().write32(0x0005b450u, 0x8e620000u) ||
+        !audio_kernel.hardware().write(
+            dma4 + 8u, 4u, 0x01000201u))
+    {
+        return fail("cannot stage original LIBSD DMA4 CHCR read");
+    }
+    audio_cpu.m_pc = 0x0005b450u;
+    audio_cpu.m_next_pc = 0x0005b454u;
+    audio_cpu.m_gpr[19] = 0xbf8010c8u;
+    audio_cpu.m_gpr[2] = 0xffffffffu;
+    if (audio_kernel.cpu().step() != iop::e_step_result::completed ||
+        audio_cpu.m_gpr[2] != 0x01000201u ||
+        audio_kernel.cpu().last_memory_fault().m_valid ||
+        audio_kernel.hardware().pending_interrupts() != 0u)
+    {
+        return fail("retail LIBSD R3000 lw DMA4.CHCR faulted");
+    }
+
+    hardware.reset();
+    for (uint32_t base : {dma4, dma7})
+    {
+        for (uint32_t index = 0u; index < 4u; ++index)
+        {
+            if (!hardware.read(base + index * 4u, 4u, &actual) ||
+                actual != 0u)
+            {
+                return fail("SPU2 DMA4/7 register bank survived reboot");
+            }
+        }
+    }
+
     const uint32_t spu2 = iop::c_spu2::k_base;
     if (!hardware.read(spu2 + 0x760u, 2u, &actual) ||
         actual != 0x3fffu ||

@@ -46,6 +46,13 @@ void c_hw::reset()
     m_timer5_remainder = 0u;
     m_timer5_irq_armed = true;
     std::fill(m_cdrom_dma, m_cdrom_dma + 3u, 0u);
+    for (auto& core : m_spu2_dma)
+    {
+        for (uint32_t& reg : core)
+        {
+            reg = 0u;
+        }
+    }
     m_dma_pcr = 0u;
     m_dma_pcr2 = 0u;
     for (auto& bank : m_sio2_dma)
@@ -150,6 +157,30 @@ bool c_hw::sif_dma_register(uint32_t address, uint32_t* channel,
     return false;
 }
 
+bool c_hw::spu2_dma_register(
+    uint32_t address, uint32_t* core, uint32_t* reg
+) const
+{
+    if (core == nullptr || reg == nullptr || (address & 3u) != 0u)
+    {
+        return false;
+    }
+    const uint32_t bases[2] = {
+        k_spu2_dma4_base, k_spu2_dma7_base
+    };
+    for (uint32_t index = 0u; index < 2u; ++index)
+    {
+        if (address >= bases[index] &&
+            address - bases[index] < k_spu2_dma_register_size)
+        {
+            *core = index;
+            *reg = (address - bases[index]) / 4u;
+            return true;
+        }
+    }
+    return false;
+}
+
 bool c_hw::read(
     uint32_t address, uint32_t width, uint32_t* value
 )
@@ -241,6 +272,17 @@ bool c_hw::read(
         address < k_cdrom_dma_base + 12u)
     {
         *value = m_cdrom_dma[(address - k_cdrom_dma_base) / 4u];
+        return true;
+    }
+
+    // The original LIBSD worker reads DMA4.CHCR through KSEG1 at
+    // 0xBF8010C8. All four primary and secondary SPU2 DMA register
+    // words have independent storage; none is a completion status.
+    uint32_t spu2_core = 0u;
+    uint32_t spu2_reg = 0u;
+    if (spu2_dma_register(address, &spu2_core, &spu2_reg))
+    {
+        *value = m_spu2_dma[spu2_core][spu2_reg];
         return true;
     }
 
@@ -476,6 +518,19 @@ bool c_hw::write(
         address < k_sio2_port_base + 0x20u)
     {
         m_sio2_port[(address - k_sio2_port_base) / 4u] = value;
+        return true;
+    }
+
+    uint32_t spu2_core = 0u;
+    uint32_t spu2_reg = 0u;
+    if (spu2_dma_register(address, &spu2_core, &spu2_reg))
+    {
+        // Only latch real guest DMA4/DMA7 register writes. A rising
+        // CHCR.STR is a request, not permission to copy fake sound
+        // samples, acknowledge DICR, clear STR or raise IOP IRQ3.
+        // The original ps2-web-recomp/SDBZ DMA4/7 backend moves real
+        // IOP <-> SPU2 RAM data before scheduling a completion.
+        m_spu2_dma[spu2_core][spu2_reg] = value;
         return true;
     }
 

@@ -1231,3 +1231,47 @@ optional guest output, registration/release, invalid-source rejection,
 and reboot reset. The actual game still needs a matched Windows replay
 to verify that this extended DMA4 disable advances method `0x500:1`
 toward its genuine guest handler return and SIF0/DMA5 reply.
+
+## 2026-11-20 05:57:06 — ARKD clears extended INTRMAN and reaches SPU2 DMA4 CHCR
+
+The matched `ps2-game-hle(20261120-055706).zip` archive contains the
+five diagnostic files and three P6 GS/WebGPU PPM captures. The previous
+`DisableIntr(36)` syscall stop is absent, confirming that the extended
+DICR interrupt-mask support advances the guest. At **41,025 EE dispatches**
+(versus 18,365 previously), the replay reports **16,323,145 EE guest
+instruction attempts**, **421 cached LLVM functions**, **29 committed
+RPC commands**, and the same six completed original IRX startup threads.
+The 512x448 GS display, 1024x64 GS upload and 512x448 WebGPU snapshots
+contain only zero RGB values. ARKD `0x500:1` remains a real pending guest
+RPC and there is no verified SIF0/DMA5 reply for this method.
+
+**Exact stop:** IOP thread 9, PC `0x0005B450`, opcode `0x8E620000`
+(`lw v0, 0(s3)`), guest address `0xBF8010C8` (physical
+`0x1F8010C8`), width 4, memory-fault stop reason 4, RA
+`0x0005AAE0`, pending guest calls 1. This register is **SPU2 core 0,
+primary DMA channel 4 CHCR**. The preserved `WaitSema(0)` diagnostic
+still appears; the origin of its invalid ID is unverified.
+
+**Primary reference** `ps2-web-recomp/SDBZ/runtime/src/iop/hw.cpp`
+`dma_channel()` maps all primary DMA channel register slots from
+`0x1F801080` and secondary slots from `0x1F801500`. In particular,
+SPU2 DMA4 uses `0x1F8010C0..0x1F8010CF` and SPU2 DMA7 uses
+`0x1F801500..0x1F80150F`, each with MADR, BCR, CHCR, TADR words.
+Its `start_dma()` invokes actual `spu2::dma()` with guest memory and
+sound-RAM transfers before any completion is scheduled. The existing
+LLVM HLE-first model does not yet supply that real transfer producer.
+
+**Coherent batch:** Add explicit independent 32-bit DMA4/DMA7 register
+banks with genuine readback, KSEG1 aliasing, reset and CHCR.STR latch
+behaviour. Do **not** synthesize sound-RAM copying, clear a requested
+CHCR.STR, fabricate DMA4/7 completion flags/IRQ3, or manufacture ARKD
+RPC replies just because control registers are programmed. Keep
+subword and unallocated MMIO addresses fail-closed. Regress the exact
+original guest R3000 `lw v0, 0(s3)` at `0x0005B450` as well as both
+DMA banks, separate configuration, no-fake-interrupt and cold reset.
+
+**Next validation:** verify CI and a new matched local Windows replay
+that passes the original CHCR read. If ARKD next actually requests a
+SPU2 DMA transfer, implement an authentic bounded IOP↔sound-RAM DMA4/7
+backend using the guest MADR/BCR/CHCR and original timing/IRQ model;
+never clear a requested transfer without moving its real data.
