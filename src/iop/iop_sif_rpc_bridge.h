@@ -174,6 +174,9 @@ public:
     bool pump();
     size_t pending_replies() const;
     size_t pending_binds() const;
+    // A blocked EE bind permits a guest IOP scheduler turn only while
+    // real R3000 threads or guest-owned timed work are runnable.
+    bool has_waiting_bind_guest_work() const;
     uint32_t load_requests() const;
 
 private:
