@@ -117,6 +117,11 @@ public:
     // IRQ bookkeeping only. Delivery through R3000 COP0 exception
     // entry is a separate milestone; this does not synthesize it.
     bool raise_interrupt(uint32_t line);
+    // INTRMAN sources 0..31 use I_MASK; 32..38 and 40..45 are
+    // primary/secondary DMA IRQs whose enables live in DICR/DICR2.
+    // These operations only program masks, not DMA completion flags.
+    static bool supports_interrupt_line(uint32_t line);
+    bool set_interrupt_mask(uint32_t line, bool enabled);
     uint32_t pending_interrupts() const;
     uint32_t cache_control() const;
     // Advance IOP timer clock by completed guest execution cycles.

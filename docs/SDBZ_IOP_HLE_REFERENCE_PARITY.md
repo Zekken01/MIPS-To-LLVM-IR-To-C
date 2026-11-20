@@ -1176,3 +1176,58 @@ unsupported byte width, and verifies that no IOP interrupt occurs.
 HEAD and a fresh matched Windows replay. Confirm the guest passes
 `0x0005A824`, then inspect genuine ARKD method `0x500:1` completion,
 SIF0/DMA5 delivery and any further verified IOP dependencies.
+
+## 2026-11-20 05:46:12 — authentic DMA4 interrupt disable during ARKD RPC
+
+Matched Windows replay `ps2-game-hle(20261120-054612).zip` contains `boot.log`,
+`expansion.log`, `first-boot.json`, `iop-disc-catalog.json`,
+`translation-cache.json`, and all three GS/WebGPU PPM captures. It reaches
+**18,365 EE dispatches**, **16,096,545 guest instruction attempts**, reuses
+**421 cached LLVM functions**, and commits **29 RPC commands**. All six
+original IRX startup threads finish and server `0x500` really registers,
+releasing its deferred bind. All three images remain black; ARKD method
+`0x500:1` has not returned. There are 32 observed EE DMA5 callbacks, but
+none is evidence that the still-pending method `1` has replied.
+
+**Previous blocker cleared:** the original LIBSD write at SPU2
+`0xBF9007CA` no longer stops the IOP. The bounded guest RPC scheduler now
+runs at least four additional 256-instruction R3000 slices. The existing
+unknown `WaitSema(0)` diagnostic persists without stopping the guest;
+its producer remains unresolved.
+
+**New exact stop:** IOP thread 9, `pc=0x000140E8`, R3000 opcode
+`0x0000000C`, service `v0=0x494F1207`, argument `a0=0x24`,
+return address `ra=0x0005D55C`, reason `unhandled_syscall=2`,
+`pending_calls=1`. The installed HLE stub at `0x14000 + 7 * 0x20 + 8`
+resolves to `intrman` ordinal `7` / `DisableIntr` for IOP interrupt
+line **36**, i.e. primary DMA channel **4**. The old bridge rejected
+all numbers above 31 and required a registered handler.
+
+**Primary reference:** `ps2-web-recomp/SDBZ/runtime/src/iop/libs.cpp`
+implements `DisableIntr` by clearing the hardware interrupt enable and
+optionally writing the source line to the caller's output pointer. Its
+`runtime/src/iop/hw.cpp` maps extended INTRMAN sources **32..38** to
+`DICR` bits 16..22 (line 36 = bit 20) and **40..45** to `DICR2`
+bits 16..21. The shared DMA IRQ is ordinary IOP `I_STAT/I_MASK` bit 3.
+Line 39 and IDs above 45 are not established DMA interrupt sources.
+The reference `RegisterIntrHandler`, `ReleaseIntrHandler`,
+`EnableIntr`, and `DisableIntr` do not require an already registered
+handler before changing a valid source's mask; release is idempotent.
+
+**Coherent parity batch:** expose a bounded hardware `set_interrupt_mask()`
+for valid primary and extended DMA sources with explicit DICR/DICR2
+channel enables. Enabling a DMA source sets the shared IRQ3 mask and
+primary controller master enable; disabling clears only that source's
+mask, preserving pending flags and unrelated interrupt control. Update
+the four INTRMAN HLE operations to use this hardware mapping and the
+reference guest pointer semantics. Keep unknown service ordinals,
+reserved line 39, out-of-range IDs, invalid function pointers and
+unwritable output pointers fail-closed; do not generate completion,
+DMA flags, IRQ delivery or semaphore wake.
+
+Regressions execute real guest R3000 INTRMAN stubs for line 36 and
+secondary line 41, verify DICR/DICR2/I_MASK state, no spontaneous IRQ,
+optional guest output, registration/release, invalid-source rejection,
+and reboot reset. The actual game still needs a matched Windows replay
+to verify that this extended DMA4 disable advances method `0x500:1`
+toward its genuine guest handler return and SIF0/DMA5 reply.

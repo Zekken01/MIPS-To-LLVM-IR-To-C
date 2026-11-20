@@ -1122,7 +1122,10 @@ bool c_kernel_hle_bridge::handle_intrman(uint32_t ordinal)
         cpu.m_gpr[2] = 0u;
         return true;
     }
-    if (line >= 32u)
+    // The IOP INTRMAN numbers DMA channels separately from the
+    // 32-bit I_STAT/I_MASK register. LIBSD DisableIntr(0x24) targets
+    // DMA channel 4 (DICR bit 20), not an invalid IOP IRQ number.
+    if (!c_hw::supports_interrupt_line(line))
     {
         return false;
     }
@@ -1140,37 +1143,22 @@ bool c_kernel_hle_bridge::handle_intrman(uint32_t ordinal)
                               cpu.m_gpr[6], cpu.m_gpr[7]});
         break;
     case 5u:
-        if (m_interrupts.erase(line) == 0u)
-        {
-            return false;
-        }
+        // Reference ReleaseIntrHandler is idempotent for valid lines.
+        m_interrupts.erase(line);
         break;
     case 6u:
     case 7u:
     {
-        if (m_interrupts.find(line) == m_interrupts.end())
+        // EnableIntr and DisableIntr operate on the kernel mask
+        // even before a handler is registered. Do not require a
+        // fictitious handler or shift by an out-of-range IRQ number.
+        if (ordinal == 7u && cpu.m_gpr[5] != 0u &&
+            !m_kernel.cpu().write32(cpu.m_gpr[5], line))
         {
             return false;
         }
-        uint32_t mask = 0u;
-        if (!m_kernel.hardware().read(c_hw::k_i_mask, 4u, &mask))
-        {
-            return false;
-        }
-        if (ordinal == 6u)
-        {
-            mask |= 1u << line;
-        }
-        else
-        {
-            if (cpu.m_gpr[5] != 0u &&
-                !m_kernel.cpu().write32(cpu.m_gpr[5], line))
-            {
-                return false;
-            }
-            mask &= ~(1u << line);
-        }
-        if (!m_kernel.hardware().write(c_hw::k_i_mask, 4u, mask))
+        if (!m_kernel.hardware().set_interrupt_mask(
+                line, ordinal == 6u))
         {
             return false;
         }

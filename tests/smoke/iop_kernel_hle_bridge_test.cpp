@@ -402,6 +402,101 @@ int main()
         return fail("VBLANK registered guest callback/edge/removal failed");
     }
 
+    // ARKD's original LIBSD worker calls INTRMAN #7 DisableIntr
+    // with a0=0x24 (primary DMAC channel 4). This is a real
+    // R3000 imported syscall at 0x140E8, not an unsupported IRQ.
+    // DMA sources must use the DICR/DICR2 enables, not an out-of-
+    // range shift in I_MASK. The calls must not start or finish DMA.
+    uint32_t dma_result = 0u;
+    uint32_t mask = 0u;
+    uint32_t icr = 0u;
+    uint32_t icr2 = 0u;
+    constexpr uint32_t k_dma4_line = 36u;
+    constexpr uint32_t k_dma8_line = 41u;
+    constexpr uint32_t k_saved_line = 0x2f80u;
+    if (!kernel.cpu().write32(k_saved_line, 0xfeedfaceu) ||
+        !call_guest(
+            kernel, "intrman", 7u,
+            {k_dma4_line, k_saved_line, 0u, 0u}, &dma_result) ||
+        dma_result != 0u ||
+        !kernel.cpu().read32(k_saved_line, &dma_result) ||
+        dma_result != k_dma4_line ||
+        !kernel.hardware().read(iop::c_hw::k_dma_icr, 4u, &icr) ||
+        (icr & (1u << 20u)) != 0u ||
+        !kernel.hardware().read(iop::c_hw::k_i_stat, 4u, &dma_result) ||
+        dma_result != 0u ||
+        !call_guest(
+            kernel, "intrman", 6u,
+            {k_dma4_line, 0u, 0u, 0u}, &dma_result) ||
+        dma_result != 0u ||
+        !kernel.hardware().read(iop::c_hw::k_dma_icr, 4u, &icr) ||
+        (icr & ((1u << 20u) | 0x00800000u)) !=
+            ((1u << 20u) | 0x00800000u) ||
+        !kernel.hardware().read(iop::c_hw::k_i_mask, 4u, &mask) ||
+        (mask & (1u << iop::c_hw::k_dma_irq)) == 0u ||
+        !call_guest(
+            kernel, "intrman", 7u,
+            {k_dma4_line, 0u, 0u, 0u}, &dma_result) ||
+        dma_result != 0u ||
+        !kernel.hardware().read(iop::c_hw::k_dma_icr, 4u, &icr) ||
+        (icr & (1u << 20u)) != 0u ||
+        (icr & 0x00800000u) == 0u ||
+        !call_guest(
+            kernel, "intrman", 6u,
+            {k_dma8_line, 0u, 0u, 0u}, &dma_result) ||
+        dma_result != 0u ||
+        !kernel.hardware().read(iop::c_hw::k_dma_icr2, 4u, &icr2) ||
+        (icr2 & (1u << 17u)) == 0u ||
+        !call_guest(
+            kernel, "intrman", 7u,
+            {k_dma8_line, 0u, 0u, 0u}, &dma_result) ||
+        dma_result != 0u ||
+        !kernel.hardware().read(iop::c_hw::k_dma_icr2, 4u, &icr2) ||
+        (icr2 & (1u << 17u)) != 0u ||
+        !kernel.hardware().read(iop::c_hw::k_i_stat, 4u, &dma_result) ||
+        dma_result != 0u)
+    {
+        return fail("INTRMAN guest DMA mask/import semantics failed");
+    }
+    if (!call_guest(
+            kernel, "intrman", 4u,
+            {k_dma4_line, 0u, 0x3000u, 0u}, &dma_result) ||
+        dma_result != 0u ||
+        !call_guest(
+            kernel, "intrman", 5u,
+            {k_dma4_line, 0u, 0u, 0u}, &dma_result) ||
+        dma_result != 0u ||
+        !call_guest(
+            kernel, "intrman", 5u,
+            {k_dma4_line, 0u, 0u, 0u}, &dma_result) ||
+        dma_result != 0u)
+    {
+        return fail("INTRMAN DMA handler registration/release failed");
+    }
+    // Reject invalid interrupt numbers and unwriteable output pointers
+    // without modifying any mask, handler or DMA status.
+    iop::s_cpu_state& interrupt_cpu = kernel.cpu().state();
+    interrupt_cpu.m_gpr[4] = 39u;
+    interrupt_cpu.m_gpr[5] = 0u;
+    if (hle.handle_syscall(
+            kernel, iop::c_kernel_hle_bridge::k_service_base +
+                2u * 0x100u + 7u))
+    {
+        return fail("reserved DMA interrupt line 39 was accepted");
+    }
+    interrupt_cpu.m_gpr[4] = k_dma4_line;
+    interrupt_cpu.m_gpr[5] = 0xf0000000u;
+    if (hle.handle_syscall(
+            kernel, iop::c_kernel_hle_bridge::k_service_base +
+                2u * 0x100u + 7u) ||
+        !kernel.hardware().read(iop::c_hw::k_dma_icr, 4u, &icr) ||
+        (icr & (1u << 20u)) != 0u ||
+        !kernel.hardware().read(iop::c_hw::k_i_stat, 4u, &dma_result) ||
+        dma_result != 0u)
+    {
+        return fail("invalid INTRMAN output pointer altered DMA mask");
+    }
+
     uint32_t result = 0u;
     if (!call_guest(
             kernel, "thbase", 20u, {0u, 0u, 0u, 0u}, &result) ||

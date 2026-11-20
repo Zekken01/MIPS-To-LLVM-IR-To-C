@@ -107,6 +107,45 @@ int main()
         }
     }
 
+    // INTRMAN's extended lines 32..38 and 40..45 map to the
+    // primary/secondary DMAC mask bits; merely enabling them must
+    // not raise IRQ3 or complete any transfer. Leave reserved line
+    // 39 and out-of-range source IDs unsupported.
+    if (!hardware.set_interrupt_mask(36u, true) ||
+        !hardware.set_interrupt_mask(41u, true) ||
+        !hardware.read(iop::c_hw::k_dma_icr, 4u, &actual) ||
+        (actual & ((1u << 20u) | 0x00800000u)) !=
+            ((1u << 20u) | 0x00800000u) ||
+        !hardware.read(iop::c_hw::k_dma_icr2, 4u, &actual) ||
+        (actual & (1u << 17u)) == 0u ||
+        !hardware.read(iop::c_hw::k_i_mask, 4u, &actual) ||
+        (actual & (1u << iop::c_hw::k_dma_irq)) == 0u ||
+        !hardware.read(iop::c_hw::k_i_stat, 4u, &actual) ||
+        actual != 0u || hardware.pending_interrupts() != 0u ||
+        hardware.set_interrupt_mask(39u, true) ||
+        hardware.set_interrupt_mask(46u, true) ||
+        !hardware.set_interrupt_mask(36u, false) ||
+        !hardware.set_interrupt_mask(41u, false) ||
+        !hardware.read(iop::c_hw::k_dma_icr, 4u, &actual) ||
+        (actual & (1u << 20u)) != 0u ||
+        (actual & 0x00800000u) == 0u ||
+        !hardware.read(iop::c_hw::k_dma_icr2, 4u, &actual) ||
+        (actual & (1u << 17u)) != 0u ||
+        hardware.pending_interrupts() != 0u)
+    {
+        return fail("extended INTRMAN DMA masks or no-fake-IRQ contract");
+    }
+    hardware.reset();
+    if (!hardware.read(iop::c_hw::k_dma_icr, 4u, &actual) ||
+        actual != 0u ||
+        !hardware.read(iop::c_hw::k_dma_icr2, 4u, &actual) ||
+        actual != 0u ||
+        !hardware.read(iop::c_hw::k_i_mask, 4u, &actual) ||
+        actual != 0u)
+    {
+        return fail("extended INTRMAN DMA enables survived reset");
+    }
+
     // CPU aliases must reach the same physical SSBUS registers.
     iop::c_kernel audio_kernel;
     if (!audio_kernel.attach_hle_hardware() ||
