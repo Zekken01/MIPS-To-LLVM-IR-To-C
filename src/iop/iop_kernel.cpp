@@ -1368,6 +1368,10 @@ s_kernel_run_result c_kernel::run(
         thread.m_status = e_thread_status::running;
         m_current_thread_id = id;
         m_last_scheduled_id = id;
+        // Report the last real scheduled guest ID even when an execution
+        // budget expires without a fault. Previously these successful
+        // turns misleadingly reported thread=0 (idle/kernel).
+        result.m_thread_id = id;
         m_cpu.state() = thread.m_cpu;
 
         const uint32_t slice = static_cast<uint32_t>(
