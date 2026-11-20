@@ -512,7 +512,7 @@ uint32_t ee_vu0_ctc2(s_ee_cpu_state* cpu, s_ee_runtime* rt,
 uint32_t ee_vu0_macro_fmac(s_ee_cpu_state* cpu, s_ee_runtime* rt,
                             uint32_t instruction_word, uint32_t pc);
 
-// Only the reached VSQRT / VWAITQ SPECIAL2 scalar-Q encodings.
+// Only the reached VSQRT / VRSQRT / VWAITQ scalar-Q encodings.
 uint32_t ee_vu0_macro_scalar(s_ee_cpu_state* cpu, s_ee_runtime* rt,
                               uint32_t instruction_word, uint32_t pc);
 

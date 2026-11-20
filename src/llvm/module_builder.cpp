@@ -2547,7 +2547,7 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
                 special2 >= 0x34u && special2 <= 0x37u;
             const bool scalar_q =
                 (ins.opcode_word & 0x3cu) == 0x3cu &&
-                (special2 == 0x39u || special2 == 0x3bu);
+                (special2 >= 0x39u && special2 <= 0x3bu);
             m_out += "  " + result + " = call i32 @" +
                      std::string(indexed_memory
                          ? "ee_vu0_macro_indexed_memory"

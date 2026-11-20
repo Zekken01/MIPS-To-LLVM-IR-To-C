@@ -358,6 +358,32 @@ int main()
         }
     }
 
+    {
+        // Six original EE instructions at 0x0010697c..0x00106990.
+        // RSQRT Q and its VMULq consumer must lower to native VU0.
+        constexpr uint32_t k_words[] = {
+            0x4bc4216au, 0x4b052941u, 0x4b052942u,
+            0x4a6503beu, 0x4a0003bfu, 0x4bc0211cu
+        };
+        constexpr const char* k_names[] = {
+            "vmul", "vaddy", "vaddz", "vrsqrt", "vwaitq", "vmulq"
+        };
+        for (uint32_t i = 0u; i < 6u; ++i)
+        {
+            const auto ins = decode(0x0010697cu + i * 4u, k_words[i]);
+            const bool ok = ins.valid == V &&
+                std::strcmp(ins.mnemonic, k_names[i]) == 0 &&
+                lift(ins).kind == LOP_VU0_MACRO;
+            ok ? ++g_pass : ++g_fail;
+            if (!ok)
+            {
+                std::printf(
+                    "FAIL retail RSQRT/VMULq macro %u: %08x -> %s/%d\n",
+                    i, k_words[i], ins.mnemonic, (int)ins.valid);
+            }
+        }
+    }
+
     expect("reserved macro", R(0x12,0x10,4,5,0,0x33), "cop2_reserved", X);
     expect("reserved special2", R(0x12,0x10,4,5,20,0x3c), "cop2_reserved", X); // index 80
     expect("reserved rs", R(0x12,0,4,5,0,0), "cop2_reserved", X);
@@ -410,7 +436,8 @@ int main()
                              funct == 56 || funct == 57 || funct >= 60;
         const auto ins = decode(0x100000, R(0x12,0x10,0,0,0,funct));
         const bool native = funct == 0x0bu || funct == 0x01u ||
-            funct == 0x02u || funct == 0x20u || funct == 0x2au;
+            funct == 0x02u || funct == 0x20u || funct == 0x1cu ||
+            funct == 0x2au;
         const auto want = !defined ? X : (native ? V : U);
         const bool ok = ins.valid == want;
         ok ? ++g_pass : ++g_fail;
@@ -426,7 +453,8 @@ int main()
         const auto ins = decode(0x100000, R(0x12,0x10,0,0,sa,funct));
         const auto want = !defined ? X :
             (index == 0x09u || index == 0x0au || index == 0x18u ||
-             index == 0x39u || index == 0x3bu ||
+             index == 0x39u || index == 0x3au ||
+              index == 0x3bu ||
              (index >= 0x34u && index <= 0x37u) ? V : U);
         const bool ok = ins.valid == want;
         ok ? ++g_pass : ++g_fail;

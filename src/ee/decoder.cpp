@@ -975,6 +975,10 @@ s_ee_instruction decode(uint32_t pc, uint32_t word)
                 {
                     name = "vaddq";
                 }
+                else if (defined && funct == 0x1cu)
+                {
+                    name = "vmulq";
+                }
                 else if (defined && funct == 0x2au)
                 {
                     name = "vmul";
@@ -989,6 +993,7 @@ s_ee_instruction decode(uint32_t pc, uint32_t word)
                     case 0x09: name = "vmadday"; break;
                     case 0x0a: name = "vmaddaz"; break;
                     case 0x39: name = "vsqrt"; break;
+                    case 0x3a: name = "vrsqrt"; break;
                     case 0x3b: name = "vwaitq"; break;
                     case 0x34: name = "vlqi"; break;
                     case 0x35: name = "vsqi"; break;
@@ -1004,10 +1009,12 @@ s_ee_instruction decode(uint32_t pc, uint32_t word)
                     (word & 0x3u) | ((word >> 4) & 0x7cu);
                 if (defined && (funct == 0x0bu ||
                     funct == 0x01u || funct == 0x02u ||
-                    funct == 0x20u || funct == 0x2au ||
+                    funct == 0x20u || funct == 0x1cu ||
+                    funct == 0x2au ||
                     (funct >= 0x3cu &&
                      (special2_index == 0x39u ||
-                      special2_index == 0x3bu ||
+                      special2_index == 0x3au ||
+                       special2_index == 0x3bu ||
                       special2_index == 0x18u ||
                       special2_index == 0x09u ||
                       special2_index == 0x0au ||
