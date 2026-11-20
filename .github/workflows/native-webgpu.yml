@@ -103,3 +103,18 @@ jobs:
       - name: Compile clang++ native WebGPU and raylib runner
         shell: pwsh
         run: cmake --build build-clang --target ee_game_runner --config Release --parallel 2
+      - name: Verify clang++ runner stack reserve and actual startup
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path 'build-clang/ee_game_runner.exe').Path
+          $headers = (& dumpbin /headers $exe | Out-String)
+          if ($LASTEXITCODE -ne 0) {
+            throw 'dumpbin could not read the clang++ runner PE headers'
+          }
+          if ($headers -notmatch '(?im)^\s*0*800000\s+size of stack reserve') {
+            throw 'clang++ runner PE stack reserve is not 8 MiB'
+          }
+          & $exe --help | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            throw "clang++ runner could not enter main(): exit $LASTEXITCODE"
+          }
