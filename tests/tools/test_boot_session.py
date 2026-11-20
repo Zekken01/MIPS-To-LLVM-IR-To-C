@@ -179,9 +179,9 @@ def test_ll_counter():
         before_done = terminal.getvalue()
         assert before_done.count("\r") == 3, repr(before_done)
         assert "\n" not in before_done, repr(before_done)
-        assert "LLVM IR [0/7550]" in before_done
-        assert "LLVM IR [1/7550]" in before_done
-        assert "LLVM IR [2/7550]" in before_done
+        assert "LLVM IR [0/7550] 0.0%" in before_done
+        assert "LLVM IR [1/7550] 0.0%" in before_done
+        assert "LLVM IR [2/7550] 0.0%" in before_done
         progress.finish_line()
         assert terminal.getvalue().endswith("\n")
         progress.refresh()  # Preserve last display across sessions.
@@ -203,7 +203,7 @@ def test_ll_counter():
         alt = c_fake_terminal()
         cached = SESSION.c_ll_file_progress(temp, stream=alt)
         cached.refresh()
-        assert "LLVM IR [2/5]" in alt.getvalue()
+        assert "LLVM IR [2/5] 40.0%" in alt.getvalue()
         cached.finish_line()
 
         # Dynamic functions beyond the original static discovery total
@@ -214,14 +214,35 @@ def test_ll_counter():
         dynamic = c_fake_terminal()
         updated = SESSION.c_ll_file_progress(temp, stream=dynamic)
         updated.refresh()
-        assert "LLVM IR [2/2]" in dynamic.getvalue()
+        assert "LLVM IR [2/2] 100.0%" in dynamic.getvalue()
         updated.finish_line()
+
+        # Cached metadata may report a total already exceeded by
+        # newly discovered guest entries. Percentages never exceed 100%.
+        marker = ir_dir / "ee_expected_ll_count.txt"
+        marker.write_text("1\n", encoding="ascii")
+        capped = c_fake_terminal()
+        latest = SESSION.c_ll_file_progress(temp, stream=capped)
+        latest.refresh()
+        assert "LLVM IR [2/2] 100.0%" in capped.getvalue()
+
+        # Use the actual denominator for a nontrivial percentage;
+        # cache-restored sessions must not show an integer-only ratio.
+        marker.write_text("8\n", encoding="ascii")
+        fractional = c_fake_terminal()
+        precise = SESSION.c_ll_file_progress(temp, stream=fractional)
+        precise.refresh()
+        assert "LLVM IR [2/8] 25.0%" in fractional.getvalue()
 
 
 def test_windows_launcher_preserves_guest_cache():
     # The Windows launcher must try a safe host-only relink before any
     # checkout-triggered cache miss falls back to recompiling all guest IR.
     launcher = (ROOT / "run_ps2_game.bat").read_text(encoding="utf-8")
+    # Progress is always enabled, including --quick (which is what the
+    # retail boot user runs); do not duplicate it in --full arguments.
+    assert 'python tools\\run_boot_session.py "%GAME_ELF%" ^\n    --ll-progress ^' in launcher
+    assert 'set "SESSION_ARGS=--ll-progress' not in launcher
     probe = launcher.split(
         "rem Git checkout may rebuild host tools", 1
     )[1].split("echo === Starting extracted-disc", 1)[0]

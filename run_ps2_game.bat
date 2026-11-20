@@ -154,7 +154,7 @@ if defined SESSION_ARGS (
 ) else (
     set "REPORT_NAME=first-boot.json"
     set "DEFAULT_MAX_DISPATCHES=500000"
-    set "SESSION_ARGS=--ll-progress --gs-snapshot=%WORK_DIR%\gs-display.ppm --gs-upload-snapshot=%WORK_DIR%\gs-upload.ppm"
+    set "SESSION_ARGS=--gs-snapshot=%WORK_DIR%\gs-display.ppm --gs-upload-snapshot=%WORK_DIR%\gs-upload.ppm"
     echo Using the full traced HLE boot session.
     echo Boot log: "%WORK_DIR%\boot.log"
     echo Expansion log: "%WORK_DIR%\expansion.log"
@@ -170,7 +170,10 @@ echo Dispatch budget: %MAX_DISPATCHES% per pass; timeout: %BOOT_TIMEOUT_SECONDS%
 echo Report: "%WORK_DIR%\%REPORT_NAME%"
 if /I "%EE_WEBGPU_SNAPSHOT%"=="1" echo Native WebGPU raster: "%WORK_DIR%\gs-webgpu.ppm"
 if /I "%EE_WEBGPU_WINDOW%"=="1" echo Native WebGPU presentation: raylib Win32 window in final replay
+rem Display live LLVM IR file count and percentage in both quick and full
+rem sessions; the orchestrator keeps in-place updates out of boot logs.
 python tools\run_boot_session.py "%GAME_ELF%" ^
+    --ll-progress ^
     --disc-root "%DISC_ROOT%" ^
     --disc-folder "%DISC_ROOT%" ^
     --build-dir build ^

@@ -78,7 +78,8 @@ class c_ll_file_progress:
         status = (current, total)
         if status == self.m_last:
             return
-        line = f"LLVM IR [{current}/{total}]"
+        percentage = current * 100.0 / total
+        line = f"LLVM IR [{current}/{total}] {percentage:.1f}%"
         self.m_stream.write("\r" + line +
                             " " * max(0, self.m_line_width - len(line)))
         self.m_stream.flush()
