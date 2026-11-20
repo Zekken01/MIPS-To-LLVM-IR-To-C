@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdio>
 #include <utility>
 
 namespace iop
@@ -90,6 +91,12 @@ bool c_sifcmd_bridge::enqueue_guest_rpc(
     const uint32_t queue = m_rpc_servers.at(server_id).m_queue;
     m_rpc_requests[queue].push_back({token, server_id, method, bytes});
     const auto thread = m_rpc_queue_threads.find(queue);
+    std::fprintf(stderr,
+        "IOP guest RPC queued: token=%u server=0x%08x method=%u "
+        "queue=0x%08x worker=%u bytes=%zu\n",
+        token, server_id, method, queue,
+        thread == m_rpc_queue_threads.end() ? 0u : thread->second,
+        bytes.size());
     if (thread != m_rpc_queue_threads.end())
     {
         const s_kernel_thread* current = m_kernel.thread(thread->second);
@@ -476,6 +483,14 @@ bool c_sifcmd_bridge::handle_rpc_syscall(uint32_t ordinal)
         }
         requests.pop_front();
         m_rpc_thread_active[thread_id] = request.m_token;
+        std::fprintf(stderr,
+            "IOP guest RPC entered: token=%u server=0x%08x "
+            "method=%u thread=%u handler=0x%08x queue=0x%08x "
+            "buffer=0x%08x bytes=%zu cycles=%llu\n",
+            request.m_token, request.m_server_id, request.m_method,
+            thread_id, server->second.m_handler, argument,
+            server->second.m_buffer, request.m_bytes.size(),
+            static_cast<unsigned long long>(m_kernel.cycles()));
         cpu.m_gpr[4] = request.m_method;
         cpu.m_gpr[5] = server->second.m_buffer;
         cpu.m_gpr[6] =
@@ -496,6 +511,11 @@ bool c_sifcmd_bridge::handle_rpc_syscall(uint32_t ordinal)
         {
             return false;
         }
+        std::fprintf(stderr,
+            "IOP guest RPC returned: token=%u thread=%u "
+            "guest_result=0x%08x cycles=%llu\n",
+            active->second, thread_id, cpu.m_gpr[26],
+            static_cast<unsigned long long>(m_kernel.cycles()));
         m_rpc_thread_active.erase(active);
         cpu.m_gpr[4] = queue->second;
         cpu.m_next_pc =

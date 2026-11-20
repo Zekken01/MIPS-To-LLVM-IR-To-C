@@ -157,6 +157,8 @@ private:
     std::map<uint32_t, s_semaphore> m_semaphores;
     // Log each distinct guest WaitSema unknown ID once per IOP boot.
     std::set<uint32_t> m_unknown_semaphore_wait_ids;
+    // Diagnostic only: keep logs bounded without mutating guest state.
+    uint32_t m_semaphore_trace_events = 0u;
     std::map<uint32_t, s_event> m_events;
     std::map<uint32_t, s_mailbox> m_mailboxes;
     std::map<uint32_t, std::set<uint32_t>> m_heaps;

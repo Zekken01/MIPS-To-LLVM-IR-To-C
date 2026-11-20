@@ -1496,3 +1496,19 @@ Reference review: `ps2-web-recomp/SDBZ/runtime/src/iop/kernel.cpp` stores interr
 **Validation:** All four Actions workflows on the new commit must pass. This proves the synthetic guest critical-section/IRQ chain, not the retail blocker. Request a fresh matched Windows archive only after same-SHA CI is green; locate the first missing guest DMA4 interrupt/handler, ARKD wake, real method return and SIF0/DMA5 reply. PR #145 stays draft and unmerged.
 
 Additional regression: stopping an otherwise runnable thread while inside `CpuSuspendIntr` must clear both the saved thread suspension state and the effective CPU interrupt gate. This prevents a stale global mask after explicit `StopThread` or guest `ExitThread` without injecting an IRQ.
+
+## 2026-11-20 — 08:31:05 matched full replay: IRQ36 proven to be LIBSD
+
+Archive: `ps2-game-hle(20261120-083105).zip`. The `boot.log`, `first-boot.json`, `expansion.log`, IOP catalog and three GS PPM files are from the 08:30:42 full replay; the archive also includes an **older** `quick-probe.json` from 08:00:10. Analyze the stopped full report, not the stale quick probe. The ZIP has no independent `git rev-parse HEAD` record, so exact running source SHA remains unverified.
+
+Full replay: EE dispatches 100,000 (budget reached), 16,912,888 instruction attempts, 29 committed RPC commands; guest ARKD servers `0x500..0x503` register. The original ARKD method `0x500:1` is enqueued and enters its guest RPC worker, but **no original handler return, SIF0 Rend or DMA5 response** for that call is evidenced. GS snapshots are black.
+
+The real 64-byte SPU2 DMA4 completes after 68 IOP cycles; `i_stat=0x8`, `i_mask=0x00020208`, `i_ctrl=1`, and `next_irq=36`. The registered guest IRQ36 handler `0x0005b9e8` is acknowledged at cycle 1,928,701 and returns `v0=1` at cycle 1,928,930. **Crucial distinction:** `0x5b9e8` lies inside the loaded LIBSD.IRX module image (entry `0x592b0`, original `0xb0` entry offset, image ends near `0x5ebb0`), not ARKD_DVD.IRX. DMA4 completion therefore verifies the LIBSD/SPU2 path, not an ARKD semaphore wakeup.
+
+The ARKD guest worker is thread 11 (entry `0x8824c`) and calls `WaitSema(0)` from ARKD address `0x7e648`, returning kernel error -408. Seven valid kernel-HLE semaphore IDs `2..8` exist, all with count 1 when this once-only error is observed. Do **not** assume the unknown semaphore call is the fatal stall without observing the following valid semaphore transitions; equally, do not infer the LIBSD IRQ signals the ARKD worker.
+
+### Next diagnostic batch
+
+Add side-effect-free bounded IOP semaphore traces for genuine create, WaitSema acquire/block and SignalSema increment/wakeup, recording guest thread, ID, caller RA and IOP cycles; log the exact guest RPC queue token, method, queue, handler entry, and genuine return. Add real CDVDMAN read acceptance/completion diagnostics only if a later trace reaches a disc-read path. This will distinguish worker scheduling, incorrect semaphore-object use, absent CDVD/event producer, and genuine handler return. **Never** fabricate a wakeup, timer, DMA completion, guest handler return, or SIF0 reply.
+
+Retain existing draft PR #145 and squash-merge-only policy. Run four required CI workflows on the new head, then request a fresh matched `run_ps2_game.bat --full` retail replay. CI is not proof the ARKD method returns.

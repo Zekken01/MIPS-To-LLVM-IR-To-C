@@ -305,6 +305,7 @@ void c_kernel_hle_bridge::reset_for_reboot()
     m_check_kelf_path_callback = 0u;
     m_ioman_files.clear();
     m_unknown_semaphore_wait_ids.clear();
+    m_semaphore_trace_events = 0u;
     m_next_object = 1u;
     m_cpu_interrupts_suspended = false;
     m_installed = false;
@@ -1861,6 +1862,24 @@ bool c_kernel_hle_bridge::handle_thsemap(uint32_t ordinal)
 {
     s_cpu_state& cpu = m_kernel.cpu().state();
     const uint32_t id = cpu.m_gpr[4];
+    // Record actual guest semaphore state transitions, not inferred
+    // completions. Bound this to avoid flooding a long retail replay.
+    const auto trace_transition =
+        [&](const char* action, uint32_t sema_id,
+            uint32_t old_count, uint32_t new_count, uint32_t target)
+    {
+        if (m_semaphore_trace_events < 128u)
+        {
+            ++m_semaphore_trace_events;
+            std::fprintf(stderr,
+                "IOP guest semaphore: action=%s id=%u thread=%u "
+                "target=%u count=%u->%u pc=0x%08x ra=0x%08x "
+                "cycles=%llu\n",
+                action, sema_id, m_kernel.current_thread_id(),
+                target, old_count, new_count, cpu.m_pc, cpu.m_gpr[31],
+                static_cast<unsigned long long>(m_kernel.cycles()));
+        }
+    };
     if (ordinal == 4u)
     {
         uint32_t attr = 0u;
@@ -1878,6 +1897,7 @@ bool c_kernel_hle_bridge::handle_thsemap(uint32_t ordinal)
         const uint32_t created = m_next_object++;
         m_semaphores.emplace(
             created, s_semaphore{attr, option, count, maximum, {}});
+        trace_transition("create", created, 0u, count, 0u);
         cpu.m_gpr[2] = created;
         return true;
     }
@@ -1952,10 +1972,15 @@ bool c_kernel_hle_bridge::handle_thsemap(uint32_t ordinal)
                 return false;
             }
             sema.m_waiters.pop_front();
+            trace_transition("signal_wake", id, sema.m_count,
+                             sema.m_count, thread_id);
         }
         else if (sema.m_count < sema.m_maximum)
         {
+            const uint32_t previous = sema.m_count;
             ++sema.m_count;
+            trace_transition("signal_increment", id, previous,
+                             sema.m_count, 0u);
         }
         else
         {
@@ -1965,7 +1990,10 @@ bool c_kernel_hle_bridge::handle_thsemap(uint32_t ordinal)
     case 8u:
         if (sema.m_count != 0u)
         {
+            const uint32_t previous = sema.m_count;
             --sema.m_count;
+            trace_transition("wait_acquire", id, previous,
+                             sema.m_count, 0u);
         }
         else
         {
@@ -1974,6 +2002,8 @@ bool c_kernel_hle_bridge::handle_thsemap(uint32_t ordinal)
                 return false;
             }
             sema.m_waiters.push_back(m_kernel.current_thread_id());
+            trace_transition("wait_block", id, 0u, 0u,
+                             m_kernel.current_thread_id());
         }
         break;
     case 9u:
