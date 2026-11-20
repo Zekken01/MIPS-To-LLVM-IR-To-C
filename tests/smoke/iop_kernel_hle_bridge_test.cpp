@@ -1154,6 +1154,60 @@ int main()
         return fail("guest SYSCLIB sprintf O32 a2/a3 formatting failed");
     }
 
+    // A third sprintf variable argument must be taken from O32
+    // sp+16, not a fictitious host-side variadic argument.
+    constexpr uint32_t k_stack_format_program = 0x3b40u;
+    uint32_t sprintf_stub = 0u;
+    const uint32_t format_program[] = {
+        0x34060004u, // ori a2, zero, 4
+        0x34070005u, // ori a3, zero, 5
+        0x27bdffe0u, // addiu sp, sp, -32
+        0x34080006u, // ori t0, zero, 6
+        0xafa80010u, // sw t0, 16(sp)
+        0u,          // jal sprintf HLE guest import (patched below)
+        0u,          // delay slot
+        0x0000000du // break
+    };
+    if (!kernel.lookup_library("sysclib", 19u, &sprintf_stub) ||
+        !write_guest_string(
+            k_sprintf_format, "%u-%u-%u"))
+    {
+        return fail("could not prepare stacked sprintf guest");
+    }
+    for (uint32_t i = 0u; i < 8u; ++i)
+    {
+        const uint32_t instruction = i == 5u
+            ? (0x0c000000u |
+               ((sprintf_stub >> 2u) & 0x03ffffffu))
+            : format_program[i];
+        if (!kernel.cpu().write32(
+                k_stack_format_program + i * 4u,
+                instruction))
+        {
+            return fail("could not author O32 stacked sprintf call");
+        }
+    }
+    const uint32_t stack_formatter = kernel.create_thread(
+        k_stack_format_program, 0u, 1u, 0x400u,
+        k_sprintf_destination, k_sprintf_format);
+    if (stack_formatter == 0u ||
+        !kernel.start_thread(stack_formatter))
+    {
+        return fail("could not start O32 stacked sprintf guest");
+    }
+    const iop::s_kernel_run_result formatted_run =
+        kernel.run(128u);
+    const iop::s_kernel_thread* formatted_thread =
+        kernel.thread(stack_formatter);
+    if (formatted_run.m_stop != iop::e_kernel_stop::breakpoint ||
+        formatted_run.m_guest_pc != k_stack_format_program + 28u ||
+        formatted_thread == nullptr ||
+        formatted_thread->m_cpu.m_gpr[2] != 5u ||
+        !check_guest_string(k_sprintf_destination, "4-5-6"))
+    {
+        return fail("SYSCLIB sprintf did not read O32 sp+16 argument");
+    }
+
     const std::string expected_vsprintf = "00000012:-7:audio";
     if (!write_guest_string(
             k_vsprintf_format, "%08x:%d:%s") ||
