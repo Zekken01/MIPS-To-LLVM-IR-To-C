@@ -71,6 +71,17 @@ struct s_kernel_thread
     uint32_t m_stack_size = 0u;
     uint64_t m_wake_cycle = 0u;
     uint32_t m_alarm_id = 0u;
+    // Monotonic, host-only IOP scheduling diagnostics. These do not
+    // affect original guest scheduling or register state and are
+    // printed only at bounded outstanding-RPC snapshots.
+    uint64_t m_guest_instructions = 0u;
+    uint64_t m_guest_slices = 0u;
+    uint64_t m_handled_syscalls = 0u;
+    uint64_t m_self_restarts = 0u;
+    uint32_t m_last_syscall_number = 0u;
+    uint32_t m_last_syscall_pc = 0u;
+    uint32_t m_last_syscall_ra = 0u;
+    uint32_t m_last_syscall_a0 = 0u;
     e_thread_status m_status = e_thread_status::dormant;
     s_cpu_state m_cpu{};
 };

@@ -2155,7 +2155,13 @@ int main()
         // StartThread passes its second API argument as new a0.
         restarted->m_cpu.m_gpr[4] != 0x37u ||
         restarted->m_cpu.m_gpr[5] != 0u ||
-        restarted->m_cpu.m_gpr[31] != 0x00013fc0u)
+        restarted->m_cpu.m_gpr[31] != 0x00013fc0u ||
+        restarted->m_guest_instructions == 0u ||
+        restarted->m_guest_slices == 0u ||
+        restarted->m_handled_syscalls != 1u ||
+        restarted->m_self_restarts != 1u ||
+        restarted->m_last_syscall_ra != restart_entry + 44u ||
+        restarted->m_last_syscall_a0 != 0u)
     {
         std::fprintf(stderr,
             "StartThread(0) diagnostic: stop=%u guest_pc=0x%08x "

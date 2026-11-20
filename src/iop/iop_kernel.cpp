@@ -1062,6 +1062,7 @@ bool c_kernel::start_thread_with_arguments(
     thread.m_delete_on_exit = false;
     if (restart_current)
     {
+        ++thread.m_self_restarts;
         m_restart_current_thread = true;
     }
     return true;
@@ -1718,6 +1719,8 @@ s_kernel_run_result c_kernel::run(
             std::min<uint64_t>(remaining, quantum)
         );
         const s_run_result step_result = m_cpu.run(slice);
+        ++thread.m_guest_slices;
+        thread.m_guest_instructions += step_result.m_instructions;
         m_cycles += step_result.m_instructions;
         m_hardware.advance_cycles(step_result.m_instructions);
         result.m_executed += step_result.m_instructions;
@@ -1839,8 +1842,16 @@ s_kernel_run_result c_kernel::run(
             // its kernel HLE boundary. It is never silently ignored.
             const uint32_t number =
                 m_cpu.state().m_gpr[2];
+            thread.m_last_syscall_number = number;
+            thread.m_last_syscall_pc = step_result.m_pc;
+            thread.m_last_syscall_ra = m_cpu.state().m_gpr[31];
+            thread.m_last_syscall_a0 = m_cpu.state().m_gpr[4];
             const bool handled =
                 m_syscall && m_syscall(*this, number);
+            if (handled)
+            {
+                ++thread.m_handled_syscalls;
+            }
             if (!handled)
             {
                 thread.m_status = e_thread_status::faulted;

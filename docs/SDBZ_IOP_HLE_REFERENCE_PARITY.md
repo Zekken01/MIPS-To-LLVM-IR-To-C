@@ -2160,3 +2160,62 @@ correctly calls `start_thread_with_argument(id,arg)` which stores
 `m_gpr[4]=arg`. Corrected the fixture to assert a0=0x37
 and a1=0. No runtime semantic change is justified by this
 synthetic test failure.
+
+
+## 2026-11-20 — 13:24 matched retail replay, ARKD token 15 priority diagnosis
+
+The exact uploaded batch `ps2-game-hle(20261120-132425).zip`
+contains a `quick-probe.log` (2,424,926 bytes) and matching
+`quick-probe.json`. It consists of **one replay**, no new
+translations. The final JSON reports 830 linked EE functions,
+4,000,000 dispatches, 84,007,184 EE guest instruction attempts,
+16 GS fields, `DISPATCH` stop/status 1 and final PC
+`0x00178de8`. The EE has exhausted the user-defined budget;
+this does not prove rendering or exception handling.
+
+The previous `StartThread(0)` fix took effect: **zero**
+`IOP HLE StartThread rejected` and zero
+`IOP HLE CreateThread rejected` events. CDVDFSV RTC method
+1 still commits (seq 41, result 1), and genuine PADMAN guest
+RPC token 14 completes, returning `0x001cfa80`. ARKD guest
+RPC token 15 (`0x501`, method 18, worker 12) queues only;
+there is no `entered` or `returned` event. Final
+IOP state remains 7 ready / 16 blocked / 0 faulted.
+
+The new SIO2 counters resolve the earlier assumption: all nine
+bounded snapshots report **sio2_ctrl_starts=0**,
+**sio2_packets=0**, **sio2_completed=0**. No executed
+controller transaction can explain this specific stall.
+
+At the final snapshot, ARKD worker **12** is ready at priority
+**50**, while PADMAN guest workers **57 and 63** are ready
+at priority **46**. Native `next_ready()` chooses minimum
+priority value, consistent with the primary reference
+`ps2-web-recomp/SDBZ/runtime/src/iop/kernel.cpp`
+`best_ready()`. The original scheduler therefore allows
+these higher-priority guest threads to consume the cycle budget.
+Do not adjust their priority, round robin across priority
+classes, or fabricate an ARKD reply to force progress.
+
+Need direct evidence to tell whether PADMAN is repeatedly
+self-restarting, executing a non-blocking R3000 loop, or
+reaching a specific HLE service before it has an opportunity
+to block. Add purely observational host-only cumulative
+per-thread `guest_insns`, `slices`, `syscalls`,
+`self_restarts`, `last_syscall`, `last_syscall_pc`,
+`last_syscall_ra`, and `last_syscall_a0` fields to the
+existing **bounded** outstanding-RPC thread snapshots, not to
+the hot-path console or guest RAM. They are zero-initialized
+on creation, naturally reset on kernel reboot, and never
+affect guest registers, device status, HLE results, thread
+priority or scheduling. The existing real R3000
+`StartThread(0)` fixture now asserts that the self-restart
+counter increases once, the HLE syscall count is one and
+the original callsite/argument were recorded.
+
+Next retail run needs to check the actual increases in
+`guest_insns`, `self_restarts`, `last_syscall*` on
+57/63 between genuine ARKD token 15 queue and final snapshot.
+Only then decide whether a particular HLE behavior requires
+a compatibility fix. The first rendered frame and token 15
+completion remain unverified.

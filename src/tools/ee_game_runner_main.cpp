@@ -251,7 +251,11 @@ void dump_pending_iop_guest_rpc(
             "priority=%u wait=%u wake=%llu suspended=%u "
             "entry=0x%08x pc=0x%08x next=0x%08x "
             "opcode=0x%08x fetch=%u ra=0x%08x gp=0x%08x "
-            "sp=0x%08x v0=0x%08x a0=0x%08x a1=0x%08x\n",
+            "sp=0x%08x v0=0x%08x a0=0x%08x a1=0x%08x "
+            "guest_insns=%llu slices=%llu syscalls=%llu "
+            "self_restarts=%llu last_syscall=0x%08x "
+            "last_syscall_pc=0x%08x last_syscall_ra=0x%08x "
+            "last_syscall_a0=0x%08x\n",
             entry.first, static_cast<uint32_t>(thread.m_status),
             thread.m_priority, thread.m_wait_type,
             static_cast<unsigned long long>(thread.m_wake_cycle),
@@ -260,7 +264,13 @@ void dump_pending_iop_guest_rpc(
             opcode, fetched ? 1u : 0u, thread.m_cpu.m_gpr[31],
             thread.m_cpu.m_gpr[28], thread.m_cpu.m_gpr[29],
             thread.m_cpu.m_gpr[2], thread.m_cpu.m_gpr[4],
-            thread.m_cpu.m_gpr[5]);
+            thread.m_cpu.m_gpr[5],
+            static_cast<unsigned long long>(thread.m_guest_instructions),
+            static_cast<unsigned long long>(thread.m_guest_slices),
+            static_cast<unsigned long long>(thread.m_handled_syscalls),
+            static_cast<unsigned long long>(thread.m_self_restarts),
+            thread.m_last_syscall_number, thread.m_last_syscall_pc,
+            thread.m_last_syscall_ra, thread.m_last_syscall_a0);
 
         // At most two runnable guest PCs: preserve surrounding opcodes,
         // their real GPRs and caller stack locals. A pending guest RPC
