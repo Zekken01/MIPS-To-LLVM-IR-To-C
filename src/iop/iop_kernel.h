@@ -165,6 +165,14 @@ public:
     bool start_thread_with_argument(uint32_t id, uint32_t argument);
     bool start_thread_with_arguments(uint32_t id,
                                      uint32_t a0, uint32_t a1);
+    // Start a linked IRX with the real _start(argc, argv) guest ABI.
+    // argv[0] is the module path; further NUL-separated LOADFILE
+    // arguments reside in the thread-owned IOP stack allocation.
+    bool start_module_thread_with_arguments(
+        uint32_t thread_id,
+        const std::string& module_path,
+        const std::vector<std::string>& arguments
+    );
     bool wake_thread(uint32_t id);
     bool wake_thread_with_result(uint32_t id, uint32_t result);
     bool stop_thread(uint32_t id);
