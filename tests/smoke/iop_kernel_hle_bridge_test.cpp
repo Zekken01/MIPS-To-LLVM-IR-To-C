@@ -2166,6 +2166,8 @@ int main()
         restarted->m_guest_slices == 0u ||
         restarted->m_handled_syscalls != 1u ||
         restarted->m_self_restarts != 1u ||
+        restarted->m_last_self_restart_ra != restart_entry + 44u ||
+        restarted->m_last_self_restart_arg != 0x37u ||
         restarted->m_last_syscall_ra != restart_entry + 44u ||
         restarted->m_last_syscall_a0 != 0u)
     {

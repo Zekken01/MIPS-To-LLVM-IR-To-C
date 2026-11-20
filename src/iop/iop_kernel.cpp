@@ -1065,6 +1065,10 @@ bool c_kernel::start_thread_with_arguments(
     thread.m_delete_on_exit = false;
     if (restart_current)
     {
+        // The live guest's RA is the original import caller, before
+        // restoring the new thread entry context.
+        thread.m_last_self_restart_ra = m_cpu.state().m_gpr[31];
+        thread.m_last_self_restart_arg = a0;
         ++thread.m_self_restarts;
         m_restart_current_thread = true;
     }

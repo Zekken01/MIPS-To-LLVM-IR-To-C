@@ -257,7 +257,8 @@ void dump_pending_iop_guest_rpc(
             "opcode=0x%08x fetch=%u ra=0x%08x gp=0x%08x "
             "sp=0x%08x v0=0x%08x a0=0x%08x a1=0x%08x "
             "guest_insns=%llu slices=%llu syscalls=%llu "
-            "self_restarts=%llu last_syscall=0x%08x "
+            "self_restarts=%llu restart_ra=0x%08x "
+            "restart_arg=0x%08x last_syscall=0x%08x "
             "last_syscall_pc=0x%08x last_syscall_ra=0x%08x "
             "last_syscall_a0=0x%08x\n",
             entry.first, static_cast<uint32_t>(thread.m_status),
@@ -273,6 +274,7 @@ void dump_pending_iop_guest_rpc(
             static_cast<unsigned long long>(thread.m_guest_slices),
             static_cast<unsigned long long>(thread.m_handled_syscalls),
             static_cast<unsigned long long>(thread.m_self_restarts),
+            thread.m_last_self_restart_ra, thread.m_last_self_restart_arg,
             thread.m_last_syscall_number, thread.m_last_syscall_pc,
             thread.m_last_syscall_ra, thread.m_last_syscall_a0);
 

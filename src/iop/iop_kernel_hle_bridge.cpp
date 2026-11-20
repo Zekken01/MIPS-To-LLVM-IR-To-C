@@ -1418,21 +1418,6 @@ bool c_kernel_hle_bridge::handle_thbase(uint32_t ordinal)
             }
             return true;
         }
-        // Record the actual guest caller before a self-restart
-        // resets its GPR context. Never change scheduling because of
-        // these bounded diagnostics.
-        if (self_restart)
-        {
-            // The kernel owns the cumulative counter and entry reset.
-            // Here we retain only guest-caller evidence for diagnosis.
-            s_kernel_thread* current =
-                m_kernel.mutable_thread(id);
-            if (current != nullptr)
-            {
-                current->m_last_self_restart_ra = cpu.m_gpr[31];
-                current->m_last_self_restart_arg = cpu.m_gpr[5];
-            }
-        }
         const bool started = ordinal == 6u
             ? m_kernel.start_thread_with_argument(id, cpu.m_gpr[5])
             : m_kernel.start_thread_with_arguments(
