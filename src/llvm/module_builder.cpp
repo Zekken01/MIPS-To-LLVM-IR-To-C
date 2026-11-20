@@ -90,6 +90,7 @@ void module_builder::declare_memory_helpers()
     m_out += "declare i32 @ee_vu0_cfc2(ptr, ptr, i32, i32, i32, i32)\n";
     m_out += "declare i32 @ee_vu0_ctc2(ptr, ptr, i32, i32, i32, i32)\n";
     m_out += "declare i32 @ee_vu0_macro_fmac(ptr, ptr, i32, i32)\n";
+    m_out += "declare i32 @ee_vu0_macro_scalar(ptr, ptr, i32, i32)\n";
     m_out += "declare i32 @ee_vu0_macro_indexed_memory(ptr, ptr, i32, i32)\n";
     m_out += "declare i32 @ee_vu0_get_branch_condition(ptr)\n";
     m_out += "\n";
@@ -865,19 +866,21 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
     if (fallthrough_pc == 0)
         fallthrough_pc = ins.pc + 8;
 
-    // VU User's Manual v6.0, LQC2/SQC2: a misaligned 128-bit
-    // effective address traps with AdEL/AdES before any VF or memory
-    // modification. Flush earlier SSA GPR writes on either branch so
-    // guest exception handlers observe the committed program state.
-    const auto guard_vu0_quad_alignment =
-        [&](const std::string& address, uint32_t excode)
+    // MIPS scalar loads/stores and VU0 quadword transfers raise
+    // AdEL/AdES before any memory or destination-register side effect.
+    // LQ/SQ are intentionally exempt: they mask address bits 0..3.
+    // Commit prior SSA writes before taking the exception so EPC,
+    // Cause.BD and BadVAddr observe precise guest architectural state.
+    const auto guard_memory_alignment =
+        [&](const std::string& address, uint32_t width, uint32_t excode)
     {
         const std::string bits = newtemp();
         const std::string misaligned = newtemp();
         const std::string suffix = std::to_string(m_temp_counter++);
-        const std::string fault = "vu0_quad_fault_" + suffix;
-        const std::string aligned = "vu0_quad_aligned_" + suffix;
-        m_out += "  " + bits + " = and i32 " + address + ", 15\n";
+        const std::string fault = "memory_alignment_fault_" + suffix;
+        const std::string aligned = "memory_alignment_ok_" + suffix;
+        m_out += "  " + bits + " = and i32 " + address + ", " +
+                 std::to_string(width - 1u) + "\n";
         m_out += "  " + misaligned + " = icmp ne i32 " + bits + ", 0\n";
         std::set<uint8_t> dirty(m_dirty_regs.begin(), m_dirty_regs.end());
         store_dirty_regs(dirty);
@@ -971,6 +974,16 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
         std::string addr = newtemp();
         m_out += "  " + sum + " = add i64 " + src_lo(ins.rs) + ", " + imm + "\n";
         m_out += "  " + addr + " = trunc i64 " + sum + " to i32\n";
+        const uint32_t width =
+            ins.opcode == ee::e_ee_opcode::OP_LH ||
+            ins.opcode == ee::e_ee_opcode::OP_LHU ? 2u :
+            ins.opcode == ee::e_ee_opcode::OP_LD ? 8u :
+            ins.opcode == ee::e_ee_opcode::OP_LW ||
+            ins.opcode == ee::e_ee_opcode::OP_LWU ? 4u : 1u;
+        if (width != 1u)
+        {
+            guard_memory_alignment(addr, width, 4u); // AdEL
+        }
 
         if (ins.opcode == ee::e_ee_opcode::OP_LB ||
             ins.opcode == ee::e_ee_opcode::OP_LBU) {
@@ -1024,6 +1037,10 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
             ins.opcode == ee::e_ee_opcode::OP_SB ? 1u :
             ins.opcode == ee::e_ee_opcode::OP_SH ? 2u :
             ins.opcode == ee::e_ee_opcode::OP_SD ? 8u : 4u;
+        if (width != 1u)
+        {
+            guard_memory_alignment(addr, width, 5u); // AdES
+        }
         emit_guest_store_trace(ins, addr, addr, width, src_lo(ins.rt), 0u);
         if (ins.opcode == ee::e_ee_opcode::OP_SB) {
             std::string v = newtemp();
@@ -1049,12 +1066,14 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
         char imm[32];
         std::snprintf(imm, sizeof(imm), "%d", ins.immediate);
         std::string sum = newtemp();
+        std::string raw_addr = newtemp();
         std::string addr = newtemp();
         std::string addr8 = newtemp();
         std::string vlo = newtemp();
         std::string vhi = newtemp();
         m_out += "  " + sum + " = add i64 " + src_lo(ins.rs) + ", " + imm + "\n";
-        m_out += "  " + addr + " = trunc i64 " + sum + " to i32\n";
+        m_out += "  " + raw_addr + " = trunc i64 " + sum + " to i32\n";
+        m_out += "  " + addr + " = and i32 " + raw_addr + ", -16\n";
         m_out += "  " + vlo + " = call i64 @ee_mem_read64(ptr %rt, i32 " + addr + ")\n";
         m_out += "  " + addr8 + " = add i32 " + addr + ", 8\n";
         m_out += "  " + vhi + " = call i64 @ee_mem_read64(ptr %rt, i32 " + addr8 + ")\n";
@@ -1063,19 +1082,24 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
     }
     case ee::e_ee_opcode::OP_SQ:
     {
-        // Store full 128-bit GPR.
+        // EE LQ/SQ mask the low four effective-address bits, unlike
+        // LQC2/SQC2. Retain the original address in store diagnostics.
         char imm[32];
         std::snprintf(imm, sizeof(imm), "%d", ins.immediate);
         std::string sum = newtemp();
+        std::string raw_addr = newtemp();
+        std::string raw_addr8 = newtemp();
         std::string addr = newtemp();
         std::string addr8 = newtemp();
         m_out += "  " + sum + " = add i64 " + src_lo(ins.rs) + ", " + imm + "\n";
-        m_out += "  " + addr + " = trunc i64 " + sum + " to i32\n";
-        emit_guest_store_trace(ins, addr, addr, 8u, src_lo(ins.rt), 0u);
+        m_out += "  " + raw_addr + " = trunc i64 " + sum + " to i32\n";
+        m_out += "  " + addr + " = and i32 " + raw_addr + ", -16\n";
+        emit_guest_store_trace(ins, raw_addr, addr, 8u, src_lo(ins.rt), 0u);
         m_out += "  call void @ee_mem_write64(ptr %rt, i32 " + addr + ", i64 " +
                  src_lo(ins.rt) + ")\n";
         m_out += "  " + addr8 + " = add i32 " + addr + ", 8\n";
-        emit_guest_store_trace(ins, addr8, addr8, 8u, src_hi(ins.rt), 1u);
+        m_out += "  " + raw_addr8 + " = add i32 " + raw_addr + ", 8\n";
+        emit_guest_store_trace(ins, raw_addr8, addr8, 8u, src_hi(ins.rt), 1u);
         m_out += "  call void @ee_mem_write64(ptr %rt, i32 " + addr8 + ", i64 " +
                  src_hi(ins.rt) + ")\n";
         break;
@@ -1143,7 +1167,7 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
         std::string vhi = newtemp();
         m_out += "  " + sum + " = add i64 " + src_lo(ins.rs) + ", " + imm + "\n";
         m_out += "  " + addr + " = trunc i64 " + sum + " to i32\n";
-        guard_vu0_quad_alignment(addr, 4u); // EX_AdEL
+        guard_memory_alignment(addr, 16u, 4u); // EX_AdEL
         m_out += "  " + addr8 + " = add i32 " + addr + ", 8\n";
         m_out += "  " + vlo + " = call i64 @ee_mem_read64(ptr %rt, i32 " + addr + ")\n";
         m_out += "  " + vhi + " = call i64 @ee_mem_read64(ptr %rt, i32 " + addr8 + ")\n";
@@ -1167,7 +1191,7 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
         std::string vhi = newtemp();
         m_out += "  " + sum + " = add i64 " + src_lo(ins.rs) + ", " + imm + "\n";
         m_out += "  " + addr + " = trunc i64 " + sum + " to i32\n";
-        guard_vu0_quad_alignment(addr, 5u); // EX_AdES
+        guard_memory_alignment(addr, 16u, 5u); // EX_AdES
         m_out += "  " + addr8 + " = add i32 " + addr + ", 8\n";
         // SQC2 VF00 always stores (0,0,0,1), even if the host backing
         // VF0 bytes are stale. Only VF1..31 are backed by storage.
@@ -1817,6 +1841,9 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
         std::string addr = newtemp();
         m_out += "  " + sum + " = add i64 " + src_lo(ins.rs) + ", " + imm + "\n";
         m_out += "  " + addr + " = trunc i64 " + sum + " to i32\n";
+        guard_memory_alignment(addr, 4u,
+                               ins.opcode == ee::e_ee_opcode::OP_LWC1
+                                   ? 4u : 5u);
         if (ins.opcode == ee::e_ee_opcode::OP_LWC1) {
             std::string w = newtemp();
             m_out += "  " + w + " = call i32 @ee_mem_read32(ptr %rt, i32 " + addr + ")\n";
@@ -2078,7 +2105,11 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
                 m_out += "  " + divisor_is_zero + " = icmp eq i32 " + ft_exponent + ", 0\n";
                 m_out += "  " + sign_xor + " = xor i32 " + raw_fs + ", " + raw_ft + "\n";
                 m_out += "  " + sign + " = and i32 " + sign_xor + ", -2147483648\n";
-                m_out += "  " + divide_by_zero_result + " = or i32 " + sign + ", 2139095039\n";
+                // Sony EE Core User's Manual v6.0, Table 8-5:
+                // unlike IEEE FMAX (0x7F7FFFFF), the R5900's
+                // exceptional quotient is signed 0x7FFFFFFF.
+                m_out += "  " + divide_by_zero_result +
+                         " = or i32 " + sign + ", 2147483647\n";
 
                 const std::string fa = load_ee_fpr_f32(fs);
                 const std::string fb = load_ee_fpr_f32(ft);
@@ -2514,10 +2545,14 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
             const bool indexed_memory =
                 (ins.opcode_word & 0x3cu) == 0x3cu &&
                 special2 >= 0x34u && special2 <= 0x37u;
+            const bool scalar_q =
+                (ins.opcode_word & 0x3cu) == 0x3cu &&
+                (special2 >= 0x39u && special2 <= 0x3bu);
             m_out += "  " + result + " = call i32 @" +
                      std::string(indexed_memory
                          ? "ee_vu0_macro_indexed_memory"
-                         : "ee_vu0_macro_fmac") +
+                         : scalar_q ? "ee_vu0_macro_scalar"
+                                    : "ee_vu0_macro_fmac") +
                      "(ptr %cpu, ptr %rt, i32 " +
                      std::to_string(ins.opcode_word) + ", i32 " +
                      std::to_string(ins.pc) + ")\n";

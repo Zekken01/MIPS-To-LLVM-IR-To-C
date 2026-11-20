@@ -1,6 +1,8 @@
 #include "iop_hw.h"
+#include "iop_cpu.h"
 
 #include <algorithm>
+#include <cstdio>
 
 namespace iop
 {
@@ -30,21 +32,43 @@ void c_hw::reset()
     m_i_mask = 0u;
     m_i_ctrl = 1u;
     m_cache_control = 0u;
+    m_spu2.reset();
     m_ssbus_spu2_addr = 0u;
     m_ssbus_spu2_addr1 = 0u;
     m_ssbus_spu2_delay = 0u;
     m_ssbus_spu2_delay1 = 0u;
     m_sio2_ctrl = 0u;
+    m_sio2_stat = 0u;
+    m_sio2_index = 0u;
     std::fill(m_sio2_send3, m_sio2_send3 + 16u, 0u);
     std::fill(m_sio2_port, m_sio2_port + 8u, 0u);
+    m_sio2_pad[0] = s_sio2_pad{};
+    m_sio2_pad[1] = s_sio2_pad{};
+    // Primary ps2-web-recomp/SDBZ reference has a neutral pad in port 0.
+    // This models a connected emulated peripheral, not host input.
+    m_sio2_pad[0].m_connected = true;
     m_sio2_pending_tx.clear();
+    m_sio2_rx.clear();
     m_sio2_transfer_requested = false;
+    m_sio2_ctrl_start_count = 0u;
+    m_sio2_packet_count = 0u;
+    m_sio2_transfer_count = 0u;
     m_timer5_count = 0u;
     m_timer5_mode = 0u;
     m_timer5_target = 0u;
     m_timer5_remainder = 0u;
     m_timer5_irq_armed = true;
     std::fill(m_cdrom_dma, m_cdrom_dma + 3u, 0u);
+    for (auto& core : m_spu2_dma)
+    {
+        for (uint32_t& reg : core)
+        {
+            reg = 0u;
+        }
+    }
+    m_spu2_dma_remaining[0] = 0u;
+    m_spu2_dma_remaining[1] = 0u;
+    m_dma_cpu = nullptr;
     m_dma_pcr = 0u;
     m_dma_pcr2 = 0u;
     for (auto& bank : m_sio2_dma)
@@ -109,6 +133,463 @@ void c_hw::bind_cdvd_start(void* user, t_cdvd_start_callback callback)
     m_cdvd_start = m_cdvd_user != nullptr ? callback : nullptr;
 }
 
+void c_hw::bind_dma_cpu(c_cpu* cpu)
+{
+    m_dma_cpu = cpu;
+}
+
+// SIO2 controller exchange from ps2-web-recomp/SDBZ's sio2.cpp:
+// SEND3 supplies the input and output sizes; the guest's actual TX bytes
+// select the device command. Never make a response to a write-only setup.
+bool c_hw::process_sio2_packet()
+{
+    if (m_dma_cpu == nullptr || m_sio2_index >= 16u)
+    {
+        return false;
+    }
+    const uint32_t send = m_sio2_send3[m_sio2_index];
+    const uint32_t in_size = (send >> 8u) & 0x1ffu;
+    const uint32_t out_size = (send >> 18u) & 0x1ffu;
+    if (in_size == 0u || out_size == 0u ||
+        in_size > k_sio2_tx_limit || out_size > k_sio2_tx_limit ||
+        m_sio2_pending_tx.size() < in_size ||
+        m_sio2_rx.size() > k_sio2_tx_limit - out_size)
+    {
+        return false;
+    }
+
+    const uint32_t port = send & 3u;
+    std::vector<uint8_t> reply(out_size, 0xffu);
+    const auto put = [&reply](uint32_t index, uint8_t value)
+    {
+        if (index < reply.size())
+        {
+            reply[index] = value;
+        }
+    };
+    if (m_sio2_index == 0u)
+    {
+        m_sio2_stat = 0x1100u;
+    }
+    // Port 2 is the memory card. No card is attached until a real
+    // persistent image is mounted: report absence, not fake save data.
+    const bool pad_present = port < 2u &&
+        m_sio2_pad[port].m_connected &&
+        m_sio2_port[port * 2u + 1u] != 0x5ffffu &&
+        m_sio2_port[port * 2u + 1u] != 0x00030064u &&
+        m_sio2_pending_tx[0u] == 0x01u;
+    if (!pad_present)
+    {
+        m_sio2_stat |= 0xc000u |
+            (0x10000u << (m_sio2_index & 15u));
+    }
+    else
+    {
+        s_sio2_pad& pad = m_sio2_pad[port];
+        const uint8_t command = in_size >= 2u ?
+            m_sio2_pending_tx[1u] : 0u;
+        put(0u, 0xffu);
+        put(1u, pad.m_config ? 0xf3u : pad.m_mode);
+        put(2u, 0x5au);
+        const auto neutral_data = [&]()
+        {
+            put(3u, 0xffu);
+            put(4u, 0xffu);
+            if (pad.m_mode != 0x41u)
+            {
+                for (uint32_t index = 5u; index < 9u; ++index)
+                {
+                    put(index, 0x80u);
+                }
+            }
+            if (pad.m_mode == 0x79u)
+            {
+                for (uint32_t index = 9u; index < 21u; ++index)
+                {
+                    put(index, 0u);
+                }
+            }
+        };
+        switch (command)
+        {
+        case 0x40u:
+            put(3u, 0u); put(4u, 0u); put(5u, 2u);
+            put(6u, 0u); put(7u, 0u); put(8u, 0x5au);
+            break;
+        case 0x41u:
+            if (pad.m_mode == 0x41u)
+            {
+                for (uint32_t index = 3u; index < 9u; ++index)
+                {
+                    put(index, 0u);
+                }
+            }
+            else
+            {
+                put(3u, pad.m_poll_mask[0u]);
+                put(4u, pad.m_poll_mask[1u]);
+                put(5u, pad.m_poll_mask[2u]);
+                put(6u, 0u); put(7u, 0u); put(8u, 0x5au);
+            }
+            break;
+        case 0x42u:
+            neutral_data();
+            break;
+        case 0x43u:
+            if (!pad.m_config)
+            {
+                neutral_data();
+            }
+            else
+            {
+                for (uint32_t index = 3u; index < 9u; ++index)
+                {
+                    put(index, 0u);
+                }
+            }
+            if (in_size > 3u)
+            {
+                pad.m_config = m_sio2_pending_tx[3u] == 1u;
+            }
+            break;
+        case 0x44u:
+            if (in_size > 4u)
+            {
+                pad.m_mode = m_sio2_pending_tx[3u] != 0u ? 0x73u : 0x41u;
+                pad.m_locked = m_sio2_pending_tx[4u] == 3u;
+            }
+            for (uint32_t index = 3u; index < 9u; ++index)
+            {
+                put(index, 0u);
+            }
+            break;
+        case 0x45u:
+            put(3u, 3u); put(4u, 2u);
+            put(5u, pad.m_mode == 0x41u ? 0u : 1u);
+            put(6u, 2u); put(7u, 1u); put(8u, 0u);
+            break;
+        case 0x46u:
+            put(3u, 0u); put(4u, 0u); put(5u, 1u);
+            put(6u, m_sio2_pending_tx.size() > 3u &&
+                m_sio2_pending_tx[3u] == 0u ? 2u : 1u);
+            put(7u, m_sio2_pending_tx.size() > 3u &&
+                m_sio2_pending_tx[3u] == 0u ? 0u : 1u);
+            put(8u, m_sio2_pending_tx.size() > 3u &&
+                m_sio2_pending_tx[3u] == 0u ? 0x0au : 0x14u);
+            break;
+        case 0x47u:
+            put(3u, 0u); put(4u, 0u); put(5u, 2u);
+            put(6u, 0u); put(7u, 1u); put(8u, 0u);
+            break;
+        case 0x4cu:
+            put(3u, 0u); put(4u, 0u); put(5u, 0u);
+            put(6u, m_sio2_pending_tx.size() > 3u &&
+                m_sio2_pending_tx[3u] == 0u ? 4u : 7u);
+            put(7u, 0u); put(8u, 0u);
+            break;
+        case 0x4du:
+            for (uint32_t index = 3u; index < 9u; ++index)
+            {
+                put(index, 0xffu);
+            }
+            for (uint32_t index = 0u;
+                 index < 6u && 3u + index < in_size; ++index)
+            {
+                pad.m_motors[index] = m_sio2_pending_tx[3u + index];
+            }
+            break;
+        case 0x4fu:
+            if (in_size > 5u)
+            {
+                pad.m_poll_mask[0u] = m_sio2_pending_tx[3u];
+                pad.m_poll_mask[1u] = m_sio2_pending_tx[4u];
+                pad.m_poll_mask[2u] = m_sio2_pending_tx[5u];
+            }
+            pad.m_mode = 0x79u;
+            for (uint32_t index = 3u; index < 9u; ++index)
+            {
+                put(index, 0u);
+            }
+            put(8u, 0x5au);
+            break;
+        default:
+            neutral_data();
+            break;
+        }
+    }
+    for (const uint8_t byte : reply)
+    {
+        m_sio2_rx.push_back(byte);
+    }
+    m_sio2_pending_tx.clear();
+    ++m_sio2_index;
+    ++m_sio2_packet_count;
+    return true;
+}
+
+// CTRL.start is the only SIO2 transaction boundary. Transfer actual IOP
+// RAM bytes for armed DMA11/12 and acknowledge precisely those channels.
+// An absent guest buffer or incomplete packet keeps STR armed and raises no
+// IRQ; setup writes alone never generate successful completion.
+bool c_hw::run_sio2_transfer()
+{
+    if (m_dma_cpu == nullptr)
+    {
+        return false;
+    }
+    const bool input_dma =
+        (m_sio2_dma[0u][2u] & k_spu2_dma_str_bit) != 0u;
+    const bool output_dma =
+        (m_sio2_dma[1u][2u] & k_spu2_dma_str_bit) != 0u;
+    std::vector<uint8_t> inbound;
+    uint32_t input_words = 0u;
+    uint32_t input_blocks = 0u;
+    uint32_t output_words = 0u;
+    uint32_t output_blocks = 0u;
+    if (input_dma)
+    {
+        const uint32_t bcr = m_sio2_dma[0u][1u];
+        input_words = bcr & 0xffffu;
+        input_blocks = bcr >> 16u;
+        const uint64_t total = static_cast<uint64_t>(
+            input_words) * input_blocks * 4u;
+        if (input_words == 0u || input_blocks == 0u ||
+            input_blocks > 16u || total > k_sio2_tx_limit ||
+            m_sio2_index + input_blocks > 16u)
+        {
+            return false;
+        }
+        inbound.resize(static_cast<size_t>(total));
+        if (!m_dma_cpu->dma_read(
+                m_sio2_dma[0u][0u], inbound.data(),
+                static_cast<uint32_t>(total)))
+        {
+            return false;
+        }
+    }
+    if (output_dma)
+    {
+        const uint32_t bcr = m_sio2_dma[1u][1u];
+        output_words = bcr & 0xffffu;
+        output_blocks = bcr >> 16u;
+        const uint64_t total = static_cast<uint64_t>(
+            output_words) * output_blocks * 4u;
+        if (output_words == 0u || output_blocks == 0u ||
+            output_blocks > 16u || total > k_sio2_tx_limit)
+        {
+            return false;
+        }
+        // Validate the write range before processing the device command.
+        // A failed target must never perform partial peripheral writes.
+        uint8_t check = 0u;
+        if (!m_dma_cpu->dma_read(m_sio2_dma[1u][0u], &check, 1u) ||
+            !m_dma_cpu->dma_read(
+                m_sio2_dma[1u][0u] +
+                    static_cast<uint32_t>(total) - 1u, &check, 1u))
+        {
+            return false;
+        }
+    }
+    bool processed = false;
+    if (input_dma)
+    {
+        const uint32_t block_bytes = input_words * 4u;
+        for (uint32_t block = 0u; block < input_blocks; ++block)
+        {
+            const uint8_t* begin = inbound.data() + block * block_bytes;
+            m_sio2_pending_tx.insert(
+                m_sio2_pending_tx.end(), begin, begin + block_bytes);
+            if (!process_sio2_packet())
+            {
+                return false;
+            }
+            processed = true;
+        }
+    }
+    else if (!m_sio2_pending_tx.empty())
+    {
+        processed = process_sio2_packet();
+    }
+    else if (!m_sio2_rx.empty())
+    {
+        processed = true;
+    }
+    if (!processed)
+    {
+        return false;
+    }
+    if (output_dma)
+    {
+        const uint32_t block_bytes = output_words * 4u;
+        for (uint32_t block = 0u; block < output_blocks; ++block)
+        {
+            if (m_sio2_index < output_blocks ||
+                m_sio2_rx.size() <
+                    ((m_sio2_send3[block] >> 18u) & 0x1ffu))
+            {
+                return false;
+            }
+            const uint32_t count =
+                (m_sio2_send3[block] >> 18u) & 0x1ffu;
+            std::vector<uint8_t> bytes(count);
+            for (uint32_t index = 0u; index < count; ++index)
+            {
+                bytes[index] = m_sio2_rx.front();
+                m_sio2_rx.pop_front();
+            }
+            if (count > block_bytes ||
+                !m_dma_cpu->dma_write(
+                    m_sio2_dma[1u][0u] + block * block_bytes,
+                    bytes.data(), count))
+            {
+                return false;
+            }
+        }
+    }
+    if (input_dma)
+    {
+        m_sio2_dma[0u][2u] &= ~k_spu2_dma_str_bit;
+        (void)complete_dma_channel(11u);
+    }
+    if (output_dma)
+    {
+        m_sio2_dma[1u][2u] &= ~k_spu2_dma_str_bit;
+        (void)complete_dma_channel(12u);
+    }
+    m_sio2_transfer_requested = false;
+    ++m_sio2_transfer_count;
+    (void)raise_interrupt(17u);
+    return true;
+}
+
+bool c_hw::spu2_ram_word(uint32_t address, uint16_t* value) const
+{
+    return m_spu2.ram_word(address, value);
+}
+
+uint32_t c_hw::spu2_dma_cycles_remaining() const
+{
+    const uint32_t first = m_spu2_dma_remaining[0u];
+    const uint32_t second = m_spu2_dma_remaining[1u];
+    if (first == 0u)
+    {
+        return second;
+    }
+    if (second == 0u)
+    {
+        return first;
+    }
+    return std::min(first, second);
+}
+
+void c_hw::start_spu2_dma(uint32_t core)
+{
+    if (core >= 2u || m_dma_cpu == nullptr ||
+        m_spu2_dma_remaining[core] != 0u)
+    {
+        return;
+    }
+    const uint32_t madr = m_spu2_dma[core][0u];
+    const uint32_t bcr = m_spu2_dma[core][1u];
+    const uint32_t chcr = m_spu2_dma[core][2u];
+    const uint64_t blocks = (bcr >> 16u) != 0u ?
+        (bcr >> 16u) : 1u;
+    const uint64_t words = static_cast<uint64_t>(bcr & 0xffffu) * blocks;
+    const uint64_t bytes = words * 4u;
+    const uint32_t physical = madr & 0x1fffffffu;
+    const bool to_spu = (chcr & 1u) != 0u;
+    const uint32_t channel = core == 0u ? 4u : 7u;
+
+    // Reject invalid lengths, unbacked RAM and separate AutoDMA
+    // streaming rather than inventing sample bytes or a completion.
+    if (words == 0u || bytes > c_cpu::k_ram_size ||
+        physical > c_cpu::k_ram_size ||
+        bytes > c_cpu::k_ram_size - physical ||
+        (to_spu && m_spu2.auto_dma_enabled(core)))
+    {
+        std::printf(
+            "IOP SPU2 DMA deferred: channel=%u madr=0x%08x "
+            "bcr=0x%08x chcr=0x%08x auto=%u "
+            "(no data or completion fabricated)\n",
+            channel, madr, bcr, chcr,
+            (to_spu && m_spu2.auto_dma_enabled(core)) ? 1u : 0u);
+        return;
+    }
+
+    std::vector<uint8_t> data(static_cast<size_t>(bytes), 0u);
+    if (to_spu && !m_dma_cpu->dma_read(
+            madr, data.data(), static_cast<uint32_t>(bytes)))
+    {
+        return;
+    }
+    const uint32_t prior_irq = m_spu2.irq_latches();
+    if (!m_spu2.copy_dma(core, data, to_spu))
+    {
+        return;
+    }
+    if (!to_spu && !m_dma_cpu->dma_write(
+            madr, data.data(), static_cast<uint32_t>(bytes)))
+    {
+        // The complete IOP RAM range was preflight above.
+        return;
+    }
+    if ((m_spu2.irq_latches() & ~prior_irq) != 0u)
+    {
+        (void)raise_interrupt(c_spu2::k_irq_line);
+    }
+
+    // ps2-web-recomp/SDBZ completes ordinary SPU2 DMA after
+    // 64 + words/4 IOP clocks. This is scheduled only once real
+    // guest bytes have moved in the guest-requested direction.
+    m_spu2_dma_remaining[core] =
+        64u + static_cast<uint32_t>(words / 4u);
+    std::printf(
+        "IOP SPU2 DMA started: channel=%u madr=0x%08x "
+        "bcr=0x%08x chcr=0x%08x bytes=%u delay=%u\n",
+        channel, madr, bcr, chcr, static_cast<uint32_t>(bytes),
+        m_spu2_dma_remaining[core]);
+}
+
+void c_hw::advance_spu2_dma(uint32_t cycles)
+{
+    for (uint32_t core = 0u; core < 2u; ++core)
+    {
+        uint32_t& remaining = m_spu2_dma_remaining[core];
+        if (remaining == 0u)
+        {
+            continue;
+        }
+        if ((m_spu2_dma[core][2u] & k_spu2_dma_str_bit) == 0u)
+        {
+            remaining = 0u;
+            continue;
+        }
+        if (cycles < remaining)
+        {
+            remaining -= cycles;
+            continue;
+        }
+        remaining = 0u;
+
+        // A real sound-RAM copy completed and was not cancelled.
+        // Only now may the guest see STR fall and the matching
+        // DICR/DICR2 channel completion flag with shared IOP IRQ3.
+        m_spu2_dma[core][2u] &= ~k_spu2_dma_str_bit;
+        const uint32_t channel = core == 0u ? 4u : 7u;
+        const uint32_t index = core == 0u ? 4u : 0u;
+        uint32_t& control = core == 0u ? m_dma_icr : m_dma_icr2;
+        control |= uint32_t{1} << (24u + index);
+        assert_dma_irq(control, false);
+        (void)raise_interrupt(k_dma_irq);
+        std::printf(
+            "IOP SPU2 DMA completed: channel=%u chcr=0x%08x "
+            "dicr=0x%08x i_stat=0x%08x i_mask=0x%08x "
+            "i_ctrl=%u next_irq=%d\n",
+            channel, m_spu2_dma[core][2u], control, m_i_stat,
+            m_i_mask, m_i_ctrl, next_pending_interrupt());
+    }
+}
+
 bool c_hw::scratchpad_range(
     uint32_t address, uint32_t width
 ) const
@@ -149,6 +630,39 @@ bool c_hw::sif_dma_register(uint32_t address, uint32_t* channel,
     return false;
 }
 
+bool c_hw::spu2_dma_register(
+    uint32_t address, uint32_t width, uint32_t* core,
+    uint32_t* reg, uint32_t* shift
+) const
+{
+    if (core == nullptr || reg == nullptr || shift == nullptr ||
+        (width != 1u && width != 2u && width != 4u) ||
+        (address & (width - 1u)) != 0u)
+    {
+        return false;
+    }
+    const uint32_t bases[2] = {
+        k_spu2_dma4_base, k_spu2_dma7_base
+    };
+    for (uint32_t index = 0u; index < 2u; ++index)
+    {
+        if (address >= bases[index])
+        {
+            const uint32_t offset = address - bases[index];
+            if (offset < k_spu2_dma_register_size &&
+                width <= k_spu2_dma_register_size - offset &&
+                width <= 4u - (offset & 3u))
+            {
+                *core = index;
+                *reg = offset / 4u;
+                *shift = (offset & 3u) * 8u;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 bool c_hw::read(
     uint32_t address, uint32_t width, uint32_t* value
 )
@@ -171,6 +685,11 @@ bool c_hw::read(
         }
         *value = data;
         return true;
+    }
+    if (address >= c_spu2::k_base &&
+        address < c_spu2::k_base + c_spu2::k_size)
+    {
+        return m_spu2.read(address, width, value);
     }
     // A physical CDVD drive with no media reports 0x00. The ROM0
     // diagnostic runner does not mount a disc. This deliberately does
@@ -208,12 +727,35 @@ bool c_hw::read(
         *value = k_cdvd_no_disc;
         return true;
     }
-    // No guest controller or memory-card producer is installed.
-    // An empty receive FIFO cannot supply fictitious reply bytes.
-    if (address == k_sio2_rx_fifo)
+    if (address == k_sio2_rx_fifo &&
+        (width == 1u || width == 4u))
     {
-        return false;
+        // Never invent a response to an unexecuted guest transaction.
+        if (m_sio2_rx.empty())
+        {
+            return false;
+        }
+        *value = m_sio2_rx.front();
+        m_sio2_rx.pop_front();
+        return true;
     }
+
+    // The actual LIBSD DMA4.BCR path uses SH, and the
+    // ps2-web-recomp/SDBZ hardware model extracts subword lanes.
+    // Only these two known DMA4/DMA7 register banks are relaxed.
+    uint32_t spu2_core = 0u;
+    uint32_t spu2_reg = 0u;
+    uint32_t spu2_shift = 0u;
+    if (spu2_dma_register(
+            address, width, &spu2_core, &spu2_reg, &spu2_shift))
+    {
+        const uint32_t mask = width == 4u ?
+            0xffffffffu : ((uint32_t{1} << (width * 8u)) - 1u);
+        *value = (m_spu2_dma[spu2_core][spu2_reg] >>
+                  spu2_shift) & mask;
+        return true;
+    }
+
     if (width != 4u || (address & 3u) != 0u)
     {
         return false;
@@ -237,6 +779,7 @@ bool c_hw::read(
         *value = m_cdrom_dma[(address - k_cdrom_dma_base) / 4u];
         return true;
     }
+
 
     for (uint32_t index = 0u; index < 2u; ++index)
     {
@@ -336,8 +879,7 @@ bool c_hw::read(
         *value = m_sio2_ctrl;
         return true;
     case k_sio2_stat:
-        // No SIO2 transaction has completed.
-        *value = 0u;
+        *value = m_sio2_stat;
         return true;
     case k_sio2_port_status:
         *value = 0x0fu; // Port register mask, not pad readiness.
@@ -365,6 +907,24 @@ bool c_hw::write(
         {
             m_scratchpad[offset + i] =
                 static_cast<uint8_t>(value >> (8u * i));
+        }
+        return true;
+    }
+    if (address >= c_spu2::k_base &&
+        address < c_spu2::k_base + c_spu2::k_size)
+    {
+        const uint32_t prior_irq = m_spu2.irq_latches();
+        if (!m_spu2.write(address, width, value))
+        {
+            return false;
+        }
+        // Only a real data-port access to the guest-selected IRQA
+        // can assert IRQ9. The SPU2 IRQ latch is edge-triggered here:
+        // an unrelated register write must not reassert an IRQ the
+        // guest already acknowledged at I_STAT.
+        if ((m_spu2.irq_latches() & ~prior_irq) != 0u)
+        {
+            (void)raise_interrupt(c_spu2::k_irq_line);
         }
         return true;
     }
@@ -426,8 +986,8 @@ bool c_hw::write(
         }
         return true;
     }
-    // Guest FIFO transmit requests are queued, never executed without
-    // a real SIO2 producer; no DMA completion or IRQ follows.
+    // A transmitted byte can finish the guest's SEND3 packet. The
+    // neutral controller responds only when a live HLE CPU is attached.
     if (address == k_sio2_tx_fifo &&
         (width == 1u || width == 4u))
     {
@@ -436,8 +996,41 @@ bool c_hw::write(
             return false;
         }
         m_sio2_pending_tx.push_back(static_cast<uint8_t>(value));
+        (void)process_sio2_packet();
         return true;
     }
+
+    uint32_t spu2_core = 0u;
+    uint32_t spu2_reg = 0u;
+    uint32_t spu2_shift = 0u;
+    if (spu2_dma_register(
+            address, width, &spu2_core, &spu2_reg, &spu2_shift))
+    {
+        // Retain the untouched bits of MADR, BCR, CHCR or TADR.
+        // This is the primary reference's little-endian subword
+        // merge, including 0xBF8010C4 and its upper half at 0xC6.
+        const uint32_t lane_mask = width == 4u ?
+            0xffffffffu : ((uint32_t{1} << (width * 8u)) - 1u);
+        const uint32_t mask = lane_mask << spu2_shift;
+        uint32_t& word = m_spu2_dma[spu2_core][spu2_reg];
+        const uint32_t previous = word;
+        word = (word & ~mask) | ((value << spu2_shift) & mask);
+        if (spu2_reg == 2u && (mask & k_spu2_dma_str_bit) != 0u)
+        {
+            if ((word & k_spu2_dma_str_bit) == 0u)
+            {
+                // Driver cancellation must never complete a stopped
+                // DMA or set a phantom DICR interrupt flag.
+                m_spu2_dma_remaining[spu2_core] = 0u;
+            }
+            else if ((previous & k_spu2_dma_str_bit) == 0u)
+            {
+                start_spu2_dma(spu2_core);
+            }
+        }
+        return true;
+    }
+
     if (width != 4u || (address & 3u) != 0u)
     {
         return false;
@@ -479,8 +1072,8 @@ bool c_hw::write(
             ? k_sio2_dma_rx_base : k_sio2_dma_tx_base;
         if (address >= base && address < base + 12u)
         {
-            // No SIO2 DMA data producer is connected. The transfer
-            // remains requested, and no hardware IRQ/completion occurs.
+            // DMA11 and DMA12 are armed by CHCR.STR but can only
+            // complete through a real SIO2 CTRL.start transaction.
             m_sio2_dma[index][(address - base) / 4u] = value;
             return true;
         }
@@ -605,14 +1198,17 @@ bool c_hw::write(
         m_sio2_ctrl = value;
         if ((value & 0x0cu) == 0x0cu)
         {
+            m_sio2_index = 0u;
             m_sio2_pending_tx.clear();
+            m_sio2_rx.clear();
             m_sio2_transfer_requested = false;
         }
         if ((value & 1u) != 0u)
         {
+            ++m_sio2_ctrl_start_count;
             m_sio2_transfer_requested = true;
+            (void)run_sio2_transfer();
         }
-        // No device bytes, completion, or interrupt are manufactured.
         return true;
     default:
         return false;
@@ -727,9 +1323,117 @@ bool c_hw::raise_interrupt(uint32_t line)
     return true;
 }
 
+bool c_hw::supports_interrupt_line(uint32_t line)
+{
+    return line < 39u || (line >= 40u && line < 46u);
+}
+
+bool c_hw::set_interrupt_mask(uint32_t line, bool enabled)
+{
+    if (!supports_interrupt_line(line))
+    {
+        return false;
+    }
+    if (line < 32u)
+    {
+        const uint32_t bit = uint32_t{1} << line;
+        if (enabled)
+        {
+            m_i_mask |= bit;
+        }
+        else
+        {
+            m_i_mask &= ~bit;
+        }
+        return true;
+    }
+
+    // Primary channels 0..6 are INTRMAN lines 32..38. Secondary
+    // channels 7..12 are lines 40..45; line 39 is not a channel.
+    // Match ps2-web-recomp/SDBZ hw::set_interrupt_mask().
+    const bool secondary = line >= 40u;
+    uint32_t& control = secondary ? m_dma_icr2 : m_dma_icr;
+    const uint32_t channel = secondary ? line - 40u : line - 32u;
+    const uint32_t bit = uint32_t{1} << (16u + channel);
+    if (enabled)
+    {
+        // DMA IRQs arrive through the ordinary IOP IRQ3 aggregator.
+        // No new request or interrupt is generated by this enable.
+        m_i_mask |= uint32_t{1} << k_dma_irq;
+        m_dma_icr |= 0x00800000u;
+        control |= bit;
+    }
+    else
+    {
+        // Disabling a channel does not acknowledge pending DMA flags,
+        // clear the shared IRQ3 mask or stop a running DMA transfer.
+        control &= ~bit;
+    }
+    assert_dma_irq(control, false);
+    return true;
+}
+
 uint32_t c_hw::pending_interrupts() const
 {
     return m_i_ctrl != 0u ? (m_i_stat & m_i_mask) : 0u;
+}
+
+int32_t c_hw::next_pending_interrupt() const
+{
+    const uint32_t pending = pending_interrupts();
+    if ((pending & (1u << k_dma_irq)) != 0u)
+    {
+        const uint32_t primary =
+            (m_dma_icr >> 24u) & (m_dma_icr >> 16u) & 0x7fu;
+        const uint32_t secondary =
+            (m_dma_icr2 >> 24u) & (m_dma_icr2 >> 16u) & 0x3fu;
+        for (uint32_t index = 0u; index < 7u; ++index)
+        {
+            if ((primary & (1u << index)) != 0u)
+            {
+                return static_cast<int32_t>(32u + index);
+            }
+        }
+        for (uint32_t index = 0u; index < 6u; ++index)
+        {
+            if ((secondary & (1u << index)) != 0u)
+            {
+                return static_cast<int32_t>(40u + index);
+            }
+        }
+    }
+    const uint32_t ordinary = pending & ~(1u << k_dma_irq);
+    for (uint32_t line = 0u; line < 32u; ++line)
+    {
+        if ((ordinary & (1u << line)) != 0u)
+        {
+            return static_cast<int32_t>(line);
+        }
+    }
+    return -1;
+}
+
+bool c_hw::acknowledge_interrupt(uint32_t line)
+{
+    if (line < 32u)
+    {
+        m_i_stat &= ~(1u << line);
+        return true;
+    }
+    if (!supports_interrupt_line(line))
+    {
+        return false;
+    }
+    const bool secondary = line >= 40u;
+    uint32_t& control = secondary ? m_dma_icr2 : m_dma_icr;
+    const uint32_t index = secondary ? line - 40u : line - 32u;
+    control &= ~(1u << (24u + index));
+    if (((m_dma_icr >> 24u) & 0x7fu) == 0u &&
+        ((m_dma_icr2 >> 24u) & 0x3fu) == 0u)
+    {
+        m_i_stat &= ~(1u << k_dma_irq);
+    }
+    return true;
 }
 
 uint32_t c_hw::cache_control() const
@@ -743,6 +1447,7 @@ void c_hw::advance_cycles(uint32_t cycles)
     {
         return;
     }
+    advance_spu2_dma(cycles);
     // Timer 5 clock division, per IOP counter MODE[14:13].
     // The initial kernel tick uses /1, mode 0x58.
     const uint32_t shifts[4] = {1u, 8u, 16u, 256u};
@@ -837,6 +1542,21 @@ bool c_hw::sio2_tx_byte(size_t index, uint8_t* value) const
 bool c_hw::sio2_transfer_requested() const
 {
     return m_sio2_transfer_requested;
+}
+
+uint32_t c_hw::sio2_ctrl_starts() const
+{
+    return m_sio2_ctrl_start_count;
+}
+
+uint32_t c_hw::sio2_packets() const
+{
+    return m_sio2_packet_count;
+}
+
+uint32_t c_hw::sio2_completed_transfers() const
+{
+    return m_sio2_transfer_count;
 }
 
 bool c_hw::complete_cdvd_read(uint8_t interrupt_reason)

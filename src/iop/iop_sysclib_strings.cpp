@@ -768,6 +768,31 @@ bool render_guest_format(c_cpu& memory, const std::string& format,
 }
 } // namespace
 
+bool render_stdio_format(c_cpu& memory, std::string* output)
+{
+    if (output == nullptr || memory.state().m_gpr[4] == 0u)
+    {
+        return false;
+    }
+    std::vector<uint8_t> format_bytes;
+    if (!read_string(memory, memory.state().m_gpr[4], format_bytes) ||
+        format_bytes.size() > k_max_format_bytes + 1u)
+    {
+        return false;
+    }
+    const std::string format(
+        format_bytes.begin(), format_bytes.end() - 1);
+    s_format_arguments arguments{memory};
+    arguments.m_index = 1u; // printf's a0 is the format, a1 is vararg 1
+    std::string rendered;
+    if (!render_guest_format(memory, format, arguments, rendered))
+    {
+        return false;
+    }
+    *output = rendered;
+    return true;
+}
+
 bool execute_sysclib_format(c_cpu& memory, uint32_t ordinal)
 {
     if (ordinal != 19u && ordinal != 42u)

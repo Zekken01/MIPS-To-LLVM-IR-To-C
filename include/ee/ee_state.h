@@ -93,6 +93,12 @@ struct alignas(16) s_ee_vu0_state
 
     s_vf_memory_issue m_vf_memory_issues[4];
     uint32_t m_vf_memory_issue_index;
+
+    // Scalar Q pipeline is appended to preserve the earlier ABI prefix.
+    // VU0 virtual cycles do not establish EE hardware cycle timing.
+    uint64_t m_q_ready_cycle;
+    uint32_t m_q_pending_bits;
+    uint32_t m_q_pending;
 };
 
 // Architectural EE CPU state. GPRs are 128 bits wide in the lifter (i128);

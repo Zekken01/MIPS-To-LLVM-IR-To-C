@@ -17,6 +17,7 @@ rem EXPANSION_PER_PASS: 1..128, newly emitted functions per pass (default 128).
 rem Stop early at genuine guest blockers; never fabricate completion.
 if not defined EXPANSION_PASSES set "EXPANSION_PASSES=8"
 if not defined EXPANSION_PER_PASS set "EXPANSION_PER_PASS=128"
+if not defined SDBZ_REPORT_SNAPSHOT_MS set "SDBZ_REPORT_SNAPSHOT_MS=2000"
 
 where python >nul 2>nul
 if errorlevel 1 (
@@ -66,6 +67,13 @@ if errorlevel 1 (
 
 rem Optional WebGPU renderer and raylib Win32 window. The window opens
 rem only during the final traced replay; expansion remains headless.
+rem An explicitly requested quick probe never captures WebGPU, even if
+rem this command prompt has retained snapshot/window flags from a
+rem previous full run. It must remain non-traced after cache misses.
+if /I "%~1"=="--quick" (
+    set "EE_WEBGPU_SNAPSHOT=0"
+    set "EE_WEBGPU_WINDOW=0"
+)
 set "EE_WEBGPU_MODE=OFF"
 set "EE_RAYLIB_MODE=OFF"
 set "EE_WEBGPU_RUN_ARG="
@@ -102,45 +110,86 @@ if errorlevel 1 exit /b 1
 if not exist "%WORK_DIR%" mkdir "%WORK_DIR%"
 if errorlevel 1 exit /b 1
 
-rem A verified cache may be reused; failed fingerprints trigger a rebuild.
+rem Git checkout may rebuild host tools without changing guest LLVM IR.
+rem Try exact reuse first; if host inputs changed, relink existing guest objects.
+rem --quick forces the non-traced probe even if no guest cache survives.
+rem Without --quick, WebGPU requests still require full replay snapshots.
+rem Only rebuild guest IR when preserved provenance cannot be verified.
 set "CACHE_FLAG="
 if exist "%WORK_DIR%\translation-cache.json" (
+    echo === Validating saved EE translation ===
     python tools\run_game.py "%GAME_ELF%" ^
         --build-dir build --config Release ^
         --work-dir "%WORK_DIR%" --emit-opt=0 ^
         --no-recompile --link-only >nul 2>nul
-    if not errorlevel 1 set "CACHE_FLAG=--no-recompile"
+    if not errorlevel 1 (
+        echo EE translation cache valid; reusing existing functions.
+        set "CACHE_FLAG=--no-recompile"
+    ) else (
+        echo Native cache changed; checking preserved guest IR and objects...
+        python tools\run_game.py "%GAME_ELF%" ^
+            --build-dir build --config Release ^
+            --work-dir "%WORK_DIR%" --emit-opt=0 ^
+            --relink-existing --link-only
+        if not errorlevel 1 (
+            echo Preserved guest IR and objects; relinked host library.
+            set "CACHE_FLAG=--no-recompile"
+        ) else (
+            echo Guest translation provenance changed; full IR rebuild required.
+        )
+    )
 )
 
 echo === Starting extracted-disc HLE boot session ===
+set "SESSION_ARGS=--quick-probe --no-iop-catalog"
+set "REPORT_NAME=quick-probe.json"
+set "DEFAULT_MAX_DISPATCHES=100000"
+if not defined CACHE_FLAG set "SESSION_ARGS="
+if /I "%~1"=="--quick" set "SESSION_ARGS=--quick-probe --no-iop-catalog"
+if /I "%~1"=="--full" set "SESSION_ARGS="
+if "%EE_WEBGPU_MODE%"=="ON" set "SESSION_ARGS="
+if defined SESSION_ARGS (
+    echo Using the cached HLE quick probe.
+    echo Boot log: "%WORK_DIR%\quick-probe.log"
+) else (
+    set "REPORT_NAME=first-boot.json"
+    set "DEFAULT_MAX_DISPATCHES=500000"
+    set "SESSION_ARGS=--gs-snapshot=%WORK_DIR%\gs-display.ppm --gs-upload-snapshot=%WORK_DIR%\gs-upload.ppm"
+    echo Using the full traced HLE boot session.
+    echo Boot log: "%WORK_DIR%\boot.log"
+    echo Expansion log: "%WORK_DIR%\expansion.log"
+    echo Guest display VRAM if configured: "%WORK_DIR%\gs-display.ppm"
+    echo GS texture upload if complete: "%WORK_DIR%\gs-upload.ppm"
+)
+rem Keep quick probes short; full retail traces need sufficient real EE/IOP
+rem cycles to observe long-running IRX work. Preserve explicit overrides.
+if not defined MAX_DISPATCHES set "MAX_DISPATCHES=%DEFAULT_MAX_DISPATCHES%"
+if not defined BOOT_TIMEOUT_SECONDS set "BOOT_TIMEOUT_SECONDS=120"
 echo Expansion budget: %EXPANSION_PASSES% passes, %EXPANSION_PER_PASS% new functions per pass
-echo Boot log: "%WORK_DIR%\boot.log"
-echo Expansion log: "%WORK_DIR%\expansion.log"
-echo Report: "%WORK_DIR%\first-boot.json"
-echo Guest display VRAM: "%WORK_DIR%\gs-display.ppm" (only if configured)
-echo GS texture upload: "%WORK_DIR%\gs-upload.ppm" (only if complete)
+echo Dispatch budget: %MAX_DISPATCHES% per pass; timeout: %BOOT_TIMEOUT_SECONDS% seconds
+echo Report: "%WORK_DIR%\%REPORT_NAME%"
 if /I "%EE_WEBGPU_SNAPSHOT%"=="1" echo Native WebGPU raster: "%WORK_DIR%\gs-webgpu.ppm"
 if /I "%EE_WEBGPU_WINDOW%"=="1" echo Native WebGPU presentation: raylib Win32 window in final replay
+rem Display live LLVM IR file count and percentage in both quick and full
+rem sessions; the orchestrator keeps in-place updates out of boot logs.
 python tools\run_boot_session.py "%GAME_ELF%" ^
+    --ll-progress ^
     --disc-root "%DISC_ROOT%" ^
     --disc-folder "%DISC_ROOT%" ^
     --build-dir build ^
     --config Release ^
     --work-dir "%WORK_DIR%" ^
-    --report "%WORK_DIR%\first-boot.json" ^
-    --gs-snapshot "%WORK_DIR%\gs-display.ppm" ^
-    --gs-upload-snapshot "%WORK_DIR%\gs-upload.ppm" ^
+    --report "%WORK_DIR%\%REPORT_NAME%" ^
     --expansion-passes=%EXPANSION_PASSES% ^
     --expansion-per-pass=%EXPANSION_PER_PASS% ^
-    --ll-progress ^
     --hle-startup ^
     --kseg-ram ^
     --emit-jobs=%EMIT_JOBS% ^
     --emit-opt=0 ^
-    --max-dispatches=100000 ^
+    --max-dispatches=%MAX_DISPATCHES% ^
     --loop-budget=1000000 ^
     --sif-poll-limit=%SIF_POLL_LIMIT% ^
-    --timeout-seconds=120 %CACHE_FLAG% %EE_WEBGPU_RUN_ARG% %EE_WEBGPU_WINDOW_ARG%
+    --timeout-seconds=%BOOT_TIMEOUT_SECONDS% %CACHE_FLAG% %SESSION_ARGS% %EE_WEBGPU_RUN_ARG% %EE_WEBGPU_WINDOW_ARG%
 set "EXIT_CODE=%ERRORLEVEL%"
 echo.
 echo Native HLE boot session exit code: %EXIT_CODE%

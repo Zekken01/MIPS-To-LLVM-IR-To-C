@@ -50,7 +50,7 @@ public:
     s_disc_load_result load_requested(
         const std::string& guest_path,
         bool start_entrypoint,
-        uint32_t priority = 1u,
+        uint32_t priority = c_kernel::k_default_module_priority,
         const std::vector<std::string>& arguments = {}
     );
 

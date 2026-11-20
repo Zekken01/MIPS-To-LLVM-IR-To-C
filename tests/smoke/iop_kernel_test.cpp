@@ -100,6 +100,46 @@ bool put_program(
 
 int main()
 {
+    // A real IOP thread stack is allocated from upper RAM downward,
+    // in 256-byte multiples. Guest modules and IOPHEAP use lower RAM.
+    // Releasing a dormant thread permits high-gap reuse without
+    // overwriting the low heap or any still-owned stack.
+    iop::c_kernel stack_kernel;
+    const uint32_t first_stack =
+        stack_kernel.create_thread(0x1800u, 0u, 8u, 0x410u);
+    const uint32_t second_stack =
+        stack_kernel.create_thread(0x1810u, 0u, 8u, 0x400u);
+    const iop::s_kernel_thread* first_thread =
+        stack_kernel.thread(first_stack);
+    const iop::s_kernel_thread* second_thread =
+        stack_kernel.thread(second_stack);
+    if (first_stack == 0u || second_stack == 0u ||
+        first_thread == nullptr || second_thread == nullptr ||
+        first_thread->m_stack_size != 0x500u ||
+        first_thread->m_stack_base !=
+            iop::c_cpu::k_ram_size - 0x500u ||
+        second_thread->m_stack_base !=
+            iop::c_cpu::k_ram_size - 0x900u ||
+        stack_kernel.allocate_heap(0x300u) !=
+            iop::c_kernel::k_user_base ||
+        !stack_kernel.delete_thread(first_stack))
+    {
+        return fail("IOP upper-RAM thread stack/low heap parity");
+    }
+    const uint32_t reused_stack =
+        stack_kernel.create_thread(0x1820u, 0u, 8u, 0x400u);
+    const iop::s_kernel_thread* reused_thread =
+        stack_kernel.thread(reused_stack);
+    if (reused_stack == 0u || reused_thread == nullptr ||
+        reused_thread->m_stack_base !=
+            iop::c_cpu::k_ram_size - 0x400u ||
+        stack_kernel.thread(second_stack)->m_stack_base !=
+            iop::c_cpu::k_ram_size - 0x900u ||
+        stack_kernel.create_thread(0x1830u, 0u, 8u, 0xffffffffu) != 0u)
+    {
+        return fail("IOP high allocation gap reuse/overflow rejection");
+    }
+
     iop::c_kernel kernel;
     auto module = make_module(true);
 
@@ -150,6 +190,8 @@ int main()
         initial->m_cpu.m_gpr[28] != 0x20050u ||
         initial->m_cpu.m_gpr[29] == 0u ||
         initial->m_status != iop::e_thread_status::dormant ||
+        kernel.threads().size() != 1u ||
+        kernel.threads().at(boot_thread).m_cpu.m_pc != 0x20000u ||
         !kernel.start_thread(boot_thread) ||
         kernel.start_thread(boot_thread))
     {
@@ -179,6 +221,7 @@ int main()
     if (!executed ||
         completed.m_stop != iop::e_kernel_stop::idle ||
         completed.m_executed != 2u ||
+        completed.m_thread_id != boot_thread ||
         after == nullptr ||
         after->m_status != iop::e_thread_status::dormant ||
         after->m_cpu.m_pc != 0x20008u ||
@@ -186,6 +229,100 @@ int main()
         kernel.cycles() != 8u)
     {
         return fail("module thread syscall callback or explicit stop");
+    }
+
+    // Module _start must return through a real MIPS JR $ra + delay
+    // slot to a reserved BREAK trampoline, become dormant, and preserve
+    // its guest return value. A thread that falls through RAM at PC=0
+    // must never be mistaken for a completed module initialization.
+    constexpr uint32_t k_module_result = 0x1234u;
+    const uint32_t module_return[] =
+    {
+        0x03e00008u, // jr ra
+        0x24021234u  // delay slot: addiu v0,zero,0x1234
+    };
+    if (!put_program(kernel.cpu(), image->m_irx.m_entry,
+                     module_return, 2u) ||
+        !kernel.start_thread_with_arguments(
+            boot_thread, 2u, 0x00020020u))
+    {
+        return fail("cannot restart original module entrypoint");
+    }
+    const iop::s_kernel_thread* restarted =
+        kernel.thread(boot_thread);
+    if (restarted == nullptr ||
+        !restarted->m_module_entry ||
+        restarted->m_module_id != loaded.m_id ||
+        restarted->m_module_entry_returned ||
+        restarted->m_cpu.m_gpr[31] == 0u ||
+        restarted->m_cpu.m_gpr[4] != 2u ||
+        restarted->m_cpu.m_gpr[5] != 0x00020020u)
+    {
+        return fail("module start lost return trampoline or argc/argv");
+    }
+    const uint32_t module_return_pc =
+        restarted->m_cpu.m_gpr[31];
+    const iop::s_kernel_run_result returned =
+        kernel.run(8u, 4u);
+    const iop::s_kernel_thread* retired =
+        kernel.thread(boot_thread);
+    if (returned.m_stop != iop::e_kernel_stop::idle ||
+        returned.m_executed != 2u ||
+        returned.m_thread_id != boot_thread ||
+        retired == nullptr ||
+        retired->m_status != iop::e_thread_status::dormant ||
+        retired->m_cpu.m_pc != module_return_pc ||
+        retired->m_cpu.m_gpr[2] != k_module_result ||
+        !retired->m_module_entry_returned ||
+        retired->m_module_entry_result != k_module_result ||
+        retired->m_cpu.m_gpr[31] != module_return_pc)
+    {
+        return fail("module _start returned without genuine trampoline retirement");
+    }
+    // No stale module thread may consume further scheduler quanta.
+    if (kernel.run(16u, 4u).m_executed != 0u)
+    {
+        return fail("dormant module initializer continued executing IOP RAM");
+    }
+
+    // The reference IOP kernel installs a distinct return trampoline
+    // for every started guest thread, not only module initializers.
+    // A guest worker that returns through $ra becomes dormant instead
+    // of wandering through low mirrored RAM at PC zero.
+    const uint32_t worker_return[] =
+    {
+        0x03e00008u, // jr ra
+        0x24020056u  // delay slot: addiu v0,zero,0x56
+    };
+    if (!put_program(kernel.cpu(), 0x1800u, worker_return, 2u))
+    {
+        return fail("cannot install returning IOP guest worker");
+    }
+    const uint32_t worker =
+        kernel.create_thread(0x1800u, 0u, 4u, 0x400u);
+    if (worker == 0u || !kernel.start_thread(worker))
+    {
+        return fail("cannot start returning IOP guest worker");
+    }
+    const uint32_t worker_ra =
+        kernel.thread(worker)->m_cpu.m_gpr[31];
+    if (worker_ra == 0u || worker_ra == module_return_pc)
+    {
+        return fail("ordinary IOP guest worker inherited invalid RA");
+    }
+    const iop::s_kernel_run_result worker_returned =
+        kernel.run(8u, 4u);
+    const iop::s_kernel_thread* dormant_worker =
+        kernel.thread(worker);
+    if (worker_returned.m_stop != iop::e_kernel_stop::idle ||
+        worker_returned.m_executed != 2u ||
+        worker_returned.m_thread_id != worker ||
+        dormant_worker == nullptr ||
+        dormant_worker->m_status != iop::e_thread_status::dormant ||
+        dormant_worker->m_cpu.m_pc != worker_ra ||
+        dormant_worker->m_cpu.m_gpr[2] != 0x56u)
+    {
+        return fail("ordinary worker did not retire on MIPS $ra return");
     }
 
     // Two equal-priority R3000 threads must each execute exactly one
@@ -216,6 +353,7 @@ int main()
     if (result.m_stop !=
             iop::e_kernel_stop::budget_exhausted ||
         result.m_executed != 6u ||
+        result.m_thread_id != second ||
         kernel.thread(first)->m_cpu.m_gpr[8] != 1u ||
         kernel.thread(second)->m_cpu.m_gpr[8] != 1u)
     {
@@ -250,6 +388,7 @@ int main()
     );
     result = kernel.run(2u, 2u);
     if (result.m_executed != 2u ||
+        result.m_thread_id != high ||
         kernel.thread(high)->m_status !=
             iop::e_thread_status::dormant ||
         kernel.thread(first)->m_cpu.m_gpr[8] != 1u ||
@@ -301,6 +440,7 @@ int main()
     kernel.reset();
     if (kernel.module(loaded.m_id) != nullptr ||
         kernel.thread(boot_thread) != nullptr ||
+        !kernel.threads().empty() ||
         kernel.cycles() != 0u ||
         !kernel.cpu().read32(0x20000u, &word) || word != 0u)
     {

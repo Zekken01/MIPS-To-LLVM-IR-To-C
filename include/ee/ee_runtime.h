@@ -507,11 +507,14 @@ uint32_t ee_vu0_ctc2(s_ee_cpu_state* cpu, s_ee_runtime* rt,
                       uint32_t gpr_index, uint32_t vi_index,
                       uint32_t mode, uint32_t pc);
 
-// Executes only VMULAx/VMADDAy/VMADDAz/VMADDw (the SDBZ US matrix
-// transform), synchronized against genuine VU0 execution. Invalid encodings
-// and unavailable synchronization must not commit VF/ACC/MAC/STATUS state.
+// Native VU0 matrix FMAC and reached VMUL/VADDy/VADDz/VADDq sequence.
+// Preserve VF0, lane masks, ACC, MAC/STATUS flags and Q interlocks.
 uint32_t ee_vu0_macro_fmac(s_ee_cpu_state* cpu, s_ee_runtime* rt,
                             uint32_t instruction_word, uint32_t pc);
+
+// Only the reached VSQRT / VRSQRT / VWAITQ scalar-Q encodings.
+uint32_t ee_vu0_macro_scalar(s_ee_cpu_state* cpu, s_ee_runtime* rt,
+                              uint32_t instruction_word, uint32_t pc);
 
 // Native-lowered VU0 indexed vector memory macros VLQI/VSQI/VLQD/VSQD.
 // These operate on VI-addressed VU0 quadwords with lane masking.

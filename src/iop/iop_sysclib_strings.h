@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 
 namespace iop
 {
@@ -14,4 +15,9 @@ bool execute_sysclib_string(c_cpu& memory, uint32_t ordinal);
 // va_list argument access. Formats only validated guest data, then
 // atomically writes the complete NUL-terminated result to IOP RAM.
 bool execute_sysclib_format(c_cpu& memory, uint32_t ordinal);
+
+// STDIO #4 printf uses the same validated O32 guest varargs and
+// safe formatting rules, but returns host text without writing guest RAM.
+// Rejected formats leave the output unchanged.
+bool render_stdio_format(c_cpu& memory, std::string* output);
 } // namespace iop

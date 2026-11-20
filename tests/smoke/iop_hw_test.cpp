@@ -22,10 +22,449 @@ void put32(std::vector<uint8_t>& data, uint32_t at, uint32_t value)
             static_cast<uint8_t>(value >> (8u * index));
     }
 }
+
+bool test_authentic_spu2_dma()
+{
+    iop::c_kernel kernel;
+    if (!kernel.attach_hle_hardware())
+    {
+        return false;
+    }
+    iop::c_hw& hw = kernel.hardware();
+    iop::c_cpu& cpu = kernel.cpu();
+    constexpr uint32_t dma4 = iop::c_hw::k_spu2_dma4_base;
+    constexpr uint32_t dma7 = iop::c_hw::k_spu2_dma7_base;
+    constexpr uint32_t spu2 = iop::c_spu2::k_base;
+    constexpr uint32_t source = 0x00032000u;
+    uint32_t actual = 0u;
+    uint16_t sample = 0u;
+    uint8_t bytes[16]{};
+
+    // Transfer four real IOP words to SPU2 RAM, crossing its 1M-word
+    // wrap. DICR and IRQ3 remain untouched until the scheduled
+    // completion, not merely because the guest wrote CHCR.STR.
+    for (uint32_t i = 0u; i < 16u; ++i)
+    {
+        if (!cpu.write8(source + i, static_cast<uint8_t>(i + 1u)))
+        {
+            return false;
+        }
+    }
+    if (!hw.set_interrupt_mask(36u, true) ||
+        !hw.write(spu2 + 0x1a8u, 2u, 0x000fu) ||
+        !hw.write(spu2 + 0x1aau, 2u, 0xfffeu) ||
+        !hw.write(dma4, 4u, source) ||
+        !hw.write(dma4 + 4u, 4u, 0x00010004u) ||
+        !cpu.write32(0xbf8010c8u, 0x01000001u) ||
+        !hw.spu2_ram_word(iop::c_spu2::k_ram_words - 2u, &sample) ||
+        sample != 0x0201u ||
+        !hw.spu2_ram_word(iop::c_spu2::k_ram_words - 1u, &sample) ||
+        sample != 0x0403u ||
+        !hw.spu2_ram_word(0u, &sample) ||
+        sample != 0x0605u ||
+        !hw.spu2_ram_word(5u, &sample) ||
+        sample != 0x100fu ||
+        !hw.read(spu2 + 0x1aau, 2u, &actual) || actual != 6u ||
+        !hw.read(dma4 + 8u, 4u, &actual) ||
+        (actual & iop::c_hw::k_spu2_dma_str_bit) == 0u ||
+        !hw.read(iop::c_hw::k_dma_icr, 4u, &actual) ||
+        (actual & 0x10000000u) != 0u ||
+        !hw.read(iop::c_hw::k_i_stat, 4u, &actual) ||
+        actual != 0u || hw.pending_interrupts() != 0u)
+    {
+        return false;
+    }
+    // An IOP kernel with no runnable threads must still advance
+    // the real DMA event through its bounded idle scheduler.
+    if (!kernel.has_guest_work())
+    {
+        return false;
+    }
+    (void)kernel.run(64u);
+    if (!hw.read(dma4 + 8u, 4u, &actual) ||
+        (actual & iop::c_hw::k_spu2_dma_str_bit) == 0u ||
+        !hw.read(iop::c_hw::k_i_stat, 4u, &actual) ||
+        actual != 0u)
+    {
+        return false;
+    }
+    (void)kernel.run(1u);
+    if (kernel.has_guest_work() ||
+        !hw.read(dma4 + 8u, 4u, &actual) ||
+        (actual & iop::c_hw::k_spu2_dma_str_bit) != 0u ||
+        !hw.read(iop::c_hw::k_dma_icr, 4u, &actual) ||
+        (actual & 0x10000000u) == 0u ||
+        !hw.read(iop::c_hw::k_i_stat, 4u, &actual) ||
+        (actual & (1u << iop::c_hw::k_dma_irq)) == 0u ||
+        (hw.pending_interrupts() &
+         (1u << iop::c_hw::k_dma_irq)) == 0u)
+    {
+        return false;
+    }
+
+    // Program the second core's real SPU2 RAM data port and transfer
+    // four sound halfwords back to a different IOP RAM destination.
+    // No fabricated sample output or unrelated DMA4 CHCR mutation.
+    const uint32_t dest = 0x00033000u;
+    if (!hw.write(iop::c_hw::k_i_stat, 4u,
+                  ~(1u << iop::c_hw::k_dma_irq)) ||
+        !hw.write(spu2 + 0x400u + 0x1a8u, 2u, 0u) ||
+        !hw.write(spu2 + 0x400u + 0x1aau, 2u, 0x0500u))
+    {
+        return false;
+    }
+    for (uint32_t i = 0u; i < 4u; ++i)
+    {
+        if (!hw.write(spu2 + 0x400u + 0x1acu, 2u, 0x1000u + i))
+        {
+            return false;
+        }
+    }
+    if (!hw.write(spu2 + 0x400u + 0x1aau, 2u, 0x0500u) ||
+        !hw.write(dma7, 4u, dest) ||
+        !hw.write(dma7 + 4u, 4u, 0x00010002u) ||
+        !cpu.write32(0xbf801508u, 0x01000000u) ||
+        !cpu.dma_read(dest, bytes, 8u))
+    {
+        return false;
+    }
+    for (uint32_t i = 0u; i < 4u; ++i)
+    {
+        if (bytes[i * 2u] != i || bytes[i * 2u + 1u] != 0x10u)
+        {
+            return false;
+        }
+    }
+    if (!hw.read(dma7 + 8u, 4u, &actual) ||
+        (actual & iop::c_hw::k_spu2_dma_str_bit) == 0u ||
+        !hw.read(iop::c_hw::k_dma_icr2, 4u, &actual) ||
+        (actual & 0x01000000u) != 0u)
+    {
+        return false;
+    }
+    hw.advance_cycles(63u);
+    if (!hw.read(dma7 + 8u, 4u, &actual) ||
+        (actual & iop::c_hw::k_spu2_dma_str_bit) == 0u)
+    {
+        return false;
+    }
+    hw.advance_cycles(1u);
+    if (!hw.read(dma7 + 8u, 4u, &actual) ||
+        (actual & iop::c_hw::k_spu2_dma_str_bit) != 0u ||
+        !hw.read(iop::c_hw::k_dma_icr2, 4u, &actual) ||
+        (actual & 0x01000000u) == 0u ||
+        !hw.read(dma4 + 8u, 4u, &actual) ||
+        (actual & iop::c_hw::k_spu2_dma_str_bit) != 0u)
+    {
+        return false;
+    }
+
+    // Cancel a real in-flight DMA request before its timer fires.
+    // There must be no DMA completion even though the original
+    // memory transfer already occurred at CHCR.STR launch.
+    hw.reset();
+    if (!kernel.attach_hle_hardware() ||
+        !hw.write(spu2 + 0x1aau, 2u, 0x0500u) ||
+        !hw.write(dma4, 4u, source) ||
+        !hw.write(dma4 + 4u, 4u, 0x00010004u) ||
+        !cpu.write32(0xbf8010c8u, 0x01000001u) ||
+        !hw.write(dma4 + 8u, 4u, 0u))
+    {
+        return false;
+    }
+    hw.advance_cycles(1000u);
+    if (!hw.read(iop::c_hw::k_dma_icr, 4u, &actual) ||
+        actual != 0u ||
+        !hw.read(iop::c_hw::k_i_stat, 4u, &actual) ||
+        actual != 0u)
+    {
+        return false;
+    }
+
+    // AutoDMA is a separate streaming-ring protocol in the primary
+    // reference, not ordinary TSA memcpy. Fail closed until it exists.
+    hw.reset();
+    if (!kernel.attach_hle_hardware() ||
+        !hw.write(spu2 + 0x1b0u, 2u, 1u) ||
+        !hw.write(dma4, 4u, source) ||
+        !hw.write(dma4 + 4u, 4u, 0x00010004u) ||
+        !cpu.write32(0xbf8010c8u, 0x01000001u))
+    {
+        return false;
+    }
+    hw.advance_cycles(1000u);
+    if (!hw.read(dma4 + 8u, 4u, &actual) ||
+        (actual & iop::c_hw::k_spu2_dma_str_bit) == 0u ||
+        !hw.read(iop::c_hw::k_i_stat, 4u, &actual) ||
+        actual != 0u ||
+        !hw.read(spu2 + 0x1aau, 2u, &actual) ||
+        actual != 0u)
+    {
+        return false;
+    }
+
+    // A transfer outside the physically backed 2 MiB IOP RAM
+    // cannot complete or partially modify sound RAM.
+    hw.reset();
+    if (!kernel.attach_hle_hardware() ||
+        !hw.write(dma4, 4u, iop::c_cpu::k_ram_size - 2u) ||
+        !hw.write(dma4 + 4u, 4u, 0x00010004u) ||
+        !cpu.write32(0xbf8010c8u, 0x01000001u) ||
+        cpu.dma_read(iop::c_cpu::k_ram_size - 2u, bytes, 16u))
+    {
+        return false;
+    }
+    hw.advance_cycles(1000u);
+    if (!hw.read(dma4 + 8u, 4u, &actual) ||
+        (actual & iop::c_hw::k_spu2_dma_str_bit) == 0u ||
+        !hw.read(iop::c_hw::k_i_stat, 4u, &actual) ||
+        actual != 0u ||
+        !hw.read(iop::c_hw::k_dma_icr, 4u, &actual) ||
+        actual != 0u ||
+        !hw.spu2_ram_word(0u, &sample) ||
+        sample != 0u)
+    {
+        return false;
+    }
+
+    hw.reset();
+    if (!hw.read(dma4 + 8u, 4u, &actual) || actual != 0u ||
+        !hw.read(dma7 + 8u, 4u, &actual) || actual != 0u ||
+        !hw.read(iop::c_hw::k_dma_icr, 4u, &actual) ||
+        actual != 0u ||
+        !hw.read(iop::c_hw::k_dma_icr2, 4u, &actual) ||
+        actual != 0u)
+    {
+        return false;
+    }
+    return true;
+}
+
+bool test_spu2_irq_edges_and_spdif()
+{
+    iop::c_kernel kernel;
+    if (!kernel.attach_hle_hardware())
+    {
+        return false;
+    }
+    iop::c_hw& hw = kernel.hardware();
+    iop::c_cpu& cpu = kernel.cpu();
+    constexpr uint32_t spu = iop::c_spu2::k_base;
+    constexpr uint32_t dma7 = iop::c_hw::k_spu2_dma7_base;
+    constexpr uint32_t src = 0x00032000u;
+    uint32_t value = 0u;
+    // Core zero latches IRQ9, then I_STAT acknowledges the edge while
+    // the SPU2 core's internal latch remains set.
+    if (!hw.write(spu + 0x19au, 2u, 0x40u) ||
+        !hw.write(spu + 0x19eu, 2u, 0x0500u) ||
+        !hw.write(spu + 0x1aau, 2u, 0x0500u) ||
+        !hw.write(spu + 0x1acu, 2u, 0x1234u) ||
+        !hw.read(iop::c_hw::k_i_stat, 4u, &value) ||
+        (value & (1u << iop::c_spu2::k_irq_line)) == 0u ||
+        !hw.write(iop::c_hw::k_i_stat, 4u,
+                  ~(1u << iop::c_spu2::k_irq_line)))
+    {
+        return false;
+    }
+    // A NEW latch on core one, triggered by an actual DMA write,
+    // must reassert IRQ9 even while core zero's latch stays set.
+    if (!hw.write(spu + 0x59au, 2u, 0x40u) ||
+        !hw.write(spu + 0x59eu, 2u, 0x0600u) ||
+        !hw.write(spu + 0x5aau, 2u, 0x0600u) ||
+        !cpu.write32(src, 0x44332211u) ||
+        !hw.write(dma7, 4u, src) ||
+        !hw.write(dma7 + 4u, 4u, 0x00010001u) ||
+        !hw.write(dma7 + 8u, 4u, 0x01000001u) ||
+        !hw.read(iop::c_hw::k_i_stat, 4u, &value) ||
+        (value & (1u << iop::c_spu2::k_irq_line)) == 0u ||
+        !hw.read(spu + 0x7c2u, 2u, &value) ||
+        (value & 0x0cu) != 0x0cu)
+    {
+        return false;
+    }
+    // Reference SPDIF_OUT accepts a 32-bit store; its 0x7c2
+    // upper halfword is ignored, not treated as a partial-store fault.
+    if (!hw.write(spu + 0x7c0u, 4u, 0xdead1234u) ||
+        !hw.read(spu + 0x7c0u, 2u, &value) || value != 0x1234u ||
+        !hw.read(spu + 0x7c2u, 2u, &value) ||
+        (value & 0x0cu) != 0x0cu ||
+        hw.write(spu + 0x7c4u, 4u, 0xbadbeefu))
+    {
+        return false;
+    }
+    return true;
+}
+
+// Native PADMAN needs the original guest SIO2 command/response transport.
+// No IRQ or DMA completion may be generated by mere register setup.
+bool test_guest_sio2_controller()
+{
+    iop::c_kernel kernel;
+    if (!kernel.attach_hle_hardware())
+    {
+        return false;
+    }
+    iop::c_hw& hw = kernel.hardware();
+    iop::c_cpu& cpu = kernel.cpu();
+    constexpr uint32_t send3 = iop::c_hw::k_sio2_send3_base;
+    constexpr uint32_t tx = iop::c_hw::k_sio2_tx_fifo;
+    constexpr uint32_t rx = iop::c_hw::k_sio2_rx_fifo;
+    constexpr uint32_t ctrl = iop::c_hw::k_sio2_ctrl;
+    constexpr uint32_t irq = uint32_t{1} << 17u;
+    constexpr uint32_t source = 0x00032000u;
+    constexpr uint32_t destination = 0x00033000u;
+    constexpr uint32_t dma11 = iop::c_hw::k_sio2_dma_rx_base;
+    constexpr uint32_t dma12 = iop::c_hw::k_sio2_dma_tx_base;
+    uint32_t status = 0u;
+    uint8_t result[8]{};
+    const uint8_t poll[5] = {0x01u, 0x42u, 0u, 0u, 0u};
+    const uint8_t neutral_reply[5] =
+    {
+        0xffu, 0x41u, 0x5au, 0xffu, 0xffu
+    };
+
+    // Real PIO: a started and fully transmitted SEND3-described packet
+    // can obtain the neutral virtual controller reply and IRQ17.
+    if (!hw.set_interrupt_mask(17u, true) ||
+        !hw.write(send3, 4u, (5u << 8u) | (5u << 18u)) ||
+        !hw.write(tx, 1u, poll[0u]) ||
+        !hw.read(iop::c_hw::k_i_stat, 4u, &status) ||
+        (status & irq) != 0u ||
+        hw.read(rx, 1u, &status))
+    {
+        return false;
+    }
+    // Requesting a transfer with an incomplete packet must not
+    // manufacture a device response, DMA completion or interrupt.
+    if (!hw.write(ctrl, 4u, 1u) ||
+        !hw.read(iop::c_hw::k_i_stat, 4u, &status) ||
+        (status & irq) != 0u)
+    {
+        return false;
+    }
+    for (uint32_t index = 1u; index < 5u; ++index)
+    {
+        if (!hw.write(tx, 1u, poll[index]))
+        {
+            return false;
+        }
+    }
+    if (!hw.read(iop::c_hw::k_i_stat, 4u, &status) ||
+        (status & irq) != 0u ||
+        !hw.write(ctrl, 4u, 1u) ||
+        !hw.read(iop::c_hw::k_i_stat, 4u, &status) ||
+        (status & irq) == 0u)
+    {
+        return false;
+    }
+    if (hw.sio2_ctrl_starts() != 2u ||
+        hw.sio2_packets() != 1u ||
+        hw.sio2_completed_transfers() != 1u)
+    {
+        return false;
+    }
+    for (uint32_t index = 0u; index < 5u; ++index)
+    {
+        if (!hw.read(rx, 1u, &status) ||
+            status != neutral_reply[index])
+        {
+            return false;
+        }
+    }
+    if (hw.read(rx, 1u, &status) ||
+        !hw.write(iop::c_hw::k_i_stat, 4u, ~irq) ||
+        hw.pending_interrupts() != 0u)
+    {
+        return false;
+    }
+
+    // Original DMA11 copies an actual controller command from IOP RAM;
+    // DMA12 stores the received bytes in the guest's requested buffer.
+    // Both requests are merely armed until SIO2 CTRL.start executes.
+    if (!hw.write(ctrl, 4u, 0x0cu) ||
+        !hw.write(send3, 4u, (8u << 8u) | (8u << 18u)) ||
+        !cpu.dma_write(source, poll, 5u) ||
+        !hw.write(dma11, 4u, source) ||
+        !hw.write(dma11 + 4u, 4u, 0x00010002u) ||
+        !hw.write(dma11 + 8u, 4u, 0x01000000u) ||
+        !hw.write(dma12, 4u, destination) ||
+        !hw.write(dma12 + 4u, 4u, 0x00010002u) ||
+        !hw.write(dma12 + 8u, 4u, 0x01000000u) ||
+        !hw.read(iop::c_hw::k_i_stat, 4u, &status) ||
+        (status & irq) != 0u ||
+        !hw.read(dma11 + 8u, 4u, &status) ||
+        (status & 0x01000000u) == 0u ||
+        !hw.read(dma12 + 8u, 4u, &status) ||
+        (status & 0x01000000u) == 0u)
+    {
+        return false;
+    }
+    if (!hw.write(ctrl, 4u, 1u) ||
+        !cpu.dma_read(destination, result, 8u) ||
+        result[0u] != 0xffu || result[1u] != 0x41u ||
+        result[2u] != 0x5au || result[3u] != 0xffu ||
+        result[4u] != 0xffu ||
+        !hw.read(dma11 + 8u, 4u, &status) ||
+        (status & 0x01000000u) != 0u ||
+        !hw.read(dma12 + 8u, 4u, &status) ||
+        (status & 0x01000000u) != 0u ||
+        !hw.read(iop::c_hw::k_i_stat, 4u, &status) ||
+        (status & irq) == 0u)
+    {
+        return false;
+    }
+
+    if (hw.sio2_ctrl_starts() != 3u ||
+        hw.sio2_packets() != 2u ||
+        hw.sio2_completed_transfers() != 2u)
+    {
+        return false;
+    }
+
+    // An out-of-bounds DMA11 source cannot cause a false transfer or
+    // clear STR. Real DMA reads must pass RAM preflight.
+    if (!hw.write(ctrl, 4u, 0x0cu) ||
+        !hw.write(send3, 4u, (8u << 8u) | (8u << 18u)) ||
+        !hw.write(iop::c_hw::k_i_stat, 4u, ~irq) ||
+        !hw.write(dma11, 4u, iop::c_cpu::k_ram_size - 4u) ||
+        !hw.write(dma11 + 4u, 4u, 0x00010002u) ||
+        !hw.write(dma11 + 8u, 4u, 0x01000000u) ||
+        !hw.write(ctrl, 4u, 1u) ||
+        !hw.read(dma11 + 8u, 4u, &status) ||
+        (status & 0x01000000u) == 0u ||
+        !hw.read(iop::c_hw::k_i_stat, 4u, &status) ||
+        (status & irq) != 0u ||
+        hw.sio2_ctrl_starts() != 4u ||
+        hw.sio2_packets() != 2u ||
+        hw.sio2_completed_transfers() != 2u)
+    {
+        return false;
+    }
+    kernel.reset();
+    return kernel.hardware().sio2_ctrl_starts() == 0u &&
+        kernel.hardware().sio2_packets() == 0u &&
+        kernel.hardware().sio2_completed_transfers() == 0u &&
+        !kernel.hardware().sio2_transfer_requested() &&
+        kernel.hardware().sio2_pending_tx_bytes() == 0u &&
+        kernel.hardware().pending_interrupts() == 0u;
+}
+
 } // namespace
 
 int main()
 {
+    if (!test_guest_sio2_controller())
+    {
+        return fail("guest SIO2 PIO/DMA11/12 transport or IRQ17 fidelity");
+    }
+    if (!test_spu2_irq_edges_and_spdif())
+    {
+        return fail("per-core SPU2 IRQ9 and SPDIF word parity");
+    }
+    if (!test_authentic_spu2_dma())
+    {
+        return fail("authentic SPU2 DMA4/7 copy, timing or cancellation");
+    }
     iop::c_hw hardware{};
     uint32_t actual = 0u;
 
@@ -107,6 +546,45 @@ int main()
         }
     }
 
+    // INTRMAN's extended lines 32..38 and 40..45 map to the
+    // primary/secondary DMAC mask bits; merely enabling them must
+    // not raise IRQ3 or complete any transfer. Leave reserved line
+    // 39 and out-of-range source IDs unsupported.
+    if (!hardware.set_interrupt_mask(36u, true) ||
+        !hardware.set_interrupt_mask(41u, true) ||
+        !hardware.read(iop::c_hw::k_dma_icr, 4u, &actual) ||
+        (actual & ((1u << 20u) | 0x00800000u)) !=
+            ((1u << 20u) | 0x00800000u) ||
+        !hardware.read(iop::c_hw::k_dma_icr2, 4u, &actual) ||
+        (actual & (1u << 17u)) == 0u ||
+        !hardware.read(iop::c_hw::k_i_mask, 4u, &actual) ||
+        (actual & (1u << iop::c_hw::k_dma_irq)) == 0u ||
+        !hardware.read(iop::c_hw::k_i_stat, 4u, &actual) ||
+        actual != 0u || hardware.pending_interrupts() != 0u ||
+        hardware.set_interrupt_mask(39u, true) ||
+        hardware.set_interrupt_mask(46u, true) ||
+        !hardware.set_interrupt_mask(36u, false) ||
+        !hardware.set_interrupt_mask(41u, false) ||
+        !hardware.read(iop::c_hw::k_dma_icr, 4u, &actual) ||
+        (actual & (1u << 20u)) != 0u ||
+        (actual & 0x00800000u) == 0u ||
+        !hardware.read(iop::c_hw::k_dma_icr2, 4u, &actual) ||
+        (actual & (1u << 17u)) != 0u ||
+        hardware.pending_interrupts() != 0u)
+    {
+        return fail("extended INTRMAN DMA masks or no-fake-IRQ contract");
+    }
+    hardware.reset();
+    if (!hardware.read(iop::c_hw::k_dma_icr, 4u, &actual) ||
+        actual != 0u ||
+        !hardware.read(iop::c_hw::k_dma_icr2, 4u, &actual) ||
+        actual != 0u ||
+        !hardware.read(iop::c_hw::k_i_mask, 4u, &actual) ||
+        actual != 0u)
+    {
+        return fail("extended INTRMAN DMA enables survived reset");
+    }
+
     // CPU aliases must reach the same physical SSBUS registers.
     iop::c_kernel audio_kernel;
     if (!audio_kernel.attach_hle_hardware() ||
@@ -116,6 +594,302 @@ int main()
         audio_kernel.hardware().pending_interrupts() != 0u)
     {
         return fail("LIBSD guest KSEG1 SPU2 bus write failed");
+    }
+
+    // The matched SDBZ LIBSD worker originally faulted on a real
+    // R3000 SH at PC 0x0005C8E8, physical SPU2 master register 0x760.
+    // Execute that same opcode through KSEG1, not a host-side bypass.
+    if (!audio_kernel.cpu().write32(0x1000u, 0xa4450000u))
+    {
+        return fail("cannot stage LIBSD SPU2 store instruction");
+    }
+    iop::s_cpu_state& audio_cpu = audio_kernel.cpu().state();
+    audio_cpu.m_pc = 0x1000u;
+    audio_cpu.m_next_pc = 0x1004u;
+    audio_cpu.m_gpr[2] = 0xbf900760u;
+    audio_cpu.m_gpr[5] = 0x1234u;
+    if (audio_kernel.cpu().step() != iop::e_step_result::completed ||
+        !audio_kernel.hardware().read(
+            iop::c_spu2::k_base + 0x760u, 2u, &actual) ||
+        actual != 0x1234u ||
+        audio_kernel.cpu().last_memory_fault().m_valid ||
+        audio_kernel.hardware().pending_interrupts() != 0u)
+    {
+        return fail("guest LIBSD SH to SPU2 master volume failed");
+    }
+
+    // Retail SDBZ executes this exact SH v0, 0(a1) instruction at
+    // 0x0005A824 after the RPC worker receives WaitSema(0) = -408.
+    // PS2SDK LIBSD InitSpdif writes MODE=0x900, MEDIA=0x200 and
+    // the final SPDIF control halfword 0x7CA=8. The primary
+    // ps2-web-recomp/SDBZ model accepts 0x7CA without latching it.
+    // These are configuration writes, not proof of SPU readiness.
+    if (!audio_kernel.cpu().write32(0x0005a824u, 0xa4a20000u) ||
+        !audio_kernel.hardware().write(
+            iop::c_spu2::k_base + 0x7c0u, 2u, 0u) ||
+        !audio_kernel.hardware().write(
+            iop::c_spu2::k_base + 0x7c0u, 2u, 0x8000u) ||
+        !audio_kernel.hardware().write(
+            iop::c_spu2::k_base + 0x7c6u, 2u, 0x900u) ||
+        !audio_kernel.hardware().write(
+            iop::c_spu2::k_base + 0x7c8u, 2u, 0x200u))
+    {
+        return fail("cannot stage retail LIBSD SPDIF init");
+    }
+    audio_cpu.m_pc = 0x0005a824u;
+    audio_cpu.m_next_pc = 0x0005a828u;
+    audio_cpu.m_gpr[2] = 8u;
+    audio_cpu.m_gpr[5] = 0xbf9007cau;
+    if (audio_kernel.cpu().step() != iop::e_step_result::completed ||
+        audio_kernel.cpu().last_memory_fault().m_valid ||
+        !audio_kernel.hardware().read(
+            iop::c_spu2::k_base + 0x7c0u, 2u, &actual) ||
+        actual != 0x8000u ||
+        !audio_kernel.hardware().read(
+            iop::c_spu2::k_base + 0x7c6u, 2u, &actual) ||
+        actual != 0x900u ||
+        !audio_kernel.hardware().read(
+            iop::c_spu2::k_base + 0x7c8u, 2u, &actual) ||
+        actual != 0x200u ||
+        !audio_kernel.hardware().read(
+            iop::c_spu2::k_base + 0x7cau, 2u, &actual) ||
+        actual != 0u ||
+        audio_kernel.hardware().read(
+            iop::c_spu2::k_base + 0x7c4u, 2u, &actual) ||
+        audio_kernel.hardware().write(
+            iop::c_spu2::k_base + 0x7ccu, 2u, 8u) ||
+        audio_kernel.hardware().write(
+            iop::c_spu2::k_base + 0x7cau, 1u, 8u) ||
+        audio_kernel.hardware().pending_interrupts() != 0u)
+    {
+        return fail("guest LIBSD SPDIF init fabricated state or faulted");
+    }
+
+    // In SDBZ's 05:57:06 replay, LIBSD's original instruction
+    // at 0x0005B450 is lw v0, 0(s3), s3=0xBF8010C8. The physical
+    // address is DMA4.CHCR. Run that exact R3000 load via KSEG1,
+    // after checking the matching primary/secondary DMA register
+    // bank storage. These are requests, never synthetic transfers.
+    constexpr uint32_t dma4 = iop::c_hw::k_spu2_dma4_base;
+    constexpr uint32_t dma7 = iop::c_hw::k_spu2_dma7_base;
+    for (uint32_t base : {dma4, dma7})
+    {
+        for (uint32_t index = 0u; index < 4u; ++index)
+        {
+            if (!hardware.read(base + index * 4u, 4u, &actual) ||
+                actual != 0u)
+            {
+                return fail("SPU2 DMA4/7 registers not reset to zero");
+            }
+        }
+    }
+    if (!hardware.write(dma4, 4u, 0x00024000u) ||
+        !hardware.write(dma4 + 4u, 4u, 0x00010020u) ||
+        !hardware.write(dma4 + 8u, 4u, 0x01000201u) ||
+        !hardware.write(dma4 + 12u, 4u, 0x0002a000u) ||
+        !hardware.write(dma7, 4u, 0x00028000u) ||
+        !hardware.write(dma7 + 4u, 4u, 0x00020010u) ||
+        !hardware.write(dma7 + 8u, 4u, 0x01000200u) ||
+        !hardware.write(dma7 + 12u, 4u, 0x0002c000u) ||
+        !hardware.read(dma4 + 8u, 4u, &actual) ||
+        actual != 0x01000201u ||
+        !hardware.read(dma7 + 8u, 4u, &actual) ||
+        actual != 0x01000200u ||
+        !hardware.read(dma4 + 12u, 4u, &actual) ||
+        actual != 0x0002a000u ||
+        !hardware.read(dma7 + 12u, 4u, &actual) ||
+        actual != 0x0002c000u ||
+        !hardware.read(iop::c_hw::k_dma_icr, 4u, &actual) ||
+        actual != 0u ||
+        !hardware.read(iop::c_hw::k_dma_icr2, 4u, &actual) ||
+        actual != 0u ||
+        !hardware.read(iop::c_hw::k_i_stat, 4u, &actual) ||
+        actual != 0u ||
+        hardware.pending_interrupts() != 0u ||
+        !hardware.write(dma4 + 4u, 2u, 0x00abu) ||
+        !hardware.read(dma4 + 4u, 4u, &actual) ||
+        actual != 0x000100abu ||
+        !hardware.write(dma4 + 6u, 2u, 0x3344u) ||
+        !hardware.read(dma4 + 4u, 4u, &actual) ||
+        actual != 0x334400abu ||
+        !hardware.read(dma4 + 6u, 2u, &actual) ||
+        actual != 0x3344u ||
+        !hardware.read(dma4 + 4u, 1u, &actual) ||
+        actual != 0xabu ||
+        !hardware.write(dma7 + 8u, 1u, 0x55u) ||
+        !hardware.read(dma7 + 8u, 4u, &actual) ||
+        actual != 0x01000255u ||
+        !hardware.read(dma7 + 9u, 1u, &actual) ||
+        actual != 0x02u ||
+        !hardware.write(dma7 + 0xbu, 1u, 0x7au) ||
+        !hardware.read(dma7 + 8u, 4u, &actual) ||
+        actual != 0x7a000255u ||
+        hardware.write(dma4 + 5u, 2u, 0u) ||
+        hardware.read(dma4 + 7u, 2u, &actual) ||
+        hardware.write(dma7 + 0x10u, 4u, 0u) ||
+        hardware.read(dma7 + 0x10u, 4u, &actual))
+    {
+        return fail("SPU2 DMA register banks or no-fake-DMA invariant");
+    }
+
+    if (!audio_kernel.cpu().write32(0x0005b450u, 0x8e620000u) ||
+        !audio_kernel.hardware().write(
+            dma4 + 8u, 4u, 0x01000201u))
+    {
+        return fail("cannot stage original LIBSD DMA4 CHCR read");
+    }
+    audio_cpu.m_pc = 0x0005b450u;
+    audio_cpu.m_next_pc = 0x0005b454u;
+    audio_cpu.m_gpr[19] = 0xbf8010c8u;
+    audio_cpu.m_gpr[2] = 0xffffffffu;
+    if (audio_kernel.cpu().step() != iop::e_step_result::completed ||
+        audio_cpu.m_gpr[2] != 0x01000201u ||
+        audio_kernel.cpu().last_memory_fault().m_valid ||
+        audio_kernel.hardware().pending_interrupts() != 0u)
+    {
+        return fail("retail LIBSD R3000 lw DMA4.CHCR faulted");
+    }
+
+    // Original R3000 SH v1, 0(a1) at 0x0005B5D4 in the
+    // matched 06:03:34 replay: a1=0xBF8010C4 (DMA4.BCR).
+    // The guest also addresses the upper BCR halfword at 0xC6.
+    if (!audio_kernel.cpu().write32(0x0005b5d4u, 0xa4a30000u) ||
+        !audio_kernel.hardware().write(
+            dma4 + 4u, 4u, 0xaabbccddu))
+    {
+        return fail("cannot stage retail LIBSD DMA4 BCR store");
+    }
+    audio_cpu.m_pc = 0x0005b5d4u;
+    audio_cpu.m_next_pc = 0x0005b5d8u;
+    audio_cpu.m_gpr[5] = 0xbf8010c4u;
+    audio_cpu.m_gpr[3] = 0x1234u;
+    if (audio_kernel.cpu().step() != iop::e_step_result::completed ||
+        !audio_kernel.cpu().read32(0xbf8010c4u, &actual) ||
+        actual != 0xaabb1234u ||
+        audio_kernel.cpu().last_memory_fault().m_valid)
+    {
+        return fail("retail LIBSD R3000 SH DMA4.BCR low half fault");
+    }
+    audio_cpu.m_pc = 0x0005b5d4u;
+    audio_cpu.m_next_pc = 0x0005b5d8u;
+    audio_cpu.m_gpr[5] = 0xbf8010c6u;
+    audio_cpu.m_gpr[3] = 0x5678u;
+    if (audio_kernel.cpu().step() != iop::e_step_result::completed ||
+        !audio_kernel.cpu().read32(0xbf8010c4u, &actual) ||
+        actual != 0x56781234u ||
+        !audio_kernel.hardware().read(
+            iop::c_hw::k_dma_icr, 4u, &actual) ||
+        actual != 0u ||
+        !audio_kernel.hardware().read(
+            iop::c_hw::k_i_stat, 4u, &actual) ||
+        actual != 0u ||
+        audio_kernel.hardware().pending_interrupts() != 0u ||
+        audio_kernel.cpu().last_memory_fault().m_valid)
+    {
+        return fail("retail LIBSD R3000 SH DMA4.BCR upper half fault");
+    }
+
+    hardware.reset();
+    for (uint32_t base : {dma4, dma7})
+    {
+        for (uint32_t index = 0u; index < 4u; ++index)
+        {
+            if (!hardware.read(base + index * 4u, 4u, &actual) ||
+                actual != 0u)
+            {
+                return fail("SPU2 DMA4/7 register bank survived reboot");
+            }
+        }
+    }
+
+    const uint32_t spu2 = iop::c_spu2::k_base;
+    if (!hardware.read(spu2 + 0x760u, 2u, &actual) ||
+        actual != 0x3fffu ||
+        !hardware.read(spu2 + 0x788u, 2u, &actual) ||
+        actual != 0x3fffu ||
+        !hardware.read(spu2 + 0x768u, 2u, &actual) ||
+        actual != 0x7fffu ||
+        !hardware.write(spu2 + 0x760u, 4u, 0x55667788u) ||
+        !hardware.read(spu2 + 0x760u, 4u, &actual) ||
+        actual != 0x55667788u ||
+        !hardware.read(spu2 + 0x788u, 2u, &actual) ||
+        actual != 0x3fffu ||
+        !hardware.write(spu2 + 0x7c6u, 2u, 0x4321u) ||
+        !hardware.read(spu2 + 0x7c6u, 2u, &actual) ||
+        actual != 0x4321u ||
+        hardware.write(spu2 + 0x760u, 1u, 0x77u) ||
+        hardware.read(spu2 + 0x760u, 1u, &actual) ||
+        hardware.read(spu2 + 0x7c4u, 2u, &actual) ||
+        hardware.write(spu2 + 0x800u, 2u, 0u) ||
+        hardware.pending_interrupts() != 0u)
+    {
+        return fail("SPU2 master, core isolation, SPDIF or MMIO widths");
+    }
+
+    // Reference core STATX settles for sixteen polls following an
+    // enabled ATTR rising edge. SPU RAM port writes advance TSA and
+    // assert IRQ9 only on an actual guest-selected IRQA hit.
+    if (!hardware.write(spu2 + 0x19au, 2u, 0x8040u))
+    {
+        return fail("cannot enable reference SPU2 core");
+    }
+    for (uint32_t index = 0u; index < 16u; ++index)
+    {
+        if (!hardware.read(spu2 + 0x344u, 2u, &actual) ||
+            actual != 0u)
+        {
+            return fail("SPU2 STATX settled before reference delay");
+        }
+    }
+    if (!hardware.read(spu2 + 0x344u, 2u, &actual) ||
+        actual != 0x80u ||
+        !hardware.write(spu2 + 0x1a8u, 2u, 0u) ||
+        !hardware.write(spu2 + 0x1aau, 2u, 0x800u) ||
+        !hardware.write(spu2 + 0x1acu, 2u, 0x55aau) ||
+        !hardware.read(spu2 + 0x1aau, 2u, &actual) ||
+        actual != 0x801u ||
+        !hardware.read(spu2 + 0x7c2u, 2u, &actual) ||
+        actual != 4u ||
+        !hardware.read(iop::c_hw::k_i_stat, 4u, &actual) ||
+        (actual & (1u << iop::c_spu2::k_irq_line)) == 0u ||
+        !hardware.write(iop::c_hw::k_i_stat, 4u,
+                        ~(1u << iop::c_spu2::k_irq_line)) ||
+        !hardware.write(spu2 + 0x1acu, 2u, 0x55abu) ||
+        !hardware.read(iop::c_hw::k_i_stat, 4u, &actual) ||
+        (actual & (1u << iop::c_spu2::k_irq_line)) != 0u ||
+        !hardware.write(spu2 + 0x19au, 2u, 0u) ||
+        !hardware.read(spu2 + 0x7c2u, 2u, &actual) ||
+        actual != 0u ||
+        hardware.pending_interrupts() != 0u)
+    {
+        return fail("SPU2 STATX, TSA, explicit data-port IRQ or reset");
+    }
+
+    // Voice parameter writes are real register state, but playback
+    // envelopes require the currently missing audio clock. Do not
+    // synthesize a voice position or an IRQ just because it was keyed.
+    if (!hardware.write(spu2 + 0x4u, 2u, 0x1010u) ||
+        !hardware.read(spu2 + 0x4u, 2u, &actual) ||
+        actual != 0x1010u ||
+        !hardware.write(spu2 + 0x1a0u, 2u, 1u) ||
+        hardware.read(spu2 + 0x0au, 2u, &actual) ||
+        hardware.read(spu2 + 0x1c8u, 2u, &actual) ||
+        !hardware.write(spu2 + 0x1a4u, 2u, 1u) ||
+        !hardware.read(spu2 + 0x0au, 2u, &actual) ||
+        actual != 0u)
+    {
+        return fail("SPU2 voice programming or dynamic read guard");
+    }
+    hardware.reset();
+    if (!hardware.read(spu2 + 0x760u, 2u, &actual) ||
+        actual != 0x3fffu ||
+        !hardware.read(spu2 + 0x7c6u, 2u, &actual) ||
+        actual != 0u ||
+        !hardware.read(spu2 + 0x7c2u, 2u, &actual) ||
+        actual != 0u ||
+        hardware.pending_interrupts() != 0u)
+    {
+        return fail("SPU2 core/master/SPDIF state survived reset");
     }
 
     // Official OpenPS2BIOS stores zero to $at=0xBF8010B8 at

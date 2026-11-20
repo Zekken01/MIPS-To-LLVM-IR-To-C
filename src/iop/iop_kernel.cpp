@@ -13,6 +13,11 @@ namespace
 {
 constexpr uint32_t k_alarm_return_pc = 0x00013ff0u;
 constexpr uint32_t k_hle_callback_return_pc = 0x00013fe0u;
+// Reserved guest HLE trampoline immediately below the other return stubs.
+constexpr uint32_t k_module_return_pc = 0x00013fd0u;
+constexpr uint32_t k_thread_return_pc = 0x00013fc0u;
+constexpr uint32_t k_interrupt_return_pc = 0x00013fb0u;
+constexpr uint32_t k_interrupt_stack = 0x0001f000u;
 
 bool valid_range(size_t size, uint64_t offset, uint64_t length)
 {
@@ -75,12 +80,18 @@ void c_kernel::reset()
     m_alarms.clear();
     m_hle_events.clear();
     m_syscall = {};
+    m_irq_lookup = {};
+    m_irq_complete = {};
+    m_interrupt_thread_id = 0u;
+    m_critical_thread_id = 0u;
+    m_interrupts_suspended = false;
     m_cycles = 0u;
     m_next_module_id = 1u;
     m_next_thread_id = 1u;
     m_next_alarm_id = 1u;
     m_last_scheduled_id = 0u;
     m_current_thread_id = 0u;
+    m_restart_current_thread = false;
 }
 
 bool c_kernel::start_rom0_boot(const std::vector<uint8_t>& image)
@@ -100,6 +111,7 @@ bool c_kernel::start_rom0_boot(const std::vector<uint8_t>& image)
         m_cpu.bind_hardware(nullptr);
         return false;
     }
+    m_hardware.bind_dma_cpu(&m_cpu);
     m_cycles = 0u;
     m_current_thread_id = 0u;
     m_rom0_boot_active = true;
@@ -114,6 +126,7 @@ bool c_kernel::attach_hle_hardware()
     }
     // Reset detaches MMIO; the HLE bootstrap reattaches explicitly.
     m_cpu.bind_hardware(&m_hardware);
+    m_hardware.bind_dma_cpu(&m_cpu);
     return true;
 }
 
@@ -150,6 +163,32 @@ uint64_t c_kernel::cycles() const
 uint32_t c_kernel::current_thread_id() const
 {
     return m_current_thread_id;
+}
+
+bool c_kernel::in_interrupt_context() const
+{
+    return m_interrupt_thread_id != 0u &&
+           m_current_thread_id == m_interrupt_thread_id;
+}
+
+bool c_kernel::interrupts_suspended() const
+{
+    return m_interrupts_suspended;
+}
+
+void c_kernel::set_interrupts_suspended(bool suspended)
+{
+    m_interrupts_suspended = suspended;
+    if (m_current_thread_id != 0u)
+    {
+        const auto found = m_threads.find(m_current_thread_id);
+        if (found != m_threads.end())
+        {
+            found->second.m_interrupts_suspended = suspended;
+        }
+    }
+    m_critical_thread_id =
+        suspended ? m_current_thread_id : 0u;
 }
 
 bool c_kernel::lookup_library(
@@ -390,6 +429,50 @@ uint32_t c_kernel::allocate(uint32_t size)
     const uint32_t base = static_cast<uint32_t>(candidate);
     m_allocations.emplace(base, static_cast<uint32_t>(required));
     return base;
+}
+
+uint32_t c_kernel::allocate_thread_stack(uint32_t size)
+{
+    // ps2-web-recomp/SDBZ kernel::create_thread uses alloc(size, 1):
+    // highest suitable gap, rounded to a 256-byte stack boundary.
+    // Use 64-bit arithmetic so huge invalid guest stack requests cannot
+    // wrap around the 2 MiB IOP physical RAM limit.
+    const uint64_t required =
+        (static_cast<uint64_t>(size) + 0xffu) & ~uint64_t(0xffu);
+    if (required == 0u ||
+        required > c_cpu::k_ram_size - k_user_base)
+    {
+        return 0u;
+    }
+
+    uint64_t upper = c_cpu::k_ram_size;
+    uint64_t chosen = 0u;
+    for (auto it = m_allocations.rbegin();
+         it != m_allocations.rend(); ++it)
+    {
+        const uint64_t occupied_end =
+            static_cast<uint64_t>(it->first) + it->second;
+        if (upper >= required &&
+            upper - required >= occupied_end &&
+            upper - required >= k_user_base)
+        {
+            chosen = upper - required;
+            break;
+        }
+        upper = it->first;
+    }
+
+    if (chosen == 0u && upper >= required &&
+        upper - required >= k_user_base)
+    {
+        chosen = upper - required;
+    }
+    if (chosen != 0u)
+    {
+        m_allocations.emplace(static_cast<uint32_t>(chosen),
+                              static_cast<uint32_t>(required));
+    }
+    return static_cast<uint32_t>(chosen);
 }
 
 uint32_t c_kernel::allocate_heap(uint32_t size)
@@ -667,7 +750,8 @@ const std::map<uint32_t, s_kernel_module>& c_kernel::modules() const
 
 uint32_t c_kernel::create_thread(
     uint32_t entry, uint32_t gp, uint32_t priority,
-    uint32_t stack_size, uint32_t a0, uint32_t a1
+    uint32_t stack_size, uint32_t a0, uint32_t a1,
+    uint32_t attr, uint32_t option
 )
 {
     const uint32_t physical = entry & 0x1fffffffu;
@@ -678,7 +762,7 @@ uint32_t c_kernel::create_thread(
         return 0u;
     }
 
-    const uint32_t stack_base = allocate(stack_size);
+    const uint32_t stack_base = allocate_thread_stack(stack_size);
     if (stack_base == 0u)
     {
         return 0u;
@@ -694,6 +778,8 @@ uint32_t c_kernel::create_thread(
     thread.m_id = m_next_thread_id++;
     thread.m_priority = priority;
     thread.m_initial_priority = priority;
+    thread.m_attr = attr;
+    thread.m_option = option;
     thread.m_entry = entry;
     thread.m_gp = gp;
     thread.m_stack_base = stack_base;
@@ -715,21 +801,36 @@ uint32_t c_kernel::create_module_thread(
 )
 {
     const s_kernel_module* loaded = module(module_id);
-    if (loaded == nullptr)
+    if (loaded == nullptr ||
+        !m_cpu.write32(k_module_return_pc, 0x0000000du))
     {
         return 0u;
     }
-    return create_thread(
+
+    const uint32_t id = create_thread(
         loaded->m_irx.m_entry,
         loaded->m_irx.m_gp,
         priority, stack_size
     );
+    if (id != 0u)
+    {
+        s_kernel_thread& thread = m_threads.at(id);
+        thread.m_module_entry = true;
+        thread.m_module_id = module_id;
+        thread.m_cpu.m_gpr[31] = k_module_return_pc;
+    }
+    return id;
 }
 
 const s_kernel_thread* c_kernel::thread(uint32_t id) const
 {
     const auto found = m_threads.find(id);
     return found == m_threads.end() ? nullptr : &found->second;
+}
+
+const std::map<uint32_t, s_kernel_thread>& c_kernel::threads() const
+{
+    return m_threads;
 }
 
 bool c_kernel::has_guest_work() const
@@ -748,16 +849,24 @@ bool c_kernel::has_guest_work() const
             return true;
         }
     }
-    return !m_alarms.empty() || !m_hle_events.empty();
+    return !m_alarms.empty() || !m_hle_events.empty() ||
+           m_hardware.spu2_dma_cycles_remaining() != 0u ||
+           (m_irq_lookup && m_interrupt_thread_id == 0u &&
+            m_hardware.next_pending_interrupt() >= 0);
+}
+
+bool c_kernel::can_schedule_hle_event(uint64_t ticks) const
+{
+    return !m_rom0_boot_active && ticks != 0u &&
+           ticks <= std::numeric_limits<uint64_t>::max() - m_cycles &&
+           m_hle_events.size() < 256u;
 }
 
 bool c_kernel::schedule_hle_event(
     uint64_t ticks, std::function<void()> callback
 )
 {
-    if (m_rom0_boot_active || ticks == 0u || !callback ||
-        ticks > std::numeric_limits<uint64_t>::max() - m_cycles ||
-        m_hle_events.size() >= 256u)
+    if (!can_schedule_hle_event(ticks) || !callback)
     {
         return false;
     }
@@ -875,11 +984,25 @@ bool c_kernel::start_thread(uint32_t id)
 {
     const auto found = m_threads.find(id);
     if (found == m_threads.end() ||
-        found->second.m_status != e_thread_status::dormant)
+        found->second.m_status != e_thread_status::dormant ||
+        !m_cpu.write32(k_thread_return_pc, 0x0000000du))
     {
         return false;
     }
-    found->second.m_status = e_thread_status::ready;
+
+    s_kernel_thread& thread = found->second;
+    // The original IOP kernel's StartThread installs a guest exit
+    // trampoline. Preserve the more specific callback and alarm
+    // return sentinels; all ordinary threads must also have an RA.
+    thread.m_cpu.m_gpr[31] =
+        thread.m_hle_guest_callback ? k_hle_callback_return_pc :
+        thread.m_alarm_id != 0u ? k_alarm_return_pc :
+        thread.m_module_entry ? k_module_return_pc :
+                                k_thread_return_pc;
+    thread.m_module_entry_returned = false;
+    thread.m_module_entry_result = 0u;
+    thread.m_interrupts_suspended = false;
+    thread.m_status = e_thread_status::ready;
     return true;
 }
 
@@ -894,9 +1017,29 @@ bool c_kernel::start_thread_with_arguments(
     uint32_t id, uint32_t a0, uint32_t a1
 )
 {
-    if (!start_thread(id))
+    // ps2-web-recomp/SDBZ resolves thbase StartThread(0) to current().
+    // A self restart is legal while RUNNING. It must preserve the new
+    // entry context across this syscall; an ordinary dormant target
+    // still uses the existing start_thread() path.
+    const auto found = m_threads.find(id);
+    const bool restart_current =
+        id != 0u && id == m_current_thread_id &&
+        found != m_threads.end() &&
+        found->second.m_status == e_thread_status::running;
+    if (!restart_current && !start_thread(id))
     {
         return false;
+    }
+    if (restart_current)
+    {
+        if (!m_cpu.write32(k_thread_return_pc, 0x0000000du))
+        {
+            return false;
+        }
+        found->second.m_status = e_thread_status::ready;
+        found->second.m_module_entry_returned = false;
+        found->second.m_module_entry_result = 0u;
+        found->second.m_interrupts_suspended = false;
     }
     s_kernel_thread& thread = m_threads.at(id);
     s_cpu_state initial{};
@@ -907,11 +1050,28 @@ bool c_kernel::start_thread_with_arguments(
         thread.m_stack_base + thread.m_stack_size - 16u;
     initial.m_gpr[4] = a0;
     initial.m_gpr[5] = a1;
+    // StartThreadArgs rebuilds the R3000 register context, including
+    // $ra. Preserve the genuine exit trampoline for module starters,
+    // generic threads and guest callback/alarm threads alike.
+    initial.m_gpr[31] =
+        thread.m_hle_guest_callback ? k_hle_callback_return_pc :
+        thread.m_alarm_id != 0u ? k_alarm_return_pc :
+        thread.m_module_entry ? k_module_return_pc :
+                                k_thread_return_pc;
     thread.m_cpu = initial;
     thread.m_priority = thread.m_initial_priority;
     thread.m_wakeup_count = 0u;
     thread.m_wait_type = 0u;
     thread.m_delete_on_exit = false;
+    if (restart_current)
+    {
+        // The live guest's RA is the original import caller, before
+        // restoring the new thread entry context.
+        thread.m_last_self_restart_ra = m_cpu.state().m_gpr[31];
+        thread.m_last_self_restart_arg = a0;
+        ++thread.m_self_restarts;
+        m_restart_current_thread = true;
+    }
     return true;
 }
 
@@ -1029,6 +1189,12 @@ bool c_kernel::stop_thread(uint32_t id)
         return false;
     }
     found->second.m_status = e_thread_status::dormant;
+    found->second.m_interrupts_suspended = false;
+    if (id == m_critical_thread_id)
+    {
+        m_critical_thread_id = 0u;
+        m_interrupts_suspended = false;
+    }
     found->second.m_wake_cycle = 0u;
     found->second.m_wait_type = 0u;
     found->second.m_wakeup_count = 0u;
@@ -1061,6 +1227,12 @@ bool c_kernel::exit_current_thread(bool delete_on_exit)
         return false;
     }
     found->second.m_status = e_thread_status::dormant;
+    found->second.m_interrupts_suspended = false;
+    if (m_current_thread_id == m_critical_thread_id)
+    {
+        m_critical_thread_id = 0u;
+        m_interrupts_suspended = false;
+    }
     found->second.m_wake_cycle = 0u;
     found->second.m_wait_type = 0u;
     found->second.m_delete_on_exit = delete_on_exit;
@@ -1177,8 +1349,74 @@ void c_kernel::bind_syscall(t_kernel_syscall handler)
     m_syscall = std::move(handler);
 }
 
+void c_kernel::bind_interrupts(
+    t_kernel_irq_lookup lookup, t_kernel_irq_complete complete
+)
+{
+    m_irq_lookup = std::move(lookup);
+    m_irq_complete = std::move(complete);
+}
+
+bool c_kernel::start_guest_interrupt(
+    uint32_t line, const s_kernel_interrupt_target& target
+)
+{
+    const uint32_t physical = target.m_handler & 0x1fffffffu;
+    const uint32_t region = target.m_handler & 0xe0000000u;
+    uint32_t opcode = 0u;
+    if (m_interrupt_thread_id != 0u ||
+        target.m_handler == 0u || (target.m_handler & 3u) != 0u ||
+        (region != 0u && region != 0x80000000u &&
+         region != 0xa0000000u) ||
+        physical >= c_cpu::k_ram_size ||
+        !m_cpu.read32(target.m_handler, &opcode) ||
+        !m_cpu.write32(k_interrupt_return_pc, 0x0000000du))
+    {
+        return false;
+    }
+    const uint32_t id = create_thread(
+        target.m_handler, 0u, 0u, 0x400u, target.m_argument);
+    if (id == 0u)
+    {
+        return false;
+    }
+    s_kernel_thread& thread = m_threads.at(id);
+    thread.m_interrupt_callback = true;
+    thread.m_interrupt_line = line;
+    if (!start_thread(id))
+    {
+        m_allocations.erase(thread.m_stack_base);
+        m_threads.erase(id);
+        return false;
+    }
+    // The original INTRMAN executes on its reserved interrupt stack;
+    // this wrapper runs only the registered guest handler instructions.
+    thread.m_cpu.m_gpr[29] = k_interrupt_stack;
+    thread.m_cpu.m_gpr[31] = k_interrupt_return_pc;
+    m_interrupt_thread_id = id;
+    return true;
+}
+
 uint32_t c_kernel::next_ready() const
 {
+    if (m_interrupts_suspended && m_critical_thread_id != 0u)
+    {
+        const auto held = m_threads.find(m_critical_thread_id);
+        if (held != m_threads.end() &&
+            held->second.m_status == e_thread_status::ready)
+        {
+            return m_critical_thread_id;
+        }
+    }
+    if (m_interrupt_thread_id != 0u)
+    {
+        const auto handler = m_threads.find(m_interrupt_thread_id);
+        if (handler != m_threads.end() &&
+            handler->second.m_status == e_thread_status::ready)
+        {
+            return m_interrupt_thread_id;
+        }
+    }
     uint32_t priority = std::numeric_limits<uint32_t>::max();
     uint32_t candidate = 0u;
     uint32_t wrapped = 0u;
@@ -1214,6 +1452,19 @@ uint32_t c_kernel::next_ready() const
 
 void c_kernel::wake_due()
 {
+    // A runnable guest in CpuSuspendIntr retains the CPU. Defer
+    // software events and context switches, but NOT hardware clocks
+    // or DMA transfers, until the guest resumes interrupts.
+    if (m_interrupts_suspended && m_critical_thread_id != 0u)
+    {
+        const auto held = m_threads.find(m_critical_thread_id);
+        if (held != m_threads.end() &&
+            (held->second.m_status == e_thread_status::ready ||
+             held->second.m_status == e_thread_status::running))
+        {
+            return;
+        }
+    }
     // Events may schedule additional future events while executing.
     while (!m_hle_events.empty() &&
            m_hle_events.begin()->first <= m_cycles)
@@ -1272,6 +1523,7 @@ s_kernel_run_result c_kernel::run(
         quantum = 1u;
     }
     m_current_thread_id = 0u;
+    m_restart_current_thread = false;
 
     // Unlike an IRX entrypoint, the actual IOP firmware begins at the
     // R3000 reset vector. Execute its own instruction stream directly.
@@ -1310,6 +1562,65 @@ s_kernel_run_result c_kernel::run(
     while (remaining != 0u)
     {
         wake_due();
+        // ps2-web-recomp/SDBZ saves interrupt state with each thread.
+        // A suspended thread owns the CPU only while runnable. Once it
+        // blocks or exits, a real DMA interrupt may wake it.
+        if (m_interrupts_suspended && m_critical_thread_id != 0u)
+        {
+            const auto held = m_threads.find(m_critical_thread_id);
+            if (held == m_threads.end() ||
+                (held->second.m_status != e_thread_status::ready &&
+                 held->second.m_status != e_thread_status::running))
+            {
+                std::fprintf(stderr,
+                    "IOP critical owner yielded: thread=%u cycles=%llu\n",
+                    m_critical_thread_id,
+                    static_cast<unsigned long long>(m_cycles));
+                m_interrupts_suspended = false;
+                m_critical_thread_id = 0u;
+            }
+        }
+        if (m_irq_lookup && !m_interrupts_suspended &&
+            m_interrupt_thread_id == 0u)
+        {
+            // Resolve the real device source and acknowledge before
+            // executing a registered guest INTRMAN callback.
+            for (uint32_t attempt = 0u; attempt < 32u; ++attempt)
+            {
+                const int32_t pending =
+                    m_hardware.next_pending_interrupt();
+                if (pending < 0)
+                {
+                    break;
+                }
+                const uint32_t line = static_cast<uint32_t>(pending);
+                s_kernel_interrupt_target target{};
+                const bool registered = m_irq_lookup(line, &target);
+                if (registered && !start_guest_interrupt(line, target))
+                {
+                    result.m_stop =
+                        e_kernel_stop::unsupported_instruction;
+                    result.m_guest_pc = target.m_handler;
+                    return result;
+                }
+                if (!m_hardware.acknowledge_interrupt(line))
+                {
+                    result.m_stop =
+                        e_kernel_stop::unsupported_instruction;
+                    return result;
+                }
+                std::printf(
+                    "IOP INTRMAN IRQ acknowledged: line=%u registered=%u "
+                    "handler=0x%08x cycles=%llu\n",
+                    line, registered ? 1u : 0u,
+                    registered ? target.m_handler : 0u,
+                    static_cast<unsigned long long>(m_cycles));
+                if (registered)
+                {
+                    break;
+                }
+            }
+        }
         const uint32_t id = next_ready();
         if (id == 0u)
         {
@@ -1343,9 +1654,34 @@ s_kernel_run_result c_kernel::run(
                     next_wake, m_hle_events.begin()->first
                 );
             }
+            // The original SPU2 DMA4/DMA7 backend schedules an
+            // actual transfer-completion event after the copied
+            // guest data has entered sound/IOP RAM. A blocked guest
+            // thread must not freeze that device deadline.
+            const uint32_t dma_left =
+                m_hardware.spu2_dma_cycles_remaining();
+            if (dma_left != 0u)
+            {
+                const uint64_t deadline =
+                    dma_left <=
+                        std::numeric_limits<uint64_t>::max() - m_cycles
+                        ? m_cycles + dma_left
+                        : std::numeric_limits<uint64_t>::max();
+                next_wake = std::min(next_wake, deadline);
+            }
             if (next_wake ==
                 std::numeric_limits<uint64_t>::max())
             {
+                uint64_t to_advance = remaining;
+                while (to_advance != 0u)
+                {
+                    const uint32_t step = static_cast<uint32_t>(
+                        std::min<uint64_t>(
+                            to_advance,
+                            std::numeric_limits<uint32_t>::max()));
+                    m_hardware.advance_cycles(step);
+                    to_advance -= step;
+                }
                 m_cycles += remaining;
                 result.m_stop = e_kernel_stop::idle;
                 break;
@@ -1354,24 +1690,108 @@ s_kernel_run_result c_kernel::run(
             const uint64_t skipped = std::min(
                 remaining, next_wake - m_cycles
             );
+            // A real device continues counting IOP cycles while
+            // the kernel has no runnable R3000 thread. Advance only
+            // the supplied cycle budget, never wall-clock time or
+            // unrelated EE dispatch counts.
+            uint64_t to_advance = skipped;
+            while (to_advance != 0u)
+            {
+                const uint32_t quantum_cycles =
+                    static_cast<uint32_t>(std::min<uint64_t>(
+                        to_advance,
+                        std::numeric_limits<uint32_t>::max()));
+                m_hardware.advance_cycles(quantum_cycles);
+                to_advance -= quantum_cycles;
+            }
             m_cycles += skipped;
             remaining -= skipped;
             continue;
         }
 
         s_kernel_thread& thread = m_threads.at(id);
+        // Resume this thread's saved INTRMAN suspension state.
+        m_interrupts_suspended = thread.m_interrupts_suspended;
+        m_critical_thread_id = m_interrupts_suspended ? id : 0u;
         thread.m_status = e_thread_status::running;
         m_current_thread_id = id;
         m_last_scheduled_id = id;
+        // Report the last real scheduled guest ID even when an execution
+        // budget expires without a fault. Previously these successful
+        // turns misleadingly reported thread=0 (idle/kernel).
+        result.m_thread_id = id;
         m_cpu.state() = thread.m_cpu;
 
         const uint32_t slice = static_cast<uint32_t>(
             std::min<uint64_t>(remaining, quantum)
         );
         const s_run_result step_result = m_cpu.run(slice);
+        ++thread.m_guest_slices;
+        thread.m_guest_instructions += step_result.m_instructions;
         m_cycles += step_result.m_instructions;
+        m_hardware.advance_cycles(step_result.m_instructions);
         result.m_executed += step_result.m_instructions;
         remaining -= step_result.m_instructions;
+
+        // A registered INTRMAN handler has executed its real JR $ra.
+        // Its return value controls whether an ordinary (<32) IRQ
+        // becomes masked, exactly as in ps2-web-recomp/SDBZ.
+        if (step_result.m_result == e_step_result::breakpoint &&
+            step_result.m_pc == k_interrupt_return_pc &&
+            thread.m_interrupt_callback &&
+            m_interrupt_thread_id == id)
+        {
+            const uint32_t line = thread.m_interrupt_line;
+            const uint32_t guest_result = m_cpu.state().m_gpr[2];
+            m_allocations.erase(thread.m_stack_base);
+            m_threads.erase(id);
+            m_interrupt_thread_id = 0u;
+            m_current_thread_id = 0u;
+            if (m_irq_complete)
+            {
+                m_irq_complete(line, guest_result);
+            }
+            std::printf(
+                "IOP INTRMAN guest handler returned: line=%u "
+                "result=0x%08x cycles=%llu\n",
+                line, guest_result,
+                static_cast<unsigned long long>(m_cycles));
+            continue;
+        }
+
+        // An ordinary guest thread has returned through its genuine
+        // MIPS $ra trampoline. The completed guest thread is dormant;
+        // this is not a synthetic successful syscall or module result.
+        if (step_result.m_result == e_step_result::breakpoint &&
+            step_result.m_pc == k_thread_return_pc &&
+            !thread.m_module_entry)
+        {
+            thread.m_cpu = m_cpu.state();
+            thread.m_status = e_thread_status::dormant;
+            m_current_thread_id = 0u;
+            continue;
+        }
+
+        // Module _start has returned its original V0 through the
+        // installed $ra sentinel. Only the actual guest BREAK at that
+        // reserved address can complete this startup thread; no time-
+        // based or LOADFILE-triggered fake completion is permitted.
+        if (step_result.m_result == e_step_result::breakpoint &&
+            step_result.m_pc == k_module_return_pc &&
+            thread.m_module_entry)
+        {
+            thread.m_cpu = m_cpu.state();
+            thread.m_module_entry_result = m_cpu.state().m_gpr[2];
+            thread.m_module_entry_returned = true;
+            thread.m_status = e_thread_status::dormant;
+            std::printf(
+                "IOP guest module entry returned: module=%u thread=%u "
+                "result=0x%08x cycles=%llu\n",
+                thread.m_module_id, id, thread.m_module_entry_result,
+                static_cast<unsigned long long>(m_cycles));
+            m_current_thread_id = 0u;
+            continue;
+        }
 
         // A hosted CDVD completion invokes a real guest callback.
         // Once the original R3000 function returns through $ra, retire
@@ -1429,8 +1849,16 @@ s_kernel_run_result c_kernel::run(
             // its kernel HLE boundary. It is never silently ignored.
             const uint32_t number =
                 m_cpu.state().m_gpr[2];
+            thread.m_last_syscall_number = number;
+            thread.m_last_syscall_pc = step_result.m_pc;
+            thread.m_last_syscall_ra = m_cpu.state().m_gpr[31];
+            thread.m_last_syscall_a0 = m_cpu.state().m_gpr[4];
             const bool handled =
                 m_syscall && m_syscall(*this, number);
+            if (handled)
+            {
+                ++thread.m_handled_syscalls;
+            }
             if (!handled)
             {
                 thread.m_status = e_thread_status::faulted;
@@ -1443,8 +1871,20 @@ s_kernel_run_result c_kernel::run(
                 m_current_thread_id = 0u;
                 return result;
             }
-            m_cpu.resume_syscall();
+            if (m_restart_current_thread)
+            {
+                // start_thread_with_arguments installed a genuine
+                // original entry context in the running thread. The
+                // syscall continuation may not overwrite that state.
+                m_cpu.state() = thread.m_cpu;
+                m_restart_current_thread = false;
+            }
+            else
+            {
+                m_cpu.resume_syscall();
+            }
             ++m_cycles;
+            m_hardware.advance_cycles(1u);
             ++result.m_executed;
             --remaining;
         }

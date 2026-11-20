@@ -5,6 +5,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -28,8 +32,29 @@ jobs:
           test -f build/_deps/wgpu-native/include/webgpu/webgpu.h
           test -f build/_deps/wgpu-native/include/webgpu/wgpu.h
           test -f build/_deps/wgpu-native/lib/libwgpu_native.a -o -f build/_deps/wgpu-native/lib/libwgpu_native.so -o -f build/_deps/wgpu-native/lib/libwgpu_native.so.0
-      - name: Install software Vulkan adapter
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq mesa-vulkan-drivers libvulkan1
+      - name: Ensure software Vulkan adapter (reuse preinstalled Lavapipe)
+        shell: bash
+        run: |
+          set -euo pipefail
+          has_vulkan() {
+            ldconfig -p | grep -q 'libvulkan.so.1' &&
+              find /usr/share/vulkan/icd.d -name '*lvp*.json' -print -quit | grep -q .
+          }
+          if has_vulkan; then
+            echo 'Using preinstalled Vulkan loader and Mesa Lavapipe ICD'
+            exit 0
+          fi
+          echo 'Missing Vulkan loader or Lavapipe; installing from cached package indexes'
+          if ! sudo apt-get install -y -qq mesa-vulkan-drivers libvulkan1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq mesa-vulkan-drivers libvulkan1
+          fi
+          if ! has_vulkan; then
+            echo 'Vulkan unavailable after cached install; refreshing package indexes'
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --reinstall mesa-vulkan-drivers libvulkan1
+          fi
+          has_vulkan || { echo 'Lavapipe or Vulkan loader still missing' >&2; exit 1; }
       - name: Compile native WebGPU renderer and smoke test
         run: cmake --build build --target ee_game_runner ee_webgpu_native_smoke --parallel 2
       - name: Run real native WebGPU compute readback
@@ -45,7 +70,7 @@ jobs:
           export EE_WEBGPU_REQUIRE_ADAPTER=1
           ctest --test-dir build -R ee_webgpu_native_smoke --output-on-failure
 
-  native-webgpu-windows:
+  native-webgpu-windows-msvc:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -80,3 +105,101 @@ jobs:
       - name: Compile runner and native GPU smoke test
         shell: pwsh
         run: cmake --build build --target ee_game_runner ee_webgpu_native_smoke --config Release --parallel 2
+
+
+  native-webgpu-windows-clang:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Activate installed MSVC toolchain for Clang STL and dumpbin
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      # The GitHub image can have LLVM 20 under Program Files while
+      # VS 2026's MSVC STL requires Clang 22 or newer (STL1000).
+      # Pin the compiler instead of suppressing the version check.
+      - name: Install pinned Windows Clang 22 for the VS 2026 STL
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = '22.1.8'
+          $expectedSha256 = '16e5709785fef73c854646241c4a92c5cd574318d1b33c63330dd7721903e55c'
+          $installer = Join-Path $env:RUNNER_TEMP "LLVM-$version-win64.exe"
+          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$version/LLVM-$version-win64.exe"
+          Invoke-WebRequest -Uri $url -OutFile $installer -MaximumRetryCount 3 -RetryIntervalSec 5
+          $actualSha256 = (Get-FileHash -Algorithm SHA256 -Path $installer).Hash.ToLowerInvariant()
+          if ($actualSha256 -ne $expectedSha256) {
+            throw "LLVM installer checksum mismatch: $actualSha256"
+          }
+          $root = Join-Path $env:RUNNER_TEMP 'llvm-22'
+          $process = Start-Process -FilePath $installer -ArgumentList @('/S', "/D=$root") -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "LLVM 22 installer returned $($process.ExitCode)"
+          }
+          $clangxx = Join-Path $root 'bin/clang++.exe'
+          if (!(Test-Path $clangxx)) {
+            throw "Pinned Clang 22 missing: $clangxx"
+          }
+          & $clangxx --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      # Keep the explicit clang++/lld-link developer configuration
+      # covered alongside MSVC; the pinned native WebGPU SDK needs
+      # its existing Windows system-library link configuration.
+      - name: Configure clang++ and lld-link with raylib from a clean tree
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'llvm-22'
+          $clang = Join-Path $root 'bin/clang.exe'
+          $clangxx = Join-Path $root 'bin/clang++.exe'
+          if (!(Test-Path $clang) -or !(Test-Path $clangxx)) {
+            throw 'Pinned LLVM 22 clang/clang++ installation missing'
+          }
+          cmake -S . -B build-clang -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            "-DCMAKE_C_COMPILER=$clang" `
+            "-DCMAKE_CXX_COMPILER=$clangxx" `
+            -DEE_ENABLE_WEBGPU=ON `
+            -DEE_ENABLE_RAYLIB_WINDOW=ON
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Assert fresh clang dependencies under build/_deps
+        shell: pwsh
+        run: |
+          foreach ($file in @('include/webgpu/webgpu.h', 'include/webgpu/wgpu.h', 'lib/wgpu_native.lib')) {
+            if (!(Test-Path (Join-Path 'build-clang/_deps/wgpu-native' $file))) {
+              throw "Missing clean Clang WebGPU SDK: $file"
+            }
+          }
+          if (!(Test-Path 'build-clang/_deps/raylib-src/src/raylib.h')) {
+            throw 'Missing clean Clang raylib dependency'
+          }
+      - name: Compile clang++ native WebGPU and raylib runner
+        shell: pwsh
+        run: cmake --build build-clang --target ee_game_runner --config Release --parallel 2
+      - name: Verify clang++ runner stack reserve and actual startup
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path 'build-clang/ee_game_runner.exe').Path
+          $headers = (& dumpbin /headers $exe | Out-String)
+          if ($LASTEXITCODE -ne 0) {
+            throw 'dumpbin could not read the clang++ runner PE headers'
+          }
+          if ($headers -notmatch '(?im)^\s*0*800000\s+size of stack reserve') {
+            throw 'clang++ runner PE stack reserve is not 8 MiB'
+          }
+          & $exe --help | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            throw "clang++ runner could not enter main(): exit $LASTEXITCODE"
+          }
+
+  # Preserve the existing required check name while building both
+  # toolchains in separate parallel workers. Run even if one failed.
+  native-webgpu-windows:
+    if: ${{ always() }}
+    needs: [native-webgpu-windows-msvc, native-webgpu-windows-clang]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require MSVC and pinned Clang native builds
+        shell: bash
+        run: |
+          test "${{ needs.native-webgpu-windows-msvc.result }}" = success
+          test "${{ needs.native-webgpu-windows-clang.result }}" = success

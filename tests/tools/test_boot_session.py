@@ -21,13 +21,16 @@ SPEC.loader.exec_module(SESSION)
 
 def run_case(passes, initial_reuse=False, diagnostics=False,
              initial_function_count=None, expansion_per_pass=2,
-             snapshots=False):
+             snapshots=False, quick_probe=False):
     with tempfile.TemporaryDirectory(prefix="ee-boot-session-") as temp:
         work = Path(temp) / "work"
         report = work / "first-boot.json"
         elf = Path(temp) / "synthetic.elf"
         elf.write_bytes(b"synthetic test input, never executed")
         calls = []
+        if quick_probe:
+            work.mkdir(parents=True)
+            (work / "boot.log").write_text("previous full trace", encoding="utf-8")
         metadata = work / "ir" / "ee_functions.json"
         if initial_function_count is not None:
             metadata.parent.mkdir(parents=True, exist_ok=True)
@@ -40,6 +43,7 @@ def run_case(passes, initial_reuse=False, diagnostics=False,
             assert kwargs["check"] is False
             assert kwargs["text"] is True
             assert kwargs["stderr"] is SESSION.subprocess.STDOUT
+            assert not report.exists(), "a previous pass's report survived"
             calls.append(list(map(str, command)))
             trace = "--trace" in command
             index = len(calls) - 1
@@ -83,6 +87,8 @@ def run_case(passes, initial_reuse=False, diagnostics=False,
         ]
         if initial_reuse:
             argv.append("--no-recompile")
+        if quick_probe:
+            argv.extend(("--quick-probe", "--no-iop-catalog"))
         if snapshots:
             work.mkdir(parents=True, exist_ok=True)
             display = work / "gs-display.ppm"
@@ -104,6 +110,12 @@ def run_case(passes, initial_reuse=False, diagnostics=False,
             code = SESSION.main(argv)
         assert len(calls) == len(passes), calls
         assert all("--trace" not in call for call in calls[:-1]), calls
+        if quick_probe:
+            assert all("--trace" not in call for call in calls), calls
+            assert report.is_file()
+            assert (work / "boot.log").read_text() == "previous full trace"
+            log = (work / "quick-probe.log").read_text()
+            return code, calls, log, log
         if len(passes) > 1:
             assert "--trace" in calls[-1], calls
         if initial_reuse:
@@ -167,9 +179,9 @@ def test_ll_counter():
         before_done = terminal.getvalue()
         assert before_done.count("\r") == 3, repr(before_done)
         assert "\n" not in before_done, repr(before_done)
-        assert "LLVM IR [0/7550]" in before_done
-        assert "LLVM IR [1/7550]" in before_done
-        assert "LLVM IR [2/7550]" in before_done
+        assert "LLVM IR [0/7550] 0.0%" in before_done
+        assert "LLVM IR [1/7550] 0.0%" in before_done
+        assert "LLVM IR [2/7550] 0.0%" in before_done
         progress.finish_line()
         assert terminal.getvalue().endswith("\n")
         progress.refresh()  # Preserve last display across sessions.
@@ -191,7 +203,7 @@ def test_ll_counter():
         alt = c_fake_terminal()
         cached = SESSION.c_ll_file_progress(temp, stream=alt)
         cached.refresh()
-        assert "LLVM IR [2/5]" in alt.getvalue()
+        assert "LLVM IR [2/5] 40.0%" in alt.getvalue()
         cached.finish_line()
 
         # Dynamic functions beyond the original static discovery total
@@ -202,12 +214,102 @@ def test_ll_counter():
         dynamic = c_fake_terminal()
         updated = SESSION.c_ll_file_progress(temp, stream=dynamic)
         updated.refresh()
-        assert "LLVM IR [2/2]" in dynamic.getvalue()
+        assert "LLVM IR [2/2] 100.0%" in dynamic.getvalue()
         updated.finish_line()
+
+        # Cached metadata may report a total already exceeded by
+        # newly discovered guest entries. Percentages never exceed 100%.
+        marker = ir_dir / "ee_expected_ll_count.txt"
+        marker.write_text("1\n", encoding="ascii")
+        capped = c_fake_terminal()
+        latest = SESSION.c_ll_file_progress(temp, stream=capped)
+        latest.refresh()
+        assert "LLVM IR [2/2] 100.0%" in capped.getvalue()
+
+        # Use the actual denominator for a nontrivial percentage;
+        # cache-restored sessions must not show an integer-only ratio.
+        marker.write_text("8\n", encoding="ascii")
+        fractional = c_fake_terminal()
+        precise = SESSION.c_ll_file_progress(temp, stream=fractional)
+        precise.refresh()
+        assert "LLVM IR [2/8] 25.0%" in fractional.getvalue()
+
+
+def test_windows_launcher_preserves_guest_cache():
+    # The Windows launcher must try a safe host-only relink before any
+    # checkout-triggered cache miss falls back to recompiling all guest IR.
+    launcher = (ROOT / "run_ps2_game.bat").read_text(encoding="utf-8")
+    # Progress is always enabled, including --quick (which is what the
+    # retail boot user runs); do not duplicate it in --full arguments.
+    assert 'python tools\\run_boot_session.py "%GAME_ELF%" ^\n    --ll-progress ^' in launcher
+    assert 'set "SESSION_ARGS=--ll-progress' not in launcher
+    probe = launcher.split(
+        "rem Git checkout may rebuild host tools", 1
+    )[1].split("echo === Starting extracted-disc", 1)[0]
+    check = probe.index("--no-recompile --link-only")
+    recovery = probe.index("--relink-existing --link-only")
+    assert check < recovery, "must validate existing library first"
+    assert probe.count('--emit-opt=0') == 2, "both probes use boot optimization"
+    assert probe.count('--work-dir "%WORK_DIR%"') == 2, "same guest cache"
+    assert probe.count('set "CACHE_FLAG=--no-recompile"') == 2
+    assert "if not errorlevel 1 (" in probe, "failed relink must not reuse"
+    assert "full IR rebuild required" in probe
+
+    # The full retail replay must be able to continue genuine guest IOP
+    # execution past the old fixed 100k ceiling; quick probes stay short.
+    assert 'set "DEFAULT_MAX_DISPATCHES=100000"' in launcher
+    assert 'set "DEFAULT_MAX_DISPATCHES=500000"' in launcher
+    assert 'if not defined MAX_DISPATCHES set "MAX_DISPATCHES=%DEFAULT_MAX_DISPATCHES%"' in launcher
+    assert '--max-dispatches=%MAX_DISPATCHES%' in launcher
+    assert '--timeout-seconds=%BOOT_TIMEOUT_SECONDS%' in launcher
+    assert '--max-dispatches=100000 ^' not in launcher
+    assert 'if /I "%~1"=="--quick" set "SESSION_ARGS=--quick-probe --no-iop-catalog"' in launcher
+    # There are two --quick checks: early WebGPU override and late
+    # session-mode selection. Only compare the latter with cache/full.
+    quick_session = launcher.index(
+        'if /I "%~1"=="--quick" set "SESSION_ARGS=--quick-probe --no-iop-catalog"')
+    assert launcher.index('if not defined CACHE_FLAG set "SESSION_ARGS="') < quick_session
+    assert quick_session < launcher.index('if /I "%~1"=="--full"')
+    assert 'set "EE_WEBGPU_SNAPSHOT=0"' in launcher
+    assert 'set "EE_WEBGPU_WINDOW=0"' in launcher
+    assert launcher.index('set "EE_WEBGPU_SNAPSHOT=0"') < launcher.index(
+        'if /I "%EE_WEBGPU_SNAPSHOT%"=="1"')
+    assert launcher.index('set "EE_WEBGPU_WINDOW=0"') < launcher.index(
+        'if /I "%EE_WEBGPU_WINDOW%"=="1"')
+
+
+def test_guest_rpc_snapshots_in_cached_probe():
+    # A long cached probe must retain read-only guest worker diagnostics
+    # without writing one line for every EE dispatch.
+    runner = (ROOT / "src" / "tools" /
+              "ee_game_runner_main.cpp").read_text(encoding="utf-8")
+    assert "if (report_path != nullptr &&\n            dispatched >= next_iop_guest_rpc_snapshot)" in runner
+    assert "if (trace && report_path != nullptr &&\n            dispatched >= next_iop_guest_rpc_snapshot)" not in runner
+    assert "IOP guest RPC pending registers:" in runner
+    assert "IOP guest RPC pending stack:" in runner
+    assert "index < 129u" in runner
 
 
 def main():
+    test_guest_rpc_snapshots_in_cached_probe()
+    test_windows_launcher_preserves_guest_cache()
     test_ll_counter()
+    code, calls, expansion, boot = run_case([
+        {"trace": False, "replay": 0, "exit_reason": 0, "dispatch_status": 1,
+         "code": 4, "message": "DISPATCH LIMIT"},
+    ], initial_reuse=True, initial_function_count=421, quick_probe=True)
+    assert code == 4 and len(calls) == 1
+    assert "--no-recompile" in calls[0] and "--auto-expand=2" in calls[0]
+    assert "new_functions=0" in expansion and "DISPATCH LIMIT" in boot
+
+    code, calls, expansion, boot = run_case([
+        {"trace": False, "replay": 2, "function_count": 423, "message": "CAP"},
+        {"trace": False, "replay": 1, "function_count": 424, "exit_reason": 5,
+         "message": "LOOP_BUDGET"},
+    ], initial_reuse=True, initial_function_count=421, quick_probe=True)
+    assert code == 3 and len(calls) == 2
+    assert "new_functions=2" in expansion and "LOOP_BUDGET" in boot
+
     # First pass consumes its expansion cap; the second finds a real
     # non-DISPATCH blocker and the final run emits the useful trace.
     code, calls, expansion, boot = run_case([
@@ -288,28 +390,41 @@ def main():
     assert code == 3
     assert len(calls) == 3
 
-    # Never retry or hide an actual compilation failure. Copy its
-    # output to boot.log, the file the Windows user normally uploads.
-    with tempfile.TemporaryDirectory(prefix="ee-boot-session-failure-") as temp:
-        work = Path(temp) / "work"
-        report = work / "first-boot.json"
-        elf = Path(temp) / "synthetic.elf"
-        elf.write_bytes(b"fixture")
-        calls = []
+    # A failed driver must leave only current diagnostics in either mode.
+    for quick_probe in (False, True):
+        with tempfile.TemporaryDirectory(prefix="ee-boot-session-failure-") as temp:
+            work = Path(temp) / "work"
+            work.mkdir()
+            report = work / ("quick-probe.json" if quick_probe else "first-boot.json")
+            report.write_text(json.dumps({
+                "schema": "ee-game-run-report-v1",
+                "snapshot_kind": "stopped",
+                "dispatches": 100000,
+                "final_pc": 0x001BD58C,
+            }), encoding="utf-8")
+            elf = Path(temp) / "synthetic.elf"
+            elf.write_bytes(b"fixture")
+            calls = []
 
-        def failing_run(command, **kwargs):
-            calls.append(command)
-            return SimpleNamespace(returncode=1, stdout="compilation failed\\n")
+            def failing_run(command, **kwargs):
+                calls.append(command)
+                return SimpleNamespace(returncode=1, stdout="compilation failed\n")
 
-        argv = [
-            str(elf), "--work-dir", str(work), "--report", str(report),
-            "--expansion-passes=2", "--expansion-per-pass=2",
-            "--driver", str(ROOT / "tools" / "run_game.py"),
-        ]
-        with patch.object(SESSION.subprocess, "run", side_effect=failing_run):
-            code = SESSION.main(argv)
-        assert code == 1 and len(calls) == 1
-        assert "compilation failed" in (work / "boot.log").read_text()
+            argv = [
+                str(elf), "--work-dir", str(work), "--report", str(report),
+                "--expansion-passes=2", "--expansion-per-pass=2",
+                "--driver", str(ROOT / "tools" / "run_game.py"), "--no-iop-catalog",
+            ]
+            if quick_probe:
+                argv.extend(("--quick-probe", "--no-recompile"))
+            with patch.object(SESSION.subprocess, "run", side_effect=failing_run):
+                code = SESSION.main(argv)
+            assert code == 1 and len(calls) == 1
+            assert not report.exists(), "a failed probe retained an old stop report"
+            log = work / ("quick-probe.log" if quick_probe else "boot.log")
+            summary = log.read_text()
+            assert "compilation failed" in summary
+            assert "dispatches=? stop=unknown" in summary
 
     print("boot session orchestration: PASS")
 

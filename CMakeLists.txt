@@ -57,6 +57,7 @@ add_library(ee_core STATIC
 add_library(iop_cpu STATIC
     src/iop/iop_cpu.cpp
     src/iop/iop_hw.cpp
+    src/iop/iop_spu2.cpp
     src/iop/irx_loader.cpp
     src/iop/iop_kernel.cpp
     src/iop/iop_kernel_hle_bridge.cpp
@@ -351,6 +352,16 @@ if(EE_ENABLE_WEBGPU)
         "${EE_WGPU_EXTRAS_INCLUDE_DIR}"
         "${CMAKE_SOURCE_DIR}/src/runtime")
     target_link_libraries(ee_webgpu_native PUBLIC "${EE_WGPU_NATIVE_LIBRARY}")
+    if(WIN32)
+        # The pinned MSVC wgpu-native SDK includes Rust std objects in
+        # wgpu_native.lib. clang++/lld-link does not infer their Windows
+        # system imports from Rust link metadata; link the required SDK
+        # providers explicitly and propagate them to runner/smoke targets.
+        # ws2_32: getaddrinfo, WSA*; ntdll: NtReadFile/NtOpenFile;
+        # userenv: GetUserProfileDirectoryW.
+        target_link_libraries(ee_webgpu_native PUBLIC
+            ws2_32 ntdll userenv)
+    endif()
     if(UNIX AND NOT APPLE)
         target_link_libraries(ee_webgpu_native PUBLIC ${CMAKE_DL_LIBS} pthread m)
     endif()
@@ -382,10 +393,13 @@ if(EE_ENABLE_WEBGPU)
     endif()
 endif()
 
-if(MSVC)
-    # This diagnostic runner has a large monolithic dispatch frame. Keep its
-    # host stack reserve explicit instead of depending on the 1 MiB PE default.
-    target_link_options(ee_game_runner PRIVATE /STACK:8388608)
+if(WIN32)
+    # The native runner holds its large EE/IOP diagnostic state in a
+    # monolithic main() frame. Both MSVC and clang++/lld-link need an
+    # explicit 8 MiB stack reserve, not the default 1 MiB PE reserve.
+    # if(MSVC) misses clang++ with GNU-style driver flags on Windows.
+    # LINKER: forwards the identical /STACK value for both drivers.
+    target_link_options(ee_game_runner PRIVATE "LINKER:/STACK:8388608")
 endif()
 
 add_executable(ee_ram_interpreter_test tests/smoke/ee_ram_interpreter_test.cpp)
@@ -746,6 +760,11 @@ if(EE_HAVE_LLVM_JIT_TEST)
                 ${CMAKE_SOURCE_DIR}/tests/smoke/test_vu0_quadword_ir_runtime.py
                 $<TARGET_FILE:ee_vu0_transfer_ir_fixture>
                 $<TARGET_FILE:ee_cop0_jit_helpers>)
+    add_test(NAME ee_alignment_ir_runtime
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/smoke/test_ee_alignment_ir_runtime.py
+                $<TARGET_FILE:ee_vu0_transfer_ir_fixture>
+                $<TARGET_FILE:ee_cop0_jit_helpers>)
     add_test(NAME compare_ir_runtime
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/smoke/test_compare_ir_runtime.py
@@ -766,12 +785,17 @@ if(EE_HAVE_LLVM_JIT_TEST)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/smoke/test_ee_timing_observer_ir_runtime.py
                 $<TARGET_FILE:ee_control_flow_ir_fixture>)
-    add_test(NAME game_runner_end_to_end
-        COMMAND ${Python3_EXECUTABLE}
-                ${CMAKE_SOURCE_DIR}/tests/tools/test_game_runner.py
-                ${CMAKE_SOURCE_DIR}
-                ${CMAKE_BINARY_DIR}
-                $<TARGET_FILE:ee_game_runner>)
+    # Independent synthetic ELF scenarios run in four parallel CI jobs;
+    # omitting the optional argument still executes the complete suite.
+    foreach(game_shard RANGE 0 3)
+        add_test(NAME game_runner_end_to_end_${game_shard}
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tests/tools/test_game_runner.py
+                    ${CMAKE_SOURCE_DIR}
+                    ${CMAKE_BINARY_DIR}
+                    $<TARGET_FILE:ee_game_runner>
+                    ${game_shard})
+    endforeach()
     add_test(NAME ee_native_thread_scheduler
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_ee_thread_scheduler.py

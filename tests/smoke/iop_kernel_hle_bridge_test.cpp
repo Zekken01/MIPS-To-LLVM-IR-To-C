@@ -319,6 +319,370 @@ bool test_vblank_guest_callbacks()
     hle.reset_for_reboot();
     return hle.install() && !kernel.has_guest_work();
 }
+bool test_registered_dma_guest_interrupt()
+{
+    iop::c_kernel kernel;
+    iop::c_kernel_hle_bridge hle(kernel);
+    if (!kernel.attach_hle_hardware() || !hle.install())
+    {
+        return false;
+    }
+    kernel.bind_syscall([&](iop::c_kernel& active, uint32_t service)
+    {
+        return hle.handle_syscall(active, service);
+    });
+
+    uint32_t query = 0u;
+    if (!kernel.lookup_library("intrman", 23u, &query))
+    {
+        return false;
+    }
+    constexpr uint32_t handler = 0x00039000u;
+    constexpr uint32_t result_addr = 0x00038000u;
+    constexpr uint32_t source = 0x00037000u;
+    constexpr uint32_t line = 36u;
+    const uint32_t code[] = {
+        0x03e08021u, // addu s0, ra, zero
+        0x3c080003u, // lui t0, 3
+        0x35088000u, // ori t0, t0, 0x8000
+        0xad040000u, // sw a0, 0(t0)
+        0x0c000000u | ((query >> 2u) & 0x03ffffffu), // jal QueryIntrContext
+        0u,
+        0xad020004u, // sw v0, 4(t0)
+        0x0200f821u, // addu ra, s0, zero
+        0x00001021u, // addu v0, zero, zero
+        0x03e00008u, // jr ra
+        0u
+    };
+    for (uint32_t i = 0u; i < sizeof(code) / sizeof(code[0]); ++i)
+    {
+        if (!kernel.cpu().write32(handler + i * 4u, code[i]))
+        {
+            return false;
+        }
+    }
+    uint32_t value = 0u;
+    if (!kernel.cpu().write32(result_addr, 0xdeadbeefu) ||
+        !kernel.cpu().write32(result_addr + 4u, 0xdeadbeefu) ||
+        !kernel.cpu().write32(source, 0x12345678u) ||
+        !call_guest(kernel, "intrman", 4u,
+                    {line, 0u, handler, 0x76543210u}, &value) ||
+        value != 0u ||
+        !call_guest(kernel, "intrman", 6u,
+                    {line, 0u, 0u, 0u}, &value) ||
+        value != 0u ||
+        !kernel.hardware().write(iop::c_hw::k_spu2_dma4_base, 4u,
+                                  source) ||
+        !kernel.hardware().write(iop::c_hw::k_spu2_dma4_base + 4u,
+                                  4u, 0x00010001u) ||
+        !kernel.hardware().write(iop::c_hw::k_spu2_dma4_base + 8u,
+                                  4u, 0x01000001u) ||
+        !kernel.cpu().read32(result_addr, &value) ||
+        value != 0xdeadbeefu)
+    {
+        return false;
+    }
+    const iop::s_kernel_run_result progressed = kernel.run(256u, 32u);
+    uint32_t context = 0u;
+    uint32_t icr = 0u;
+    if ((progressed.m_stop != iop::e_kernel_stop::idle &&
+         progressed.m_stop != iop::e_kernel_stop::budget_exhausted) ||
+        !kernel.cpu().read32(result_addr, &value) ||
+        value != 0x76543210u ||
+        !kernel.cpu().read32(result_addr + 4u, &context) ||
+        context != 1u ||
+        !kernel.hardware().read(iop::c_hw::k_dma_icr, 4u, &icr) ||
+        (icr & (1u << 28u)) != 0u ||
+        kernel.hardware().next_pending_interrupt() >= 0 ||
+        kernel.in_interrupt_context())
+    {
+        return false;
+    }
+    // A real ordinary IRQ9 handler returning zero masks that source
+    // as required by the primary reference, unlike a DMA line.
+    if (!call_guest(kernel, "intrman", 4u,
+                    {9u, 0u, handler, 0x11223344u}, &value) ||
+        !call_guest(kernel, "intrman", 6u,
+                    {9u, 0u, 0u, 0u}, &value) ||
+        !kernel.hardware().raise_interrupt(9u) ||
+        !kernel.cpu().write32(result_addr, 0xdeadbeefu))
+    {
+        return false;
+    }
+    (void)kernel.run(128u, 32u);
+    uint32_t mask = 0u;
+    return kernel.cpu().read32(result_addr, &value) &&
+           value == 0x11223344u &&
+           kernel.hardware().read(iop::c_hw::k_i_mask, 4u, &mask) &&
+           (mask & (1u << 9u)) == 0u;
+}
+
+
+// Original DMA4 completion must wake a guest waiter even when that
+// waiter used CpuSuspendIntr before entering WaitSema. Its saved
+// interrupt state must not mask the interrupt for the whole IOP.
+bool test_suspended_waiter_dma4_irq_wakeup()
+{
+    iop::c_kernel kernel;
+    iop::c_kernel_hle_bridge hle(kernel);
+    if (!kernel.attach_hle_hardware() || !hle.install())
+    {
+        return false;
+    }
+    kernel.bind_syscall([&](iop::c_kernel& active, uint32_t service)
+    {
+        return hle.handle_syscall(active, service);
+    });
+
+    constexpr uint32_t k_sema_param = 0x00036000u;
+    constexpr uint32_t k_dma_source = 0x00037000u;
+    constexpr uint32_t k_irq_handler = 0x00039000u;
+    constexpr uint32_t k_worker = 0x00044000u;
+    constexpr uint32_t k_marker = 0x00047000u;
+    uint32_t suspend_pc = 0u;
+    uint32_t resume_pc = 0u;
+    uint32_t wait_pc = 0u;
+    uint32_t signal_pc = 0u;
+    uint32_t sema_id = 0u;
+    if (!kernel.lookup_library("intrman", 17u, &suspend_pc) ||
+        !kernel.lookup_library("intrman", 18u, &resume_pc) ||
+        !kernel.lookup_library("thsemap", 8u, &wait_pc) ||
+        !kernel.lookup_library("thsemap", 7u, &signal_pc) ||
+        !kernel.cpu().write32(k_sema_param, 0u) ||
+        !kernel.cpu().write32(k_sema_param + 4u, 0u) ||
+        !kernel.cpu().write32(k_sema_param + 8u, 0u) ||
+        !kernel.cpu().write32(k_sema_param + 12u, 1u) ||
+        !call_guest(kernel, "thsemap", 4u,
+                    {k_sema_param, 0u, 0u, 0u}, &sema_id) ||
+        sema_id == 0u || sema_id > 0x7fffu)
+    {
+        return false;
+    }
+
+    const uint32_t worker[] =
+    {
+        0x03e08021u, // addu s0,ra,zero
+        0x24040000u, // addiu a0,zero,0
+        0x0c000000u | ((suspend_pc >> 2u) & 0x03ffffffu),
+        0u,
+        0x24040000u | sema_id, // WaitSema(guest semaphore)
+        0x0c000000u | ((wait_pc >> 2u) & 0x03ffffffu),
+        0u,
+        0x24040001u, // CpuResumeIntr(previously enabled)
+        0x0c000000u | ((resume_pc >> 2u) & 0x03ffffffu),
+        0u,
+        0x3c080004u, // lui t0,4
+        0x35087000u, // ori t0,t0,0x7000
+        0x24090001u, // addiu t1,zero,1
+        0xad090000u, // sw t1,0(t0)
+        0x0200f821u, // addu ra,s0,zero
+        0x03e00008u, // jr ra
+        0u
+    };
+    const uint32_t irq[] =
+    {
+        0x03e08021u, // addu s0,ra,zero
+        0x0c000000u | ((signal_pc >> 2u) & 0x03ffffffu),
+        0u,           // iSignalSema(a0), from original INTRMAN arg
+        0x0200f821u, // addu ra,s0,zero
+        0x24020001u, // keep DMA4 interrupt enabled
+        0x03e00008u, // jr ra
+        0u
+    };
+    for (uint32_t i = 0u; i < sizeof(worker) / sizeof(worker[0]); ++i)
+    {
+        if (!kernel.cpu().write32(k_worker + i * 4u, worker[i]))
+        {
+            return false;
+        }
+    }
+    for (uint32_t i = 0u; i < sizeof(irq) / sizeof(irq[0]); ++i)
+    {
+        if (!kernel.cpu().write32(k_irq_handler + i * 4u, irq[i]))
+        {
+            return false;
+        }
+    }
+    uint32_t result = 0u;
+    if (!kernel.cpu().write32(k_marker, 0u) ||
+        !kernel.cpu().write32(k_dma_source, 0x11223344u) ||
+        !call_guest(kernel, "intrman", 4u,
+                    {36u, 0u, k_irq_handler, sema_id}, &result) ||
+        result != 0u ||
+        !call_guest(kernel, "intrman", 6u,
+                    {36u, 0u, 0u, 0u}, &result) ||
+        result != 0u)
+    {
+        return false;
+    }
+
+    const uint32_t worker_id = kernel.create_thread(
+        k_worker, 0u, 8u, 0x400u);
+    if (worker_id == 0u || !kernel.start_thread(worker_id) ||
+        !kernel.hardware().write(iop::c_hw::k_spu2_dma4_base,
+                                 4u, k_dma_source) ||
+        !kernel.hardware().write(iop::c_hw::k_spu2_dma4_base + 4u,
+                                 4u, 0x00010001u) ||
+        !kernel.hardware().write(iop::c_hw::k_spu2_dma4_base + 8u,
+                                 4u, 0x01000001u))
+    {
+        return false;
+    }
+
+    const iop::s_kernel_run_result ran = kernel.run(256u, 16u);
+    uint32_t marker = 0u;
+    uint32_t icr = 0u;
+    const iop::s_kernel_thread* completed = kernel.thread(worker_id);
+    return (ran.m_stop == iop::e_kernel_stop::idle ||
+            ran.m_stop == iop::e_kernel_stop::budget_exhausted) &&
+           completed != nullptr &&
+           completed->m_status == iop::e_thread_status::dormant &&
+           kernel.cpu().read32(k_marker, &marker) && marker == 1u &&
+           kernel.hardware().read(iop::c_hw::k_dma_icr, 4u, &icr) &&
+           (icr & (1u << 28u)) == 0u &&
+           !kernel.interrupts_suspended();
+}
+
+
+bool test_stopped_suspended_guest_releases_cpu()
+{
+    iop::c_kernel kernel;
+    iop::c_kernel_hle_bridge hle(kernel);
+    if (!hle.install())
+    {
+        return false;
+    }
+    kernel.bind_syscall([&](iop::c_kernel& active, uint32_t service)
+    {
+        return hle.handle_syscall(active, service);
+    });
+    uint32_t suspend_pc = 0u;
+    if (!kernel.lookup_library("intrman", 17u, &suspend_pc))
+    {
+        return false;
+    }
+    constexpr uint32_t k_entry = 0x00044000u;
+    const uint32_t loop[] =
+    {
+        0x24040000u, // addiu a0,zero,0
+        0x0c000000u | ((suspend_pc >> 2u) & 0x03ffffffu),
+        0u,
+        0x08000000u | (((k_entry + 12u) >> 2u) & 0x03ffffffu),
+        0u
+    };
+    for (uint32_t i = 0u; i < sizeof(loop) / sizeof(loop[0]); ++i)
+    {
+        if (!kernel.cpu().write32(k_entry + i * 4u, loop[i]))
+        {
+            return false;
+        }
+    }
+    const uint32_t id = kernel.create_thread(k_entry, 0u, 8u, 0x400u);
+    if (id == 0u || !kernel.start_thread(id))
+    {
+        return false;
+    }
+    const iop::s_kernel_run_result before = kernel.run(32u, 8u);
+    if (before.m_stop != iop::e_kernel_stop::budget_exhausted ||
+        !kernel.interrupts_suspended() ||
+        !kernel.stop_thread(id))
+    {
+        return false;
+    }
+    const iop::s_kernel_thread* stopped = kernel.thread(id);
+    return !kernel.interrupts_suspended() && stopped != nullptr &&
+           stopped->m_status == iop::e_thread_status::dormant &&
+           !stopped->m_interrupts_suspended;
+}
+
+bool test_cpu_suspend_pins_original_guest_thread()
+{
+    iop::c_kernel kernel;
+    iop::c_kernel_hle_bridge hle(kernel);
+    if (!hle.install())
+    {
+        return false;
+    }
+    kernel.bind_syscall([&](iop::c_kernel& current, uint32_t service)
+    {
+        return hle.handle_syscall(current, service);
+    });
+    uint32_t suspend_pc = 0u;
+    uint32_t resume_pc = 0u;
+    if (!kernel.lookup_library("intrman", 17u, &suspend_pc) ||
+        !kernel.lookup_library("intrman", 18u, &resume_pc))
+    {
+        return false;
+    }
+    constexpr uint32_t original_pc = 0x00044000u;
+    constexpr uint32_t peer_pc = 0x00045000u;
+    constexpr uint32_t marker = 0x00047000u;
+    const uint32_t original[] = {
+        0x24040000u, // addiu a0,zero,0
+        0x0c000000u | ((suspend_pc >> 2u) & 0x03ffffffu),
+        0u,          // JAL delay slot
+        0x3c080004u, // lui t0,4
+        0x35087000u, // ori t0,t0,0x7000
+        0x24090001u, // addiu t1,zero,1
+        0xad090000u, // sw t1,0(t0)
+        0x24040001u, // resume interrupts enabled
+        0x0c000000u | ((resume_pc >> 2u) & 0x03ffffffu),
+        0u,          // JAL delay slot
+        0x3c0a0001u, // lui t2,1
+        0x354a3fc0u, // ori t2,t2,thread return trampoline
+        0x01400008u, // jr t2
+        0u
+    };
+    const uint32_t peer[] = {
+        0x3c080004u, // lui t0,4
+        0x35087000u, // ori t0,t0,0x7000
+        0x8d090000u, // lw t1,0(t0)
+        0xad090004u, // sw t1,4(t0): record what peer observed
+        0x03e00008u, // jr ra
+        0u
+    };
+    for (uint32_t i = 0u;
+         i < sizeof(original) / sizeof(original[0]); ++i)
+    {
+        if (!kernel.cpu().write32(original_pc + 4u * i, original[i]))
+        {
+            return false;
+        }
+    }
+    for (uint32_t i = 0u;
+         i < sizeof(peer) / sizeof(peer[0]); ++i)
+    {
+        if (!kernel.cpu().write32(peer_pc + 4u * i, peer[i]))
+        {
+            return false;
+        }
+    }
+    const uint32_t first = kernel.create_thread(
+        original_pc, 0u, 8u, 0x400u);
+    const uint32_t second = kernel.create_thread(
+        peer_pc, 0u, 8u, 0x400u);
+    if (first == 0u || second == 0u ||
+        !kernel.cpu().write32(marker, 0u) ||
+        !kernel.cpu().write32(marker + 4u, 0xffffffffu) ||
+        !kernel.start_thread(first) || !kernel.start_thread(second))
+    {
+        return false;
+    }
+    const iop::s_kernel_run_result done = kernel.run(256u, 8u);
+    uint32_t value = 0u;
+    uint32_t observed = 0u;
+    const iop::s_kernel_thread* first_thread = kernel.thread(first);
+    const iop::s_kernel_thread* peer_thread = kernel.thread(second);
+    return done.m_stop == iop::e_kernel_stop::idle &&
+           first_thread != nullptr && peer_thread != nullptr &&
+           first_thread->m_status == iop::e_thread_status::dormant &&
+           peer_thread->m_status == iop::e_thread_status::dormant &&
+           kernel.cpu().read32(marker, &value) && value == 1u &&
+           kernel.cpu().read32(marker + 4u, &observed) &&
+           observed == 1u &&
+           !kernel.interrupts_suspended();
+}
+
 } // namespace
 
 int main()
@@ -397,9 +761,120 @@ int main()
         }
     }
 
+    if (!test_cpu_suspend_pins_original_guest_thread())
+    {
+        return fail("CpuSuspendIntr allowed peer scheduling before resume");
+    }
+    if (!test_stopped_suspended_guest_releases_cpu())
+    {
+        return fail("stopping suspended guest retained global IRQ mask");
+    }
+    if (!test_registered_dma_guest_interrupt())
+    {
+        return fail("real DMA interrupt guest handler / IRQ context");
+    }
+    if (!test_suspended_waiter_dma4_irq_wakeup())
+    {
+        return fail("blocked CpuSuspendIntr waiter masked actual DMA4 IRQ");
+    }
     if (!test_vblank_guest_callbacks())
     {
         return fail("VBLANK registered guest callback/edge/removal failed");
+    }
+
+    // ARKD's original LIBSD worker calls INTRMAN #7 DisableIntr
+    // with a0=0x24 (primary DMAC channel 4). This is a real
+    // R3000 imported syscall at 0x140E8, not an unsupported IRQ.
+    // DMA sources must use the DICR/DICR2 enables, not an out-of-
+    // range shift in I_MASK. The calls must not start or finish DMA.
+    uint32_t dma_result = 0u;
+    uint32_t mask = 0u;
+    uint32_t icr = 0u;
+    uint32_t icr2 = 0u;
+    constexpr uint32_t k_dma4_line = 36u;
+    constexpr uint32_t k_dma8_line = 41u;
+    constexpr uint32_t k_saved_line = 0x2f80u;
+    if (!kernel.cpu().write32(k_saved_line, 0xfeedfaceu) ||
+        !call_guest(
+            kernel, "intrman", 7u,
+            {k_dma4_line, k_saved_line, 0u, 0u}, &dma_result) ||
+        dma_result != 0u ||
+        !kernel.cpu().read32(k_saved_line, &dma_result) ||
+        dma_result != k_dma4_line ||
+        !kernel.hardware().read(iop::c_hw::k_dma_icr, 4u, &icr) ||
+        (icr & (1u << 20u)) != 0u ||
+        !kernel.hardware().read(iop::c_hw::k_i_stat, 4u, &dma_result) ||
+        dma_result != 0u ||
+        !call_guest(
+            kernel, "intrman", 6u,
+            {k_dma4_line, 0u, 0u, 0u}, &dma_result) ||
+        dma_result != 0u ||
+        !kernel.hardware().read(iop::c_hw::k_dma_icr, 4u, &icr) ||
+        (icr & ((1u << 20u) | 0x00800000u)) !=
+            ((1u << 20u) | 0x00800000u) ||
+        !kernel.hardware().read(iop::c_hw::k_i_mask, 4u, &mask) ||
+        (mask & (1u << iop::c_hw::k_dma_irq)) == 0u ||
+        !call_guest(
+            kernel, "intrman", 7u,
+            {k_dma4_line, 0u, 0u, 0u}, &dma_result) ||
+        dma_result != 0u ||
+        !kernel.hardware().read(iop::c_hw::k_dma_icr, 4u, &icr) ||
+        (icr & (1u << 20u)) != 0u ||
+        (icr & 0x00800000u) == 0u ||
+        !call_guest(
+            kernel, "intrman", 6u,
+            {k_dma8_line, 0u, 0u, 0u}, &dma_result) ||
+        dma_result != 0u ||
+        !kernel.hardware().read(iop::c_hw::k_dma_icr2, 4u, &icr2) ||
+        (icr2 & (1u << 17u)) == 0u ||
+        !call_guest(
+            kernel, "intrman", 7u,
+            {k_dma8_line, 0u, 0u, 0u}, &dma_result) ||
+        dma_result != 0u ||
+        !kernel.hardware().read(iop::c_hw::k_dma_icr2, 4u, &icr2) ||
+        (icr2 & (1u << 17u)) != 0u ||
+        !kernel.hardware().read(iop::c_hw::k_i_stat, 4u, &dma_result) ||
+        dma_result != 0u)
+    {
+        return fail("INTRMAN guest DMA mask/import semantics failed");
+    }
+    if (!call_guest(
+            kernel, "intrman", 4u,
+            {k_dma4_line, 0u, 0x3000u, 0u}, &dma_result) ||
+        dma_result != 0u ||
+        !call_guest(
+            kernel, "intrman", 5u,
+            {k_dma4_line, 0u, 0u, 0u}, &dma_result) ||
+        dma_result != 0u ||
+        !call_guest(
+            kernel, "intrman", 5u,
+            {k_dma4_line, 0u, 0u, 0u}, &dma_result) ||
+        dma_result != 0u)
+    {
+        return fail("INTRMAN DMA handler registration/release failed");
+    }
+    // Reject invalid interrupt numbers and unwriteable output pointers
+    // without modifying any mask, handler or DMA status.
+    iop::s_cpu_state& interrupt_cpu = kernel.cpu().state();
+    interrupt_cpu.m_gpr[4] = 39u;
+    interrupt_cpu.m_gpr[5] = 0u;
+    if (hle.handle_syscall(
+            kernel, iop::c_kernel_hle_bridge::k_service_base +
+                2u * 0x100u + 7u))
+    {
+        return fail("reserved DMA interrupt line 39 was accepted");
+    }
+    interrupt_cpu.m_gpr[4] = k_dma4_line;
+    interrupt_cpu.m_gpr[5] = 0xf0000000u;
+    if (hle.handle_syscall(
+            kernel, iop::c_kernel_hle_bridge::k_service_base +
+                2u * 0x100u + 7u) ||
+        !kernel.hardware().read(iop::c_hw::k_dma_icr, 4u, &icr) ||
+        (icr & (1u << 20u)) != 0u ||
+        !kernel.hardware().read(iop::c_hw::k_i_stat, 4u, &dma_result) ||
+        dma_result != 0u)
+    {
+        return fail("invalid INTRMAN output pointer altered DMA mask");
     }
 
     uint32_t result = 0u;
@@ -928,6 +1403,65 @@ int main()
         return fail("semaphore polling, status or delete failed");
     }
 
+    // The primary ps2-web-recomp/SDBZ IOP kernel returns precise
+    // unknown-object errors for real imported services, including the
+    // thsemap #8 WaitSema reached by the ARKD_DVD guest RPC worker.
+    // These are guest API failures, not unsupported host syscalls.
+    // A missing object must not be created, signalled or waited on.
+    struct s_missing_object_case
+    {
+        const char* m_library;
+        uint16_t m_ordinal;
+        std::array<uint32_t, 4> m_args;
+        uint32_t m_error;
+    };
+    const s_missing_object_case missing_objects[] =
+    {
+        {"thsemap", 5u, {2u, 0u, 0u, 0u},
+            static_cast<uint32_t>(-408)},
+        {"thsemap", 6u, {2u, 0u, 0u, 0u},
+            static_cast<uint32_t>(-408)},
+        {"thsemap", 7u, {2u, 0u, 0u, 0u},
+            static_cast<uint32_t>(-408)},
+        {"thsemap", 8u, {2u, 0u, 0u, 0u},
+            static_cast<uint32_t>(-408)},
+        {"thsemap", 9u, {2u, 0u, 0u, 0u},
+            static_cast<uint32_t>(-408)},
+        {"thsemap", 11u, {2u, 0x2740u, 0u, 0u},
+            static_cast<uint32_t>(-408)},
+        {"thsemap", 12u, {2u, 0x2740u, 0u, 0u},
+            static_cast<uint32_t>(-408)},
+        {"thevent", 6u, {1u, 0x20u, 0u, 0u},
+            static_cast<uint32_t>(-409)},
+        {"thevent", 10u, {1u, 0x20u, 0u, 0x2620u},
+            static_cast<uint32_t>(-409)},
+        {"thevent", 13u, {1u, 0x2680u, 0u, 0u},
+            static_cast<uint32_t>(-409)},
+        {"thmsgbx", 5u, {0xfffffffeu, 0u, 0u, 0u},
+            static_cast<uint32_t>(-410)},
+        {"thmsgbx", 8u, {0x2400u, 0xfffffffeu, 0u, 0u},
+            static_cast<uint32_t>(-410)},
+        {"thvpool", 6u, {0xfffffffeu, 16u, 0u, 0u},
+            static_cast<uint32_t>(-411)},
+        {"thvpool", 11u, {0xfffffffeu, 0x2680u, 0u, 0u},
+            static_cast<uint32_t>(-411)},
+        {"thfpool", 6u, {0xfffffffeu, 0u, 0u, 0u},
+            static_cast<uint32_t>(-412)},
+        {"thfpool", 9u, {0xfffffffeu, 0x2500u, 0u, 0u},
+            static_cast<uint32_t>(-412)}
+    };
+    for (const s_missing_object_case& item : missing_objects)
+    {
+        if (!call_guest(
+                kernel, item.m_library, item.m_ordinal,
+                item.m_args, &result) ||
+            result != item.m_error ||
+            kernel.hardware().pending_interrupts() != 0u)
+        {
+            return fail("unknown IOP object did not return guest error");
+        }
+    }
+
     // Cross-check the additional reference-backed families against
     // the actual guest-visible IOP allocation and thread state.
     uint32_t total_free = 0u;
@@ -976,8 +1510,8 @@ int main()
         return fail("SYS_MEM queried an impossible free-memory total");
     }
 
-    kernel.cpu().write32(0x2b00u, 0u);
-    kernel.cpu().write32(0x2b04u, 0u);
+    kernel.cpu().write32(0x2b00u, 0x02000000u);
+    kernel.cpu().write32(0x2b04u, 0x13572468u);
     kernel.cpu().write32(0x2b08u, 0x3000u);
     kernel.cpu().write32(0x2b0cu, 0x400u);
     kernel.cpu().write32(0x2b10u, 32u);
@@ -991,6 +1525,8 @@ int main()
     const uint32_t managed_thread = result;
     uint32_t thread_status = 0u;
     uint32_t priority = 0u;
+    uint32_t attributes = 0u;
+    uint32_t options = 0u;
     if (!call_guest(
             kernel, "thbase", 14u,
             {managed_thread, 16u, 0u, 0u}, &result) ||
@@ -999,6 +1535,10 @@ int main()
             kernel, "thbase", 22u,
             {managed_thread, 0x2b40u, 0u, 0u}, &result) ||
         result != 0u ||
+        !kernel.cpu().read32(0x2b40u, &attributes) ||
+        attributes != 0x02000000u ||
+        !kernel.cpu().read32(0x2b44u, &options) ||
+        options != 0x13572468u ||
         !kernel.cpu().read32(0x2b48u, &thread_status) ||
         thread_status != 16u ||
         !kernel.cpu().read32(0x2b60u, &priority) ||
@@ -1309,6 +1849,67 @@ int main()
     constexpr uint32_t k_vsprintf_argument_list = 0x3580u;
     constexpr uint32_t k_vsprintf_destination = 0x3600u;
 
+    // STDIO #4 must share SYSCLIB's validated R3000 O32 formatter.
+    // The retail ARKD method-1 worker reached this import after
+    // millions of real byte operations. A previously narrower printf
+    // implementation rejected legitimate width/precision modifiers.
+    constexpr uint32_t k_printf_format = 0x3680u;
+    constexpr uint32_t k_printf_text = 0x36e0u;
+    uint32_t printf_result = 0u;
+    const std::string expected_printf = "blk:buf   /0x00002a/-7\n";
+    // The test kernel was deliberately unattached during import/link
+    // checks. Guest printf writes the real IOP debug-console MMIO,
+    // which requires the normal HLE hardware binding.
+    if (!kernel.attach_hle_hardware())
+    {
+        return fail("could not attach real IOP debug console for STDIO");
+    }
+    if (!write_guest_string(k_printf_format,
+            "blk:%-6.3s/%#08x/%+ld\n") ||
+        !write_guest_string(k_printf_text, "buffers") ||
+        !call_guest(kernel, "stdio", 4u,
+            {k_printf_format, k_printf_text, 0x2au, 0xfffffff9u},
+            &printf_result) ||
+        printf_result != expected_printf.size())
+    {
+        return fail("STDIO printf guest flags/precision/long formatting failed");
+    }
+    const std::string& printed = kernel.hardware().debug_console();
+    if (printed.size() < expected_printf.size() ||
+        printed.compare(printed.size() - expected_printf.size(),
+                        expected_printf.size(), expected_printf) != 0)
+    {
+        return fail("STDIO printf did not emit expected guest debug text");
+    }
+    // O32 long long varargs consume an aligned 32-bit argument pair.
+    if (!write_guest_string(k_printf_format, "%08llX") ||
+        !call_guest(kernel, "stdio", 4u,
+            {k_printf_format, 0xabcdef01u, 0x89abcdefu, 0x12345678u},
+            &printf_result) || printf_result != 16u ||
+        kernel.hardware().debug_console().size() <
+            expected_printf.size() + 16u ||
+        kernel.hardware().debug_console().substr(
+            kernel.hardware().debug_console().size() - 16u) !=
+                "1234567889ABCDEF")
+    {
+        return fail("STDIO printf O32 64-bit vararg alignment failed");
+    }
+    // Unsafe printf formats must fail before printing or changing v0.
+    if (!write_guest_string(k_printf_format, "unsafe:%n"))
+    {
+        return fail("could not prepare unsafe STDIO printf test");
+    }
+    kernel.cpu().state().m_gpr[4] = k_printf_format;
+    kernel.cpu().state().m_gpr[5] = k_printf_text;
+    kernel.cpu().state().m_gpr[2] = 0x1234abcdu;
+    std::string rejected_printf = "preserve";
+    if (iop::render_stdio_format(kernel.cpu(), &rejected_printf) ||
+        rejected_printf != "preserve" ||
+        kernel.cpu().state().m_gpr[2] != 0x1234abcdu)
+    {
+        return fail("unsafe STDIO printf format was accepted or mutated state");
+    }
+
     const std::string expected_sprintf = "mod=002A/audio";
     if (!write_guest_string(
             k_sprintf_format, "mod=%04X/%s") ||
@@ -1493,6 +2094,111 @@ int main()
         args_run.m_guest_pc != 0x3e00u)
     {
         return fail("StartThreadArgs guest was not actually scheduled");
+    }
+
+    // Unknown thread IDs remain a guest-level negative error.
+    // Zero instead denotes the currently running R3000 thread, as
+    // in the ps2-web-recomp/SDBZ kernel's thread(0)=current() lookup.
+    for (uint16_t ordinal : {6u, 7u})
+    {
+        if (!call_guest(kernel, "thbase", ordinal,
+                        {0xffffffffu, 0u, 0u, 0u}, &result) ||
+            result != static_cast<uint32_t>(-407))
+        {
+            return fail("unknown StartThread guest error ABI");
+        }
+    }
+    // Exercise the original import via actual R3000 instructions:
+    // StartThread(0, 0x37) must restart the calling guest thread at
+    // its entry, with a clean register context, not execute the old
+    // post-syscall continuation and not spawn a synthetic thread.
+    constexpr uint32_t restart_entry = 0x00005000u;
+    constexpr uint32_t restart_marker = 0x00005f80u;
+    uint32_t restart_import = 0u;
+    if (!kernel.lookup_library("thbase", 6u, &restart_import) ||
+        !kernel.cpu().write32(restart_marker, 0u))
+    {
+        return fail("cannot stage real StartThread(0) guest fixture");
+    }
+    const uint32_t restart_code[] = {
+        0x3c080000u, // lui t0, 0
+        0x35085f80u, // ori t0,t0,0x5f80
+        0x8d090000u, // lw t1,0(t0)
+        0x15200009u, // bne t1,zero,finished
+        0u,          // delay slot
+        0x24090001u, // addiu t1,zero,1
+        0xad090000u, // sw t1,0(t0)
+        0x24040000u, // addiu a0,zero,0 (current thread)
+        0x24050037u, // addiu a1,zero,0x37
+        0x0c000000u | ((restart_import >> 2u) & 0x03ffffffu),
+        0u,          // JAL delay slot
+        0x24090002u, // must not execute after a self restart
+        0xad090000u, // must not overwrite the persistent marker
+        0x0000000du // finished: BREAK
+    };
+    for (uint32_t index = 0u;
+         index < sizeof(restart_code) / sizeof(restart_code[0]); ++index)
+    {
+        if (!kernel.cpu().write32(
+                restart_entry + index * 4u, restart_code[index]))
+        {
+            return fail("cannot write self-restart R3000 program");
+        }
+    }
+    const uint32_t restart_id = kernel.create_thread(
+        restart_entry, 0u, 1u, 0x400u);
+    if (restart_id == 0u || !kernel.start_thread(restart_id))
+    {
+        return fail("cannot start genuine self-restart guest thread");
+    }
+    const iop::s_kernel_run_result restart_run = kernel.run(128u, 8u);
+    uint32_t marker_value = 0u;
+    const iop::s_kernel_thread* restarted = kernel.thread(restart_id);
+    if (restart_run.m_stop != iop::e_kernel_stop::breakpoint ||
+        restart_run.m_guest_pc != restart_entry + 52u ||
+        !kernel.cpu().read32(restart_marker, &marker_value) ||
+        marker_value != 1u || restarted == nullptr ||
+        // StartThread passes its second API argument as new a0.
+        restarted->m_cpu.m_gpr[4] != 0x37u ||
+        restarted->m_cpu.m_gpr[5] != 0u ||
+        restarted->m_cpu.m_gpr[31] != 0x00013fc0u ||
+        restarted->m_guest_instructions == 0u ||
+        restarted->m_guest_slices == 0u ||
+        restarted->m_handled_syscalls != 1u ||
+        restarted->m_self_restarts != 1u ||
+        restarted->m_last_self_restart_ra != restart_entry + 44u ||
+        restarted->m_last_self_restart_arg != 0x37u ||
+        restarted->m_last_syscall_ra != restart_entry + 44u ||
+        restarted->m_last_syscall_a0 != 0u)
+    {
+        std::fprintf(stderr,
+            "StartThread(0) diagnostic: stop=%u guest_pc=0x%08x "
+            "executed=%llu marker=%u thread=%u status=%u "
+            "pc=0x%08x a0=0x%08x a1=0x%08x ra=0x%08x\n",
+            static_cast<uint32_t>(restart_run.m_stop),
+            restart_run.m_guest_pc,
+            static_cast<unsigned long long>(restart_run.m_executed),
+            marker_value, restart_id,
+            restarted == nullptr ? 0xffffffffu :
+                static_cast<uint32_t>(restarted->m_status),
+            restarted == nullptr ? 0u : restarted->m_cpu.m_pc,
+            restarted == nullptr ? 0u : restarted->m_cpu.m_gpr[4],
+            restarted == nullptr ? 0u : restarted->m_cpu.m_gpr[5],
+            restarted == nullptr ? 0u : restarted->m_cpu.m_gpr[31]);
+        return fail("StartThread(0) failed to restart its real guest CPU");
+    }
+    // A valid descriptor with impossible stack size must fail with
+    // KE_NO_MEMORY rather than creating a fake thread or faulting
+    // the caller's syscall.
+    constexpr uint32_t k_oversized_thread = 0x00003f80u;
+    if (!kernel.cpu().write32(k_oversized_thread + 8u, 0x3e00u) ||
+        !kernel.cpu().write32(k_oversized_thread + 12u, 0xffffffffu) ||
+        !kernel.cpu().write32(k_oversized_thread + 16u, 32u) ||
+        !call_guest(kernel, "thbase", 4u,
+                    {k_oversized_thread, 0u, 0u, 0u}, &result) ||
+        result != static_cast<uint32_t>(-400))
+    {
+        return fail("oversized CreateThread did not report no memory");
     }
 
     // ExitDeleteThread must retire the real guest thread/stack after

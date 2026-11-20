@@ -48,6 +48,14 @@ bool c_ee_scanout_clock::configure(
     m_fraction = 0u;
     m_csr = 0u;
     m_fields_started = 0u;
+    m_fields_ended = 0u;
+    m_next_end_cycle = 0u;
+    // Reference timing: VBlank end 22 scanlines after field start.
+    // NTSC/PAL each have 525/625 scanlines per two fields.
+    const uint64_t field_cycles = numerator / denominator;
+    m_vblank_duration = field_cycles * 44u /
+        (mode == 0x02u ? 525u : 625u);
+    m_delivered_edges.clear();
     queue_next_field();
     return true;
 }
@@ -78,8 +86,21 @@ bool c_ee_scanout_clock::advance_to(
         return false;
     }
 
-    while (ee_cycle >= m_next_field_cycle)
+    m_delivered_edges.clear();
+    while (ee_cycle >= m_next_field_cycle ||
+           (m_next_end_cycle != 0u &&
+            ee_cycle >= m_next_end_cycle))
     {
+        if (m_next_end_cycle != 0u &&
+            m_next_end_cycle <= m_next_field_cycle &&
+            ee_cycle >= m_next_end_cycle)
+        {
+            ++m_fields_ended;
+            m_next_end_cycle = 0u;
+            m_delivered_edges.push_back(0u);
+            continue;
+        }
+        const uint64_t field_boundary = m_next_field_cycle;
         uint64_t next_csr = m_csr | k_csr_vsint;
         if (m_interlaced)
         {
@@ -97,6 +118,8 @@ bool c_ee_scanout_clock::advance_to(
         }
         m_csr = next_csr;
         ++m_fields_started;
+        m_next_end_cycle = field_boundary + m_vblank_duration;
+        m_delivered_edges.push_back(1u);
         queue_next_field();
     }
     m_last_ee_cycle = ee_cycle;
@@ -131,5 +154,16 @@ uint64_t c_ee_scanout_clock::csr() const
 uint64_t c_ee_scanout_clock::fields_started() const
 {
     return m_fields_started;
+}
+
+uint64_t c_ee_scanout_clock::fields_ended() const
+{
+    return m_fields_ended;
+}
+
+const std::vector<uint8_t>&
+c_ee_scanout_clock::delivered_vblank_edges() const
+{
+    return m_delivered_edges;
 }
 } // namespace ee

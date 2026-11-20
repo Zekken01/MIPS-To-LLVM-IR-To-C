@@ -132,6 +132,220 @@ bool validate_hle_iop_reboot(
     return true;
 }
 
+
+// Inspect guest IOP contexts only at bounded EE WaitSema checkpoints.
+// A loaded IRX's module/thread "started" bit does not prove the
+// scheduler ever entered its code or reached sceSifRegisterRpc.
+void dump_iop_rpc_wait_threads(
+    const iop::c_kernel& kernel, uint32_t semaphore_id, uint32_t turn
+)
+{
+    std::fprintf(stderr,
+        "IOP RPC wait snapshot: sema=%u turn=%u cycles=%llu "
+        "threads=%zu modules=%zu\n",
+        semaphore_id, turn,
+        static_cast<unsigned long long>(kernel.cycles()),
+        kernel.threads().size(), kernel.modules().size());
+
+    for (const auto& item : kernel.threads())
+    {
+        const iop::s_kernel_thread& thread = item.second;
+        const uint32_t pc = thread.m_cpu.m_pc;
+        const uint32_t region = pc & 0xe0000000u;
+        const uint32_t physical = pc & 0x1fffffffu;
+        const bool ram_pc =
+            (region == 0u || region == 0x80000000u ||
+             region == 0xa0000000u) &&
+            (pc & 3u) == 0u &&
+            physical < iop::c_cpu::k_ram_mirror_size;
+        const uint32_t backing =
+            physical & (iop::c_cpu::k_ram_size - 1u);
+        uint32_t module_id = 0u;
+        if (ram_pc)
+        {
+            for (const auto& module : kernel.modules())
+            {
+                const iop::s_irx_module& irx = module.second.m_irx;
+                if (backing >= irx.m_base &&
+                    backing - irx.m_base < irx.m_size)
+                {
+                    module_id = module.first;
+                    break;
+                }
+            }
+        }
+        uint32_t opcode = 0u;
+        const bool fetched = ram_pc && kernel.cpu().read32(pc, &opcode);
+        std::fprintf(stderr,
+            "IOP RPC wait thread: id=%u status=%u priority=%u "
+            "wait=%u wake=%llu entry=0x%08x "
+            "pc=0x%08x next=0x%08x backing=0x%08x "
+            "opcode=0x%08x fetch=%u image_module=%u "
+            "ra=0x%08x gp=0x%08x sp=0x%08x\n",
+            item.first, static_cast<uint32_t>(thread.m_status),
+            thread.m_priority, thread.m_wait_type,
+            static_cast<unsigned long long>(thread.m_wake_cycle),
+            thread.m_entry, pc, thread.m_cpu.m_next_pc, backing,
+            opcode, fetched ? 1u : 0u, module_id,
+            thread.m_cpu.m_gpr[31], thread.m_cpu.m_gpr[28],
+            thread.m_cpu.m_gpr[29]);
+    }
+} 
+
+// Side-effect-free, bounded checkpoint for an outstanding original IOP
+// RPC. It distinguishes an actively spinning guest PC from a blocked
+// semaphore worker without guessing a result or waking any thread.
+void dump_pending_iop_guest_rpc(
+    const iop::c_kernel& kernel, uint64_t ee_dispatches,
+    size_t pending_calls, const char* phase
+)
+{
+    uint32_t ready = 0u;
+    uint32_t blocked = 0u;
+    uint32_t faulted = 0u;
+    uint32_t highest_ready_priority =
+        std::numeric_limits<uint32_t>::max();
+    for (const auto& entry : kernel.threads())
+    {
+        switch (entry.second.m_status)
+        {
+        case iop::e_thread_status::ready:
+        case iop::e_thread_status::running:
+            ++ready;
+            highest_ready_priority = std::min(
+                highest_ready_priority, entry.second.m_priority);
+            break;
+        case iop::e_thread_status::blocked:
+            ++blocked;
+            break;
+        case iop::e_thread_status::faulted:
+            ++faulted;
+            break;
+        default:
+            break;
+        }
+    }
+
+    std::fprintf(stderr,
+        "IOP guest RPC pending snapshot: phase=%s ee_dispatch=%llu "
+        "iop_cycles=%llu pending_calls=%zu guest_work=%u "
+        "ready=%u blocked=%u faulted=%u threads=%zu "
+        "sio2_ctrl_starts=%u sio2_packets=%u sio2_completed=%u\n",
+        phase, static_cast<unsigned long long>(ee_dispatches),
+        static_cast<unsigned long long>(kernel.cycles()),
+        pending_calls, kernel.has_guest_work() ? 1u : 0u,
+        ready, blocked, faulted, kernel.threads().size(),
+        kernel.hardware().sio2_ctrl_starts(),
+        kernel.hardware().sio2_packets(),
+        kernel.hardware().sio2_completed_transfers());
+
+    uint32_t sampled_opcode_windows = 0u;
+    for (const auto& entry : kernel.threads())
+    {
+        const iop::s_kernel_thread& thread = entry.second;
+        if (thread.m_status == iop::e_thread_status::dormant)
+        {
+            continue;
+        }
+        const uint32_t pc = thread.m_cpu.m_pc;
+        uint32_t opcode = 0u;
+        const bool fetched = kernel.cpu().read32(pc, &opcode);
+        std::fprintf(stderr,
+            "IOP guest RPC pending context: thread=%u status=%u "
+            "priority=%u wait=%u wake=%llu suspended=%u "
+            "entry=0x%08x pc=0x%08x next=0x%08x "
+            "opcode=0x%08x fetch=%u ra=0x%08x gp=0x%08x "
+            "sp=0x%08x v0=0x%08x a0=0x%08x a1=0x%08x "
+            "guest_insns=%llu slices=%llu syscalls=%llu "
+            "self_restarts=%llu restart_ra=0x%08x "
+            "restart_arg=0x%08x last_syscall=0x%08x "
+            "last_syscall_pc=0x%08x last_syscall_ra=0x%08x "
+            "last_syscall_a0=0x%08x\n",
+            entry.first, static_cast<uint32_t>(thread.m_status),
+            thread.m_priority, thread.m_wait_type,
+            static_cast<unsigned long long>(thread.m_wake_cycle),
+            thread.m_interrupts_suspended ? 1u : 0u,
+            thread.m_entry, pc, thread.m_cpu.m_next_pc,
+            opcode, fetched ? 1u : 0u, thread.m_cpu.m_gpr[31],
+            thread.m_cpu.m_gpr[28], thread.m_cpu.m_gpr[29],
+            thread.m_cpu.m_gpr[2], thread.m_cpu.m_gpr[4],
+            thread.m_cpu.m_gpr[5],
+            static_cast<unsigned long long>(thread.m_guest_instructions),
+            static_cast<unsigned long long>(thread.m_guest_slices),
+            static_cast<unsigned long long>(thread.m_handled_syscalls),
+            static_cast<unsigned long long>(thread.m_self_restarts),
+            thread.m_last_self_restart_ra, thread.m_last_self_restart_arg,
+            thread.m_last_syscall_number, thread.m_last_syscall_pc,
+            thread.m_last_syscall_ra, thread.m_last_syscall_a0);
+
+        // At most two highest-priority runnable guest PCs.
+        // Previously iterating IDs captured lower-priority ARKD
+        // workers instead of the higher-priority PADMAN threads
+        // responsible for consuming the budget. The full context
+        // lines above still include every non-dormant thread.
+        // Do not synthesize any instruction, byte, return or wakeup.
+        if (phase[0] == 'f' &&
+            (thread.m_status == iop::e_thread_status::ready ||
+             thread.m_status == iop::e_thread_status::running) &&
+            thread.m_priority == highest_ready_priority &&
+            sampled_opcode_windows < 2u &&
+            pc >= 0x100u &&
+            pc < iop::c_cpu::k_ram_size - 0x180u)
+        {
+            ++sampled_opcode_windows;
+            for (uint32_t group = 0u; group < 8u; ++group)
+            {
+                const uint32_t first = group * 4u;
+                std::fprintf(stderr,
+                    "IOP guest RPC pending registers: thread=%u "
+                    "r%02u=0x%08x r%02u=0x%08x "
+                    "r%02u=0x%08x r%02u=0x%08x\n",
+                    entry.first,
+                    first, thread.m_cpu.m_gpr[first],
+                    first + 1u, thread.m_cpu.m_gpr[first + 1u],
+                    first + 2u, thread.m_cpu.m_gpr[first + 2u],
+                    first + 3u, thread.m_cpu.m_gpr[first + 3u]);
+            }
+            const uint32_t fp = thread.m_cpu.m_gpr[30];
+            if ((fp & 3u) == 0u &&
+                fp != 0u &&
+                fp < iop::c_cpu::k_ram_size - 0x20u)
+            {
+                for (uint32_t offset = 0x10u;
+                     offset <= 0x1cu; offset += 4u)
+                {
+                    uint32_t value = 0u;
+                    if (!kernel.cpu().read32(fp + offset, &value))
+                    {
+                        break;
+                    }
+                    std::fprintf(stderr,
+                        "IOP guest RPC pending stack: thread=%u "
+                        "fp=0x%08x offset=0x%02x word=0x%08x\n",
+                        entry.first, fp, offset, value);
+                }
+            }
+            // The 09:11 retail opcode window ended before the ARKD
+            // inner-loop exit branch. Preserve +/-256 bytes around
+            // each sampled PC to include both the body and its bounds.
+            const uint32_t start = (pc - 0x100u) & ~3u;
+            for (uint32_t index = 0u; index < 129u; ++index)
+            {
+                const uint32_t address = start + index * 4u;
+                uint32_t word = 0u;
+                if (!kernel.cpu().read32(address, &word))
+                {
+                    break;
+                }
+                std::fprintf(stderr,
+                    "IOP guest RPC pending opcode: thread=%u "
+                    "address=0x%08x word=0x%08x\n",
+                    entry.first, address, word);
+            }
+        }
+    }
+}
+
 using t_game_run = uint32_t (*)(
 
     ee::s_ee_cpu_state*,
@@ -2025,6 +2239,16 @@ int main(int argc, char** argv)
     // diagnostic/scheduling guard, never a synthetic signal.
     uint32_t iop_semaphore_wait_turns = 0u;
     uint64_t iop_semaphore_wait_last_sif0 = 0u;
+    // All IOP work runs against elapsed EE guest time, not only
+    // when a guest RPC call is outstanding. Retain fractional clocks
+    // and a backlog after bounded native-dispatch safepoints.
+    uint64_t iop_clock_last_ee_cycle = 0u;
+    uint64_t iop_clock_remainder = 0u;
+    uint64_t iop_clock_due = 0u;
+    uint64_t iop_clock_turns = 0u;
+    bool iop_clock_active = false;
+    bool guest_rpc_idle_diagnostic_reported = false;
+    uint64_t next_iop_guest_rpc_snapshot = 50000u;
     ee::c_ee_dispatch_hotspots hotspots;
     std::vector<s_dispatch_sample> history;
     if (report_path != nullptr)
@@ -2080,6 +2304,134 @@ int main(int argc, char** argv)
                 "EE timing observer refused an event "
                 "(guest execution halted, no hardware timing inferred)\n");
             return 1;
+        }
+
+        // The primary SDBZ reference advances the IOP from every
+        // elapsed EE cycle, including polling, timer, and idle periods.
+        // Dividing by eight is reference compatibility timing, not an
+        // assertion of verified R5900 cycle accuracy.
+        if (hle_startup && iop_rom0_path == nullptr &&
+            iop_kernel != nullptr)
+        {
+            const uint64_t ee_cycle =
+                runtime.m_ee_cycle_scheduler.current_cycle();
+            if (!iop_clock_active)
+            {
+                iop_clock_active = true;
+                iop_clock_last_ee_cycle = ee_cycle;
+            }
+            else if (ee_cycle < iop_clock_last_ee_cycle)
+            {
+                std::fprintf(stderr,
+                    "IOP clock refused nonmonotonic EE timestamp\n");
+                return 1;
+            }
+            else
+            {
+                const uint64_t delta =
+                    ee_cycle - iop_clock_last_ee_cycle;
+                iop_clock_last_ee_cycle = ee_cycle;
+                const uint64_t whole = delta / 8u;
+                const uint64_t fraction =
+                    (delta % 8u) + iop_clock_remainder;
+                if (iop_clock_due >
+                    std::numeric_limits<uint64_t>::max() -
+                        whole - fraction / 8u)
+                {
+                    std::fprintf(stderr,
+                        "IOP clock refused accumulated cycle overflow\n");
+                    return 1;
+                }
+                iop_clock_due += whole + fraction / 8u;
+                iop_clock_remainder = fraction % 8u;
+            }
+            uint32_t turns = 0u;
+            // Never drop guest cycles to make a host checkpoint fast.
+            // A large translated function may leave a bounded backlog.
+            while (iop_clock_due != 0u && turns < 64u)
+            {
+                const uint32_t cycles = static_cast<uint32_t>(
+                    std::min<uint64_t>(iop_clock_due, 256u));
+                const iop::s_kernel_run_result progressed =
+                    iop_kernel->run(cycles, 128u);
+                if (iop_rpc != nullptr)
+                {
+                    (void)iop_rpc->pump();
+                }
+                iop_clock_due -= cycles;
+                ++turns;
+                ++iop_clock_turns;
+                if (progressed.m_stop !=
+                        iop::e_kernel_stop::budget_exhausted &&
+                    progressed.m_stop != iop::e_kernel_stop::idle)
+                {
+                    std::fprintf(stderr,
+                        "IOP clock guest execution stopped: "
+                        "turn=%llu thread=%u reason=%u pc=0x%08x "
+                        "opcode=0x%08x\n",
+                        static_cast<unsigned long long>(
+                            iop_clock_turns),
+                        progressed.m_thread_id,
+                        static_cast<uint32_t>(progressed.m_stop),
+                        progressed.m_guest_pc, progressed.m_opcode);
+                    reason = static_cast<uint32_t>(
+                        ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED);
+                    status = 0u;
+                    cpu.m_exit_reason = reason;
+                    break;
+                }
+            }
+            if (reason == static_cast<uint32_t>(
+                    ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED))
+            {
+                break;
+            }
+            if (iop_rpc != nullptr &&
+                iop_rpc->pending_guest_calls() != 0u &&
+                !iop_kernel->has_guest_work() &&
+                !guest_rpc_idle_diagnostic_reported)
+            {
+                guest_rpc_idle_diagnostic_reported = true;
+                uint32_t dma4_chcr = 0u;
+                uint32_t dicr = 0u;
+                uint32_t i_stat = 0u;
+                (void)iop_kernel->hardware().read(
+                    iop::c_hw::k_spu2_dma4_base + 8u,
+                    4u, &dma4_chcr);
+                (void)iop_kernel->hardware().read(
+                    iop::c_hw::k_dma_icr, 4u, &dicr);
+                (void)iop_kernel->hardware().read(
+                    iop::c_hw::k_i_stat, 4u, &i_stat);
+                std::printf(
+                    "IOP HLE guest RPC stalled without IOP work: "
+                    "ee_cycle=%llu pending_calls=%zu "
+                    "dma4_chcr=0x%08x dicr=0x%08x i_stat=0x%08x\n",
+                    static_cast<unsigned long long>(ee_cycle),
+                    iop_rpc->pending_guest_calls(),
+                    dma4_chcr, dicr, i_stat);
+                for (const auto& item : iop_kernel->threads())
+                {
+                    const iop::s_kernel_thread& thread = item.second;
+                    if (thread.m_status ==
+                        iop::e_thread_status::dormant)
+                    {
+                        continue;
+                    }
+                    std::printf(
+                        "IOP HLE pending thread: id=%u status=%u "
+                        "pc=0x%08x wait_type=%u wake_cycle=%llu\n",
+                        item.first,
+                        static_cast<uint32_t>(thread.m_status),
+                        thread.m_cpu.m_pc, thread.m_wait_type,
+                        static_cast<unsigned long long>(
+                            thread.m_wake_cycle));
+                }
+            }
+            if (iop_rpc == nullptr ||
+                iop_rpc->pending_guest_calls() == 0u)
+            {
+                guest_rpc_idle_diagnostic_reported = false;
+            }
         }
 
         // Kernel HLE services completed device interrupts before handing
@@ -2386,6 +2738,41 @@ int main(int argc, char** argv)
         }
 
         dispatched += count;
+        // Observing the guest in the middle and near the end of a
+        // bounded retail replay reveals a persistent R3000 spin without
+        // recording per-instruction traces or changing guest scheduling.
+        if (report_path != nullptr &&
+            dispatched >= next_iop_guest_rpc_snapshot)
+        {
+            if (hle_startup && iop_kernel != nullptr &&
+                iop_rpc != nullptr &&
+                iop_rpc->pending_guest_calls() != 0u)
+            {
+                dump_pending_iop_guest_rpc(
+                    *iop_kernel, dispatched,
+                    iop_rpc->pending_guest_calls(), "checkpoint");
+            }
+            // Dense early checkpoints, then logarithmic spacing so
+            // longer genuine guest work cannot flood the trace.
+            if (next_iop_guest_rpc_snapshot < 100000u)
+            {
+                next_iop_guest_rpc_snapshot += 25000u;
+            }
+            else if (next_iop_guest_rpc_snapshot < 250000u)
+            {
+                next_iop_guest_rpc_snapshot = 250000u;
+            }
+            else if (next_iop_guest_rpc_snapshot <=
+                     std::numeric_limits<uint64_t>::max() / 2u)
+            {
+                next_iop_guest_rpc_snapshot *= 2u;
+            }
+            else
+            {
+                next_iop_guest_rpc_snapshot =
+                    std::numeric_limits<uint64_t>::max();
+            }
+        }
         remaining -= count;
         // Model ps2-web-recomp's execution-budget/event architecture using
         // reached guest instructions as approximate budget units. This is
@@ -2403,7 +2790,6 @@ int main(int argc, char** argv)
         // Timer COUNT reads inside a long native loop sample the live
         // instruction budget rather than this after-dispatch checkpoint.
         host_timers.service();
-        const uint64_t fields_before = hardware.scanout().fields_started();
         const auto scanout_result = runtime.m_ee_cycle_scheduler.service_scanout(
             hardware, vsync_flags, *memory);
         if (scanout_result == ee::e_ee_scheduled_event_result::INVALID_TIMESTAMP_OR_DELIVERY)
@@ -2412,13 +2798,15 @@ int main(int argc, char** argv)
                 static_cast<unsigned long long>(runtime.m_ee_cycle_scheduler.current_cycle()));
             return 1;
         }
-        // Only signal IOP VBlank *start* for an actually delivered
-        // GS field. There is no validated VBlank-end producer yet:
-        // WaitVblankEnd must remain blocked instead of timing out.
-        if (iop_hle != nullptr &&
-            hardware.scanout().fields_started() > fields_before)
+        // Deliver original IOP start/end callbacks in the scanout
+        // clock's event order; never infer edges from wall time.
+        if (iop_hle != nullptr)
         {
-            iop_hle->signal_vblank_edge(true);
+            for (uint8_t start_edge :
+                 hardware.scanout().delivered_vblank_edges())
+            {
+                iop_hle->signal_vblank_edge(start_edge != 0u);
+            }
         }
 #ifdef EE_ENABLE_RAYLIB_WINDOW
         if (gs_webgpu_window)
@@ -3657,6 +4045,142 @@ int main(int argc, char** argv)
                             if (!other_ready || callback_active ||
                                 irq_callback_active)
                             {
+                                // A real EE SIFRPC BIND can block in
+                                // WaitSema before its guest IOP server
+                                // registers. Unlike ROM0 DMA, HLE-first
+                                // SIF1 is already committed; give only
+                                // already-scheduled guest R3000 work a
+                                // bounded turn so it can register that
+                                // server and produce a genuine SIF0 Rend.
+                                const bool guest_rpc_wait =
+                                    !other_ready && !callback_active &&
+                                    !irq_callback_active &&
+                                    iop_rom0_path == nullptr &&
+                                    iop_kernel != nullptr &&
+                                    iop_rpc != nullptr &&
+                                    (iop_rpc->has_waiting_bind_guest_work() ||
+                                     ((iop_rpc->pending_guest_calls() != 0u ||
+                                       iop_rpc->pending_module_starts() != 0u) &&
+                                      iop_kernel->has_guest_work()));
+                                if (guest_rpc_wait)
+                                {
+                                    if (trace &&
+                                        iop_semaphore_wait_turns == 0u)
+                                    {
+                                        dump_iop_rpc_wait_threads(
+                                            *iop_kernel, semaphore_id, 0u);
+                                    }
+                                    if (iop_semaphore_wait_turns >=
+                                        sif_poll_limit)
+                                    {
+                                        std::fprintf(stderr,
+                                            "WaitSema HLE pending RPC "
+                                            "exhausted guest IOP turns: "
+                                            "id=%u turns=%u binds=%zu "
+                                            "replies=%zu iop_pc=0x%08x\n",
+                                            semaphore_id,
+                                            iop_semaphore_wait_turns,
+                                            iop_rpc->pending_binds(),
+                                            iop_rpc->pending_replies(),
+                                            iop_kernel->cpu().state().m_pc);
+                                        break;
+                                    }
+                                    ++iop_semaphore_wait_turns;
+                                    const size_t binds_before =
+                                        iop_rpc->pending_binds();
+                                    const iop::s_kernel_run_result progressed =
+                                        iop_kernel->run(iop_quantum, 128u);
+                                    if (progressed.m_stop !=
+                                            iop::e_kernel_stop::budget_exhausted &&
+                                        progressed.m_stop !=
+                                            iop::e_kernel_stop::idle)
+                                    {
+                                        std::fprintf(stderr,
+                                            "WaitSema HLE guest IOP stopped: "
+                                            "id=%u reason=%u thread=%u "
+                                            "pc=0x%08x opcode=0x%08x "
+                                            "executed=%llu\n",
+                                            semaphore_id,
+                                            static_cast<uint32_t>(
+                                                progressed.m_stop),
+                                            progressed.m_thread_id,
+                                            progressed.m_guest_pc,
+                                            progressed.m_opcode,
+                                            static_cast<unsigned long long>(
+                                                progressed.m_executed));
+                                        if (progressed.m_stop ==
+                                            iop::e_kernel_stop::memory_fault)
+                                        {
+                                            const iop::s_memory_fault& fault =
+                                                iop_kernel->cpu().last_memory_fault();
+                                            const iop::s_cpu_state& guest =
+                                                iop_kernel->cpu().state();
+                                            std::fprintf(stderr,
+                                                "WaitSema HLE IOP memory fault: "
+                                                "address=0x%08x width=%u "
+                                                "write=%u valid=%u "
+                                                "ra=0x%08x gp=0x%08x "
+                                                "sp=0x%08x\n",
+                                                fault.m_address, fault.m_width,
+                                                fault.m_write ? 1u : 0u,
+                                                fault.m_valid ? 1u : 0u,
+                                                guest.m_gpr[31],
+                                                guest.m_gpr[28],
+                                                guest.m_gpr[29]);
+                                        }
+                                        dump_iop_rpc_wait_threads(
+                                            *iop_kernel, semaphore_id,
+                                            iop_semaphore_wait_turns);
+                                        break;
+                                    }
+                                    // Delivery still requires guest
+                                    // registration, the armed EE SIF0
+                                    // receiver and actual DMAC IRQ. Pumping
+                                    // does not manufacture a response.
+                                    (void)iop_rpc->pump();
+                                    const size_t binds_after =
+                                        iop_rpc->pending_binds();
+                                    if (trace &&
+                                        (iop_semaphore_wait_turns == 1u ||
+                                         binds_before != binds_after ||
+                                         (hardware.dmac().pending() &
+                                             (1u << 5u)) != 0u))
+                                    {
+                                        std::printf(
+                                            "WaitSema HLE guest RPC turn: "
+                                            "id=%u turn=%u executed=%llu "
+                                            "binds=%zu replies=%zu "
+                                            "dma5_pending=%u\n",
+                                            semaphore_id,
+                                            iop_semaphore_wait_turns,
+                                            static_cast<unsigned long long>(
+                                                progressed.m_executed),
+                                            binds_after,
+                                            iop_rpc->pending_replies(),
+                                            (hardware.dmac().pending() &
+                                                (1u << 5u)) != 0u ? 1u : 0u);
+                                    }
+                                    // A handful of read-only snapshots
+                                    // distinguish guest thread starvation,
+                                    // a runaway NOP path and genuine server
+                                    // initialization without a 2048-turn log.
+                                    if (trace &&
+                                        (iop_semaphore_wait_turns == 1u ||
+                                         iop_semaphore_wait_turns == 64u ||
+                                         iop_semaphore_wait_turns == 512u ||
+                                         iop_semaphore_wait_turns ==
+                                             sif_poll_limit))
+                                    {
+                                        dump_iop_rpc_wait_threads(
+                                            *iop_kernel, semaphore_id,
+                                            iop_semaphore_wait_turns);
+                                    }
+                                    // The normal top-of-loop interrupt
+                                    // delivery executes the original guest
+                                    // callback. Only its iSignalSema may
+                                    // wake this trapped WaitSema.
+                                    continue;
+                                }
                                 if (!other_ready && !callback_active &&
                                     !irq_callback_active &&
                                     iop_rom0_path != nullptr &&
@@ -5116,6 +5640,17 @@ int main(int argc, char** argv)
         {
             break;
         }
+    }
+
+    // The last authentic IOP thread state is the most useful artifact
+    // when EE reaches its dispatch budget with a guest RPC still active.
+    if (report_path != nullptr &&
+        hle_startup && iop_kernel != nullptr &&
+        iop_rpc != nullptr && iop_rpc->pending_guest_calls() != 0u)
+    {
+        dump_pending_iop_guest_rpc(
+            *iop_kernel, dispatched,
+            iop_rpc->pending_guest_calls(), "final");
     }
 
     if (report_path != nullptr)

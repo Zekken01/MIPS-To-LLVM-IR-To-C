@@ -1,6 +1,7 @@
 #include "iop_sifman_bridge.h"
 
 #include <array>
+#include <cstdio>
 #include <utility>
 #include <vector>
 
@@ -45,9 +46,9 @@ bool c_sifman_bridge::install()
 {
     // Keep all existing guest stub addresses stable; this avoids
     // collisions with SIFCMD and CDVDMAN in reserved low IOP RAM.
-    constexpr std::array<uint16_t, 13u> ordinals = {
+    constexpr std::array<uint16_t, 14u> ordinals = {
         4u, 5u, 6u, 7u, 8u, 21u, 22u,
-        23u, 24u, 25u, 26u, 27u, 29u
+        23u, 24u, 25u, 26u, 27u, 29u, 32u
     };
     for (uint16_t ordinal : ordinals)
     {
@@ -55,6 +56,10 @@ bool c_sifman_bridge::install()
         if (ordinal == 7u)
         {
             pc = k_set_dma_stub;
+        }
+        else if (ordinal == 32u)
+        {
+            pc = k_set_dma_intr_stub;
         }
         else if (ordinal == 23u)
         {
@@ -77,6 +82,7 @@ bool c_sifman_bridge::install()
     m_initialized = false;
     m_dma_chain_configured = false;
     m_next_dma_id = 1u;
+    m_dma_success_log_count = 0u;
     return true;
 }
 
@@ -236,17 +242,104 @@ bool c_sifman_bridge::handle_syscall(
         return true;
 
     case k_set_dma_syscall:
+    case k_set_dma_intr_syscall:
     {
-        // Guest sceSifSetDma receives a pointer to 16-byte
+        // Both sifman #7 and #32 receive 16-byte
         // descriptors (IOP src, EE dst, byte count, attributes).
         // Unlike the reference's eager memcpy, validate and stage
         // every transfer before writing a single guest EE byte.
+        const s_cpu_state& state = kernel.cpu().state();
+        const uint32_t list = state.m_gpr[4];
+        const uint32_t count = state.m_gpr[5];
+        // sceSifSetDmaIntr(a0=list,a1=count,a2=callback,a3=data).
+        // A successful DMA with a non-null callback schedules actual
+        // guest code; the callback is never a synthetic completion.
+        const uint32_t callback = service == k_set_dma_intr_syscall
+            ? state.m_gpr[6] : 0u;
+        const uint32_t callback_data = state.m_gpr[7];
+        const uint32_t callback_gp = state.m_gpr[28];
+
+        // The retail ARKD worker reaches this import only after its
+        // original method-1 RPC and the 0x503:258/2 follow-up calls
+        // return. On rejection preserve the real IOP/EE state and
+        // identify the exact validation boundary rather than guessing
+        // which DMA producer is missing or synthesizing a completion.
+        const auto reject = [&](const char* reason,
+                                uint32_t descriptor_index = 0u,
+                                uint32_t source = 0u,
+                                uint32_t destination = 0u,
+                                uint32_t size = 0u,
+                                uint32_t attributes = 0u)
+        {
+            ee::s_ee_u128 channel{};
+            const bool channel_readable =
+                m_dmac != nullptr &&
+                ee::c_ee_dmac::mmio_read(
+                    m_dmac, ee::c_ee_dmac::k_sif0_base,
+                    4u, &channel);
+
+            // The receiver may be unarmed before we normally inspect
+            // the descriptor list. Read at most the first rejected
+            // descriptor for diagnostic purposes without changing
+            // acceptance, DMA clocks or guest memory.
+            const uint32_t list_region = list & 0xe0000000u;
+            const uint32_t list_physical = list & 0x1fffffffu;
+            bool descriptor_readable = false;
+            if (count != 0u && descriptor_index < count &&
+                (list & 3u) == 0u &&
+                (list_region == 0u ||
+                 list_region == 0x80000000u ||
+                 list_region == 0xa0000000u) &&
+                list_physical <= c_cpu::k_ram_size - 16u &&
+                descriptor_index <=
+                    (c_cpu::k_ram_size - 16u -
+                     list_physical) / 16u)
+            {
+                const uint32_t address =
+                    list_physical + descriptor_index * 16u;
+                uint32_t traced_source = 0u;
+                uint32_t traced_destination = 0u;
+                uint32_t traced_size = 0u;
+                uint32_t traced_attributes = 0u;
+                descriptor_readable =
+                    kernel.cpu().read32(address, &traced_source) &&
+                    kernel.cpu().read32(address + 4u,
+                                        &traced_destination) &&
+                    kernel.cpu().read32(address + 8u,
+                                        &traced_size) &&
+                    kernel.cpu().read32(address + 12u,
+                                        &traced_attributes);
+                if (descriptor_readable)
+                {
+                    source = traced_source;
+                    destination = traced_destination;
+                    size = traced_size;
+                    attributes = traced_attributes;
+                }
+            }
+
+            std::fprintf(stderr,
+                "IOP HLE SifSetDma rejected: reason=%s "
+                "thread=%u pc=0x%08x ra=0x%08x "
+                "list=0x%08x count=%u index=%u desc_readable=%u "
+                "src=0x%08x dst=0x%08x size=%u attr=0x%08x "
+                "ee5_chcr=0x%08x ee5_readable=%u "
+                "iop_cycles=%llu\n",
+                reason, kernel.current_thread_id(),
+                state.m_pc, state.m_gpr[31],
+                list, count, descriptor_index,
+                descriptor_readable ? 1u : 0u,
+                source, destination, size, attributes,
+                static_cast<uint32_t>(channel.m_lo),
+                channel_readable ? 1u : 0u,
+                static_cast<unsigned long long>(kernel.cycles()));
+            return false;
+        };
+
         if (m_dmac == nullptr || m_ee_ram == nullptr)
         {
-            return false;
+            return reject("missing_ee_dma_backend");
         }
-        const uint32_t list = kernel.cpu().state().m_gpr[4];
-        const uint32_t count = kernel.cpu().state().m_gpr[5];
         const uint32_t list_physical = list & 0x1fffffffu;
         const uint32_t list_region = list & 0xe0000000u;
         if (count == 0u || count > 64u ||
@@ -256,16 +349,38 @@ bool c_sifman_bridge::handle_syscall(
              list_region != 0xa0000000u) ||
             list_physical > c_cpu::k_ram_size - count * 16u)
         {
-            return false;
+            return reject("invalid_descriptor_list");
+        }
+
+        if (callback != 0u)
+        {
+            const uint32_t region = callback & 0xe0000000u;
+            const uint32_t physical = callback & 0x1fffffffu;
+            uint32_t instruction = 0u;
+            if ((callback & 3u) != 0u ||
+                (region != 0u && region != 0x80000000u &&
+                 region != 0xa0000000u) ||
+                physical >= c_cpu::k_ram_size ||
+                !kernel.cpu().read32(callback, &instruction))
+            {
+                return reject("invalid_dma_callback");
+            }
+            if (!kernel.can_schedule_hle_event(32u))
+            {
+                return reject("dma_callback_queue_unavailable");
+            }
         }
 
         ee::s_ee_u128 chcr{};
         if (!ee::c_ee_dmac::mmio_read(
                 m_dmac, ee::c_ee_dmac::k_sif0_base,
-                4u, &chcr) ||
-            (chcr.m_lo & ee::c_ee_dmac::k_chcr_str) == 0u)
+                4u, &chcr))
         {
-            return false;
+            return reject("unreadable_ee_sif0_chcr");
+        }
+        if ((chcr.m_lo & ee::c_ee_dmac::k_chcr_str) == 0u)
+        {
+            return reject("ee_sif0_receiver_not_armed");
         }
 
         struct s_transfer
@@ -286,7 +401,8 @@ bool c_sifman_bridge::handle_syscall(
                 !kernel.cpu().read32(descriptor + 8u, &size) ||
                 !kernel.cpu().read32(descriptor + 12u, &attributes))
             {
-                return false;
+                return reject("unreadable_descriptor", index,
+                              source, destination, size, attributes);
             }
 
             const uint32_t source_physical = source & 0x1fffffffu;
@@ -297,7 +413,10 @@ bool c_sifman_bridge::handle_syscall(
                 destination & 0xe0000000u;
             const uint64_t rounded =
                 (static_cast<uint64_t>(size) + 3u) & ~uint64_t(3u);
-            if (size == 0u || size > 65536u ||
+            // Retail ARKD uses a single 96 KiB IOP-to-EE DMA descriptor.
+            // The checked IOP source and EE destination spans bound
+            // each transfer; a 64 KiB cap incorrectly rejects valid RAM.
+            if (size == 0u ||
                 attributes != 0u ||
                 (source_region != 0u &&
                  source_region != 0x80000000u &&
@@ -311,7 +430,8 @@ bool c_sifman_bridge::handle_syscall(
                     c_cpu::k_ram_size ||
                 !m_ee_ram->contains(destination_physical, size))
             {
-                return false;
+                return reject("invalid_descriptor_fields", index,
+                              source, destination, size, attributes);
             }
 
             s_transfer transfer{};
@@ -323,7 +443,8 @@ bool c_sifman_bridge::handle_syscall(
                 if (!kernel.cpu().read32(
                         source_physical + offset, &word))
                 {
-                    return false;
+                    return reject("unreadable_source_payload", index,
+                                  source, destination, size, attributes);
                 }
                 for (uint32_t b = 0u;
                      b < 4u && offset + b < size; ++b)
@@ -353,9 +474,55 @@ bool c_sifman_bridge::handle_syscall(
         }
         if (!m_dmac->raise(5u))
         {
-            return false;
+            return reject("ee_sif0_dmac_completion");
         }
-        kernel.cpu().state().m_gpr[2] = m_next_dma_id++;
+        if (callback != 0u)
+        {
+            // All DMA checks and the real DMA5 raise have completed.
+            // The 32-tick delay matches ps2-web-recomp/SDBZ's job
+            // scheduling; IOP guest instructions drive this clock.
+            const bool scheduled = kernel.schedule_hle_event(
+                32u, [this, callback, callback_gp, callback_data]()
+                {
+                    if (!m_kernel.start_guest_callback(
+                            callback, callback_gp, callback_data))
+                    {
+                        std::fprintf(stderr,
+                            "IOP SIFMAN DMA callback could not enter "
+                            "guest code: pc=0x%08x gp=0x%08x "
+                            "data=0x%08x cycles=%llu\n",
+                            callback, callback_gp, callback_data,
+                            static_cast<unsigned long long>(
+                                m_kernel.cycles()));
+                    }
+                });
+            if (!scheduled)
+            {
+                // Preflight already reserved capacity. This cannot
+                // fail in the single-threaded IOP scheduler without
+                // an intervening kernel reset or invariant violation.
+                return reject("dma_callback_enqueue_failed");
+            }
+        }
+        const uint32_t dma_id = m_next_dma_id++;
+        kernel.cpu().state().m_gpr[2] = dma_id;
+        if (m_dma_success_log_count < 8u)
+        {
+            uint64_t bytes = 0u;
+            for (const s_transfer& transfer : transfers)
+            {
+                bytes += transfer.m_bytes.size();
+            }
+            std::fprintf(stderr,
+                "IOP HLE SifSetDma accepted: service=0x%08x "
+                "thread=%u list=0x%08x count=%u bytes=%llu "
+                "dma_id=%u callback=0x%08x cycles=%llu\n",
+                service, kernel.current_thread_id(), list, count,
+                static_cast<unsigned long long>(bytes),
+                dma_id, callback,
+                static_cast<unsigned long long>(kernel.cycles()));
+            ++m_dma_success_log_count;
+        }
         return true;
     }
 

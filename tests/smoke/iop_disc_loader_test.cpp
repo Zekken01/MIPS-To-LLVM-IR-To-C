@@ -170,6 +170,10 @@ int main()
         linked.m_thread_id == 0u ||
         thread == nullptr ||
         thread->m_status != iop::e_thread_status::ready ||
+        thread->m_priority != iop::c_kernel::k_default_module_priority ||
+        thread->m_module_id != linked.m_module_id ||
+        !thread->m_module_entry ||
+        thread->m_cpu.m_gpr[31] == 0u ||
         thread->m_cpu.m_pc != 0x20000u)
     {
         return fail("guest IRX could not be linked and scheduled");
@@ -213,6 +217,8 @@ int main()
     if (parameterized.m_result != iop::e_disc_load_result::success ||
         parameterized.m_module_id != 3u ||
         params_thread == nullptr ||
+        params_thread->m_priority != 1u ||
+        params_thread->m_cpu.m_gpr[31] == 0u ||
         params_thread->m_cpu.m_gpr[4] != 3u ||
         params_thread->m_cpu.m_gpr[5] == 0u ||
         params_thread->m_cpu.m_gpr[29] <

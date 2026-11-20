@@ -181,11 +181,11 @@ int main()
 
     // SIFMAN initialization is stateful, not an installed-stub
     // side-effect. Test the actual IOP DMA registers and mailbox.
-    // MCSERV statically imports #5/#7/#8/#29, while #32 still
-    // requires real interrupt/callback semantics and stays unresolved.
+    // MCSERV imports #5/#7/#8/#29; PADMAN additionally requires
+    // #32, which now uses the same validated DMA and guest callback path.
     for (uint16_t ordinal : {
              4u, 5u, 6u, 7u, 8u, 21u, 22u,
-             23u, 24u, 25u, 26u, 27u, 29u})
+             23u, 24u, 25u, 26u, 27u, 29u, 32u})
     {
         uint32_t entry = 0u;
         uint32_t instruction = 0u;
@@ -196,7 +196,7 @@ int main()
             return fail("SIFMAN service has no guest R3000 import stub");
         }
     }
-    for (uint16_t ordinal : {9u, 30u, 31u, 32u})
+    for (uint16_t ordinal : {9u, 30u, 31u, 33u})
     {
         uint32_t entry = 0u;
         if (kernel.lookup_library("sifman", ordinal, &entry))

@@ -262,6 +262,27 @@ bool c_kernel_hle_bridge::install()
             return false;
         }
     }
+    m_kernel.bind_interrupts(
+        [this](uint32_t line, s_kernel_interrupt_target* target)
+        {
+            const auto found = m_interrupts.find(line);
+            if (found == m_interrupts.end() ||
+                found->second.m_handler == 0u || target == nullptr)
+            {
+                return false;
+            }
+            target->m_handler = found->second.m_handler;
+            target->m_argument = found->second.m_argument;
+            return true;
+        },
+        [this](uint32_t line, uint32_t guest_result)
+        {
+            if (guest_result == 0u && line < 32u)
+            {
+                (void)m_kernel.hardware().set_interrupt_mask(line, false);
+            }
+        }
+    );
     m_installed = true;
     return true;
 }
@@ -283,6 +304,9 @@ void c_kernel_hle_bridge::reset_for_reboot()
     m_strtok_next = 0u;
     m_check_kelf_path_callback = 0u;
     m_ioman_files.clear();
+    m_unknown_semaphore_wait_ids.clear();
+    m_semaphore_trace_events = 0u;
+    m_thread_failure_trace_events = 0u;
     m_next_object = 1u;
     m_cpu_interrupts_suspended = false;
     m_installed = false;
@@ -513,6 +537,13 @@ bool c_kernel_hle_bridge::handle_fixed_pool(uint32_t ordinal)
     auto found = m_fixed_pools.find(id);
     if (found == m_fixed_pools.end())
     {
+        // PS2 IOP kernel: unknown FPL ID is an API error, not an
+        // unhandled host syscall. Preserve unsupported ordinals.
+        if (ordinal >= 5u && ordinal <= 9u)
+        {
+            cpu.m_gpr[2] = static_cast<uint32_t>(-412);
+            return true;
+        }
         return false;
     }
     s_fixed_pool& pool = found->second;
@@ -640,6 +671,12 @@ bool c_kernel_hle_bridge::handle_variable_pool(uint32_t ordinal)
     auto found = m_variable_pools.find(id);
     if (found == m_variable_pools.end())
     {
+        if ((ordinal >= 5u && ordinal <= 9u) ||
+            ordinal == 11u || ordinal == 12u)
+        {
+            cpu.m_gpr[2] = static_cast<uint32_t>(-411);
+            return true;
+        }
         return false;
     }
     s_variable_pool& pool = found->second;
@@ -859,6 +896,11 @@ bool c_kernel_hle_bridge::handle_thmsgbx(uint32_t ordinal)
     auto found = m_mailboxes.find(id);
     if (found == m_mailboxes.end())
     {
+        if (ordinal >= 5u && ordinal <= 9u)
+        {
+            cpu.m_gpr[2] = static_cast<uint32_t>(-410);
+            return true;
+        }
         return false;
     }
     s_mailbox& mailbox = found->second;
@@ -1057,36 +1099,30 @@ bool c_kernel_hle_bridge::handle_intrman(uint32_t ordinal)
     const uint32_t line = cpu.m_gpr[4];
     if (ordinal == 23u)
     {
-        // HLE kernel bridge executes in the scheduler's normal thread
-        // context, not inside a simulated interrupt callback.
-        cpu.m_gpr[2] = 0u;
+        // Real guest INTRMAN handler execution has its own context.
+        cpu.m_gpr[2] = m_kernel.in_interrupt_context() ? 1u : 0u;
         return true;
     }
     if (ordinal == 8u || ordinal == 9u)
     {
         const bool disabled = ordinal == 8u;
-        if (!m_kernel.hardware().write(
-                c_hw::k_i_ctrl, 4u, disabled ? 0u : 1u))
-        {
-            return false;
-        }
+        // The reference INTRMAN saves CPU suspension in the thread
+        // context; it does not overwrite the hardware I_CTRL latch.
         m_cpu_interrupts_suspended = disabled;
+        m_kernel.set_interrupts_suspended(disabled);
         cpu.m_gpr[2] = 0u;
         return true;
     }
     if (ordinal == 17u)
     {
-        const bool suspended = m_cpu_interrupts_suspended;
+        const bool suspended = m_kernel.interrupts_suspended();
         if (line != 0u &&
             !m_kernel.cpu().write32(line, suspended ? 0u : 1u))
         {
             return false;
         }
         m_cpu_interrupts_suspended = true;
-        if (!m_kernel.hardware().write(c_hw::k_i_ctrl, 4u, 0u))
-        {
-            return false;
-        }
+        m_kernel.set_interrupts_suspended(true);
         cpu.m_gpr[2] = suspended ?
             static_cast<uint32_t>(-102) : 0u;
         return true;
@@ -1094,16 +1130,14 @@ bool c_kernel_hle_bridge::handle_intrman(uint32_t ordinal)
     if (ordinal == 18u)
     {
         m_cpu_interrupts_suspended = line == 0u;
-        if (!m_kernel.hardware().write(
-                c_hw::k_i_ctrl, 4u,
-                m_cpu_interrupts_suspended ? 0u : 1u))
-        {
-            return false;
-        }
+        m_kernel.set_interrupts_suspended(m_cpu_interrupts_suspended);
         cpu.m_gpr[2] = 0u;
         return true;
     }
-    if (line >= 32u)
+    // The IOP INTRMAN numbers DMA channels separately from the
+    // 32-bit I_STAT/I_MASK register. LIBSD DisableIntr(0x24) targets
+    // DMA channel 4 (DICR bit 20), not an invalid IOP IRQ number.
+    if (!c_hw::supports_interrupt_line(line))
     {
         return false;
     }
@@ -1121,37 +1155,22 @@ bool c_kernel_hle_bridge::handle_intrman(uint32_t ordinal)
                               cpu.m_gpr[6], cpu.m_gpr[7]});
         break;
     case 5u:
-        if (m_interrupts.erase(line) == 0u)
-        {
-            return false;
-        }
+        // Reference ReleaseIntrHandler is idempotent for valid lines.
+        m_interrupts.erase(line);
         break;
     case 6u:
     case 7u:
     {
-        if (m_interrupts.find(line) == m_interrupts.end())
+        // EnableIntr and DisableIntr operate on the kernel mask
+        // even before a handler is registered. Do not require a
+        // fictitious handler or shift by an out-of-range IRQ number.
+        if (ordinal == 7u && cpu.m_gpr[5] != 0u &&
+            !m_kernel.cpu().write32(cpu.m_gpr[5], line))
         {
             return false;
         }
-        uint32_t mask = 0u;
-        if (!m_kernel.hardware().read(c_hw::k_i_mask, 4u, &mask))
-        {
-            return false;
-        }
-        if (ordinal == 6u)
-        {
-            mask |= 1u << line;
-        }
-        else
-        {
-            if (cpu.m_gpr[5] != 0u &&
-                !m_kernel.cpu().write32(cpu.m_gpr[5], line))
-            {
-                return false;
-            }
-            mask &= ~(1u << line);
-        }
-        if (!m_kernel.hardware().write(c_hw::k_i_mask, 4u, mask))
+        if (!m_kernel.hardware().set_interrupt_mask(
+                line, ordinal == 6u))
         {
             return false;
         }
@@ -1192,111 +1211,32 @@ bool c_kernel_hle_bridge::handle_stdio(uint32_t ordinal)
     {
         return false;
     }
-    std::string format;
-    if (!read_string(cpu.m_gpr[4], 4096u, &format))
-    {
-        return false;
-    }
     std::string output;
-    uint32_t argument = 1u;
-    for (size_t i = 0u; i < format.size(); ++i)
+    if (!render_stdio_format(m_kernel.cpu(), &output))
     {
-        if (format[i] != '%')
-        {
-            output += format[i];
-            continue;
-        }
-        if (++i >= format.size())
-        {
-            return false;
-        }
-        if (format[i] == '%')
-        {
-            output += '%';
-            continue;
-        }
-        bool zero = false;
-        if (format[i] == '0')
-        {
-            zero = true;
-            ++i;
-        }
-        uint32_t width = 0u;
-        while (i < format.size() &&
-               format[i] >= '0' && format[i] <= '9')
-        {
-            width = width * 10u + static_cast<uint32_t>(
-                format[i++] - '0');
-            if (width > 32u)
-            {
-                return false;
-            }
-        }
-        if (i >= format.size())
-        {
-            return false;
-        }
-        uint32_t value = 0u;
-        if (!read_argument(argument++, &value))
-        {
-            return false;
-        }
-        const char spec = format[i];
-        if (spec == 's')
-        {
-            std::string content;
-            if (!read_string(value, 4096u, &content))
-            {
-                return false;
-            }
-            output += content;
-        }
-        else if (spec == 'c')
-        {
-            output += static_cast<char>(value);
-        }
-        else if (spec == 'u' || spec == 'd' ||
-                 spec == 'x' || spec == 'X' || spec == 'p')
-        {
-            char buffer[96]{};
-            char option[16]{};
-            if (width != 0u)
-            {
-                std::snprintf(option, sizeof(option), "%%%s%u%c",
-                              zero ? "0" : "", width,
-                              spec == 'p' ? 'x' : spec);
-            }
-            else
-            {
-                std::snprintf(option, sizeof(option), "%%%c",
-                              spec == 'p' ? 'x' : spec);
-            }
-            if (spec == 'd')
-            {
-                std::snprintf(buffer, sizeof(buffer), option,
-                              static_cast<int32_t>(value));
-            }
-            else
-            {
-                std::snprintf(buffer, sizeof(buffer), option, value);
-            }
-            output += buffer;
-        }
-        else
-        {
-            return false;
-        }
-        if (output.size() > 8192u)
-        {
-            return false;
-        }
+        // An unsupported guest format must not silently appear as a
+        // successful print. Record enough bounded context to locate the
+        // original module's call without exposing its entire image.
+        std::string format;
+        const bool valid_format =
+            read_string(cpu.m_gpr[4], 4096u, &format);
+        std::fprintf(stderr,
+            "IOP HLE stdio printf rejected: thread=%u "
+            "format_addr=0x%08x format=%.160s "
+            "a1=0x%08x a2=0x%08x a3=0x%08x "
+            "sp=0x%08x ra=0x%08x cycles=%llu\n",
+            m_kernel.current_thread_id(), cpu.m_gpr[4],
+            valid_format ? format.c_str() : "(unreadable)",
+            cpu.m_gpr[5], cpu.m_gpr[6], cpu.m_gpr[7],
+            cpu.m_gpr[29], cpu.m_gpr[31],
+            static_cast<unsigned long long>(m_kernel.cycles()));
+        return false;
     }
     if (!write_console(output))
     {
         return false;
     }
-    m_kernel.cpu().state().m_gpr[2] =
-        static_cast<uint32_t>(output.size());
+    cpu.m_gpr[2] = static_cast<uint32_t>(output.size());
     return true;
 }
 
@@ -1384,18 +1324,55 @@ bool c_kernel_hle_bridge::handle_thbase(uint32_t ordinal)
     case 4u:
     {
         const uint32_t descriptor = cpu.m_gpr[4];
+        uint32_t attr = 0u;
+        uint32_t option = 0u;
         uint32_t entry = 0u;
         uint32_t stack = 0u;
         uint32_t priority = 0u;
-        if (!m_kernel.cpu().read32(descriptor + 8u, &entry) ||
+        if (!is_iop_ram_span(descriptor, 20u) ||
+            !m_kernel.cpu().read32(descriptor, &attr) ||
+            !m_kernel.cpu().read32(descriptor + 4u, &option) ||
+            !m_kernel.cpu().read32(descriptor + 8u, &entry) ||
             !m_kernel.cpu().read32(descriptor + 12u, &stack) ||
             !m_kernel.cpu().read32(descriptor + 16u, &priority))
         {
             return false;
         }
-        cpu.m_gpr[2] = m_kernel.create_thread(
-            entry, cpu.m_gpr[28], priority, stack);
-        return cpu.m_gpr[2] != 0u;
+        // A valid CreateThread request can fail because its stack no
+        // longer fits physical IOP RAM. Return a genuine negative
+        // kernel error rather than faulting the caller's guest syscall.
+        // Never publish a synthetic thread ID or an unusable stack.
+        const uint32_t created =
+            m_kernel.create_thread(
+                entry, cpu.m_gpr[28], priority, stack,
+                0u, 0u, attr, option);
+        if (created == 0u)
+        {
+            const uint32_t physical = entry & 0x1fffffffu;
+            const bool parameters_valid =
+                entry != 0u && (entry & 3u) == 0u &&
+                physical < c_cpu::k_ram_size && stack >= 64u;
+            cpu.m_gpr[2] = static_cast<uint32_t>(
+                parameters_valid ? -400 : -201);
+            if (m_thread_failure_trace_events < 12u)
+            {
+                std::fprintf(stderr,
+                    "IOP HLE CreateThread rejected: thread=%u "
+                    "entry=0x%08x stack=%u priority=%u "
+                    "reason=%s max_free=%u total_free=%u "
+                    "cycles=%llu\n",
+                    m_kernel.current_thread_id(), entry, stack,
+                    priority, parameters_valid
+                        ? "stack_allocation_failed"
+                        : "invalid_thread_parameters",
+                    m_kernel.heap_max_free(), m_kernel.heap_total_free(),
+                    static_cast<unsigned long long>(m_kernel.cycles()));
+                ++m_thread_failure_trace_events;
+            }
+            return true;
+        }
+        cpu.m_gpr[2] = created;
+        return true;
     }
     case 5u:
         if (!m_kernel.delete_thread(cpu.m_gpr[4]))
@@ -1405,21 +1382,55 @@ bool c_kernel_hle_bridge::handle_thbase(uint32_t ordinal)
         cpu.m_gpr[2] = 0u;
         return true;
     case 6u:
-        if (!m_kernel.start_thread_with_argument(
-                cpu.m_gpr[4], cpu.m_gpr[5]))
-        {
-            return false;
-        }
-        cpu.m_gpr[2] = 0u;
-        return true;
     case 7u:
-        if (!m_kernel.start_thread_with_arguments(
-                cpu.m_gpr[4], cpu.m_gpr[5], cpu.m_gpr[6]))
+    {
+        const uint32_t requested_id = cpu.m_gpr[4];
+        // Original SDBZ reference: kernel::thread(0) returns current().
+        // This is an actual self-restart request, not an invalid ID.
+        const uint32_t id = requested_id == 0u
+            ? m_kernel.current_thread_id() : requested_id;
+        const s_kernel_thread* thread = m_kernel.thread(id);
+        const bool self_restart =
+            id != 0u && id == m_kernel.current_thread_id() &&
+            thread != nullptr &&
+            thread->m_status == e_thread_status::running;
+        if (thread == nullptr ||
+            (thread->m_status != e_thread_status::dormant &&
+             !self_restart))
         {
+            // Unknown IDs fail with -407; other non-dormant threads
+            // cannot be started unless they are the current caller.
+            cpu.m_gpr[2] = static_cast<uint32_t>(
+                thread == nullptr ? -407 : -414);
+            if (m_thread_failure_trace_events < 12u)
+            {
+                std::fprintf(stderr,
+                    "IOP HLE StartThread rejected: ordinal=%u "
+                    "caller=%u target=%u reason=%s result=%d "
+                    "cycles=%llu\n",
+                    ordinal, m_kernel.current_thread_id(),
+                    requested_id,
+                    thread == nullptr
+                        ? "unknown_thread" : "thread_not_dormant",
+                    static_cast<int32_t>(cpu.m_gpr[2]),
+                    static_cast<unsigned long long>(m_kernel.cycles()));
+                ++m_thread_failure_trace_events;
+            }
+            return true;
+        }
+        const bool started = ordinal == 6u
+            ? m_kernel.start_thread_with_argument(id, cpu.m_gpr[5])
+            : m_kernel.start_thread_with_arguments(
+                id, cpu.m_gpr[5], cpu.m_gpr[6]);
+        if (!started)
+        {
+            // Do not grant a successful start without a scheduled
+            // original R3000 thread.
             return false;
         }
         cpu.m_gpr[2] = 0u;
         return true;
+    }
     case 8u:
     case 9u:
         if (!m_kernel.exit_current_thread(ordinal == 9u))
@@ -1524,7 +1535,8 @@ bool c_kernel_hle_bridge::handle_thbase(uint32_t ordinal)
         default: return false;
         }
         const uint32_t words[20] = {
-            0u, 0u, status, thread->m_entry, thread->m_stack_base,
+            thread->m_attr, thread->m_option, status,
+            thread->m_entry, thread->m_stack_base,
             thread->m_stack_size, thread->m_gp,
             thread->m_initial_priority, thread->m_priority,
             thread->m_wait_type, 0u, thread->m_wakeup_count,
@@ -1704,6 +1716,11 @@ bool c_kernel_hle_bridge::handle_thevent(uint32_t ordinal)
     auto found = m_events.find(id);
     if (found == m_events.end())
     {
+        if (ordinal >= 5u && ordinal <= 14u)
+        {
+            cpu.m_gpr[2] = static_cast<uint32_t>(-409);
+            return true;
+        }
         return false;
     }
     s_event& event = found->second;
@@ -1839,6 +1856,24 @@ bool c_kernel_hle_bridge::handle_thsemap(uint32_t ordinal)
 {
     s_cpu_state& cpu = m_kernel.cpu().state();
     const uint32_t id = cpu.m_gpr[4];
+    // Record actual guest semaphore state transitions, not inferred
+    // completions. Bound this to avoid flooding a long retail replay.
+    const auto trace_transition =
+        [&](const char* action, uint32_t sema_id,
+            uint32_t old_count, uint32_t new_count, uint32_t target)
+    {
+        if (m_semaphore_trace_events < 128u)
+        {
+            ++m_semaphore_trace_events;
+            std::fprintf(stderr,
+                "IOP guest semaphore: action=%s id=%u thread=%u "
+                "target=%u count=%u->%u pc=0x%08x ra=0x%08x "
+                "cycles=%llu\n",
+                action, sema_id, m_kernel.current_thread_id(),
+                target, old_count, new_count, cpu.m_pc, cpu.m_gpr[31],
+                static_cast<unsigned long long>(m_kernel.cycles()));
+        }
+    };
     if (ordinal == 4u)
     {
         uint32_t attr = 0u;
@@ -1856,12 +1891,43 @@ bool c_kernel_hle_bridge::handle_thsemap(uint32_t ordinal)
         const uint32_t created = m_next_object++;
         m_semaphores.emplace(
             created, s_semaphore{attr, option, count, maximum, {}});
+        trace_transition("create", created, 0u, count, 0u);
         cpu.m_gpr[2] = created;
         return true;
     }
     auto found = m_semaphores.find(id);
     if (found == m_semaphores.end())
     {
+        if ((ordinal >= 5u && ordinal <= 9u) ||
+            ordinal == 11u || ordinal == 12u)
+        {
+            // The real ARKD RPC worker reached thsemap #8 WaitSema
+            // with an unknown guest object. Record the requested ID
+            // once without manufacturing a semaphore or waking a
+            // thread. Reference PS2 kernel returns KE_UNKNOWN_SEMID.
+            if (ordinal == 8u &&
+                m_unknown_semaphore_wait_ids.insert(id).second)
+            {
+                std::fprintf(stderr,
+                    "IOP HLE WaitSema unknown id: id=%u "
+                    "thread=%u pc=0x%08x ra=0x%08x "
+                    "registered_semaphores=%zu\n",
+                    id, m_kernel.current_thread_id(),
+                    cpu.m_pc, cpu.m_gpr[31],
+                    m_semaphores.size());
+                for (const auto& item : m_semaphores)
+                {
+                    std::fprintf(stderr,
+                        "IOP HLE WaitSema known id: id=%u count=%u "
+                        "max=%u waiters=%zu\n",
+                        item.first, item.second.m_count,
+                        item.second.m_maximum,
+                        item.second.m_waiters.size());
+                }
+            }
+            cpu.m_gpr[2] = static_cast<uint32_t>(-408);
+            return true;
+        }
         return false;
     }
     s_semaphore& sema = found->second;
@@ -1900,10 +1966,15 @@ bool c_kernel_hle_bridge::handle_thsemap(uint32_t ordinal)
                 return false;
             }
             sema.m_waiters.pop_front();
+            trace_transition("signal_wake", id, sema.m_count,
+                             sema.m_count, thread_id);
         }
         else if (sema.m_count < sema.m_maximum)
         {
+            const uint32_t previous = sema.m_count;
             ++sema.m_count;
+            trace_transition("signal_increment", id, previous,
+                             sema.m_count, 0u);
         }
         else
         {
@@ -1913,7 +1984,10 @@ bool c_kernel_hle_bridge::handle_thsemap(uint32_t ordinal)
     case 8u:
         if (sema.m_count != 0u)
         {
+            const uint32_t previous = sema.m_count;
             --sema.m_count;
+            trace_transition("wait_acquire", id, previous,
+                             sema.m_count, 0u);
         }
         else
         {
@@ -1922,6 +1996,8 @@ bool c_kernel_hle_bridge::handle_thsemap(uint32_t ordinal)
                 return false;
             }
             sema.m_waiters.push_back(m_kernel.current_thread_id());
+            trace_transition("wait_block", id, 0u, 0u,
+                             m_kernel.current_thread_id());
         }
         break;
     case 9u:

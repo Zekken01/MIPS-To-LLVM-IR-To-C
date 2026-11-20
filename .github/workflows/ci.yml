@@ -9,6 +9,10 @@ on:
       - main
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -78,7 +82,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [game, fast-0, fast-1, fast-2]
+        shard: [game-0, game-1, game-2, game-3, fast-0, fast-1, fast-2]
     steps:
       - uses: actions/checkout@v4
 

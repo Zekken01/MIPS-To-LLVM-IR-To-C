@@ -48,16 +48,46 @@ struct s_kernel_thread
     uint32_t m_id = 0u;
     uint32_t m_priority = 0u;
     uint32_t m_initial_priority = 0u;
+    // Original IOP CreateThread descriptor; ReferThreadStatus exposes
+    // these exact guest values rather than fabricated zeros.
+    uint32_t m_attr = 0u;
+    uint32_t m_option = 0u;
     uint32_t m_entry = 0u;
     uint32_t m_gp = 0u;
     uint32_t m_wakeup_count = 0u;
     bool m_delete_on_exit = false;
     bool m_hle_guest_callback = false;
+    bool m_interrupt_callback = false;
+    uint32_t m_interrupt_line = 0u;
+    // INTRMAN suspension is part of this guest thread's context.
+    // A blocked thread must not globally mask another thread's IRQs.
+    bool m_interrupts_suspended = false;
+    // Module _start has a guest return trampoline; returning must
+    // retire its init thread instead of executing zero-filled RAM.
+    bool m_module_entry = false;
+    uint32_t m_module_id = 0u;
+    // Only the reserved guest return BREAK records a completed _start.
+    // Stopping or faulting a startup thread cannot complete LOADFILE.
+    bool m_module_entry_returned = false;
+    uint32_t m_module_entry_result = 0u;
     uint32_t m_wait_type = 0u;
     uint32_t m_stack_base = 0u;
     uint32_t m_stack_size = 0u;
     uint64_t m_wake_cycle = 0u;
     uint32_t m_alarm_id = 0u;
+    // Monotonic, host-only IOP scheduling diagnostics. These do not
+    // affect original guest scheduling or register state and are
+    // printed only at bounded outstanding-RPC snapshots.
+    uint64_t m_guest_instructions = 0u;
+    uint64_t m_guest_slices = 0u;
+    uint64_t m_handled_syscalls = 0u;
+    uint64_t m_self_restarts = 0u;
+    uint32_t m_last_self_restart_ra = 0u;
+    uint32_t m_last_self_restart_arg = 0u;
+    uint32_t m_last_syscall_number = 0u;
+    uint32_t m_last_syscall_pc = 0u;
+    uint32_t m_last_syscall_ra = 0u;
+    uint32_t m_last_syscall_a0 = 0u;
     e_thread_status m_status = e_thread_status::dormant;
     s_cpu_state m_cpu{};
 };
@@ -93,6 +123,19 @@ struct s_module_load_result
 // the CPU registers and call sleep_current()/stop_current(). Returning
 // false leaves the syscall unhandled and stops at the original guest PC.
 // No default kernel HLE, SIF service, or synthetic ready bit exists.
+struct s_kernel_interrupt_target
+{
+    uint32_t m_handler = 0u;
+    uint32_t m_argument = 0u;
+};
+
+using t_kernel_irq_lookup = std::function<bool(
+    uint32_t line, s_kernel_interrupt_target* target
+)>;
+using t_kernel_irq_complete = std::function<void(
+    uint32_t line, uint32_t guest_result
+)>;
+
 class c_kernel;
 using t_kernel_syscall = std::function<bool(
     c_kernel& kernel, uint32_t syscall_number
@@ -102,6 +145,8 @@ class c_kernel
 {
 public:
     static constexpr uint32_t k_user_base = 0x00020000u;
+    // ps2-web-recomp/SDBZ runtime/src/iop/kernel.cpp: start_module().
+    static constexpr uint32_t k_default_module_priority = 8u;
 
     c_kernel();
     void reset();
@@ -120,6 +165,9 @@ public:
     const c_cpu& cpu() const;
     uint64_t cycles() const;
     uint32_t current_thread_id() const;
+    bool in_interrupt_context() const;
+    bool interrupts_suspended() const;
+    void set_interrupts_suspended(bool suspended);
 
     // Actual IOP library exports supply concrete executable targets.
     bool lookup_library(
@@ -156,7 +204,8 @@ public:
     uint32_t create_thread(
         uint32_t entry, uint32_t gp, uint32_t priority,
         uint32_t stack_size = 0x1000u,
-        uint32_t a0 = 0u, uint32_t a1 = 0u
+        uint32_t a0 = 0u, uint32_t a1 = 0u,
+        uint32_t attr = 0u, uint32_t option = 0u
     );
     uint32_t create_module_thread(
         uint32_t module_id, uint32_t priority,
@@ -186,6 +235,9 @@ public:
     bool sleep_current(uint64_t delay_cycles);
     bool block_current(uint32_t wait_type = 0u);
     const s_kernel_thread* thread(uint32_t id) const;
+    // Diagnostic read-only view of real guest thread contexts; never
+    // changes scheduler order, interrupts or IOP virtual time.
+    const std::map<uint32_t, s_kernel_thread>& threads() const;
     // Only scheduled guest work permits an HLE transport-triggered
     // IOP execution turn; absent modules cannot advance IOP time.
     bool has_guest_work() const;
@@ -198,6 +250,7 @@ public:
     bool cancel_alarm(uint32_t callback, uint32_t argument);
     // Deterministic HLE tasks in IOP guest-instruction time, not host time.
     // Scheduling a task does not imply a hardware IRQ or DMA completion.
+    bool can_schedule_hle_event(uint64_t ticks) const;
     bool schedule_hle_event(uint64_t ticks, std::function<void()> callback);
     // Execute the original R3000 guest function as a bounded one-shot
     // callback with a real MIPS return trampoline, not a host fake.
@@ -205,6 +258,10 @@ public:
                               uint32_t argument);
 
     void bind_syscall(t_kernel_syscall handler);
+    // INTRMAN registrations resolve actual pending device IRQs to guest
+    // addresses. No IRQ handler executes unless the source is asserted.
+    void bind_interrupts(t_kernel_irq_lookup lookup,
+                         t_kernel_irq_complete complete);
     // Explicit IOP cycle budget. The EE must eventually provide this from
     // guest execution timing, never by counting native dispatches.
     s_kernel_run_result run(
@@ -213,11 +270,16 @@ public:
 
 private:
     uint32_t allocate(uint32_t size);
+    // The IOP reference uses upper-RAM, 256-byte-aligned stacks;
+    // module images and heap allocations retain low-RAM first-fit.
+    uint32_t allocate_thread_stack(uint32_t size);
     bool estimate_module_size(
         const std::vector<uint8_t>& bytes, uint32_t* size
     ) const;
     uint32_t next_ready() const;
     void wake_due();
+    bool start_guest_interrupt(uint32_t line,
+                               const s_kernel_interrupt_target& target);
 
     c_cpu m_cpu{};
     c_hw m_hardware{};
@@ -229,6 +291,11 @@ private:
     std::map<uint32_t, s_kernel_alarm> m_alarms;
     std::multimap<uint64_t, std::function<void()>> m_hle_events;
     t_kernel_syscall m_syscall;
+    t_kernel_irq_lookup m_irq_lookup;
+    t_kernel_irq_complete m_irq_complete;
+    uint32_t m_interrupt_thread_id = 0u;
+    uint32_t m_critical_thread_id = 0u;
+    bool m_interrupts_suspended = false;
     uint64_t m_cycles = 0u;
     bool m_rom0_boot_active = false;
     uint32_t m_next_module_id = 1u;
@@ -236,5 +303,9 @@ private:
     uint32_t m_next_alarm_id = 1u;
     uint32_t m_last_scheduled_id = 0u;
     uint32_t m_current_thread_id = 0u;
+    // A genuine StartThread(0) may restart its own running guest
+    // thread. Apply the new R3000 context after the syscall handler,
+    // not the old post-syscall continuation.
+    bool m_restart_current_thread = false;
 };
 } // namespace iop
