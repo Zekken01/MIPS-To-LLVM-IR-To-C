@@ -381,6 +381,18 @@ bool c_sifcmd_bridge::handle_rpc_syscall(uint32_t ordinal)
         }
         m_rpc_queue_threads[argument] = thread_id;
         m_rpc_thread_queues[thread_id] = argument;
+        // Queue assignment and server registration may occur in either
+        // order. Only a guest-created server becomes eligible for replies.
+        if (m_rpc_bridge != nullptr)
+        {
+            for (const auto& entry : m_rpc_servers)
+            {
+                if (entry.second.m_queue == argument)
+                {
+                    m_rpc_bridge->on_guest_rpc_server_registered(entry.first);
+                }
+            }
+        }
         cpu.m_gpr[2] = 0u;
         return true;
     }
@@ -413,6 +425,10 @@ bool c_sifcmd_bridge::handle_rpc_syscall(uint32_t ordinal)
         }
         m_rpc_servers.emplace(
             server_id, s_rpc_server{argument, handler, buffer, queue});
+        if (m_rpc_bridge != nullptr)
+        {
+            m_rpc_bridge->on_guest_rpc_server_registered(server_id);
+        }
         cpu.m_gpr[2] = 0u;
         return true;
     }
