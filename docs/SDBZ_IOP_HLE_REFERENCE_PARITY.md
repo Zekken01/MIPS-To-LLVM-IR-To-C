@@ -8,7 +8,7 @@ Current native LLVM-IR implementation: [`src/iop/iop_kernel_hle_bridge.cpp`](../
 
 The reference file defines **172 explicitly named `def("library", ordinal, ...)` handlers**. The HLE-first runtime now installs **181 guest-callable export ordinals** across
 the kernel bridge (148), CDVDMAN bridge (7), SIFCMD bridge (13) and
-SIFMAN bridge (13). **131** of the kernel bridge exports match explicitly
+SIFMAN bridge (13). **133** of the kernel bridge exports match explicitly
 named `libs.cpp` reference definitions. The earlier 152 count omitted
 seven pre-existing registrations in separate device/SIF bridges. Counts include no claim about full behavioral equivalence. The reference also uses loops/dynamic registrations (e.g. `secrman#4/#5`) and separate IOP modules (`io.cpp`, `sif.cpp`, `cdvd.cpp`, `spu2.cpp`) and EE kernel syscalls. The full reference runtime is larger than these 172 direct definitions.
 
