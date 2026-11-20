@@ -60,6 +60,9 @@ class c_cpu
 {
 public:
     static constexpr uint32_t k_ram_size = 2u * 1024u * 1024u;
+    // Retail IOP maps the 2 MiB backing RAM four times in the first
+    // 8 MiB of physical address space (including KSEG0/KSEG1 mirrors).
+    static constexpr uint32_t k_ram_mirror_size = 8u * 1024u * 1024u;
     static constexpr uint32_t k_rom0_size = 4u * 1024u * 1024u;
     static constexpr uint32_t k_rom0_physical = 0x1fc00000u;
     static constexpr uint32_t k_rom0_reset_pc = 0xbfc00000u;
