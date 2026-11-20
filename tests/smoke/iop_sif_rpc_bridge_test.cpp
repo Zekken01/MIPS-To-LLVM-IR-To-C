@@ -865,7 +865,7 @@ bool test_guest_sifcmd_send(const std::filesystem::path& disc_root)
         {
             std::fprintf(stderr,
                 "SIFCMD send #%u: stop=%u pc=%08x expected=%08x v0=%08x "
-                "queued=%zu cid=%08x extra=%08x\\n",
+                "queued=%zu cid=%08x extra=%08x\n",
                 ordinal, static_cast<uint32_t>(ran.m_stop),
                 ran.m_guest_pc, guest_program + 20u,
                 thread != nullptr ? thread->m_cpu.m_gpr[2] : 0xffffffffu,
@@ -891,7 +891,19 @@ bool test_guest_sifcmd_send(const std::filesystem::path& disc_root)
             return fail_at(__LINE__);
         }
         dmac.acknowledge(5u);
+        // Acknowledging the previous SIF0 IRQ alone does not clear
+        // the receiver's CHCR. Explicitly disarm it so the next
+        // guest command is verified queued, not auto-delivered into
+        // an intentionally still-armed EE destination.
+        const ee::s_ee_u128 disarmed{0x84u, 0u};
+        if (!ee::c_ee_dmac::mmio_write(
+                &dmac, ee::c_ee_dmac::k_sif0_base,
+                4u, &disarmed))
+        {
+            return fail_at(__LINE__);
+        }
         memory.write32(k_receive + 8u, 0u);
+        memory.write32(k_extra_destination, 0u);
     }
     // Malformed guest command payloads must not enqueue, alter the EE
     // receiver or report a successful SIF packet.
