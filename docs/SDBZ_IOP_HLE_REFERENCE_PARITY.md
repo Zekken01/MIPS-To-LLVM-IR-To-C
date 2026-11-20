@@ -914,3 +914,45 @@ issue. Observe genuine guest startup returns and worker execution,
 then `sceSifRegisterRpc` for server `0x500`, any real SIF0 reply,
 and EE `WaitSema(8)` DMA5 callback wakeup. Do not claim these steps
 from CI alone.
+
+## Windows clean Clang boot — missing runner stack reserve (2026-11-20)
+
+The latest user-provided diagnostic set consists of `boot.log`,
+`expansion.log`, `iop-disc-catalog.json`, and
+`translation-cache.json` from a clean Windows LLVM `clang++` build.
+It is *not* a matched final traced boot: the expansion terminated
+on its first non-traced `replay=0`, before the wrapper could execute
+its separate final traced replay. Both logs contain the same six
+lines, ending in `exit=4294967295` (`0xFFFFFFFF`, -1 signed),
+`elapsed=1.34s`, no reached EE dispatch count, and no observed
+IOP runtime events. No `first-boot.json` was supplied. The catalog
+correctly labels its seven IRX candidates and 279 imports as
+`static-only`, with zero runtime load events. The validated
+translation cache records only the entry-function IR
+`sub_0x100008_0x100008.ll`; no EE expansion was possible after the
+runner process quit.
+
+Code inspection identified a concrete build configuration mismatch:
+`src/tools/ee_game_runner_main.cpp` holds
+`s_kernel_thread threads[256]` on the main function's stack;
+each thread stores a full `s_ee_vu0_state` with two 4 KiB
+micro/data memories (over 2 MiB for VU0 snapshots alone). However
+`CMakeLists.txt` reserved an 8 MiB stack with `if(MSVC)`, which
+misses the LLVM `clang++` *GNU-like* driver used for the user's
+fresh Ninja build. Windows' default PE stack reserve is much too
+small for that frame. This is a proven **configuration defect**,
+not yet a proven complete explanation for the numeric `-1` exit.
+
+PR #145 now applies the same 8 MiB stack reserve for all native
+Windows compiler drivers through `LINKER:/STACK:8388608`.
+The Windows native WebGPU CI job inspects the *linked Clang PE header*
+using `dumpbin /headers` and requires an `800000` stack reserve;
+it also executes `ee_game_runner.exe --help` as a startup smoke
+check. Both MSVC and fresh Clang builds are retained. No EE, IOP,
+RPC, guest timing, or shader behavior was altered.
+
+**Next validation:** after new CI passes, re-run the existing
+`run_ps2_game.bat` from the current PR branch and inspect a
+matched final traced log bundle, including `first-boot.json`.
+Do not attribute ARKD registration or a genuine DMA5/EE semaphore
+wake to this host-only fix before observed runtime evidence.
