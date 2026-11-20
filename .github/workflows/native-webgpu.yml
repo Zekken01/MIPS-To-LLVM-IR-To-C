@@ -80,3 +80,26 @@ jobs:
       - name: Compile runner and native GPU smoke test
         shell: pwsh
         run: cmake --build build --target ee_game_runner ee_webgpu_native_smoke --config Release --parallel 2
+
+      # The MSVC CI build does not reproduce an explicit clang++/lld-link
+      # developer configuration. Keep that path covered alongside MSVC:
+      # pinned Windows Rust wgpu_native.lib needs explicit system libraries.
+      - name: Configure clang++ and lld-link with raylib from a clean tree
+        shell: pwsh
+        run: |
+          $clang = 'C:/Program Files/LLVM/bin/clang.exe'
+          $clangxx = 'C:/Program Files/LLVM/bin/clang++.exe'
+          if (!(Test-Path $clang) -or !(Test-Path $clangxx)) {
+            throw 'Expected LLVM clang/clang++ in the Windows runner'
+          }
+          cmake -S . -B build-clang -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            "-DCMAKE_C_COMPILER=$clang" `
+            "-DCMAKE_CXX_COMPILER=$clangxx" `
+            -DEE_ENABLE_WEBGPU=ON `
+            -DEE_ENABLE_RAYLIB_WINDOW=ON `
+            "-DEE_WEBGPU_ROOT=$((Resolve-Path build/_deps/wgpu-native).Path)"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Compile clang++ native WebGPU and raylib runner
+        shell: pwsh
+        run: cmake --build build-clang --target ee_game_runner --config Release --parallel 2
