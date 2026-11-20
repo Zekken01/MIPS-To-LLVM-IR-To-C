@@ -160,6 +160,11 @@ bool test_arkd_deferred_bind(const std::filesystem::path& disc_root)
         loader, kernel, commands, memory, dmac, &sectors);
     iop::c_sif1_bridge sif1(
         memory, kernel.cpu(), dmac, &commands, &rpc);
+    kernel.bind_syscall(
+        [&](iop::c_kernel& active, uint32_t service)
+        {
+            return commands.handle_syscall(active, service);
+        });
     if (!sectors.valid() || !commands.install() ||
         !init_sifcmd_guest(kernel))
     {
