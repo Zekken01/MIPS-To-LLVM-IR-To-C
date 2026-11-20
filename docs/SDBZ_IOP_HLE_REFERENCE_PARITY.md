@@ -744,3 +744,58 @@ guest turns reach actual ARKD guest registration for server `0x500`,
 whether a real DMAC5 callback signals the semaphore, and identify
 the next supported or faulting guest instruction. A bounded wait
 exhaustion remains a reported blocker, not synthetic success.
+
+## 2026-11-20 03:36:57 — IOP R3000 RAM mirror fault after EE WaitSema rendezvous
+
+Matched archive: `ps2-game-hle(20261120-033657).zip`. Only the
+committed `replay=0` is present; `boot.log`, `expansion.log`,
+`first-boot.json`, `iop-disc-catalog.json`, `translation-cache.json`
+and all three GS PPMs belong to that replay. The ELF SHA-256 is
+`1b213a85a2c305dc0f893c007a502c93e0851d1bb7db6164f9e0b72adb074a16`.
+
+All six committed IRX loads again link/start; the `ARKD_DVD.IRX`
+LOADFILE is sequence 18 (module 6, initial thread 8), followed by
+committed 64-byte SIFRPC BIND sequence 19 (server `0x500`, client
+`0x005A9330`), pending and without any observed registration or SIF0
+reply. The EE stops at `WaitSema(8)`, EPC `0x00174CE4`, Cause `0x20`,
+11,434 dispatches. The HLE-first WaitSema rendezvous from draft
+PR #146 executes one guest IOP turn (256 R3000 instructions) and
+then stops on `e_kernel_stop::memory_fault` (`reason=4`), thread 1,
+PC `0x00202080`, opcode `0x00000000`, after another 38 guest
+instructions. This is an instruction-fetch failure outside the
+native CPU's previous strict 2 MiB RAM window, not an observed
+unresolved IRX import or proven failure in ARKD's initial thread.
+All three PPM captures have zero nonblack pixels.
+
+### Reference parity and implementation
+
+The primary `ps2-web-recomp/SDBZ` reference uses `ram_ptr(a)` with
+`phys(a) & (kRamSize - 1)` and fetches IOP instructions as RAM for
+physical addresses below `0x00800000`. PCSX2's IOP memory LUT
+similarly maps 2 MiB RAM across the first 8 MiB of physical space
+(its first 0x80 64-KiB pages index RAM with `i & 0x1f`).
+Consequently the attempted PC `0x00202080` aliases backing offset
+`0x00002080`, and native `c_cpu::read`/`write` must preserve that
+address translation for aligned instruction fetches and data accesses.
+
+Add a strictly bounded 8 MiB IOP RAM mirror window to `c_cpu`,
+retaining the 2 MiB backing store, original guest virtual addresses,
+the KSEG0/KSEG1 restrictions, alignment checks, ROM0 and MMIO
+routing, and rejection at or above physical `0x00800000` when
+unmapped. Leave the existing DMA buffer and kernel allocation
+ownership checks conservative; this batch does not license
+arbitrary DMA or heap addresses beyond actual backing RAM.
+
+Test executed R3000 code at `0x00202080` against backing RAM
+`0x00002080`; check the other mirrors and KSEG aliases, and reject
+unmapped addresses, unaligned writes and KSEG2-only virtual
+addresses. Preserve all existing hardware/ROM0 tests.
+Add the actual fault address/access width and guest RA/GP/SP to
+the EE WaitSema IOP-stop diagnostic to identify the next genuine
+blocker without assuming the RAM mirror will complete RPC binding.
+
+**Next Windows replay must confirm** whether the guest progresses
+through the previous PC, whether server `0x500` registers and replies
+via an armed SIF0 receiver, whether EE `WaitSema(8)` wakes through
+the original DMA5 callback, and what exact IOP/EE fault follows.
+Static module startup and CI tests alone do not establish gameplay.
