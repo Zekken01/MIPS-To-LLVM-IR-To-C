@@ -72,6 +72,7 @@ public:
         std::vector<uint8_t> m_guest_rpc_bytes;
         std::vector<uint8_t> m_cdvd_bytes;
         std::string m_guest_path;
+        std::vector<std::string> m_module_arguments;
     };
 
     // Actual committed SIFRPC operations. This diagnostic is populated
