@@ -2,6 +2,7 @@
 #include "iop_folder_sector_source.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <ctime>
 #include <iterator>
 #include <sstream>
@@ -220,7 +221,8 @@ bool c_sif_rpc_bridge::prepare_command(
     }
     if (!m_sifcmd.initialized() ||
         request == nullptr ||
-        m_replies.size() >= 64u ||
+        m_replies.size() + m_guest_pending.size() +
+            m_deferred_binds.size() >= 64u ||
         packet.size() < size / 4u ||
         (size != 36u && size != 56u && size != 64u) ||
         (packet[0] & 0xffu) != size ||
@@ -259,10 +261,17 @@ bool c_sif_rpc_bridge::prepare_command(
             packet[8] == k_cdvd_search_server ||
             packet[8] == k_cdvd_ready_server ||
             packet[8] == k_cdvd_ready_alt_server;
+        // The retail Arika RPC IDs 0x500..0x503 belong to guest IOP
+        // servers. A BIND may precede their genuine registration.
+        const bool deferred_guest_server =
+            packet[8] >= k_arkd_first_server &&
+            packet[8] <= k_arkd_last_server &&
+            !m_sifcmd.has_guest_rpc_server(packet[8]);
         if (packet[8] != k_loadfile_server &&
             packet[8] != k_iop_heap_server &&
             packet[8] != k_cdvd_init_server && !cdvd_server &&
-            !m_sifcmd.has_guest_rpc_server(packet[8]))
+            !m_sifcmd.has_guest_rpc_server(packet[8]) &&
+            !deferred_guest_server)
         {
             return refuse(e_rpc_rejection::unknown_server);
         }
@@ -272,6 +281,7 @@ bool c_sif_rpc_bridge::prepare_command(
             return refuse(e_rpc_rejection::unavailable_backend);
         }
         candidate.m_server_id = packet[8];
+        candidate.m_deferred_bind = deferred_guest_server;
         *request = std::move(candidate);
         if (rejected_reason != nullptr)
         {
@@ -747,6 +757,17 @@ void c_sif_rpc_bridge::commit_command(const s_request& request)
         response.m_words[9] = request.m_server_id ^ k_server_xor;
         response.m_words[10] = k_rpc_data_destination;
         response.m_words[11] = 0xdeadcafeu;
+        if (request.m_deferred_bind)
+        {
+            // Accept the real SIF1 transfer but do not fabricate
+            // registration, a SIF0 Rend or a DMA completion.
+            m_deferred_binds.push_back({request.m_server_id, response});
+            m_last_observation = std::move(observed);
+            std::fprintf(stderr,
+                "IOP HLE RPC bind pending: server=0x%08x client=0x%08x\n",
+                request.m_server_id, request.m_words[7]);
+            return;
+        }
     }
     else if (request.m_words[2] == k_call_cid &&
              request.m_server_id == k_loadfile_server)
@@ -1017,7 +1038,8 @@ bool c_sif_rpc_bridge::queue_iop_command(
         (words.size() != 9u && words.size() != 14u) ||
         (words[0] & 0xffu) != words.size() * 4u ||
         (words[2] != k_bind_cid && words[2] != k_call_cid) ||
-        m_replies.size() + m_guest_pending.size() >= 64u ||
+        m_replies.size() + m_guest_pending.size() +
+            m_deferred_binds.size() >= 64u ||
         payload.size() > 4096u)
     {
         return false;
@@ -1058,7 +1080,8 @@ bool c_sif_rpc_bridge::queue_iop_guest_command(
         (words[0] >> 8u) != payload.size() ||
         words[1] != (payload.empty() ? 0u : ee_payload_destination) ||
         words[2] == 0u ||
-        m_replies.size() + m_guest_pending.size() >= 64u ||
+        m_replies.size() + m_guest_pending.size() +
+            m_deferred_binds.size() >= 64u ||
         payload.size() > 4096u ||
         (!payload.empty() &&
          (ee_payload_destination == 0u ||
@@ -1074,6 +1097,36 @@ bool c_sif_rpc_bridge::queue_iop_guest_command(
     m_replies.push_back(std::move(command));
     (void)pump();
     return true;
+}
+
+void c_sif_rpc_bridge::on_guest_rpc_server_registered(uint32_t server_id)
+{
+    if (!m_sifcmd.has_guest_rpc_server(server_id))
+    {
+        return;
+    }
+    uint32_t released = 0u;
+    for (auto it = m_deferred_binds.begin();
+         it != m_deferred_binds.end();)
+    {
+        if (it->m_server_id == server_id)
+        {
+            m_replies.push_back(std::move(it->m_reply));
+            it = m_deferred_binds.erase(it);
+            ++released;
+        }
+        else
+        {
+            ++it;
+        }
+    }
+    if (released != 0u)
+    {
+        std::fprintf(stderr,
+            "IOP HLE RPC guest server registered: id=0x%08x binds=%u\n",
+            server_id, released);
+        (void)pump();
+    }
 }
 
 bool c_sif_rpc_bridge::finish_guest_rpc(
@@ -1129,6 +1182,7 @@ void c_sif_rpc_bridge::reset_for_reboot()
     m_cdvd_streaming = false;
     m_cdvd_stream_position = 0u;
     m_replies.clear();
+    m_deferred_binds.clear();
     m_guest_pending.clear();
     m_next_guest_token = 1u;
     m_load_requests = 0u;
@@ -1139,7 +1193,8 @@ void c_sif_rpc_bridge::reset_for_reboot()
 bool c_sif_rpc_bridge::can_queue_replies(size_t count) const
 {
     return count <= 64u &&
-        m_replies.size() + m_guest_pending.size() <= 64u - count;
+        m_replies.size() + m_guest_pending.size() +
+            m_deferred_binds.size() <= 64u - count;
 }
 
 void c_sif_rpc_bridge::queue_init_sreg_reply()
@@ -1217,6 +1272,11 @@ bool c_sif_rpc_bridge::pump()
 size_t c_sif_rpc_bridge::pending_replies() const
 {
     return m_replies.size();
+}
+
+size_t c_sif_rpc_bridge::pending_binds() const
+{
+    return m_deferred_binds.size();
 }
 
 uint32_t c_sif_rpc_bridge::load_requests() const
