@@ -186,6 +186,9 @@ public:
     bool sleep_current(uint64_t delay_cycles);
     bool block_current(uint32_t wait_type = 0u);
     const s_kernel_thread* thread(uint32_t id) const;
+    // Diagnostic read-only view of real guest thread contexts; never
+    // changes scheduler order, interrupts or IOP virtual time.
+    const std::map<uint32_t, s_kernel_thread>& threads() const;
     // Only scheduled guest work permits an HLE transport-triggered
     // IOP execution turn; absent modules cannot advance IOP time.
     bool has_guest_work() const;
