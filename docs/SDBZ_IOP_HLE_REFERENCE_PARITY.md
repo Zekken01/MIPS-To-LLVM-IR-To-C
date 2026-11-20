@@ -1406,3 +1406,73 @@ does not keep the DMA event runnable after completion.
 AutoDMA, invalid memory and cancellation remain fail-closed.
 This scheduling change still does not invoke guest INTRMAN
 callbacks or send a synthetic ARKD SIF reply.
+
+
+## 2026-11-20 06:35:50 matched retail replay and follow-up runtime parity
+
+The complete matched Windows archive `ps2-game-hle(20261120-063550).zip`
+was collected **on prior head `768a9e4c5e084b3f39d03f2adc8782e6e1b59533`**,
+after the original DMA4/DMA7 sound-RAM transfer and idle-device scheduling
+changes. It is NOT a validation of the later interrupt/scheduler patches.
+
+- The EE reaches 100,000 dispatches, 16,912,906 attempted guest
+  instructions, 421 cached LLVM functions and 29 committed SIFRPC commands.
+  ARKD registers original guest servers `0x500..0x503`, but method
+  `0x500:1` remains genuinely pending. Three GS captures are black.
+- Real IOP DMA4 starts at MADR `0x000880ec`, BCR `0x00010010`,
+  CHCR `0x01000201` and copies 64 bytes. Its 68-IOP-cycle deadline fires,
+  clearing STR to CHCR `0x00000201`, publishing DICR `0x90900000`
+  and I_STAT `0x00000008` (IRQ3).
+- IOP ARKD thread 9 then blocks at `0x000147ac` with wait type 3
+  (semaphore). A previous invalid `WaitSema(0)` at `0x000147a8`,
+  RA `0x0007d648`, still returns authentic `-408`.
+  The replay alone does not prove whether missing IRQ handler dispatch
+  caused the pending semaphore.
+
+### Implementation and source comparison after that replay
+
+All changes remain on the single draft PR #145, not on main:
+
+- `a9f8ef0`: individually track the two SPU2 core IRQ latches;
+  assert IRQ9 whenever either core newly latches, even after the other
+  core's I_STAT acknowledgement. Accept the reference's ignored
+  SPDIF status halfword at `0x1f9007c2` for 32-bit OUT writes.
+- `4661c61`: resolve enabled and pending DMA channels through
+  DICR/DICR2 before ordinary IOP IRQ lines. Schedule the originally
+  registered INTRMAN guest R3000 handler only after a real device
+  event, acknowledge its source, preserve an interrupt context for
+  QueryIntrContext, and respect the guest return value for ordinary IRQ
+  masks. Extend the EE WaitSema guest-work path to pending calls as well
+  as deferred binds. No synthetic iSignalSema, EE DMA5 or RPC reply.
+- `7c5439e`: add regressions for SPU2 per-core IRQ9, SPDIF word
+  stores, DMA handler and QueryIntrContext execution, plus a guest
+  RPC handler requiring multiple IOP turns before a genuine response.
+- `72c04a3`: keep a running IOP thread inside CpuSuspendIntr/
+  CpuResumeIntr critical sections until it resumes, while allowing
+  hardware DMA/timer cycles to progress during the masked interval.
+- `93b1f23`: replace RPC-only EE-cycle scheduling with a bounded,
+  carried-forward IOP clock at the reference's 8:1 EE-to-IOP ratio.
+  Guest IOP work now progresses on elapsed EE time even without a
+  pending ARKD call. This ratio is reference-compatibility timing,
+  not validated per-instruction R5900 cycle accuracy.
+- `3bacb44`: derive both IOP VBlank start and end edges from the
+  existing GS scanout schedule, using the reference's 22-scanline
+  end offset, instead of requiring manual end-edge test injection.
+
+### CI and acceptance
+
+The workflow changes in `3ee9831` run Windows MSVC and SHA256-pinned
+Clang 22 independently, keep the combined `native-webgpu-windows` gate,
+reuse Linux Lavapipe where installed, and cancel superseded PR runs.
+`bced18e` divides the independent Python game-runner scenarios into
+four exhaustive parallel CTest entries and retains three fast shards.
+
+**Not yet established:** A full Windows retail replay at the new HEAD,
+completion of ARKD method `0x500:1`, any nonblack GS capture, or real
+sound output. The IOP critical-section and VBlank end changes also require
+current-head CI validation before being regarded as accepted. LOADFILE
+still replies when module `_start` is scheduled instead of after its
+actual return, and native `timrman` / `sifman#32` coverage remains open.
+
+Do not merge PR #145 without explicit authorization; when authorized,
+squash-merge it once into `main`.
