@@ -2085,12 +2085,14 @@ int main(int argc, char** argv)
     // diagnostic/scheduling guard, never a synthetic signal.
     uint32_t iop_semaphore_wait_turns = 0u;
     uint64_t iop_semaphore_wait_last_sif0 = 0u;
-    // The EE may poll a guest RPC indefinitely without another HLE syscall.
-    // Keep the IOP guest scheduler tied to elapsed EE guest cycles, not
-    // native dispatch counts or wall-clock time.
-    uint64_t guest_rpc_last_ee_cycle = 0u;
-    uint64_t guest_rpc_schedule_turns = 0u;
-    bool guest_rpc_schedule_active = false;
+    // All IOP work runs against elapsed EE guest time, not only
+    // when a guest RPC call is outstanding. Retain fractional clocks
+    // and a backlog after bounded native-dispatch safepoints.
+    uint64_t iop_clock_last_ee_cycle = 0u;
+    uint64_t iop_clock_remainder = 0u;
+    uint64_t iop_clock_due = 0u;
+    uint64_t iop_clock_turns = 0u;
+    bool iop_clock_active = false;
     bool guest_rpc_idle_diagnostic_reported = false;
     ee::c_ee_dispatch_hotspots hotspots;
     std::vector<s_dispatch_sample> history;
@@ -2149,170 +2151,127 @@ int main(int argc, char** argv)
             return 1;
         }
 
-        // A genuine ARKD RPC handler may require several R3000 slices.
-        // Advancing only on SifSetDma / EE WaitSema starves the IOP when
-        // the EE polls its own RPC completion flag in translated code.
-        // ps2-web-recomp schedules IOP work against EE cycles (8:1).
-        // This bounded HLE-first cadence runs only for an outstanding
-        // guest call; it never creates an RPC reply, DMA completion or
-        // semaphore wakeup. The guest finish trampoline remains mandatory.
-        const bool guest_rpc_pending =
-            hle_startup && iop_rom0_path == nullptr &&
-            iop_rpc != nullptr && iop_kernel != nullptr &&
-            iop_rpc->pending_guest_calls() != 0u;
-        if (!guest_rpc_pending)
-        {
-            guest_rpc_schedule_active = false;
-            guest_rpc_idle_diagnostic_reported = false;
-        }
-        else
+        // The primary SDBZ reference advances the IOP from every
+        // elapsed EE cycle, including polling, timer, and idle periods.
+        // Dividing by eight is reference compatibility timing, not an
+        // assertion of verified R5900 cycle accuracy.
+        if (hle_startup && iop_rom0_path == nullptr &&
+            iop_kernel != nullptr)
         {
             const uint64_t ee_cycle =
                 runtime.m_ee_cycle_scheduler.current_cycle();
-            if (!guest_rpc_schedule_active)
+            if (!iop_clock_active)
             {
-                guest_rpc_schedule_active = true;
-                guest_rpc_last_ee_cycle = ee_cycle;
+                iop_clock_active = true;
+                iop_clock_last_ee_cycle = ee_cycle;
             }
-            else if (!iop_kernel->has_guest_work() &&
-                     !guest_rpc_idle_diagnostic_reported)
+            else if (ee_cycle < iop_clock_last_ee_cycle)
             {
-                // An unfinished guest RPC with no ready IOP thread
-                // cannot be advanced by merely increasing EE dispatches.
-                // Record the actual guest states and DMA registers once.
-                guest_rpc_idle_diagnostic_reported = true;
-                uint32_t dma4_bcr = 0u;
-                uint32_t dma4_chcr = 0u;
-                uint32_t dma7_chcr = 0u;
-                uint32_t dicr = 0u;
-                uint32_t i_stat = 0u;
-                (void)iop_kernel->hardware().read(
-                    iop::c_hw::k_spu2_dma4_base + 4u,
-                    4u, &dma4_bcr);
-                (void)iop_kernel->hardware().read(
-                    iop::c_hw::k_spu2_dma4_base + 8u,
-                    4u, &dma4_chcr);
-                (void)iop_kernel->hardware().read(
-                    iop::c_hw::k_spu2_dma7_base + 8u,
-                    4u, &dma7_chcr);
-                (void)iop_kernel->hardware().read(
-                    iop::c_hw::k_dma_icr, 4u, &dicr);
-                (void)iop_kernel->hardware().read(
-                    iop::c_hw::k_i_stat, 4u, &i_stat);
-                std::printf(
-                    "IOP HLE guest RPC stalled without IOP work: "
-                    "turn=%llu ee_cycle=%llu pending_calls=%zu "
-                    "dma4_bcr=0x%08x dma4_chcr=0x%08x "
-                    "dma7_chcr=0x%08x dicr=0x%08x "
-                    "i_stat=0x%08x\n",
-                    static_cast<unsigned long long>(
-                        guest_rpc_schedule_turns),
-                    static_cast<unsigned long long>(ee_cycle),
-                    iop_rpc->pending_guest_calls(),
-                    dma4_bcr, dma4_chcr, dma7_chcr, dicr, i_stat);
-                for (const auto& item : iop_kernel->threads())
+                std::fprintf(stderr,
+                    "IOP clock refused nonmonotonic EE timestamp\n");
+                return 1;
+            }
+            else
+            {
+                const uint64_t delta =
+                    ee_cycle - iop_clock_last_ee_cycle;
+                iop_clock_last_ee_cycle = ee_cycle;
+                const uint64_t whole = delta / 8u;
+                const uint64_t fraction =
+                    (delta % 8u) + iop_clock_remainder;
+                if (iop_clock_due >
+                    std::numeric_limits<uint64_t>::max() -
+                        whole - fraction / 8u)
                 {
-                    const iop::s_kernel_thread& thread = item.second;
-                    if (thread.m_status == iop::e_thread_status::dormant)
-                    {
-                        continue;
-                    }
-                    std::printf(
-                        "IOP HLE pending thread: id=%u status=%u "
-                        "pc=0x%08x wait_type=%u wake_cycle=%llu\n",
-                        item.first, static_cast<uint32_t>(thread.m_status),
-                        thread.m_cpu.m_pc, thread.m_wait_type,
-                        static_cast<unsigned long long>(thread.m_wake_cycle));
+                    std::fprintf(stderr,
+                        "IOP clock refused accumulated cycle overflow\n");
+                    return 1;
                 }
+                iop_clock_due += whole + fraction / 8u;
+                iop_clock_remainder = fraction % 8u;
             }
-            else if (ee_cycle >= guest_rpc_last_ee_cycle &&
-                     ee_cycle - guest_rpc_last_ee_cycle >= 2048u &&
-                     iop_kernel->has_guest_work())
+            uint32_t turns = 0u;
+            // Never drop guest cycles to make a host checkpoint fast.
+            // A large translated function may leave a bounded backlog.
+            while (iop_clock_due != 0u && turns < 64u)
             {
-                // 2048 EE cycles permit at most 256 IOP guest steps.
-                // Do not backfill elapsed time with unbounded execution.
-                guest_rpc_last_ee_cycle = ee_cycle;
+                const uint32_t cycles = static_cast<uint32_t>(
+                    std::min<uint64_t>(iop_clock_due, 256u));
                 const iop::s_kernel_run_result progressed =
-                    iop_kernel->run(
-                        std::min<uint32_t>(iop_quantum, 256u), 128u);
-                ++guest_rpc_schedule_turns;
+                    iop_kernel->run(cycles, 128u);
+                iop_clock_due -= cycles;
+                ++turns;
+                ++iop_clock_turns;
                 if (progressed.m_stop !=
                         iop::e_kernel_stop::budget_exhausted &&
                     progressed.m_stop != iop::e_kernel_stop::idle)
                 {
-                    const iop::s_cpu_state& state =
-                        iop_kernel->cpu().state();
                     std::fprintf(stderr,
-                        "IOP HLE guest RPC scheduler stopped: "
-                        "thread=%u reason=%u pc=0x%08x "
-                        "opcode=0x%08x v0=0x%08x a0=0x%08x "
-                        "ra=0x%08x pending_calls=%zu\n",
+                        "IOP clock guest execution stopped: "
+                        "turn=%llu thread=%u reason=%u pc=0x%08x "
+                        "opcode=0x%08x\n",
+                        static_cast<unsigned long long>(
+                            iop_clock_turns),
                         progressed.m_thread_id,
                         static_cast<uint32_t>(progressed.m_stop),
-                        progressed.m_guest_pc, progressed.m_opcode,
-                        state.m_gpr[2], state.m_gpr[4],
-                        state.m_gpr[31], iop_rpc->pending_guest_calls());
-                    if (progressed.m_stop ==
-                        iop::e_kernel_stop::memory_fault)
-                    {
-                        const iop::s_memory_fault& fault =
-                            iop_kernel->cpu().last_memory_fault();
-                        std::fprintf(stderr,
-                            "IOP HLE guest RPC memory fault: "
-                            "address=0x%08x width=%u write=%u valid=%u\n",
-                            fault.m_address, fault.m_width,
-                            fault.m_write ? 1u : 0u,
-                            fault.m_valid ? 1u : 0u);
-                    }
+                        progressed.m_guest_pc, progressed.m_opcode);
                     reason = static_cast<uint32_t>(
                         ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED);
                     status = 0u;
                     cpu.m_exit_reason = reason;
                     break;
                 }
-                if (trace &&
-                    (guest_rpc_schedule_turns <= 4u ||
-                     guest_rpc_schedule_turns % 64u == 0u ||
-                     iop_rpc->pending_guest_calls() == 0u))
+            }
+            if (reason == static_cast<uint32_t>(
+                    ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED))
+            {
+                break;
+            }
+            if (iop_rpc != nullptr &&
+                iop_rpc->pending_guest_calls() != 0u &&
+                !iop_kernel->has_guest_work() &&
+                !guest_rpc_idle_diagnostic_reported)
+            {
+                guest_rpc_idle_diagnostic_reported = true;
+                uint32_t dma4_chcr = 0u;
+                uint32_t dicr = 0u;
+                uint32_t i_stat = 0u;
+                (void)iop_kernel->hardware().read(
+                    iop::c_hw::k_spu2_dma4_base + 8u,
+                    4u, &dma4_chcr);
+                (void)iop_kernel->hardware().read(
+                    iop::c_hw::k_dma_icr, 4u, &dicr);
+                (void)iop_kernel->hardware().read(
+                    iop::c_hw::k_i_stat, 4u, &i_stat);
+                std::printf(
+                    "IOP HLE guest RPC stalled without IOP work: "
+                    "ee_cycle=%llu pending_calls=%zu "
+                    "dma4_chcr=0x%08x dicr=0x%08x i_stat=0x%08x\n",
+                    static_cast<unsigned long long>(ee_cycle),
+                    iop_rpc->pending_guest_calls(),
+                    dma4_chcr, dicr, i_stat);
+                for (const auto& item : iop_kernel->threads())
                 {
+                    const iop::s_kernel_thread& thread = item.second;
+                    if (thread.m_status ==
+                        iop::e_thread_status::dormant)
+                    {
+                        continue;
+                    }
                     std::printf(
-                        "IOP HLE guest RPC scheduler turn: "
-                        "turn=%llu ee_cycle=%llu thread=%u "
-                        "instructions=%llu stop=%u pending_calls=%zu "
-                        "replies=%zu\n",
+                        "IOP HLE pending thread: id=%u status=%u "
+                        "pc=0x%08x wait_type=%u wake_cycle=%llu\n",
+                        item.first,
+                        static_cast<uint32_t>(thread.m_status),
+                        thread.m_cpu.m_pc, thread.m_wait_type,
                         static_cast<unsigned long long>(
-                            guest_rpc_schedule_turns),
-                        static_cast<unsigned long long>(ee_cycle),
-                        progressed.m_thread_id,
-                        static_cast<unsigned long long>(
-                            progressed.m_executed),
-                        static_cast<uint32_t>(progressed.m_stop),
-                        iop_rpc->pending_guest_calls(),
-                        iop_rpc->pending_replies());
-                    const iop::s_kernel_thread* guest_thread =
-                        iop_kernel->thread(progressed.m_thread_id);
-                    uint32_t dma4_chcr = 0u;
-                    uint32_t dma4_bcr = 0u;
-                    uint32_t dma7_chcr = 0u;
-                    (void)iop_kernel->hardware().read(
-                        iop::c_hw::k_spu2_dma4_base + 8u,
-                        4u, &dma4_chcr);
-                    (void)iop_kernel->hardware().read(
-                        iop::c_hw::k_spu2_dma4_base + 4u,
-                        4u, &dma4_bcr);
-                    (void)iop_kernel->hardware().read(
-                        iop::c_hw::k_spu2_dma7_base + 8u,
-                        4u, &dma7_chcr);
-                    std::printf(
-                        "IOP HLE guest RPC progress: turn=%llu "
-                        "guest_pc=0x%08x dma4_chcr=0x%08x "
-                        "dma4_bcr=0x%08x dma7_chcr=0x%08x\n",
-                        static_cast<unsigned long long>(
-                            guest_rpc_schedule_turns),
-                        guest_thread != nullptr ?
-                            guest_thread->m_cpu.m_pc : 0u,
-                        dma4_chcr, dma4_bcr, dma7_chcr);
+                            thread.m_wake_cycle));
                 }
+            }
+            if (iop_rpc == nullptr ||
+                iop_rpc->pending_guest_calls() == 0u)
+            {
+                guest_rpc_idle_diagnostic_reported = false;
             }
         }
 
