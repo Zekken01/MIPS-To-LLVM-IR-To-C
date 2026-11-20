@@ -1512,3 +1512,45 @@ The ARKD guest worker is thread 11 (entry `0x8824c`) and calls `WaitSema(0)` fro
 Add side-effect-free bounded IOP semaphore traces for genuine create, WaitSema acquire/block and SignalSema increment/wakeup, recording guest thread, ID, caller RA and IOP cycles; log the exact guest RPC queue token, method, queue, handler entry, and genuine return. Add real CDVDMAN read acceptance/completion diagnostics only if a later trace reaches a disc-read path. This will distinguish worker scheduling, incorrect semaphore-object use, absent CDVD/event producer, and genuine handler return. **Never** fabricate a wakeup, timer, DMA completion, guest handler return, or SIF0 reply.
 
 Retain existing draft PR #145 and squash-merge-only policy. Run four required CI workflows on the new head, then request a fresh matched `run_ps2_game.bat --full` retail replay. CI is not proof the ARKD method returns.
+
+
+## 2026-11-20 — 08:47:39 full retail replay: ARKD semaphore wakeup is real
+
+Analyzed `ps2-game-hle(20261120-084739).zip`. Matched full `boot.log`,
+`first-boot.json`, IOP catalog and GS snapshots timestamped 08:47:20.
+The archive also contains an **older** `quick-probe.json` from 08:00:10;
+never use it as the final replay. The ZIP does not embed an independently
+verified checkout SHA.
+
+At 100,000 EE dispatches, 16,912,888 EE instruction attempts and 29 committed
+RPCs, ARKD method `0x500:1` (guest RPC token 7) has genuinely entered thread 11,
+at IOP cycle 1,891,889, in guest handler `0x0007df44`, but no guest return
+trampoline or method-1 SIF0/DMA5 reply occurred.
+
+New semaphore trace **eliminates the previously suspected first missing
+wakeup**:
+
+- Thread 11 creates semaphores 11, 12, 13, 14 and 15 (ID 14 begins with
+  count 1), consumes ID 14 once and then blocks again on ID 14 at cycle
+  1,930,247 from RA `0x0007e4d8`.
+- Thread 25 **genuinely signals and wakes thread 11** on semaphore 14 at
+  cycle 1,930,634 from RA `0x0007e3c8`.
+- Thread 11 genuinely resumes and **signals semaphore 14 itself** at cycle
+  1,930,656 from RA `0x0007e4f0`.
+- Threads 18, 19, 23 and 24 block on semaphore IDs 11, 12, 13 and 15
+  respectively. There is no further semaphore transition in the bounded
+  replay, so their eventual producers and thread 11's later PC remain open.
+
+LIBSD DMA4 IRQ36 still registers, executes and returns; it does not signify
+an ARKD completion. The earlier `WaitSema(0)` returns error -408 but must **not**
+be labeled the actual cause without following the now-proven valid semaphore
+sequence. All three PPMs still contain only black pixels.
+
+**Next bounded diagnostic batch:** when a guest RPC remains outstanding in a
+full `--trace --report` replay, print the real ready/blocked/faulted IOP
+thread contexts at EE dispatch 50,000, 75,000 and at final stop. Include PC,
+next PC, fetched opcode, module-related entry, semaphore wait type, RA, GP,
+stack, interrupt-suspension state and IOP cycle count. This is read-only and
+does not advance the clock or fabricate any result. Compare snapshots to
+distinguish guest busy-polling, scheduler starvation, waiting for a different
+producer, or fault. Retain PR #145 and require all four CI gates on one head.

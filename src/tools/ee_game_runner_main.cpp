@@ -190,6 +190,73 @@ void dump_iop_rpc_wait_threads(
             thread.m_cpu.m_gpr[31], thread.m_cpu.m_gpr[28],
             thread.m_cpu.m_gpr[29]);
     }
+} 
+
+// Side-effect-free, bounded checkpoint for an outstanding original IOP
+// RPC. It distinguishes an actively spinning guest PC from a blocked
+// semaphore worker without guessing a result or waking any thread.
+void dump_pending_iop_guest_rpc(
+    const iop::c_kernel& kernel, uint64_t ee_dispatches,
+    size_t pending_calls, const char* phase
+)
+{
+    uint32_t ready = 0u;
+    uint32_t blocked = 0u;
+    uint32_t faulted = 0u;
+    for (const auto& entry : kernel.threads())
+    {
+        switch (entry.second.m_status)
+        {
+        case iop::e_thread_status::ready:
+        case iop::e_thread_status::running:
+            ++ready;
+            break;
+        case iop::e_thread_status::blocked:
+            ++blocked;
+            break;
+        case iop::e_thread_status::faulted:
+            ++faulted;
+            break;
+        default:
+            break;
+        }
+    }
+
+    std::fprintf(stderr,
+        "IOP guest RPC pending snapshot: phase=%s ee_dispatch=%llu "
+        "iop_cycles=%llu pending_calls=%zu guest_work=%u "
+        "ready=%u blocked=%u faulted=%u threads=%zu\n",
+        phase, static_cast<unsigned long long>(ee_dispatches),
+        static_cast<unsigned long long>(kernel.cycles()),
+        pending_calls, kernel.has_guest_work() ? 1u : 0u,
+        ready, blocked, faulted, kernel.threads().size());
+
+    for (const auto& entry : kernel.threads())
+    {
+        const iop::s_kernel_thread& thread = entry.second;
+        if (thread.m_status == iop::e_thread_status::dormant)
+        {
+            continue;
+        }
+        const uint32_t pc = thread.m_cpu.m_pc;
+        uint32_t opcode = 0u;
+        const bool fetched = kernel.cpu().read32(pc, &opcode);
+        std::fprintf(stderr,
+            "IOP guest RPC pending context: thread=%u status=%u "
+            "priority=%u wait=%u wake=%llu suspended=%u "
+            "entry=0x%08x pc=0x%08x next=0x%08x "
+            "opcode=0x%08x fetch=%u ra=0x%08x gp=0x%08x "
+            "sp=0x%08x v0=0x%08x a0=0x%08x a1=0x%08x\n",
+            entry.first, static_cast<uint32_t>(thread.m_status),
+            thread.m_priority, thread.m_wait_type,
+            static_cast<unsigned long long>(thread.m_wake_cycle),
+            thread.m_interrupts_suspended ? 1u : 0u,
+            thread.m_entry, pc, thread.m_cpu.m_next_pc,
+            opcode, fetched ? 1u : 0u, thread.m_cpu.m_gpr[31],
+            thread.m_cpu.m_gpr[28], thread.m_cpu.m_gpr[29],
+            thread.m_cpu.m_gpr[2], thread.m_cpu.m_gpr[4],
+            thread.m_cpu.m_gpr[5]);
+    }
 }
 
 using t_game_run = uint32_t (*)(
@@ -2094,6 +2161,7 @@ int main(int argc, char** argv)
     uint64_t iop_clock_turns = 0u;
     bool iop_clock_active = false;
     bool guest_rpc_idle_diagnostic_reported = false;
+    uint64_t next_iop_guest_rpc_snapshot = 50000u;
     ee::c_ee_dispatch_hotspots hotspots;
     std::vector<s_dispatch_sample> history;
     if (report_path != nullptr)
@@ -2583,6 +2651,22 @@ int main(int argc, char** argv)
         }
 
         dispatched += count;
+        // Observing the guest in the middle and near the end of a
+        // bounded retail replay reveals a persistent R3000 spin without
+        // recording per-instruction traces or changing guest scheduling.
+        if (trace && report_path != nullptr &&
+            dispatched >= next_iop_guest_rpc_snapshot)
+        {
+            if (hle_startup && iop_kernel != nullptr &&
+                iop_rpc != nullptr &&
+                iop_rpc->pending_guest_calls() != 0u)
+            {
+                dump_pending_iop_guest_rpc(
+                    *iop_kernel, dispatched,
+                    iop_rpc->pending_guest_calls(), "checkpoint");
+            }
+            next_iop_guest_rpc_snapshot += 25000u;
+        }
         remaining -= count;
         // Model ps2-web-recomp's execution-budget/event architecture using
         // reached guest instructions as approximate budget units. This is
@@ -5450,6 +5534,16 @@ int main(int argc, char** argv)
         {
             break;
         }
+    }
+
+    // The last authentic IOP thread state is the most useful artifact
+    // when EE reaches its dispatch budget with a guest RPC still active.
+    if (trace && hle_startup && iop_kernel != nullptr &&
+        iop_rpc != nullptr && iop_rpc->pending_guest_calls() != 0u)
+    {
+        dump_pending_iop_guest_rpc(
+            *iop_kernel, dispatched,
+            iop_rpc->pending_guest_calls(), "final");
     }
 
     if (report_path != nullptr)
