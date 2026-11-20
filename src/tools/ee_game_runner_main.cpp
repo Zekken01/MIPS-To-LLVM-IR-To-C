@@ -11,6 +11,7 @@
 #include "ee_gif.h"
 #include "ee_gs.h"
 #include "ee_gs_display.h"
+#include "ee_gs_presentation_probe.h"
 #ifdef EE_ENABLE_WEBGPU
 #include "ee_webgpu_bridge.h"
 #endif
@@ -830,6 +831,7 @@ bool write_report(
     const std::vector<s_dispatch_sample>& history,
     const std::vector<s_syscall_sample>& syscall_history,
     const ee::s_ee_gs_state& gs,
+    const ee::c_ee_gs_presentation_probe& graphics_probe,
     const ee::c_ee_sdbz_dma_wait_probe& dma_wait_probe,
     const ee::c_ee_dispatch_hotspots& hotspots,
     bool in_progress
@@ -928,6 +930,8 @@ bool write_report(
     hotspots.write_json(output);
     std::fputs(",\n  \"m2_gif_gs\": ", output);
     write_gs_diagnostics_json(output, gs);
+    std::fputs(",\n  \"m2_gs_presentation\": ", output);
+    graphics_probe.write_json(output, hardware.scanout().fields_started());
     std::fputs(",\n  \"m2_sdbz_dma_wait\": ", output);
     dma_wait_probe.write_json(output);
     std::fputs("\n}\n", output);
@@ -1582,6 +1586,8 @@ int main(int argc, char** argv)
         });
     hardware.bind_device_download(&gs_state, &ee::c_ee_gs_state::dma_download);
 
+    ee::c_ee_gs_presentation_probe graphics_probe{};
+    graphics_probe.set_window_requested(gs_webgpu_window);
 #ifdef EE_ENABLE_WEBGPU
     ee::c_ee_webgpu_bridge webgpu_bridge{};
     if (gs_webgpu_snapshot_path != nullptr || gs_webgpu_window)
@@ -2509,12 +2515,16 @@ int main(int argc, char** argv)
             // avoid repeated JSON I/O in fast guest paths, without using host
             // time to advance any EE, IOP, DMA, scanout or interrupt state.
             const auto report_start = std::chrono::steady_clock::now();
+#ifdef EE_ENABLE_WEBGPU
+            graphics_probe.set_gpu_progress(
+                webgpu_bridge.active(), webgpu_bridge.rendered_primitives());
+#endif
             const bool report_ok = write_report(
                 report_path, image, cpu, entry, dispatched,
                 runtime.m_guest_instruction_attempts,
                 runtime, hardware, vsync_flags,
                 reason, status, history, syscall_history, gs_state.state(),
-                dma_wait_probe, hotspots, true
+                graphics_probe, dma_wait_probe, hotspots, true
             );
             report_time_ms += std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - report_start
@@ -2815,7 +2825,7 @@ int main(int argc, char** argv)
                 webgpu_bridge,
                 hardware.gs_display_registers(),
                 hardware.gs_crt_mode(),
-                hardware.scanout().fields_started());
+                hardware.scanout().fields_started(), &graphics_probe);
         }
 #endif
         if (has_watch_word && count != 0u)
@@ -5756,6 +5766,7 @@ int main(int argc, char** argv)
 
     if (gs_snapshot_path != nullptr)
     {
+        graphics_probe.request_capture(ee::e_ee_gs_capture_kind::cpu_display);
         std::vector<uint32_t> pixels;
         uint32_t width = 0u;
         uint32_t height = 0u;
@@ -5764,8 +5775,14 @@ int main(int argc, char** argv)
                 gs_state, hardware.gs_display_registers(),
                 hardware.gs_crt_mode(), pixels, width, height))
         {
+            graphics_probe.record_capture(
+                ee::e_ee_gs_capture_kind::cpu_display,
+                pixels, width, height, &hardware.gs_display_registers(),
+                hardware.gs_crt_mode());
             if (write_gs_ppm(gs_snapshot_path, pixels, width, height))
             {
+                graphics_probe.record_file_written(
+                    ee::e_ee_gs_capture_kind::cpu_display, true);
                 std::printf(
                     "GS diagnostic display VRAM: %ux%u path=%s "
                     "(not a rendered frame; no VBlank generated)\n",
@@ -5790,15 +5807,26 @@ int main(int argc, char** argv)
 #ifdef EE_ENABLE_WEBGPU
     if (gs_webgpu_snapshot_path != nullptr)
     {
+        graphics_probe.request_capture(ee::e_ee_gs_capture_kind::gpu_display);
         std::vector<uint32_t> pixels;
         uint32_t width = 0u;
         uint32_t height = 0u;
         std::remove(gs_webgpu_snapshot_path);
-        if (webgpu_bridge.readback(
-                hardware.gs_display_registers(), hardware.gs_crt_mode(),
-                pixels, width, height) &&
+        const bool readback_succeeded = webgpu_bridge.readback(
+            hardware.gs_display_registers(), hardware.gs_crt_mode(),
+            pixels, width, height);
+        if (readback_succeeded)
+        {
+            graphics_probe.record_capture(
+                ee::e_ee_gs_capture_kind::gpu_display,
+                pixels, width, height, &hardware.gs_display_registers(),
+                hardware.gs_crt_mode());
+        }
+        if (readback_succeeded &&
             write_gs_ppm(gs_webgpu_snapshot_path, pixels, width, height))
         {
+            graphics_probe.record_file_written(
+                ee::e_ee_gs_capture_kind::gpu_display, true);
             std::printf(
                 "GS native WebGPU raster readback: %ux%u path=%s "
                 "draws=%llu (GPU-processed GS VRAM; not a present event)\n",
@@ -5817,6 +5845,7 @@ int main(int argc, char** argv)
 
     if (gs_upload_snapshot_path != nullptr)
     {
+        graphics_probe.request_capture(ee::e_ee_gs_capture_kind::upload);
         std::vector<uint32_t> pixels;
         uint32_t width = 0u;
         uint32_t height = 0u;
@@ -5824,8 +5853,12 @@ int main(int argc, char** argv)
         if (ee::c_ee_gs_display::readback_upload(
                 gs_state, pixels, width, height))
         {
+            graphics_probe.record_capture(
+                ee::e_ee_gs_capture_kind::upload, pixels, width, height);
             if (write_gs_ppm(gs_upload_snapshot_path, pixels, width, height))
             {
+                graphics_probe.record_file_written(
+                    ee::e_ee_gs_capture_kind::upload, true);
                 std::printf(
                     "GS diagnostic completed upload VRAM: %ux%u path=%s "
                     "(texture transfer, NOT a rendered frame)\n",
@@ -5916,12 +5949,16 @@ int main(int argc, char** argv)
             );
         }
     }
+#ifdef EE_ENABLE_WEBGPU
+    graphics_probe.set_gpu_progress(
+        webgpu_bridge.active(), webgpu_bridge.rendered_primitives());
+#endif
     if (report_path != nullptr &&
         !write_report(report_path, image, cpu, entry, dispatched,
                       runtime.m_guest_instruction_attempts,
                       runtime, hardware, vsync_flags,
                       reason, status, history, syscall_history, gs_state.state(),
-                       dma_wait_probe, hotspots, false))
+                      graphics_probe, dma_wait_probe, hotspots, false))
     {
         return 1;
     }
