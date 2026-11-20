@@ -4,6 +4,10 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <limits>
+#include <string>
 #include <vector>
 
 namespace iop
@@ -381,5 +385,431 @@ bool execute_sysclib_string(c_cpu& memory, uint32_t ordinal)
         cpu.m_gpr[2] = return_value;
     }
     return accepted;
+}
+
+namespace
+{
+constexpr uint32_t k_max_format_bytes = 4096u;
+constexpr uint32_t k_max_format_piece = 8192u;
+constexpr uint32_t k_max_format_field = 4096u;
+constexpr uint32_t k_max_format_arguments = 128u;
+
+struct s_format_arguments
+{
+    c_cpu& m_memory;
+    uint32_t m_ap = 0u;
+    uint32_t m_index = 0u;
+    bool m_guest_va_list = false;
+
+    bool read32(uint32_t* value)
+    {
+        if (value == nullptr || m_index >= k_max_format_arguments)
+        {
+            return false;
+        }
+
+        if (m_guest_va_list)
+        {
+            const uint64_t address = static_cast<uint64_t>(m_ap) +
+                static_cast<uint64_t>(m_index) * 4u;
+            if (address > std::numeric_limits<uint32_t>::max() ||
+                !ram_span(static_cast<uint32_t>(address), 4u) ||
+                !m_memory.read32(static_cast<uint32_t>(address), value))
+            {
+                return false;
+            }
+        }
+        else if (m_index < 4u)
+        {
+            *value = m_memory.state().m_gpr[4u + m_index];
+        }
+        else
+        {
+            const uint64_t address =
+                static_cast<uint64_t>(m_memory.state().m_gpr[29]) +
+                16u + static_cast<uint64_t>(m_index - 4u) * 4u;
+            if (address > std::numeric_limits<uint32_t>::max() ||
+                !ram_span(static_cast<uint32_t>(address), 4u) ||
+                !m_memory.read32(static_cast<uint32_t>(address), value))
+            {
+                return false;
+            }
+        }
+        ++m_index;
+        return true;
+    }
+
+    bool read64(uint64_t* value)
+    {
+        if (value == nullptr)
+        {
+            return false;
+        }
+        // R3000 O32 double/long-long arguments occupy an even pair
+        // of 32-bit argument slots. This also advances guest va_list.
+        if ((m_index & 1u) != 0u)
+        {
+            ++m_index;
+        }
+        uint32_t lo = 0u;
+        uint32_t hi = 0u;
+        if (!read32(&lo) || !read32(&hi))
+        {
+            return false;
+        }
+        *value = (static_cast<uint64_t>(hi) << 32u) | lo;
+        return true;
+    }
+};
+
+template<typename T>
+bool append_piece(std::string& output, const std::string& format,
+                  T value)
+{
+    std::array<char, k_max_format_piece> piece{};
+    const int written =
+        std::snprintf(piece.data(), piece.size(), format.c_str(), value);
+    if (written < 0 ||
+        static_cast<uint32_t>(written) >= piece.size() ||
+        output.size() + static_cast<size_t>(written) >=
+            k_max_string_bytes)
+    {
+        return false;
+    }
+    output.append(piece.data(), static_cast<size_t>(written));
+    return true;
+}
+
+bool read_field(const std::string& format, size_t& offset,
+                s_format_arguments& arguments, bool precision,
+                int32_t* value, bool* specified)
+{
+    if (value == nullptr || specified == nullptr)
+    {
+        return false;
+    }
+    *specified = false;
+    *value = 0;
+    if (offset < format.size() && format[offset] == '*')
+    {
+        uint32_t word = 0u;
+        if (!arguments.read32(&word))
+        {
+            return false;
+        }
+        ++offset;
+        const int64_t signed_value =
+            static_cast<int32_t>(word);
+        if (signed_value < -static_cast<int64_t>(k_max_format_field) ||
+            signed_value > static_cast<int64_t>(k_max_format_field))
+        {
+            return false;
+        }
+        *value = static_cast<int32_t>(signed_value);
+        *specified = !precision || signed_value >= 0;
+        return true;
+    }
+
+    while (offset < format.size() &&
+           format[offset] >= '0' && format[offset] <= '9')
+    {
+        *specified = true;
+        const int32_t digit = format[offset] - '0';
+        if (*value > static_cast<int32_t>(k_max_format_field / 10u) ||
+            *value * 10 + digit >
+                static_cast<int32_t>(k_max_format_field))
+        {
+            return false;
+        }
+        *value = *value * 10 + digit;
+        ++offset;
+    }
+    return true;
+}
+
+bool render_guest_format(c_cpu& memory, const std::string& format,
+                         s_format_arguments& arguments,
+                         std::string& output)
+{
+    output.clear();
+    for (size_t index = 0u; index < format.size(); ++index)
+    {
+        if (format[index] != '%')
+        {
+            output.push_back(format[index]);
+            if (output.size() >= k_max_string_bytes)
+            {
+                return false;
+            }
+            continue;
+        }
+
+        ++index;
+        if (index >= format.size())
+        {
+            return false;
+        }
+        if (format[index] == '%')
+        {
+            output.push_back('%');
+            continue;
+        }
+
+        std::string flags;
+        while (index < format.size() &&
+               std::strchr("-+ #0", format[index]) != nullptr)
+        {
+            if (flags.find(format[index]) == std::string::npos)
+            {
+                flags.push_back(format[index]);
+            }
+            ++index;
+        }
+
+        int32_t width = 0;
+        bool width_specified = false;
+        if (!read_field(format, index, arguments, false,
+                        &width, &width_specified))
+        {
+            return false;
+        }
+        if (width_specified && width < 0)
+        {
+            width = -width;
+            if (flags.find('-') == std::string::npos)
+            {
+                flags.push_back('-');
+            }
+        }
+
+        int32_t precision = 0;
+        bool precision_specified = false;
+        if (index < format.size() && format[index] == '.')
+        {
+            ++index;
+            precision_specified = true;
+            bool digits = false;
+            if (!read_field(format, index, arguments, true,
+                            &precision, &digits))
+            {
+                return false;
+            }
+            if (precision < 0)
+            {
+                precision_specified = false;
+            }
+        }
+
+        uint32_t length = 0u;
+        if (index < format.size() &&
+            (format[index] == 'h' || format[index] == 'l'))
+        {
+            const char qualifier = format[index++];
+            length = qualifier == 'h' ? 1u : 3u;
+            if (index < format.size() &&
+                format[index] == qualifier)
+            {
+                ++index;
+                length = qualifier == 'h' ? 2u : 4u;
+            }
+        }
+        if (index >= format.size())
+        {
+            return false;
+        }
+        const char conversion = format[index];
+        if (std::strchr("diuoxXcspfFeEgGaA", conversion) == nullptr)
+        {
+            // In particular %n may never write to arbitrary guest RAM.
+            // Unknown conversions also fail without a partial sprintf.
+            return false;
+        }
+        if (length != 0u &&
+            (conversion == 's' || conversion == 'c' ||
+             conversion == 'p'))
+        {
+            return false;
+        }
+
+        std::string spec = "%" + flags;
+        if (width_specified)
+        {
+            spec += std::to_string(width);
+        }
+        if (precision_specified)
+        {
+            spec += "." + std::to_string(precision);
+        }
+        if (length == 4u)
+        {
+            spec += "ll";
+        }
+        spec += conversion;
+
+        uint32_t raw = 0u;
+        if (conversion == 's')
+        {
+            if (!arguments.read32(&raw) || raw == 0u)
+            {
+                return false;
+            }
+            std::vector<uint8_t> chars;
+            if (precision_specified)
+            {
+                if (!read_prefix(memory, raw,
+                                 static_cast<uint32_t>(precision),
+                                 chars))
+                {
+                    return false;
+                }
+            }
+            else if (!read_string(memory, raw, chars))
+            {
+                return false;
+            }
+            if (!precision_specified)
+            {
+                chars.pop_back();
+            }
+            const std::string guest(chars.begin(), chars.end());
+            if (!append_piece(output, spec, guest.c_str()))
+            {
+                return false;
+            }
+        }
+        else if (conversion == 'c')
+        {
+            if (!arguments.read32(&raw) ||
+                !append_piece(output, spec, static_cast<int>(raw)))
+            {
+                return false;
+            }
+        }
+        else if (conversion == 'p')
+        {
+            // The primary ps2-web-recomp SDBZ reference renders
+            // guest 32-bit pointers as eight lowercase hex digits.
+            if (!arguments.read32(&raw) ||
+                !append_piece(output, "%08x", raw))
+            {
+                return false;
+            }
+        }
+        else if (std::strchr("fFeEgGaA", conversion) != nullptr)
+        {
+            if (length != 0u && length != 3u)
+            {
+                return false;
+            }
+            uint64_t bits = 0u;
+            double value = 0.0;
+            if (!arguments.read64(&bits))
+            {
+                return false;
+            }
+            std::memcpy(&value, &bits, sizeof(value));
+            if (!append_piece(output, spec, value))
+            {
+                return false;
+            }
+        }
+        else if (length == 4u)
+        {
+            uint64_t value = 0u;
+            if (!arguments.read64(&value))
+            {
+                return false;
+            }
+            if (conversion == 'd' || conversion == 'i')
+            {
+                if (!append_piece(output, spec,
+                                  static_cast<long long>(
+                                      static_cast<int64_t>(value))))
+                {
+                    return false;
+                }
+            }
+            else if (!append_piece(output, spec,
+                                   static_cast<unsigned long long>(value)))
+            {
+                return false;
+            }
+        }
+        else
+        {
+            if (!arguments.read32(&raw))
+            {
+                return false;
+            }
+            if (length == 1u)
+            {
+                raw = (conversion == 'd' || conversion == 'i')
+                    ? static_cast<uint32_t>(
+                        static_cast<int16_t>(raw))
+                    : static_cast<uint16_t>(raw);
+            }
+            else if (length == 2u)
+            {
+                raw = (conversion == 'd' || conversion == 'i')
+                    ? static_cast<uint32_t>(
+                        static_cast<int8_t>(raw))
+                    : static_cast<uint8_t>(raw);
+            }
+            if ((conversion == 'd' || conversion == 'i')
+                ? !append_piece(
+                    output, spec, static_cast<int32_t>(raw))
+                : !append_piece(output, spec, raw))
+            {
+                return false;
+            }
+        }
+    }
+    return output.size() < k_max_string_bytes;
+}
+} // namespace
+
+bool execute_sysclib_format(c_cpu& memory, uint32_t ordinal)
+{
+    if (ordinal != 19u && ordinal != 42u)
+    {
+        return false;
+    }
+    s_cpu_state& cpu = memory.state();
+    const uint32_t destination = cpu.m_gpr[4];
+    const uint32_t format_address = cpu.m_gpr[5];
+    std::vector<uint8_t> format_bytes;
+    if (!ram_span(destination, 1u) ||
+        !read_string(memory, format_address, format_bytes) ||
+        format_bytes.size() > k_max_format_bytes + 1u)
+    {
+        return false;
+    }
+    const std::string format(
+        format_bytes.begin(), format_bytes.end() - 1);
+    s_format_arguments args{memory};
+    args.m_guest_va_list = ordinal == 42u;
+    args.m_index = ordinal == 19u ? 2u : 0u;
+    args.m_ap = cpu.m_gpr[6];
+    if (args.m_guest_va_list &&
+        ((args.m_ap & 3u) != 0u ||
+         !ram_span(args.m_ap, 4u)))
+    {
+        return false;
+    }
+    std::string output;
+    if (!render_guest_format(memory, format, args, output) ||
+        output.size() >= k_max_string_bytes ||
+        !ram_span(destination, static_cast<uint32_t>(output.size() + 1u)))
+    {
+        return false;
+    }
+    std::vector<uint8_t> bytes(output.begin(), output.end());
+    bytes.push_back(0u);
+    if (!write_bytes(memory, destination, bytes))
+    {
+        return false;
+    }
+    cpu.m_gpr[2] = static_cast<uint32_t>(output.size());
+    return true;
 }
 } // namespace iop
