@@ -191,6 +191,57 @@ int main()
         return fail("module thread syscall callback or explicit stop");
     }
 
+    // Module _start must return through a real MIPS JR $ra + delay
+    // slot to a reserved BREAK trampoline, become dormant, and preserve
+    // its guest return value. A thread that falls through RAM at PC=0
+    // must never be mistaken for a completed module initialization.
+    constexpr uint32_t k_module_result = 0x1234u;
+    const uint32_t module_return[] =
+    {
+        0x03e00008u, // jr ra
+        0x24021234u  // delay slot: addiu v0,zero,0x1234
+    };
+    if (!put_program(kernel.cpu(), image->m_irx.m_entry,
+                     module_return, 2u) ||
+        !kernel.start_thread_with_arguments(
+            boot_thread, 2u, 0x00020020u))
+    {
+        return fail("cannot restart original module entrypoint");
+    }
+    const iop::s_kernel_thread* restarted =
+        kernel.thread(boot_thread);
+    if (restarted == nullptr ||
+        !restarted->m_module_entry ||
+        restarted->m_module_id != loaded.m_id ||
+        restarted->m_cpu.m_gpr[31] == 0u ||
+        restarted->m_cpu.m_gpr[4] != 2u ||
+        restarted->m_cpu.m_gpr[5] != 0x00020020u)
+    {
+        return fail("module start lost return trampoline or argc/argv");
+    }
+    const uint32_t module_return_pc =
+        restarted->m_cpu.m_gpr[31];
+    const iop::s_kernel_run_result returned =
+        kernel.run(8u, 4u);
+    const iop::s_kernel_thread* retired =
+        kernel.thread(boot_thread);
+    if (returned.m_stop != iop::e_kernel_stop::idle ||
+        returned.m_executed != 2u ||
+        returned.m_thread_id != boot_thread ||
+        retired == nullptr ||
+        retired->m_status != iop::e_thread_status::dormant ||
+        retired->m_cpu.m_pc != module_return_pc ||
+        retired->m_cpu.m_gpr[2] != k_module_result ||
+        retired->m_cpu.m_gpr[31] != module_return_pc)
+    {
+        return fail("module _start returned without genuine trampoline retirement");
+    }
+    // No stale module thread may consume further scheduler quanta.
+    if (kernel.run(16u, 4u).m_executed != 0u)
+    {
+        return fail("dormant module initializer continued executing IOP RAM");
+    }
+
     // Two equal-priority R3000 threads must each execute exactly one
     // three-instruction loop per 3-cycle scheduler quantum.
     const uint32_t loop[] =
