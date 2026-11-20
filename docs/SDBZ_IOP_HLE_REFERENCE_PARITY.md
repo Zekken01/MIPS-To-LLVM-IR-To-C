@@ -897,6 +897,16 @@ Regressions cover a real R3000 `JR $ra` plus delay-slot result,
 no further scheduling after a module returns, matching default 8
 priority, and preservation of explicit caller-chosen priority.
 
+The reference kernel also seeds `ra=g_exit_stub` for **ordinary**
+`StartThread`/`StartThreadArgs` guest threads. ARKD worker threads 9–12
+had `ra=0` in the same snapshot and could otherwise repeat the bad
+fall-through upon returning. This batch therefore reserves a separate
+`0x00013FC0` BREAK trampoline for ordinary guest threads, retains
+the preexisting alarm and one-shot callback return trampolines,
+and retires a generic worker only after its actual guest MIPS return.
+Tests exercise that separate worker path and verify no spurious module
+completion or fabricated signal.
+
 **Limitations and next Windows replay:** The present LOADFILE bridge
 publishes the module ID before observing the entrypoint's return;
 full load-module completion/result timing parity remains a separate
