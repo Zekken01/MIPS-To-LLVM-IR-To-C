@@ -381,7 +381,10 @@ bool c_sifman_bridge::handle_syscall(
                 destination & 0xe0000000u;
             const uint64_t rounded =
                 (static_cast<uint64_t>(size) + 3u) & ~uint64_t(3u);
-            if (size == 0u || size > 65536u ||
+            // Retail ARKD uses a single 96 KiB IOP-to-EE DMA descriptor.
+            // The checked IOP source and EE destination spans bound
+            // each transfer; a 64 KiB cap incorrectly rejects valid RAM.
+            if (size == 0u ||
                 attributes != 0u ||
                 (source_region != 0u &&
                  source_region != 0x80000000u &&

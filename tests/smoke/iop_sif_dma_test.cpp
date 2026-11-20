@@ -243,6 +243,101 @@ int main()
         return fail("failed DMA incorrectly consumed an ID or data");
     }
 
+    // The matched retail ARKD worker sends a single 96 KiB descriptor
+    // from IOP 0x000dd2c0 to EE 0x01652400. The older 64 KiB cap
+    // incorrectly rejected this valid, armed transfer.
+    constexpr uint32_t k_large_source = 0x000dd2c0u;
+    constexpr uint32_t k_large_destination = 0x01652400u;
+    constexpr uint32_t k_large_size = 96u * 1024u;
+    for (uint32_t index = 0u; index < k_large_size / 4u; ++index)
+    {
+        const uint32_t word = 0x5a430000u ^ (index * 0x010203u);
+        if (!kernel.cpu().write32(k_large_source + index * 4u, word))
+        {
+            return fail("could not populate retail-size IOP DMA source");
+        }
+    }
+    if (!make_descriptor(kernel.cpu(), k_list, k_large_source,
+                         k_large_destination, k_large_size))
+    {
+        return fail("could not create retail-size DMA descriptor");
+    }
+
+    dmac.acknowledge(5u);
+    ee_ram.write32(k_large_destination - 4u, 0xdeadbeefu);
+    ee_ram.write32(k_large_destination, 0xabcdef01u);
+    ee_ram.write32(k_large_destination + k_large_size, 0xfeedfaceu);
+    kernel.cpu().state().m_gpr[4] = k_list;
+    kernel.cpu().state().m_gpr[5] = 1u;
+    if (!set_sif0_chcr(dmac, 0u) ||
+        bridge.handle_syscall(
+            kernel, iop::c_sifman_bridge::k_set_dma_syscall) ||
+        ee_ram.read32(k_large_destination) != 0xabcdef01u ||
+        (dmac.status() & (1u << 5u)) != 0u)
+    {
+        return fail("unarmed 96 KiB DMA changed EE state");
+    }
+
+    if (!set_sif0_chcr(dmac, 0x184u) ||
+        !bridge.handle_syscall(
+            kernel, iop::c_sifman_bridge::k_set_dma_syscall) ||
+        kernel.cpu().state().m_gpr[2] != 3u ||
+        (dmac.status() & (1u << 5u)) == 0u ||
+        ee_ram.read32(k_large_destination - 4u) != 0xdeadbeefu ||
+        ee_ram.read32(k_large_destination + k_large_size) != 0xfeedfaceu)
+    {
+        return fail("armed 96 KiB DMA did not complete with intact guards");
+    }
+    for (uint32_t index = 0u; index < k_large_size / 4u; ++index)
+    {
+        const uint32_t expected = 0x5a430000u ^ (index * 0x010203u);
+        if (ee_ram.read32(k_large_destination + index * 4u) != expected)
+        {
+            return fail("retail-size IOP DMA payload mismatch");
+        }
+    }
+
+    // A later invalid descriptor must not commit the earlier valid
+    // descriptor, acknowledge DMA5, or consume the next DMA ID.
+    dmac.acknowledge(5u);
+    ee_ram.write32(k_destination0, 0x1234abcdu);
+    kernel.cpu().state().m_gpr[5] = 2u;
+    if (!make_descriptor(kernel.cpu(), k_list,
+                         k_source0, k_destination0, 32u) ||
+        !make_descriptor(kernel.cpu(), k_list + 16u,
+                         iop::c_cpu::k_ram_size - k_large_size + 4u,
+                         k_large_destination, k_large_size) ||
+        bridge.handle_syscall(
+            kernel, iop::c_sifman_bridge::k_set_dma_syscall) ||
+        ee_ram.read32(k_destination0) != 0x1234abcdu ||
+        (dmac.status() & (1u << 5u)) != 0u)
+    {
+        return fail("IOP-boundary 96 KiB descriptor caused partial DMA");
+    }
+    if (!make_descriptor(kernel.cpu(), k_list + 16u,
+                         k_large_source,
+                         32u * 1024u * 1024u - k_large_size + 4u,
+                         k_large_size) ||
+        bridge.handle_syscall(
+            kernel, iop::c_sifman_bridge::k_set_dma_syscall) ||
+        ee_ram.read32(k_destination0) != 0x1234abcdu ||
+        (dmac.status() & (1u << 5u)) != 0u)
+    {
+        return fail("EE-boundary 96 KiB descriptor caused partial DMA");
+    }
+
+    // Rejected operations leave the next genuine DMA ID available.
+    kernel.cpu().state().m_gpr[5] = 1u;
+    if (!make_descriptor(kernel.cpu(), k_list,
+                         k_large_source, k_large_destination, k_large_size) ||
+        !bridge.handle_syscall(
+            kernel, iop::c_sifman_bridge::k_set_dma_syscall) ||
+        kernel.cpu().state().m_gpr[2] != 4u ||
+        (dmac.status() & (1u << 5u)) == 0u)
+    {
+        return fail("rejected 96 KiB DMA consumed the following DMA ID");
+    }
+
     // An IOP kernel without an EE DMA backend must not pretend to
     // accept an imported sifman SetDma operation.
     iop::c_kernel isolated;

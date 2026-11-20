@@ -1759,3 +1759,43 @@ determine whether the true blocker is EE receiver state
 or a specific guest transfer descriptor before changing
 device semantics.
 
+
+
+
+## 2026-11-20 — 09:59 matched cached quick probe: valid 96 KiB SIFMAN descriptor rejected
+
+The uploaded `quick-probe(1).log` and `quick-probe(1).json` represent a
+single final `replay=0` (3,639,873 EE dispatches, 59,312,889
+instruction attempts, 11 GS fields). This upload contains **no checkout
+SHA**, so its exact local commit is not independently established.
+All four CI workflows had passed on remote PR #145 HEAD
+`8de7a731239d5bda13dc55a5c73876c66b75f1df`.
+
+The newly instrumented SIFMAN rejection is **`invalid_descriptor_fields`**:
+original IOP thread 24, PC `0x00018048`, RA `0x0007fba8`,
+descriptor list `0x000dd268`, count 1, first descriptor readable,
+IOP source `0x000dd2c0`, EE destination `0x01652400`,
+size **98,304 bytes (96 KiB)**, attributes 0, EE SIF0 channel-5
+CHCR **`0x00000184`** (STR armed), IOP cycle **6,458,047**.
+Both addresses are 4-byte aligned. Source plus size ends at
+`0x000f52c0` (inside 2 MiB IOP RAM); destination plus size ends
+at `0x0166a400` (inside 32 MiB EE RAM).
+
+The sole failing clause for those exact fields is the native bridge's
+hardcoded `size > 65536` rejection. The primary reference
+`ps2-web-recomp/SDBZ/runtime/src/iop/sif.cpp` has no 64 KiB
+`sceSifSetDma` descriptor limit. Remove only that artificial limit;
+retain nonzero size, zero-attribute, segment/alignment, IOP source
+span, EE destination span, staged reads, armed receiver and actual
+DMA5-completion requirements. The existing 2 MiB IOP source span
+bounds an individual descriptor; a new unbounded copy is **not**
+introduced.
+
+Regression extends the guest-import SIFMAN test with this exact
+96 KiB source/destination and payload, checks the complete EE payload
+and guards after an armed call, rejects the same call unarmed, and
+rejects invalid 96 KiB IOP-source and EE-destination boundary
+descriptors transactionally. Failed calls may not modify EE RAM,
+raise DMA5, or consume an ID. CI success alone does not prove a
+retail SIF0 response or visible frame. A subsequent matched quick
+probe is required to observe the next original guest event.
