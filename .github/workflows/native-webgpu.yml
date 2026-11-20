@@ -5,6 +5,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -28,8 +32,29 @@ jobs:
           test -f build/_deps/wgpu-native/include/webgpu/webgpu.h
           test -f build/_deps/wgpu-native/include/webgpu/wgpu.h
           test -f build/_deps/wgpu-native/lib/libwgpu_native.a -o -f build/_deps/wgpu-native/lib/libwgpu_native.so -o -f build/_deps/wgpu-native/lib/libwgpu_native.so.0
-      - name: Install software Vulkan adapter
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq mesa-vulkan-drivers libvulkan1
+      - name: Ensure software Vulkan adapter (reuse preinstalled Lavapipe)
+        shell: bash
+        run: |
+          set -euo pipefail
+          has_vulkan() {
+            ldconfig -p | grep -q 'libvulkan.so.1' &&
+              find /usr/share/vulkan/icd.d -name '*lvp*.json' -print -quit | grep -q .
+          }
+          if has_vulkan; then
+            echo 'Using preinstalled Vulkan loader and Mesa Lavapipe ICD'
+            exit 0
+          fi
+          echo 'Missing Vulkan loader or Lavapipe; installing from cached package indexes'
+          if ! sudo apt-get install -y -qq mesa-vulkan-drivers libvulkan1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq mesa-vulkan-drivers libvulkan1
+          fi
+          if ! has_vulkan; then
+            echo 'Vulkan unavailable after cached install; refreshing package indexes'
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --reinstall mesa-vulkan-drivers libvulkan1
+          fi
+          has_vulkan || { echo 'Lavapipe or Vulkan loader still missing' >&2; exit 1; }
       - name: Compile native WebGPU renderer and smoke test
         run: cmake --build build --target ee_game_runner ee_webgpu_native_smoke --parallel 2
       - name: Run real native WebGPU compute readback
@@ -45,7 +70,7 @@ jobs:
           export EE_WEBGPU_REQUIRE_ADAPTER=1
           ctest --test-dir build -R ee_webgpu_native_smoke --output-on-failure
 
-  native-webgpu-windows:
+  native-webgpu-windows-msvc:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -81,6 +106,15 @@ jobs:
         shell: pwsh
         run: cmake --build build --target ee_game_runner ee_webgpu_native_smoke --config Release --parallel 2
 
+
+  native-webgpu-windows-clang:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Activate installed MSVC toolchain for Clang STL and dumpbin
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
       # The GitHub image can have LLVM 20 under Program Files while
       # VS 2026's MSVC STL requires Clang 22 or newer (STL1000).
       # Pin the compiler instead of suppressing the version check.
@@ -125,9 +159,19 @@ jobs:
             "-DCMAKE_C_COMPILER=$clang" `
             "-DCMAKE_CXX_COMPILER=$clangxx" `
             -DEE_ENABLE_WEBGPU=ON `
-            -DEE_ENABLE_RAYLIB_WINDOW=ON `
-            "-DEE_WEBGPU_ROOT=$((Resolve-Path build/_deps/wgpu-native).Path)"
+            -DEE_ENABLE_RAYLIB_WINDOW=ON
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Assert fresh clang dependencies under build/_deps
+        shell: pwsh
+        run: |
+          foreach ($file in @('include/webgpu/webgpu.h', 'include/webgpu/wgpu.h', 'lib/wgpu_native.lib')) {
+            if (!(Test-Path (Join-Path 'build-clang/_deps/wgpu-native' $file))) {
+              throw "Missing clean Clang WebGPU SDK: $file"
+            }
+          }
+          if (!(Test-Path 'build-clang/_deps/raylib-src/src/raylib.h')) {
+            throw 'Missing clean Clang raylib dependency'
+          }
       - name: Compile clang++ native WebGPU and raylib runner
         shell: pwsh
         run: cmake --build build-clang --target ee_game_runner --config Release --parallel 2
@@ -146,3 +190,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "clang++ runner could not enter main(): exit $LASTEXITCODE"
           }
+
+  # Preserve the existing required check name while building both
+  # toolchains in separate parallel workers. Run even if one failed.
+  native-webgpu-windows:
+    if: ${{ always() }}
+    needs: [native-webgpu-windows-msvc, native-webgpu-windows-clang]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require MSVC and pinned Clang native builds
+        shell: bash
+        run: |
+          test "${{ needs.native-webgpu-windows-msvc.result }}" = success
+          test "${{ needs.native-webgpu-windows-clang.result }}" = success
