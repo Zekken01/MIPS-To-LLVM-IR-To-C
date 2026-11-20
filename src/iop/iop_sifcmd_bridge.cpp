@@ -644,7 +644,7 @@ bool c_sifcmd_bridge::prepare_command(
     // original 20/24-byte packet size.
     if (!m_initialized || command == nullptr ||
         (size != 16u && size != 20u && size != 24u &&
-         size != 104u) ||
+         size != 48u && size != 104u) ||
         words.size() < size / 4u ||
         (words[0] & 0xffu) != size ||
         words[1] != 0u)
@@ -653,6 +653,49 @@ bool c_sifcmd_bridge::prepare_command(
     }
 
     const uint32_t cid = words[2];
+
+    // A Rend packet is an EE-originated completion of a specific
+    // pending IOP client operation, not an arbitrary incoming command.
+    // Validate all identity fields without modifying guest memory;
+    // the containing SIF1 descriptor batch must pass as a whole.
+    if (cid == c_sif_rpc_bridge::k_reply_cid && size == 48u)
+    {
+        const uint32_t client = words[7];
+        const auto found = m_rpc_clients.find(client);
+        if (words[3] != 0u || words[5] != client ||
+            found == m_rpc_clients.end() ||
+            !found->second.m_pending ||
+            found->second.m_packet_id != words[4] ||
+            found->second.m_rpc_id != words[6] ||
+            found->second.m_expected_command != words[8])
+        {
+            return false;
+        }
+        const uint32_t expected = found->second.m_expected_command;
+        if (expected != c_sif_rpc_bridge::k_bind_cid &&
+            expected != c_sif_rpc_bridge::k_call_cid)
+        {
+            return false;
+        }
+        if (expected == c_sif_rpc_bridge::k_bind_cid &&
+            words[9] != 0u &&
+            (m_ee_ram == nullptr ||
+             !m_ee_ram->contains(
+                 words[10] & 0x1fffffffu, 1u)))
+        {
+            return false;
+        }
+        s_command reply{};
+        reply.m_cid = cid;
+        reply.m_rpc_end = true;
+        reply.m_rpc_client = client;
+        reply.m_rpc_command = words[8];
+        reply.m_rpc_server_data = words[9];
+        reply.m_rpc_buffer = words[10];
+        reply.m_rpc_cbuffer = words[11];
+        *command = reply;
+        return true;
+    }
 
     // SIF_CMD_RESET_CMD is a distinct system command. It is NOT a
     // normal RPC or an acknowledgement that ROM0/UDNL has booted.
@@ -738,6 +781,46 @@ bool c_sifcmd_bridge::prepare_command(
 
 void c_sifcmd_bridge::commit_command(const s_command& command)
 {
+    if (command.m_rpc_end &&
+        command.m_cid == c_sif_rpc_bridge::k_reply_cid)
+    {
+        auto found = m_rpc_clients.find(command.m_rpc_client);
+        if (found == m_rpc_clients.end() ||
+            !found->second.m_pending ||
+            found->second.m_expected_command != command.m_rpc_command)
+        {
+            return;
+        }
+        s_rpc_client& client = found->second;
+        // The EE's Rend controls the state transition. An absent
+        // server-data pointer denotes an unsuccessful bind, not a
+        // remotely initialized RPC service.
+        if (command.m_rpc_command == c_sif_rpc_bridge::k_bind_cid)
+        {
+            client.m_server_data = command.m_rpc_server_data;
+            client.m_ee_buffer = command.m_rpc_buffer;
+            client.m_bound = command.m_rpc_server_data != 0u;
+            (void)m_kernel.cpu().write32(
+                command.m_rpc_client + 36u,
+                client.m_server_data);
+            (void)m_kernel.cpu().write32(
+                command.m_rpc_client + 20u,
+                client.m_ee_buffer);
+            (void)m_kernel.cpu().write32(
+                command.m_rpc_client + 24u,
+                command.m_rpc_cbuffer);
+        }
+        client.m_pending = false;
+        client.m_expected_command = 0u;
+        (void)m_kernel.cpu().write32(command.m_rpc_client, 0u);
+        if (client.m_wait_thread != 0u)
+        {
+            (void)m_kernel.wake_thread_with_result(
+                client.m_wait_thread, 0u);
+            client.m_wait_thread = 0u;
+        }
+        return;
+    }
     if (command.m_reboot_request &&
         command.m_cid == 0x80000003u)
     {
