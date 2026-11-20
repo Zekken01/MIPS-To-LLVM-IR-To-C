@@ -176,6 +176,8 @@ public:
     // Calls pending a real R3000 SIFCMD finish trampoline.
     // A committed request alone never counts as a completed reply.
     size_t pending_guest_calls() const;
+    // LOADFILE success is not a guest module start result until _start returns.
+    size_t pending_module_starts() const;
     size_t pending_binds() const;
     // A blocked EE bind permits a guest IOP scheduler turn only while
     // real R3000 threads or guest-owned timed work are runnable.
@@ -204,6 +206,15 @@ private:
         uint32_t m_recv_size = 0u;
     };
 
+    struct s_pending_module_start
+    {
+        s_reply m_reply{};
+        uint32_t m_thread_id = 0u;
+        uint32_t m_module_id = 0u;
+        uint32_t m_destination = 0u;
+        uint64_t m_sequence = 0u;
+    };
+
     c_disc_loader& m_loader;
     c_kernel& m_kernel;
     c_sifcmd_bridge& m_sifcmd;
@@ -216,6 +227,7 @@ private:
     uint32_t m_cdvd_stream_position = 0u;
     std::deque<s_reply> m_replies;
     std::deque<s_deferred_bind> m_deferred_binds;
+    std::deque<s_pending_module_start> m_pending_module_starts;
     std::map<uint32_t, s_guest_pending> m_guest_pending;
     uint32_t m_next_guest_token = 1u;
     uint32_t m_load_requests = 0u;

@@ -2199,6 +2199,10 @@ int main(int argc, char** argv)
                     std::min<uint64_t>(iop_clock_due, 256u));
                 const iop::s_kernel_run_result progressed =
                     iop_kernel->run(cycles, 128u);
+                if (iop_rpc != nullptr)
+                {
+                    (void)iop_rpc->pump();
+                }
                 iop_clock_due -= cycles;
                 ++turns;
                 ++iop_clock_turns;
@@ -3865,7 +3869,8 @@ int main(int argc, char** argv)
                                     iop_kernel != nullptr &&
                                     iop_rpc != nullptr &&
                                     (iop_rpc->has_waiting_bind_guest_work() ||
-                                     (iop_rpc->pending_guest_calls() != 0u &&
+                                     ((iop_rpc->pending_guest_calls() != 0u ||
+                                       iop_rpc->pending_module_starts() != 0u) &&
                                       iop_kernel->has_guest_work()));
                                 if (guest_rpc_wait)
                                 {

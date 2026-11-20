@@ -222,7 +222,8 @@ bool c_sif_rpc_bridge::prepare_command(
     if (!m_sifcmd.initialized() ||
         request == nullptr ||
         m_replies.size() + m_guest_pending.size() +
-            m_deferred_binds.size() >= 64u ||
+            m_deferred_binds.size() +
+            m_pending_module_starts.size() >= 64u ||
         packet.size() < size / 4u ||
         (size != 36u && size != 56u && size != 64u) ||
         (packet[0] & 0xffu) != size ||
@@ -805,16 +806,23 @@ void c_sif_rpc_bridge::commit_command(const s_request& request)
             observed.m_module_started =
                 loaded.m_result == e_disc_load_result::success &&
                 loaded.m_thread_id != 0u;
-            const uint32_t result =
-                loaded.m_result == e_disc_load_result::success
-                    ? loaded.m_module_id
-                    : static_cast<uint32_t>(-1);
-            m_ee_ram.write32(request.m_result_destination, result);
+            if (loaded.m_result == e_disc_load_result::success &&
+                loaded.m_thread_id != 0u)
+            {
+                // The original guest _start must actually return.
+                // Scheduling it is not permission to answer LOADFILE.
+                m_pending_module_starts.push_back(s_pending_module_start{
+                    response, loaded.m_thread_id, loaded.m_module_id,
+                    request.m_result_destination, observed.m_sequence
+                });
+                m_last_observation = std::move(observed);
+                return;
+            }
+            m_ee_ram.write32(
+                request.m_result_destination, static_cast<uint32_t>(-1));
             m_ee_ram.write32(
                 request.m_result_destination + 4u,
-                loaded.m_result == e_disc_load_result::success
-                    ? 0u : static_cast<uint32_t>(-1)
-            );
+                static_cast<uint32_t>(-1));
         }
     }
     else if (request.m_words[2] == k_call_cid &&
@@ -1040,7 +1048,8 @@ bool c_sif_rpc_bridge::queue_iop_command(
         (words[0] & 0xffu) != words.size() * 4u ||
         (words[2] != k_bind_cid && words[2] != k_call_cid) ||
         m_replies.size() + m_guest_pending.size() +
-            m_deferred_binds.size() >= 64u ||
+            m_deferred_binds.size() +
+            m_pending_module_starts.size() >= 64u ||
         payload.size() > 4096u)
     {
         return false;
@@ -1082,7 +1091,8 @@ bool c_sif_rpc_bridge::queue_iop_guest_command(
         words[1] != (payload.empty() ? 0u : ee_payload_destination) ||
         words[2] == 0u ||
         m_replies.size() + m_guest_pending.size() +
-            m_deferred_binds.size() >= 64u ||
+            m_deferred_binds.size() +
+            m_pending_module_starts.size() >= 64u ||
         payload.size() > 4096u ||
         (!payload.empty() &&
          (ee_payload_destination == 0u ||
@@ -1184,6 +1194,7 @@ void c_sif_rpc_bridge::reset_for_reboot()
     m_cdvd_stream_position = 0u;
     m_replies.clear();
     m_deferred_binds.clear();
+    m_pending_module_starts.clear();
     m_guest_pending.clear();
     m_next_guest_token = 1u;
     m_load_requests = 0u;
@@ -1195,7 +1206,8 @@ bool c_sif_rpc_bridge::can_queue_replies(size_t count) const
 {
     return count <= 64u &&
         m_replies.size() + m_guest_pending.size() +
-            m_deferred_binds.size() <= 64u - count;
+            m_deferred_binds.size() +
+            m_pending_module_starts.size() <= 64u - count;
 }
 
 void c_sif_rpc_bridge::queue_init_sreg_reply()
@@ -1214,6 +1226,31 @@ void c_sif_rpc_bridge::queue_init_sreg_reply()
 
 bool c_sif_rpc_bridge::pump()
 {
+    // Only a real guest module-return trampoline permits LOADFILE
+    // completion. An unfinished, blocked or faulted thread cannot.
+    for (auto it = m_pending_module_starts.begin();
+         it != m_pending_module_starts.end();)
+    {
+        const s_kernel_thread* thread = m_kernel.thread(it->m_thread_id);
+        if (thread == nullptr ||
+            thread->m_status != e_thread_status::dormant ||
+            !thread->m_module_entry ||
+            thread->m_module_id != it->m_module_id)
+        {
+            ++it;
+            continue;
+        }
+        const uint32_t guest_start_result = thread->m_cpu.m_gpr[2];
+        m_ee_ram.write32(it->m_destination, it->m_module_id);
+        m_ee_ram.write32(it->m_destination + 4u,
+                          guest_start_result);
+        if (m_last_observation.m_sequence == it->m_sequence)
+        {
+            m_last_observation.m_return_word = it->m_module_id;
+        }
+        m_replies.push_back(std::move(it->m_reply));
+        it = m_pending_module_starts.erase(it);
+    }
     if (m_reply_in_flight)
     {
         // The prior SIF0 interrupt must have been acknowledged before
@@ -1278,6 +1315,11 @@ size_t c_sif_rpc_bridge::pending_replies() const
 size_t c_sif_rpc_bridge::pending_guest_calls() const
 {
     return m_guest_pending.size();
+}
+
+size_t c_sif_rpc_bridge::pending_module_starts() const
+{
+    return m_pending_module_starts.size();
 }
 
 size_t c_sif_rpc_bridge::pending_binds() const
