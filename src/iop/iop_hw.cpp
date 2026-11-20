@@ -173,6 +173,11 @@ bool c_hw::read(
         *value = data;
         return true;
     }
+    if (address >= c_spu2::k_base &&
+        address < c_spu2::k_base + c_spu2::k_size)
+    {
+        return m_spu2.read(address, width, value);
+    }
     // A physical CDVD drive with no media reports 0x00. The ROM0
     // diagnostic runner does not mount a disc. This deliberately does
     // not claim a successful CD read, device initialization, or SIF.
@@ -366,6 +371,22 @@ bool c_hw::write(
         {
             m_scratchpad[offset + i] =
                 static_cast<uint8_t>(value >> (8u * i));
+        }
+        return true;
+    }
+    if (address >= c_spu2::k_base &&
+        address < c_spu2::k_base + c_spu2::k_size)
+    {
+        if (!m_spu2.write(address, width, value))
+        {
+            return false;
+        }
+        // Only a real SPU2 data-port access to the guest-programmed
+        // IRQ address can assert line 9. Register latches, key-on
+        // commands, and arbitrary MMIO writes never complete DMA.
+        if (m_spu2.irq_pending())
+        {
+            (void)raise_interrupt(c_spu2::k_irq_line);
         }
         return true;
     }
