@@ -2013,6 +2013,59 @@ int main()
         return sif1.set_dma(list, 2u, &dma_id, diagnostic);
     };
 
+    // Retail 2026-11-20 replay: CDVDFSV RTC CALL has header.opt=1.
+    // Earlier HLE rejected the exact packet before the mounted-disc
+    // CDVD method could run. Exercise the original 64-byte SIF1
+    // descriptor and genuine existing CDVD response path.
+    std::vector<uint32_t> retail_clock = {
+        64u, 0u, iop::c_sif_rpc_bridge::k_call_cid, 1u,
+        0x00010005u, 0x20561940u, 0x25u, 0x00464dc0u,
+        1u, 0u, rpc_result, 16u, 1u,
+        iop::c_sif_rpc_bridge::k_cdvd_s_server ^
+            iop::c_sif_rpc_bridge::k_server_xor,
+        0u, 0u
+    };
+    packet(memory, call_source, retail_clock);
+    descriptor(memory, list, call_source,
+               iop::c_sifcmd_bridge::k_command_buffer, 64u);
+    memory.write32(list + 12u, 0x44u);
+    dmac.acknowledge(5u);
+    dmac.acknowledge(6u);
+    iop::s_sif1_dma_diagnostic rtc_diagnostic{};
+    if (!sif1.set_dma(list, 1u, &dma_id, &rtc_diagnostic) ||
+        rtc_diagnostic.m_failure != iop::e_sif1_dma_failure::none ||
+        rpc.last_observation().m_cid != iop::c_sif_rpc_bridge::k_call_cid ||
+        rpc.last_observation().m_server_id !=
+            iop::c_sif_rpc_bridge::k_cdvd_s_server ||
+        rpc.last_observation().m_method != 1u ||
+        memory.read32(rpc_result) != 1u ||
+        (dmac.status() & (1u << 5u)) == 0u)
+    {
+        return fail("retail CDVDFSV RTC RPC opt=1 not committed via SIF1");
+    }
+
+    // This exception does not license arbitrary option values or
+    // alternate BIND packets. Rejection must remain side-effect-free.
+    iop::c_sif_rpc_bridge::s_request opt_request{};
+    iop::e_rpc_rejection opt_rejection = iop::e_rpc_rejection::none;
+    retail_clock[3] = 2u;
+    if (rpc.prepare_command(
+            retail_clock, 64u, 0u, 0u,
+            &opt_request, &opt_rejection) ||
+        opt_rejection != iop::e_rpc_rejection::invalid_envelope)
+    {
+        return fail("unsupported SIFRPC CALL option was accepted");
+    }
+    retail_clock[3] = 1u;
+    retail_clock[2] = iop::c_sif_rpc_bridge::k_bind_cid;
+    if (rpc.prepare_command(
+            retail_clock, 64u, 0u, 0u,
+            &opt_request, &opt_rejection) ||
+        opt_rejection != iop::e_rpc_rejection::invalid_envelope)
+    {
+        return fail("SIFRPC BIND option 1 bypassed envelope checks");
+    }
+
     packet(memory, args_source, {0u, 0u, 0u, 0u});
     packet(memory, rpc_result, {0x11111111u, 0x22222222u, 0u, 0u});
     if (!cdvd_rpc_call(iop::c_sif_rpc_bridge::k_cdvd_s_server,

@@ -1964,3 +1964,68 @@ from program+20 to program+24. The guest now actually owns its
 O32 call frame. Do not weaken bounded IOP memory writes or move
 the allocation policy back to low RAM. CI retests all workflows
 on the updated commit.
+
+
+## 2026-11-20 — 11:56 full quick-probe ZIP: CDVDFSV RTC CALL header.opt=1
+
+The uploaded archive `ps2-game-hle(20261120-115659).zip` contains
+matching `quick-probe.log` (501,219,902 bytes uncompressed) and
+`quick-probe.json`. Log parsing counted **229 distinct EE execution
+replays** across expansion passes; `auto-expand: appended` reports
+**287 new, genuinely emitted functions**, taking the linked library
+from 457 to **744 function modules** by its last successful native
+link. This is not 229 independent novel function translations;
+table-based batches account for more than one function in some
+replays. The final JSON applies exclusively to the **last replay
+(replay 31 of pass 3)**: 3,649,155 EE dispatches, 80,493,570
+guest instruction attempts, 15 GS fields and EE exception vector
+`0x80000180` with Cause=32 (SYSCALL at EPC 0x00174d64).
+The final attempt is not a guest screen/frame success.
+
+**Confirmed progress over the preceding log:** PADMAN.IRX loads as
+module 7 and its original IOP entry returns 0. Real PADMAN guest
+server `0x80000100` RPC token **14 returns** from its R3000
+handler at cycle **9,935,640**. A subsequent ARKD guest server
+`0x00000501` method 18 RPC is queued as token 15. There are
+repeated `thbase#6 StartThread(0)` errors (the native bridge now
+returns the genuine negative error -407). The latest guest context
+shows three ready threads and zero faulted IOP threads. Do **not**
+invent successful thread starts to suppress these errors.
+
+**First concrete new transport blocker:** the genuine retail EE
+SIF1 DMA descriptor
+`source=0x20561940 destination=0x0001e000 bytes=64 attrs=0x44`
+carries SIFRPC CALL words:
+
+```text
+00000040 00000000 8000000a 00000001
+00010005 20561940 00000025 00464dc0
+00000001 00000000 00464440 00000010
+00000001 2caca93f 00000000 00000000
+```
+
+This decodes as CDVDFSV `0x80000593`, method 1 (RTC),
+zero send bytes, 16 reply bytes, normal recv_mode 1, with
+**`Header.opt=1`** in packet word 3. The existing
+`c_sif_rpc_bridge::prepare_command()` unconditionally rejected
+word 3 if nonzero as `invalid_envelope`, even though the
+`ps2-web-recomp/SDBZ/runtime/src/iop/sif.cpp` RPC call
+dispatcher does not demand `Header.opt==0`. Result:
+`unsupported_rpc_packet` rejects the entire descriptor
+transaction, which is **not** a legitimate completion.
+
+Implement only the verified narrow compatibility rule: permit
+`Header.opt=1` for SIFRPC **CALL** packets, while continuing to
+reject unsupported option values and nonzero BIND options; all
+other guest address, body-length, method, server, bounded result
+buffer and DMA preflight checks remain intact. This permits the
+already existing, media-backed CDVD RTC method 1 to execute
+through a *real guest SIF1 descriptor* rather than fabricating
+its result. A synthetic 64-byte retail-shaped guest packet
+regression tests positive end-to-end transaction, while
+option 2 CALL and option 1 BIND tests must still fail closed.
+
+The EE exception after that 229-replay sequence is distinct from
+this rejected transport. The next retail replay must identify
+whether further original ARKD RPC work becomes reachable after
+accepting this packet; no first rendered frame has been proven.

@@ -234,7 +234,13 @@ bool c_sif_rpc_bridge::prepare_command(
         // form licenses an arbitrary IOP destination.
         (packet[1] != 0u &&
          packet[1] != k_rpc_data_destination) ||
-        packet[3] != 0u ||
+        // The original SDBZ EE sends SIFRPC CALL with header.opt=1
+        // during the CDVD RTC query (0x80000593 method 1). The
+        // ps2-web-recomp/SDBZ SIF RPC dispatcher does not require zero
+        // for CALL header.opt. Accept only the observed option 1 for
+        // CALL packets; BIND and unknown option bits remain rejected.
+        (packet[3] != 0u &&
+         !(packet[2] == k_call_cid && packet[3] == 1u)) ||
         packet[4] == 0u || packet[5] == 0u ||
         packet[6] == 0u || packet[7] == 0u)
     {
