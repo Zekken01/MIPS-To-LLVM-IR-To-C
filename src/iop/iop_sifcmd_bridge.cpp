@@ -133,9 +133,12 @@ bool c_sifcmd_bridge::install()
     }
     // The guest returns from its service to this trampoline only
     // after executing the actual IRX-registered RPC handler function.
-    m_installed = create_stub(
-        m_kernel.cpu(), k_rpc_finish_stub, k_service_base + 0xfeu
-    );
+    // Preserve the handler's actual v0 before the syscall stub loads
+    // its service selector. R3000 k0 is reserved kernel scratch.
+    m_installed = m_kernel.cpu().write32(
+        k_rpc_finish_stub, 0x0040d021u) &&
+        create_stub(m_kernel.cpu(), k_rpc_finish_stub + 4u,
+                    k_service_base + 0xfeu);
     return m_installed;
 }
 
@@ -332,7 +335,7 @@ bool c_sifcmd_bridge::handle_rpc_syscall(uint32_t ordinal)
         if (active == m_rpc_thread_active.end() ||
             queue == m_rpc_thread_queues.end() ||
             m_rpc_bridge == nullptr ||
-            !m_rpc_bridge->finish_guest_rpc(active->second, cpu.m_gpr[2]))
+            !m_rpc_bridge->finish_guest_rpc(active->second, cpu.m_gpr[26]))
         {
             return false;
         }
