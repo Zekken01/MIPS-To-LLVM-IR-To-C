@@ -242,6 +242,46 @@ int main()
         return fail("dormant module initializer continued executing IOP RAM");
     }
 
+    // The reference IOP kernel installs a distinct return trampoline
+    // for every started guest thread, not only module initializers.
+    // A guest worker that returns through $ra becomes dormant instead
+    // of wandering through low mirrored RAM at PC zero.
+    const uint32_t worker_return[] =
+    {
+        0x03e00008u, // jr ra
+        0x24020056u  // delay slot: addiu v0,zero,0x56
+    };
+    if (!put_program(kernel.cpu(), 0x1800u, worker_return, 2u))
+    {
+        return fail("cannot install returning IOP guest worker");
+    }
+    const uint32_t worker =
+        kernel.create_thread(0x1800u, 0u, 4u, 0x400u);
+    if (worker == 0u || !kernel.start_thread(worker))
+    {
+        return fail("cannot start returning IOP guest worker");
+    }
+    const uint32_t worker_ra =
+        kernel.thread(worker)->m_cpu.m_gpr[31];
+    if (worker_ra == 0u || worker_ra == module_return_pc)
+    {
+        return fail("ordinary IOP guest worker inherited invalid RA");
+    }
+    const iop::s_kernel_run_result worker_returned =
+        kernel.run(8u, 4u);
+    const iop::s_kernel_thread* dormant_worker =
+        kernel.thread(worker);
+    if (worker_returned.m_stop != iop::e_kernel_stop::idle ||
+        worker_returned.m_executed != 2u ||
+        worker_returned.m_thread_id != worker ||
+        dormant_worker == nullptr ||
+        dormant_worker->m_status != iop::e_thread_status::dormant ||
+        dormant_worker->m_cpu.m_pc != worker_ra ||
+        dormant_worker->m_cpu.m_gpr[2] != 0x56u)
+    {
+        return fail("ordinary worker did not retire on MIPS $ra return");
+    }
+
     // Two equal-priority R3000 threads must each execute exactly one
     // three-instruction loop per 3-cycle scheduler quantum.
     const uint32_t loop[] =
