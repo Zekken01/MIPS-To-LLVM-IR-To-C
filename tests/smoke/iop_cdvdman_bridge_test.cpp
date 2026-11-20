@@ -366,26 +366,39 @@ int main()
             return fail("idle sceCdSync incorrectly completed a command");
         }
     }
+    // The synthetic IRX's JAL targets the initial relocated import
+    // base, so use a fresh kernel instead of accidentally calling the
+    // first module's already-linked sceCdStandby stub.
+    iop::c_kernel sync_kernel;
+    iop::c_cdvdman_bridge sync_bridge(sync_kernel, media);
+    if (!sync_bridge.install())
+    {
+        return fail("sceCdSync guest bridge installation failed");
+    }
     const iop::s_module_load_result sync_module =
-        standby_kernel.load_module(make_irx(11u));
+        sync_kernel.load_module(make_irx(11u));
     if (sync_module.m_status != iop::e_irx_load_result::success)
     {
         return fail("sceCdSync guest import did not link");
     }
     const uint32_t sync_thread =
-        standby_kernel.create_module_thread(sync_module.m_id, 1u);
-    if (sync_thread == 0u || !standby_kernel.start_thread(sync_thread))
+        sync_kernel.create_module_thread(sync_module.m_id, 1u);
+    if (sync_thread == 0u || !sync_kernel.start_thread(sync_thread))
     {
         return fail("sceCdSync guest thread did not start");
     }
+    sync_kernel.bind_syscall([&](iop::c_kernel& active, uint32_t service)
+    {
+        return sync_bridge.handle_syscall(active, service);
+    });
     const iop::s_kernel_run_result sync_run =
-        standby_kernel.run(64u, 64u);
+        sync_kernel.run(64u, 64u);
     const iop::s_kernel_thread* sync_guest =
-        standby_kernel.thread(sync_thread);
+        sync_kernel.thread(sync_thread);
     if (sync_run.m_stop != iop::e_kernel_stop::budget_exhausted ||
         sync_guest == nullptr || sync_guest->m_cpu.m_gpr[2] != 0u ||
-        standby_kernel.hardware().pending_interrupts() != 0u ||
-        standby_kernel.hardware().cdvd_ncmd_pending())
+        sync_kernel.hardware().pending_interrupts() != 0u ||
+        sync_kernel.hardware().cdvd_ncmd_pending())
     {
         return fail("sceCdSync guest import did not observe idle media");
     }
