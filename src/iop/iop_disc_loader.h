@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 namespace iop
 {
@@ -49,7 +50,8 @@ public:
     s_disc_load_result load_requested(
         const std::string& guest_path,
         bool start_entrypoint,
-        uint32_t priority = 1u
+        uint32_t priority = 1u,
+        const std::vector<std::string>& arguments = {}
     );
 
 private:
