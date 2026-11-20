@@ -6,8 +6,8 @@ Main architectural reference: [twist84/ps2-web-recomp, `SDBZ` branch](https://gi
 
 Current native LLVM-IR implementation: [`src/iop/iop_kernel_hle_bridge.cpp`](../src/iop/iop_kernel_hle_bridge.cpp), audited blob `623875f9bacb21633a539ce2529570b81132c474`.
 
-The reference file defines **172 explicitly named `def("library", ordinal, ...)` handlers**. The HLE-first runtime now installs **169 guest-callable export ordinals** across
-the kernel bridge (146), CDVDMAN bridge (7), SIFCMD bridge (3) and
+The reference file defines **172 explicitly named `def("library", ordinal, ...)` handlers**. The HLE-first runtime now installs **177 guest-callable export ordinals** across
+the kernel bridge (146), CDVDMAN bridge (7), SIFCMD bridge (11) and
 SIFMAN bridge (13). **131** of the kernel bridge exports match explicitly
 named `libs.cpp` reference definitions. The earlier 152 count omitted
 seven pre-existing registrations in separate device/SIF bridges. Counts include no claim about full behavioral equivalence. The reference also uses loops/dynamic registrations (e.g. `secrman#4/#5`) and separate IOP modules (`io.cpp`, `sif.cpp`, `cdvd.cpp`, `spu2.cpp`) and EE kernel syscalls. The full reference runtime is larger than these 172 direct definitions.
@@ -213,3 +213,56 @@ invalid guest pointers.
 diagnose any subsequent `sifcmd` RPC or guest `mcman` dependency
 rather than bulk registering stubs. The preceding +138 dispatches
 do not prove video output or fully initialized memory-card hardware.
+
+## 2026-11-20 — MCSERV guest SIFCMD RPC server batch
+
+The next matched Windows archive, `ps2-game-hle(3).zip`, retains the
+correct USA ELF SHA-256 and disc folder. It contains one final replay
+with **14,523 EE dispatches** (no change from the previous batch),
+3,524 cached IR modules, and **zero newly generated EE functions**.
+Two LOADFILE operations succeeded and started guest R3000 module threads:
+`SIO2MAN.IRX` (module 1/thread 1) and `MCMAN.IRX` (module 2/thread 3).
+The real `MCSERV.IRX` attempt failed linking on `sifcmd#14`
+(`sceSifInitRpc`), rather than the previous `sifman#5`.
+All three GS diagnostic images remain completely black; terminal
+EE syscall is still `KExit` at EPC `0x001748C4`.
+
+Based on `ps2-web-recomp/runtime/src/iop/sif.cpp`, the IOP SIFCMD
+bridge now registers a **coherent eight-ordinal guest RPC family**:
+
+- `#14 sceSifInitRpc`: idempotent guest-side RPC initialization
+  after SIFCMD is actually initialized, never by registering imports;
+- `#17 sceSifRegisterRpc`, `#19 sceSifSetRpcQueue`,
+  `#24 sceSifRemoveRpc`, `#25 sceSifRemoveRpcQueue`: validated
+  guest server/function/buffer/queue ownership and lifecycle;
+- `#22 sceSifRpcLoop`: the real IOP guest thread blocks pending
+  requests, wakes only on an actual accepted EE SIF1 RPC call, runs
+  its registered R3000 callback, and returns through a dedicated
+  completion trampoline;
+- `#18 sceSifCheckStatRpc`: reads actual client-busy status from
+  validated IOP memory;
+- `#23 sceSifGetOtherData`: bounded EE RAM to IOP RAM copy with
+  explicit backend and address validation.
+
+The existing SIFRPC bridge recognizes **only registered guest servers**.
+An incoming EE bind can be accepted after the guest server exists;
+incoming calls are validated and staged, and **no EE output or SIF0
+reply is produced until the guest handler executes**. The genuine
+R3000 callback's return pointer determines reply data, with bounded
+IOP and EE RAM, and the SIF0 response uses the pre-existing armed
+DMAC transport. All guest server/pending-call state resets on IOP reboot.
+
+A focused regression executes guest R3000 `sceSifInitRpc`, blocks a
+real RPC-loop guest thread, supplies an EE SIF1 bind/call, verifies
+that no premature reply is sent, checks an actual guest callback's
+write to the response buffer, and verifies the outgoing SIF0 reply.
+Unimplemented `sifcmd#12/#13/#15/#16/#28` remain unregistered:
+real command-send, IOP-to-EE client RPC, and callback interrupt
+semantics must not be fabricated. The current MCSERV static
+`sifcmd` import set (`#14/#17/#19/#22/#23/#24/#25`) is now
+registered, but **only a subsequent matched Windows boot** can prove
+that MCSERV links and its guest thread starts or runs correctly.
+
+The native HLE ordinal total is **177**, including bridge exports
+defined outside `libs.cpp`. The explicit `libs.cpp` match count
+remains **131/172**.
