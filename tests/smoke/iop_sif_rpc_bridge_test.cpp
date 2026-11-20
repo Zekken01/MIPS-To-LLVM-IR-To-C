@@ -1507,6 +1507,129 @@ int main()
         return fail("malformed RPC envelope was not distinguished");
     }
 
+
+    // Retail SDBZ's next LOADFILE call sends 512 bytes with a
+    // nonzero argument length (observed after LIBSD.IRX). The
+    // PS2SDK arg_len and args[] fields are not reserved padding.
+    // First verify transactional validation without mutating IOP RAM.
+    const std::string with_args_path = "cdrom0:\\PADMAN.IRX;1";
+    const std::vector<uint8_t> module_args = {
+        'm', 'c', '0', ':', 0u,
+        '-', 'p', 'o', 'r', 't', '=', '0', 0u
+    };
+    for (uint32_t offset = 0u; offset < 512u; offset += 4u)
+    {
+        memory.write32(args_source + offset, 0u);
+    }
+    memory.write32(args_source, static_cast<uint32_t>(module_args.size()));
+    for (uint32_t index = 0u; index <= with_args_path.size(); ++index)
+    {
+        memory.write8(
+            args_source + 8u + index,
+            index == with_args_path.size() ? 0u :
+                static_cast<uint8_t>(with_args_path[index]));
+    }
+    for (uint32_t index = 0u; index < module_args.size(); ++index)
+    {
+        memory.write8(args_source + 260u + index, module_args[index]);
+    }
+    const std::vector<uint32_t> load_with_args = {
+        0x00020040u,
+        iop::c_sif_rpc_bridge::k_rpc_data_destination,
+        iop::c_sif_rpc_bridge::k_call_cid, 0u,
+        5u, 0x20561900u, 13u, 0x00564d40u,
+        0u, 512u, rpc_result, 8u, 1u,
+        iop::c_sif_rpc_bridge::k_loadfile_server ^
+            iop::c_sif_rpc_bridge::k_server_xor,
+        0u, 0u
+    };
+    staged.m_guest_path = "unchanged";
+    staged.m_module_arguments = {"untouched"};
+    if (!rpc.prepare_command(
+            load_with_args, 64u, args_source, 512u,
+            &staged, &status) ||
+        status != iop::e_rpc_rejection::none ||
+        staged.m_guest_path != with_args_path ||
+        staged.m_module_arguments !=
+            std::vector<std::string>({"mc0:", "-port=0"}))
+    {
+        return fail("LOADFILE nonzero arglen did not decode NUL argv");
+    }
+    memory.write32(args_source, 253u);
+    if (rpc.prepare_command(
+            load_with_args, 64u, args_source, 512u,
+            &staged, &status) ||
+        status != iop::e_rpc_rejection::invalid_arguments ||
+        staged.m_guest_path != with_args_path)
+    {
+        return fail("LOADFILE oversized arglen was accepted");
+    }
+    memory.write32(args_source, 13u);
+    memory.write8(args_source + 260u + 12u, 'X');
+    if (rpc.prepare_command(
+            load_with_args, 64u, args_source, 512u,
+            &staged, &status) ||
+        status != iop::e_rpc_rejection::invalid_arguments)
+    {
+        return fail("LOADFILE unterminated module argument was accepted");
+    }
+    memory.write8(args_source + 260u + 12u, 0u);
+
+    // Exercise the same retail-form packet through the actual
+    // transactional SIF1 descriptor list and LOADFILE backend.
+    packet(memory, call_source, load_with_args);
+    descriptor(memory, list, args_source,
+               iop::c_sif_rpc_bridge::k_rpc_data_destination, 512u);
+    descriptor(memory, list + 16u, call_source,
+               iop::c_sifcmd_bridge::k_command_buffer, 64u);
+    memory.write32(list + 28u, 0x44u);
+    dmac.acknowledge(5u);
+    dmac.acknowledge(6u);
+    if (!sif1.set_dma(list, 2u, &dma_id) ||
+        rpc.last_observation().m_guest_path != with_args_path ||
+        rpc.last_observation().m_load_status !=
+            iop::e_disc_load_result::success ||
+        !rpc.last_observation().m_module_started ||
+        rpc.last_observation().m_module_id != 2u ||
+        memory.read32(rpc_result) != 2u)
+    {
+        return fail("LOADFILE argument-bearing SIF1 packet was refused");
+    }
+    const iop::s_kernel_thread* args_thread =
+        kernel.thread(rpc.last_observation().m_thread_id);
+    if (args_thread == nullptr ||
+        args_thread->m_cpu.m_gpr[4] != 3u)
+    {
+        return fail("LOADFILE argument-bearing IRX received wrong argc");
+    }
+    const uint32_t argv_base = args_thread->m_cpu.m_gpr[5];
+    const std::vector<std::string> expected_args = {
+        with_args_path, "mc0:", "-port=0"
+    };
+    for (uint32_t index = 0u; index < expected_args.size(); ++index)
+    {
+        uint32_t guest_pointer = 0u;
+        if (!kernel.cpu().read32(
+                argv_base + index * 4u, &guest_pointer))
+        {
+            return fail("LOADFILE guest argv pointer unreadable");
+        }
+        for (uint32_t byte = 0u;
+             byte <= expected_args[index].size(); ++byte)
+        {
+            uint8_t actual_byte = 0xffu;
+            const uint8_t expected_byte =
+                byte == expected_args[index].size() ? 0u :
+                    static_cast<uint8_t>(expected_args[index][byte]);
+            if (!kernel.cpu().read8(
+                    guest_pointer + byte, &actual_byte) ||
+                actual_byte != expected_byte)
+            {
+                return fail("LOADFILE did not preserve argument bytes");
+            }
+        }
+    }
+
     // Reset may not retain the previous IOPRP's LOADFILE version.
     rpc.reset_for_reboot();
     packet(memory, call_source, version_call);
