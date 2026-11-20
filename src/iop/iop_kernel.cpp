@@ -72,6 +72,7 @@ void c_kernel::reset()
     m_modules.clear();
     m_threads.clear();
     m_alarms.clear();
+    m_hle_events.clear();
     m_syscall = {};
     m_cycles = 0u;
     m_next_module_id = 1u;
@@ -746,7 +747,21 @@ bool c_kernel::has_guest_work() const
             return true;
         }
     }
-    return !m_alarms.empty();
+    return !m_alarms.empty() || !m_hle_events.empty();
+}
+
+bool c_kernel::schedule_hle_event(
+    uint64_t ticks, std::function<void()> callback
+)
+{
+    if (m_rom0_boot_active || ticks == 0u || !callback ||
+        ticks > std::numeric_limits<uint64_t>::max() - m_cycles ||
+        m_hle_events.size() >= 256u)
+    {
+        return false;
+    }
+    m_hle_events.emplace(m_cycles + ticks, std::move(callback));
+    return true;
 }
 
 bool c_kernel::set_alarm(
@@ -1169,6 +1184,15 @@ uint32_t c_kernel::next_ready() const
 
 void c_kernel::wake_due()
 {
+    // Events may schedule additional future events while executing.
+    while (!m_hle_events.empty() &&
+           m_hle_events.begin()->first <= m_cycles)
+    {
+        std::function<void()> callback =
+            std::move(m_hle_events.begin()->second);
+        m_hle_events.erase(m_hle_events.begin());
+        callback();
+    }
     for (auto& item : m_alarms)
     {
         s_kernel_alarm& alarm = item.second;
@@ -1281,6 +1305,13 @@ s_kernel_run_result c_kernel::run(
                         next_wake, item.second.m_deadline
                     );
                 }
+            }
+            if (!m_hle_events.empty() &&
+                m_hle_events.begin()->first > m_cycles)
+            {
+                next_wake = std::min(
+                    next_wake, m_hle_events.begin()->first
+                );
             }
             if (next_wake ==
                 std::numeric_limits<uint64_t>::max())

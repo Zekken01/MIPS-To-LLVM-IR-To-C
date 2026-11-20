@@ -195,6 +195,9 @@ public:
     bool set_alarm(uint64_t ticks, uint32_t callback,
                    uint32_t argument, uint32_t gp);
     bool cancel_alarm(uint32_t callback, uint32_t argument);
+    // Deterministic HLE tasks in IOP guest-instruction time, not host time.
+    // Scheduling a task does not imply a hardware IRQ or DMA completion.
+    bool schedule_hle_event(uint64_t ticks, std::function<void()> callback);
 
     void bind_syscall(t_kernel_syscall handler);
     // Explicit IOP cycle budget. The EE must eventually provide this from
@@ -219,6 +222,7 @@ private:
     std::map<uint32_t, s_kernel_module> m_modules;
     std::map<uint32_t, s_kernel_thread> m_threads;
     std::map<uint32_t, s_kernel_alarm> m_alarms;
+    std::multimap<uint64_t, std::function<void()>> m_hle_events;
     t_kernel_syscall m_syscall;
     uint64_t m_cycles = 0u;
     bool m_rom0_boot_active = false;
