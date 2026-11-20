@@ -107,8 +107,9 @@ bool c_sifcmd_bridge::install()
 {
     // Preserve original syscall entry points. Reserve separate stubs
     // for actual guest-side RPC server lifecycle operations.
-    constexpr std::array<uint16_t, 11u> ordinals = {
-        4u, 6u, 7u, 14u, 17u, 18u, 19u, 22u, 23u, 24u, 25u
+    constexpr std::array<uint16_t, 13u> ordinals = {
+        4u, 6u, 7u, 14u, 15u, 16u, 17u,
+        18u, 19u, 22u, 23u, 24u, 25u
     };
     for (uint16_t ordinal : ordinals)
     {
@@ -185,6 +186,8 @@ void c_sifcmd_bridge::reset_for_reboot()
     m_hle_bootstrapped = false;
     m_rpc_initialized = false;
     m_rpc_servers.clear();
+    m_rpc_clients.clear();
+    m_next_iop_rpc_id = 1u;
     m_rpc_queue_threads.clear();
     m_rpc_requests.clear();
     m_rpc_thread_queues.clear();
@@ -217,6 +220,144 @@ bool c_sifcmd_bridge::handle_rpc_syscall(uint32_t ordinal)
     if (!m_rpc_initialized)
     {
         return false;
+    }
+    if (ordinal == 15u) // sceSifBindRpc
+    {
+        const uint32_t server_id = cpu.m_gpr[5];
+        const uint32_t mode = cpu.m_gpr[6];
+        const uint32_t thread_id = m_kernel.current_thread_id();
+        if (m_rpc_bridge == nullptr ||
+            !guest_ram_span(argument, 40u) ||
+            server_id == 0u || (mode & ~3u) != 0u ||
+            m_next_iop_rpc_id == 0u ||
+            m_rpc_clients.size() >= 64u ||
+            (m_rpc_clients.count(argument) != 0u &&
+             m_rpc_clients.at(argument).m_pending) ||
+            ((mode & 1u) == 0u && thread_id == 0u))
+        {
+            return fail();
+        }
+        const uint32_t id = m_next_iop_rpc_id;
+        const std::vector<uint32_t> packet = {
+            36u, 0u, c_sif_rpc_bridge::k_bind_cid, 0u,
+            id, argument, id, argument, server_id
+        };
+        if (!m_rpc_bridge->queue_iop_command(packet))
+        {
+            return fail();
+        }
+        m_rpc_clients[argument] = s_rpc_client{
+            argument, server_id, 0u, 0u, id, id,
+            (mode & 1u) == 0u ? thread_id : 0u,
+            c_sif_rpc_bridge::k_bind_cid, true, false};
+        ++m_next_iop_rpc_id;
+        if (!m_kernel.cpu().write32(argument, 1u) ||
+            !m_kernel.cpu().write32(argument + 4u, id) ||
+            !m_kernel.cpu().write32(argument + 20u, 0u) ||
+            !m_kernel.cpu().write32(argument + 24u, 0u) ||
+            !m_kernel.cpu().write32(argument + 36u, 0u))
+        {
+            return false;
+        }
+        cpu.m_gpr[2] = 0u;
+        if ((mode & 1u) == 0u &&
+            !m_kernel.block_current(51u))
+        {
+            return false;
+        }
+        return true;
+    }
+    if (ordinal == 16u) // sceSifCallRpc
+    {
+        const auto found = m_rpc_clients.find(argument);
+        const uint32_t method = cpu.m_gpr[5];
+        const uint32_t mode = cpu.m_gpr[6];
+        const uint32_t source = cpu.m_gpr[7];
+        const uint32_t sp = cpu.m_gpr[29];
+        uint32_t send_size = 0u;
+        uint32_t receive = 0u;
+        uint32_t recv_size = 0u;
+        uint32_t callback = 0u;
+        uint32_t callback_arg = 0u;
+        uint32_t published_server = 0u;
+        if (m_rpc_bridge == nullptr ||
+            found == m_rpc_clients.end() ||
+            !found->second.m_bound || found->second.m_pending ||
+            !guest_ram_span(argument, 40u) ||
+            !guest_ram_span(sp + 16u, 20u) ||
+            !m_kernel.cpu().read32(sp + 16u, &send_size) ||
+            !m_kernel.cpu().read32(sp + 20u, &receive) ||
+            !m_kernel.cpu().read32(sp + 24u, &recv_size) ||
+            !m_kernel.cpu().read32(sp + 28u, &callback) ||
+            !m_kernel.cpu().read32(sp + 32u, &callback_arg) ||
+            !m_kernel.cpu().read32(argument + 36u, &published_server) ||
+            published_server != found->second.m_server_data ||
+            (mode & ~3u) != 0u ||
+            send_size > 4096u || recv_size > 4096u ||
+            (send_size != 0u && !guest_ram_span(source, send_size)) ||
+            (recv_size != 0u && !guest_ram_span(receive, recv_size)) ||
+            // A non-null end-function must execute in guest R3000
+            // context. Do not claim to have invoked it.
+            callback != 0u ||
+            m_next_iop_rpc_id == 0u ||
+            ((mode & 1u) == 0u &&
+             m_kernel.current_thread_id() == 0u))
+        {
+            return fail();
+        }
+        const uint32_t ee_address = found->second.m_ee_buffer;
+        const uint32_t ee_region = ee_address & 0xe0000000u;
+        const uint32_t ee_physical = ee_address & 0x1fffffffu;
+        if (send_size != 0u &&
+            ((ee_region != 0u && ee_region != 0x80000000u &&
+              ee_region != 0xa0000000u) ||
+             ee_physical == 0u || m_ee_ram == nullptr ||
+             !m_ee_ram->contains(ee_physical, send_size)))
+        {
+            return fail();
+        }
+        std::vector<uint8_t> bytes(send_size);
+        for (uint32_t i = 0u; i < send_size; ++i)
+        {
+            if (!m_kernel.cpu().read8(source + i, &bytes[i]))
+            {
+                return fail();
+            }
+        }
+        const uint32_t id = m_next_iop_rpc_id;
+        const std::vector<uint32_t> packet = {
+            56u, 0u, c_sif_rpc_bridge::k_call_cid, 0u,
+            id, argument, id, argument, method, send_size,
+            receive, recv_size, 1u,
+            found->second.m_server_data
+        };
+        if (!m_rpc_bridge->queue_iop_command(
+                packet, send_size == 0u ? 0u : ee_physical, bytes))
+        {
+            return fail();
+        }
+        s_rpc_client& client = found->second;
+        client.m_packet_id = id;
+        client.m_rpc_id = id;
+        client.m_pending = true;
+        client.m_expected_command = c_sif_rpc_bridge::k_call_cid;
+        client.m_wait_thread = (mode & 1u) == 0u
+            ? m_kernel.current_thread_id() : 0u;
+        ++m_next_iop_rpc_id;
+        if (!m_kernel.cpu().write32(argument, 1u) ||
+            !m_kernel.cpu().write32(argument + 4u, id) ||
+            !m_kernel.cpu().write32(argument + 28u, callback) ||
+            !m_kernel.cpu().write32(argument + 32u, callback_arg))
+        {
+            return false;
+        }
+        cpu.m_gpr[2] = 0u;
+        if ((mode & 1u) == 0u &&
+            !m_kernel.block_current(51u))
+        {
+            return false;
+        }
+        return true;
     }
     if (ordinal == 18u) // sceSifCheckStatRpc
     {
@@ -442,6 +583,7 @@ bool c_sifcmd_bridge::handle_syscall(
     {
         const uint32_t ordinal = service - k_service_base;
         if (ordinal == 14u || ordinal == 17u ||
+            ordinal == 15u || ordinal == 16u ||
             ordinal == 18u || ordinal == 19u ||
             ordinal == 22u || ordinal == 23u ||
             ordinal == 24u || ordinal == 25u ||
