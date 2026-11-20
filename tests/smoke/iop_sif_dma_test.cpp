@@ -338,6 +338,108 @@ int main()
         return fail("rejected 96 KiB DMA consumed the following DMA ID");
     }
 
+    // PADMAN imports sifman #32. A requested DMA callback must
+    // execute original R3000 code only after a validated transfer and
+    // the reference's 32 IOP guest-cycle delay, with a0=data and
+    // the original module GP. Install a tiny synthetic callback.
+    constexpr uint32_t k_callback = 0x0001a100u;
+    constexpr uint32_t k_callback_result = 0x0001a200u;
+    constexpr uint32_t k_callback_data = 0x13572468u;
+    constexpr uint32_t k_callback_gp = 0x0000abc0u;
+    uint32_t callback_stub = 0u;
+    if (!kernel.lookup_library("sifman", 32u, &callback_stub) ||
+        callback_stub != iop::c_sifman_bridge::k_set_dma_intr_stub ||
+        !kernel.cpu().write32(k_callback, 0x3c080001u) ||
+        !kernel.cpu().write32(k_callback + 4u, 0x3508a200u) ||
+        !kernel.cpu().write32(k_callback + 8u, 0xad040000u) ||
+        !kernel.cpu().write32(k_callback + 12u, 0xad1c0004u) ||
+        !kernel.cpu().write32(k_callback + 16u, 0x03e00008u) ||
+        !kernel.cpu().write32(k_callback + 20u, 0u) ||
+        !kernel.cpu().write32(k_callback_result, 0u) ||
+        !kernel.cpu().write32(k_callback_result + 4u, 0u) ||
+        !make_descriptor(kernel.cpu(), k_list,
+                         k_source0, k_destination0, 32u))
+    {
+        return fail("failed to prepare sifman #32 guest callback");
+    }
+
+    kernel.cpu().state().m_gpr[4] = k_list;
+    kernel.cpu().state().m_gpr[5] = 1u;
+    kernel.cpu().state().m_gpr[6] = k_callback;
+    kernel.cpu().state().m_gpr[7] = k_callback_data;
+    kernel.cpu().state().m_gpr[28] = k_callback_gp;
+    dmac.acknowledge(5u);
+    ee_ram.write32(k_destination0, 0xaabbccddu);
+    if (!set_sif0_chcr(dmac, 0u) ||
+        bridge.handle_syscall(
+            kernel, iop::c_sifman_bridge::k_set_dma_intr_syscall) ||
+        ee_ram.read32(k_destination0) != 0xaabbccddu ||
+        (dmac.status() & (1u << 5u)) != 0u ||
+        !set_sif0_chcr(dmac, 0x184u))
+    {
+        return fail("unarmed sifman #32 fabricated a transfer");
+    }
+
+    kernel.cpu().state().m_gpr[6] = k_callback + 1u;
+    if (bridge.handle_syscall(
+            kernel, iop::c_sifman_bridge::k_set_dma_intr_syscall) ||
+        ee_ram.read32(k_destination0) != 0xaabbccddu ||
+        (dmac.status() & (1u << 5u)) != 0u)
+    {
+        return fail("invalid sifman #32 callback altered DMA state");
+    }
+
+    kernel.cpu().state().m_gpr[6] = k_callback;
+    if (!bridge.handle_syscall(
+            kernel, iop::c_sifman_bridge::k_set_dma_intr_syscall) ||
+        kernel.cpu().state().m_gpr[2] != 5u ||
+        ee_ram.read32(k_destination0) != 0xaabb0000u ||
+        (dmac.status() & (1u << 5u)) == 0u)
+    {
+        return fail("sifman #32 did not perform authenticated DMA");
+    }
+    uint32_t observed_data = 0u;
+    if (!kernel.cpu().read32(k_callback_result, &observed_data) ||
+        observed_data != 0u)
+    {
+        return fail("sifman #32 executed callback at registration");
+    }
+    (void)kernel.run(31u);
+    if (!kernel.cpu().read32(k_callback_result, &observed_data) ||
+        observed_data != 0u)
+    {
+        return fail("sifman #32 callback fired before 32 IOP cycles");
+    }
+    (void)kernel.run(256u);
+    uint32_t observed_gp = 0u;
+    if (!kernel.cpu().read32(k_callback_result, &observed_data) ||
+        !kernel.cpu().read32(k_callback_result + 4u, &observed_gp) ||
+        observed_data != k_callback_data ||
+        observed_gp != k_callback_gp ||
+        kernel.has_guest_work())
+    {
+        return fail("sifman #32 original R3000 callback did not return");
+    }
+
+    // Queue-capacity rejection must also be atomic. The queue is
+    // driven only by virtual guest IOP cycles, never wall-clock time.
+    for (uint32_t index = 0u; index < 256u; ++index)
+    {
+        if (!kernel.schedule_hle_event(4096u, []() {}))
+        {
+            return fail("could not fill finite IOP event queue");
+        }
+    }
+    dmac.acknowledge(5u);
+    ee_ram.write32(k_destination0, 0xdeadbeefu);
+    if (bridge.handle_syscall(
+            kernel, iop::c_sifman_bridge::k_set_dma_intr_syscall) ||
+        ee_ram.read32(k_destination0) != 0xdeadbeefu ||
+        (dmac.status() & (1u << 5u)) != 0u)
+    {
+        return fail("full callback queue caused partial SIFMAN DMA");
+    }
+
     // An IOP kernel without an EE DMA backend must not pretend to
     // accept an imported sifman SetDma operation.
     iop::c_kernel isolated;

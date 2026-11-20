@@ -232,6 +232,7 @@ public:
     bool cancel_alarm(uint32_t callback, uint32_t argument);
     // Deterministic HLE tasks in IOP guest-instruction time, not host time.
     // Scheduling a task does not imply a hardware IRQ or DMA completion.
+    bool can_schedule_hle_event(uint64_t ticks) const;
     bool schedule_hle_event(uint64_t ticks, std::function<void()> callback);
     // Execute the original R3000 guest function as a bounded one-shot
     // callback with a real MIPS return trampoline, not a host fake.

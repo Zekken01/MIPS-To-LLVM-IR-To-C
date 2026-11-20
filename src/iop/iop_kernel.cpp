@@ -807,13 +807,18 @@ bool c_kernel::has_guest_work() const
             m_hardware.next_pending_interrupt() >= 0);
 }
 
+bool c_kernel::can_schedule_hle_event(uint64_t ticks) const
+{
+    return !m_rom0_boot_active && ticks != 0u &&
+           ticks <= std::numeric_limits<uint64_t>::max() - m_cycles &&
+           m_hle_events.size() < 256u;
+}
+
 bool c_kernel::schedule_hle_event(
     uint64_t ticks, std::function<void()> callback
 )
 {
-    if (m_rom0_boot_active || ticks == 0u || !callback ||
-        ticks > std::numeric_limits<uint64_t>::max() - m_cycles ||
-        m_hle_events.size() >= 256u)
+    if (!can_schedule_hle_event(ticks) || !callback)
     {
         return false;
     }

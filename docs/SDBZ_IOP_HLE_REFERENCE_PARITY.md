@@ -1799,3 +1799,62 @@ descriptors transactionally. Failed calls may not modify EE RAM,
 raise DMA5, or consume an ID. CI success alone does not prove a
 retail SIF0 response or visible frame. A subsequent matched quick
 probe is required to observe the next original guest event.
+
+
+## 2026-11-20 — 10:13 matched quick-probe: PADMAN sifman #32 missing
+
+User-uploaded `quick-probe(2).log`, `quick-probe(2).json`, and
+`translation-cache(2).json` form the next Windows cached probe.
+The log contains **nine independent auto-expansion replays (0..8)**;
+the final JSON is replay 8, not a continuation of earlier dispatch
+counts. Neither log nor cache embeds a verified checkout SHA. Remote
+PR #145 HEAD before this batch was
+`8ac12e4055b9dfbccd749928a1752c38fd007471`.
+
+No `SifSetDma rejected` or IOP syscall stop occurs. The prior 96 KiB
+SIFMAN rejection is gone. Actual ARKD guest RPC token 10, server
+`0x503`, method 2, returns guest pointer `0x00091bc0` at
+IOP cycle 7,303,495. The final replay reaches **4,000,000 EE
+dispatches**, 91,541,856 EE guest instruction attempts and 18 GS
+fields; it stops at the configured budget with `exit_name=RETURN`,
+not an unsupported instruction. No black/nonblack image was supplied.
+Observed GS sprite provenance still has five untextured pairs and
+zero nonblack sample RGB.
+
+The **new first concrete bootstrap blocker** is repeated LOADFILE
+`cdrom0:\\PADMAN.IRX;1`, first request sequence 33, returning
+`0xffffffff`, `load_status=7`, `link_status=5`,
+`unresolved=sifman#32`. Subsequent failed retries are reported
+at sequences 128, 256, ..., 2048. This is a genuine missing IRX
+library import, not a reason to increase dispatch limits.
+
+The primary reference `ps2-web-recomp/SDBZ/runtime/src/iop/sif.cpp`
+exports `sceSifSetDmaIntr` as SIFMAN ordinal 32. Its first two
+arguments use the same DMA descriptor transport as ordinal 7;
+arguments 3/4 supply an original IOP guest callback and argument.
+Only after the DMA is committed does the reference queue a callback
+job for 32 IOP cycles later. Our native kernel already supports
+bounded HLE clock events and real one-shot R3000 guest callbacks.
+
+This batch exports only `sifman#32` with a dedicated guest R3000
+stub at `0x00018060`; the default extra ordinal mapping would land
+at `0x00018b00`, owned by SIFCMD, and must not be used. Both #7
+and #32 use the existing staged, range-checked and armed EE SIF0
+DMA5 path. A non-null #32 callback is validated as executable
+IOP RAM and preflighted for finite event capacity **before** any EE
+destination write. Following genuine DMA5 completion, schedule the
+provided callback for 32 original IOP guest-clock ticks, preserving
+its caller GP and argument; callback dispatch creates no synthetic
+EE/IOP readiness or DMA completion. Null callbacks behave exactly
+like plain #7. Reset clears pending HLE events.
+
+Regressions cover the newly resolved IRX import, invalid callback,
+unarmed receiver, real guest R3000 callback writing its argument
+and GP after the delayed event, no early callback, and fail-closed
+queue-capacity rejection. A bounded success trace reports the
+first eight legitimate SIFMAN DMA commits.
+
+The underlying virtual IOP clock is still approximate and the
+callback runs in an existing one-shot guest R3000 thread rather
+than bit-exact hardware interrupt nesting. Do not claim first-frame
+success before a new retail replay. PR #145 remains draft and open.

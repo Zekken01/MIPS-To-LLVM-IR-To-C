@@ -46,9 +46,9 @@ bool c_sifman_bridge::install()
 {
     // Keep all existing guest stub addresses stable; this avoids
     // collisions with SIFCMD and CDVDMAN in reserved low IOP RAM.
-    constexpr std::array<uint16_t, 13u> ordinals = {
+    constexpr std::array<uint16_t, 14u> ordinals = {
         4u, 5u, 6u, 7u, 8u, 21u, 22u,
-        23u, 24u, 25u, 26u, 27u, 29u
+        23u, 24u, 25u, 26u, 27u, 29u, 32u
     };
     for (uint16_t ordinal : ordinals)
     {
@@ -56,6 +56,10 @@ bool c_sifman_bridge::install()
         if (ordinal == 7u)
         {
             pc = k_set_dma_stub;
+        }
+        else if (ordinal == 32u)
+        {
+            pc = k_set_dma_intr_stub;
         }
         else if (ordinal == 23u)
         {
@@ -78,6 +82,7 @@ bool c_sifman_bridge::install()
     m_initialized = false;
     m_dma_chain_configured = false;
     m_next_dma_id = 1u;
+    m_dma_success_log_count = 0u;
     return true;
 }
 
@@ -237,14 +242,22 @@ bool c_sifman_bridge::handle_syscall(
         return true;
 
     case k_set_dma_syscall:
+    case k_set_dma_intr_syscall:
     {
-        // Guest sceSifSetDma receives a pointer to 16-byte
+        // Both sifman #7 and #32 receive 16-byte
         // descriptors (IOP src, EE dst, byte count, attributes).
         // Unlike the reference's eager memcpy, validate and stage
         // every transfer before writing a single guest EE byte.
         const s_cpu_state& state = kernel.cpu().state();
         const uint32_t list = state.m_gpr[4];
         const uint32_t count = state.m_gpr[5];
+        // sceSifSetDmaIntr(a0=list,a1=count,a2=callback,a3=data).
+        // A successful DMA with a non-null callback schedules actual
+        // guest code; the callback is never a synthetic completion.
+        const uint32_t callback = service == k_set_dma_intr_syscall
+            ? state.m_gpr[6] : 0u;
+        const uint32_t callback_data = state.m_gpr[7];
+        const uint32_t callback_gp = state.m_gpr[28];
 
         // The retail ARKD worker reaches this import only after its
         // original method-1 RPC and the 0x503:258/2 follow-up calls
@@ -337,6 +350,25 @@ bool c_sifman_bridge::handle_syscall(
             list_physical > c_cpu::k_ram_size - count * 16u)
         {
             return reject("invalid_descriptor_list");
+        }
+
+        if (callback != 0u)
+        {
+            const uint32_t region = callback & 0xe0000000u;
+            const uint32_t physical = callback & 0x1fffffffu;
+            uint32_t instruction = 0u;
+            if ((callback & 3u) != 0u ||
+                (region != 0u && region != 0x80000000u &&
+                 region != 0xa0000000u) ||
+                physical >= c_cpu::k_ram_size ||
+                !kernel.cpu().read32(callback, &instruction))
+            {
+                return reject("invalid_dma_callback");
+            }
+            if (!kernel.can_schedule_hle_event(32u))
+            {
+                return reject("dma_callback_queue_unavailable");
+            }
         }
 
         ee::s_ee_u128 chcr{};
@@ -444,7 +476,53 @@ bool c_sifman_bridge::handle_syscall(
         {
             return reject("ee_sif0_dmac_completion");
         }
-        kernel.cpu().state().m_gpr[2] = m_next_dma_id++;
+        if (callback != 0u)
+        {
+            // All DMA checks and the real DMA5 raise have completed.
+            // The 32-tick delay matches ps2-web-recomp/SDBZ's job
+            // scheduling; IOP guest instructions drive this clock.
+            const bool scheduled = kernel.schedule_hle_event(
+                32u, [this, callback, callback_gp, callback_data]()
+                {
+                    if (!m_kernel.start_guest_callback(
+                            callback, callback_gp, callback_data))
+                    {
+                        std::fprintf(stderr,
+                            "IOP SIFMAN DMA callback could not enter "
+                            "guest code: pc=0x%08x gp=0x%08x "
+                            "data=0x%08x cycles=%llu\n",
+                            callback, callback_gp, callback_data,
+                            static_cast<unsigned long long>(
+                                m_kernel.cycles()));
+                    }
+                });
+            if (!scheduled)
+            {
+                // Preflight already reserved capacity. This cannot
+                // fail in the single-threaded IOP scheduler without
+                // an intervening kernel reset or invariant violation.
+                return reject("dma_callback_enqueue_failed");
+            }
+        }
+        const uint32_t dma_id = m_next_dma_id++;
+        kernel.cpu().state().m_gpr[2] = dma_id;
+        if (m_dma_success_log_count < 8u)
+        {
+            uint64_t bytes = 0u;
+            for (const s_transfer& transfer : transfers)
+            {
+                bytes += transfer.m_bytes.size();
+            }
+            std::fprintf(stderr,
+                "IOP HLE SifSetDma accepted: service=0x%08x "
+                "thread=%u list=0x%08x count=%u bytes=%llu "
+                "dma_id=%u callback=0x%08x cycles=%llu\n",
+                service, kernel.current_thread_id(), list, count,
+                static_cast<unsigned long long>(bytes),
+                dma_id, callback,
+                static_cast<unsigned long long>(kernel.cycles()));
+            ++m_dma_success_log_count;
+        }
         return true;
     }
 
