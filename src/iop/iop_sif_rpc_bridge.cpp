@@ -34,30 +34,35 @@ bool normalize_ee_ram(uint32_t pointer, uint32_t* physical)
 
 bool read_guest_path(
     ee::ee_memory& memory, uint32_t buffer,
-    uint32_t size, std::string* output
+    uint32_t size, std::string* output,
+    std::vector<std::string>* arguments
 )
 {
-    // LOADFILE method 0: word arglen, word unused, 252-byte path,
-    // followed by up to 252 bytes of IOP module arguments. Module
-    // arguments are not yet supported: reject rather than discard.
-    if (output == nullptr || size < 260u ||
-        !memory.contains(buffer, size) ||
-        memory.read32(buffer) != 0u)
+    // PS2SDK _lf_module_load_arg, exactly 512 bytes in retail:
+    // +0 arg_len (0..252), +4 modres, +8 path[252],
+    // +260 args[252]. A short zero-argument test envelope remains
+    // valid, but nonempty arguments require their staged bytes.
+    if (output == nullptr || arguments == nullptr || size < 260u ||
+        !memory.contains(buffer, size))
+    {
+        return false;
+    }
+
+    const uint32_t argument_bytes = memory.read32(buffer);
+    if (argument_bytes > 252u ||
+        argument_bytes > size - 260u)
     {
         return false;
     }
     std::string path;
+    bool terminated = false;
     for (uint32_t index = 0u; index < 252u; ++index)
     {
         const uint8_t ch = memory.read8(buffer + 8u + index);
         if (ch == 0u)
         {
-            if (path.empty())
-            {
-                return false;
-            }
-            *output = std::move(path);
-            return true;
+            terminated = true;
+            break;
         }
         if (ch < 0x20u || ch > 0x7eu)
         {
@@ -65,7 +70,38 @@ bool read_guest_path(
         }
         path.push_back(static_cast<char>(ch));
     }
-    return false;
+    if (!terminated || path.empty())
+    {
+        return false;
+    }
+
+    std::vector<std::string> parsed;
+    std::string word;
+    for (uint32_t index = 0u; index < argument_bytes; ++index)
+    {
+        const uint8_t ch = memory.read8(buffer + 260u + index);
+        if (ch == 0u)
+        {
+            parsed.push_back(std::move(word));
+            word.clear();
+        }
+        else
+        {
+            // Preserve the caller's literal module arguments. They
+            // are delivered as guest strings, not interpreted by HLE.
+            word.push_back(static_cast<char>(ch));
+        }
+    }
+    if (!word.empty() ||
+        (argument_bytes != 0u &&
+         memory.read8(buffer + 260u + argument_bytes - 1u) != 0u))
+    {
+        // Partial final argument would leak beyond the DMA payload.
+        return false;
+    }
+    *output = std::move(path);
+    *arguments = std::move(parsed);
+    return true;
 }
 } // namespace
 
@@ -289,7 +325,8 @@ bool c_sif_rpc_bridge::prepare_command(
                  !m_ee_ram.contains(payload_source, packet[9]) ||
                  !read_guest_path(
                      m_ee_ram, payload_source, packet[9],
-                     &candidate.m_guest_path))
+                     &candidate.m_guest_path,
+                     &candidate.m_module_arguments))
         {
             return refuse(e_rpc_rejection::invalid_arguments);
         }
@@ -726,7 +763,8 @@ void c_sif_rpc_bridge::commit_command(const s_request& request)
         {
             ++m_load_requests;
             const s_disc_load_result loaded = m_loader.load_requested(
-                request.m_guest_path, true
+                request.m_guest_path, true, 1u,
+                request.m_module_arguments
             );
             observed.m_load_status = loaded.m_result;
             observed.m_link_status = loaded.m_link_status;
