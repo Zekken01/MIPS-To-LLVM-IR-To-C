@@ -185,7 +185,7 @@ int main()
         return fail("failed to install cdvdman #10 import trampoline");
     }
     if (bridge.install() || bridge.handle_syscall(kernel, 0xffffffffu) ||
-        kernel.load_module(make_irx(6u)).m_status !=
+        kernel.load_module(make_irx(7u)).m_status !=
             iop::e_irx_load_result::unresolved_import)
     {
         return fail("duplicate install or unknown cdvdman export accepted");
