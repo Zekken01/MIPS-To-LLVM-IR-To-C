@@ -11,6 +11,9 @@ namespace iop
 {
 namespace
 {
+constexpr uint32_t k_alarm_return_pc = 0x00013ff0u;
+constexpr uint32_t k_hle_callback_return_pc = 0x00013fe0u;
+
 bool valid_range(size_t size, uint64_t offset, uint64_t length)
 {
     return offset <= size && length <= size - offset;
@@ -69,10 +72,13 @@ void c_kernel::reset()
     m_libraries.clear();
     m_modules.clear();
     m_threads.clear();
+    m_alarms.clear();
+    m_hle_events.clear();
     m_syscall = {};
     m_cycles = 0u;
     m_next_module_id = 1u;
     m_next_thread_id = 1u;
+    m_next_alarm_id = 1u;
     m_last_scheduled_id = 0u;
     m_current_thread_id = 0u;
 }
@@ -184,6 +190,178 @@ bool c_kernel::register_library(
     return library.emplace(ordinal, entry).second;
 }
 
+// LOADCORE RegisterLibraryEntries/ReleaseLibraryEntries operate on actual
+// relocated IRX export tables, not an arbitrary guest-supplied name/address.
+// Modules publish their entries during load_irx() after transactional
+// validation; the original entrypoint's RegisterLibraryEntries is therefore
+// initially idempotent. Release unregisters exactly that module's exports.
+// Previously bound consumer JAL stubs are not repatched (linker limitation).
+bool c_kernel::set_module_library_registration(
+    uint32_t table, bool registered)
+{
+    if ((table & 3u) != 0u)
+    {
+        return false;
+    }
+    const uint32_t physical = table & 0x1fffffffu;
+    const s_kernel_module* owner = nullptr;
+    for (const auto& item : m_modules)
+    {
+        const s_irx_module& module = item.second.m_irx;
+        const uint64_t base = module.m_base;
+        const uint64_t end = base + module.m_size;
+        if (physical >= base &&
+            static_cast<uint64_t>(physical) + 24u <= end)
+        {
+            owner = &item.second;
+            break;
+        }
+    }
+    if (owner == nullptr)
+    {
+        return false;
+    }
+
+    uint32_t marker = 0u;
+    if (!m_cpu.read32(table, &marker) || marker != 0x41c00000u)
+    {
+        return false;
+    }
+    std::string name;
+    for (uint32_t i = 0u; i < 8u; ++i)
+    {
+        uint8_t ch = 0u;
+        if (!m_cpu.read8(table + 12u + i, &ch))
+        {
+            return false;
+        }
+        if (ch == 0u)
+        {
+            break;
+        }
+        if (ch < 0x21u || ch > 0x7eu)
+        {
+            return false;
+        }
+        name.push_back(static_cast<char>(ch));
+    }
+    if (name.empty())
+    {
+        return false;
+    }
+
+    std::map<uint16_t, uint32_t> expected;
+    for (const s_irx_export& item : owner->m_irx.m_exports)
+    {
+        if (item.m_library == name)
+        {
+            if (!expected.emplace(item.m_ordinal, item.m_entry).second)
+            {
+                return false;
+            }
+        }
+    }
+    if (expected.empty())
+    {
+        return false;
+    }
+
+    // Recheck all guest words against the real module export metadata,
+    // including zero holes in sparse tables, before touching the registry.
+    // The 20-byte header is followed by ordinal-indexed 32-bit pointers.
+    const uint64_t end = static_cast<uint64_t>(owner->m_irx.m_base) +
+        owner->m_irx.m_size;
+    uint32_t entries_seen = 0u;
+    bool terminated = false;
+    for (uint32_t ordinal = 0u; ordinal < 1024u; ++ordinal)
+    {
+        const uint64_t offset = static_cast<uint64_t>(physical) +
+            20u + static_cast<uint64_t>(ordinal) * 4u;
+        if (offset + 4u > end)
+        {
+            return false;
+        }
+        uint32_t entry = 0u;
+        if (!m_cpu.read32(table + 20u + ordinal * 4u, &entry))
+        {
+            return false;
+        }
+        const auto found = expected.find(static_cast<uint16_t>(ordinal));
+        if (found == expected.end())
+        {
+            if (entry != 0u)
+            {
+                return false;
+            }
+            if (expected.upper_bound(static_cast<uint16_t>(ordinal)) ==
+                expected.end())
+            {
+                terminated = true;
+                break;
+            }
+            continue;
+        }
+        if (entry != found->second)
+        {
+            return false;
+        }
+        ++entries_seen;
+    }
+    if (!terminated || entries_seen != expected.size())
+    {
+        return false;
+    }
+
+    // An existing kernel/HLE provider cannot be overwritten or released
+    // using a forged export table. Reject partial and conflicting state.
+    const auto library = m_libraries.find(name);
+    uint32_t existing_count = 0u;
+    for (const auto& entry : expected)
+    {
+        if (library != m_libraries.end())
+        {
+            const auto found = library->second.find(entry.first);
+            if (found != library->second.end())
+            {
+                if (found->second != entry.second)
+                {
+                    return false;
+                }
+                ++existing_count;
+            }
+        }
+    }
+    if (existing_count != 0u && existing_count != expected.size())
+    {
+        return false;
+    }
+    if (registered)
+    {
+        if (existing_count == 0u)
+        {
+            auto& entries = m_libraries[name];
+            entries.insert(expected.begin(), expected.end());
+        }
+    }
+    else
+    {
+        if (existing_count != expected.size() ||
+            library == m_libraries.end())
+        {
+            return false;
+        }
+        for (const auto& entry : expected)
+        {
+            library->second.erase(entry.first);
+        }
+        if (library->second.empty())
+        {
+            m_libraries.erase(library);
+        }
+    }
+    return true;
+}
+
 uint32_t c_kernel::allocate(uint32_t size)
 {
     const uint64_t required = align16(size);
@@ -292,6 +470,31 @@ uint32_t c_kernel::heap_total_free() const
     }
     total += static_cast<uint64_t>(c_cpu::k_ram_size) - candidate;
     return static_cast<uint32_t>(total);
+}
+
+bool c_kernel::query_heap_block(
+    uint32_t address, uint32_t* base, uint32_t* size
+) const
+{
+    if (base == nullptr || size == nullptr)
+    {
+        return false;
+    }
+    const auto upper = m_heap_allocations.upper_bound(address);
+    if (upper == m_heap_allocations.begin())
+    {
+        return false;
+    }
+    const auto found = std::prev(upper);
+    const uint64_t end =
+        static_cast<uint64_t>(found->first) + found->second;
+    if (static_cast<uint64_t>(address) >= end)
+    {
+        return false;
+    }
+    *base = found->first;
+    *size = found->second;
+    return true;
 }
 
 bool c_kernel::estimate_module_size(
@@ -457,6 +660,11 @@ const s_kernel_module* c_kernel::module(uint32_t id) const
     return found == m_modules.end() ? nullptr : &found->second;
 }
 
+const std::map<uint32_t, s_kernel_module>& c_kernel::modules() const
+{
+    return m_modules;
+}
+
 uint32_t c_kernel::create_thread(
     uint32_t entry, uint32_t gp, uint32_t priority,
     uint32_t stack_size, uint32_t a0, uint32_t a1
@@ -485,6 +693,9 @@ uint32_t c_kernel::create_thread(
     s_kernel_thread thread{};
     thread.m_id = m_next_thread_id++;
     thread.m_priority = priority;
+    thread.m_initial_priority = priority;
+    thread.m_entry = entry;
+    thread.m_gp = gp;
     thread.m_stack_base = stack_base;
     thread.m_stack_size = allocated_size;
     thread.m_cpu.m_pc = entry;
@@ -537,6 +748,126 @@ bool c_kernel::has_guest_work() const
             return true;
         }
     }
+    return !m_alarms.empty() || !m_hle_events.empty();
+}
+
+bool c_kernel::schedule_hle_event(
+    uint64_t ticks, std::function<void()> callback
+)
+{
+    if (m_rom0_boot_active || ticks == 0u || !callback ||
+        ticks > std::numeric_limits<uint64_t>::max() - m_cycles ||
+        m_hle_events.size() >= 256u)
+    {
+        return false;
+    }
+    m_hle_events.emplace(m_cycles + ticks, std::move(callback));
+    return true;
+}
+
+bool c_kernel::start_guest_callback(
+    uint32_t callback, uint32_t gp, uint32_t argument
+)
+{
+    const uint32_t region = callback & 0xe0000000u;
+    const uint32_t physical = callback & 0x1fffffffu;
+    uint32_t opcode = 0u;
+    if (m_rom0_boot_active || callback == 0u ||
+        (callback & 3u) != 0u ||
+        (region != 0u && region != 0x80000000u &&
+         region != 0xa0000000u) ||
+        physical >= c_cpu::k_ram_size ||
+        !m_cpu.read32(callback, &opcode) ||
+        !m_cpu.write32(k_hle_callback_return_pc, 0x0000000du))
+    {
+        return false;
+    }
+    const uint32_t id = create_thread(callback, gp, 1u,
+                                      0x400u, argument);
+    if (id == 0u)
+    {
+        return false;
+    }
+    s_kernel_thread& thread = m_threads.at(id);
+    thread.m_hle_guest_callback = true;
+    thread.m_cpu.m_gpr[31] = k_hle_callback_return_pc;
+    return start_thread(id);
+}
+
+bool c_kernel::set_alarm(
+    uint64_t ticks, uint32_t callback,
+    uint32_t argument, uint32_t gp
+)
+{
+    const uint32_t physical = callback & 0x1fffffffu;
+    uint32_t opcode = 0u;
+    if (m_rom0_boot_active || ticks == 0u ||
+        ticks > std::numeric_limits<uint64_t>::max() - m_cycles ||
+        callback == 0u || (callback & 3u) != 0u ||
+        physical >= c_cpu::k_ram_size ||
+        !m_cpu.read32(callback, &opcode))
+    {
+        return false;
+    }
+    for (const auto& item : m_alarms)
+    {
+        if (item.second.m_callback == callback &&
+            item.second.m_argument == argument)
+        {
+            return false;
+        }
+    }
+    // Reserved below the kernel HLE stubs and above their ctype table.
+    // A real guest callback returns here through $ra; the break is
+    // consumed only for a thread explicitly associated with an alarm.
+    if (!m_cpu.write32(k_alarm_return_pc, 0x0000000du))
+    {
+        return false;
+    }
+    const uint32_t id = create_thread(
+        callback, gp, 0u, 0x400u, argument);
+    if (id == 0u)
+    {
+        return false;
+    }
+    s_kernel_thread& thread = m_threads.at(id);
+    const uint32_t alarm_id = m_next_alarm_id++;
+    thread.m_alarm_id = alarm_id;
+    thread.m_cpu.m_gpr[31] = k_alarm_return_pc;
+    m_alarms.emplace(alarm_id, s_kernel_alarm{
+        alarm_id, id, callback, argument, gp, m_cycles + ticks, false
+    });
+    return true;
+}
+
+bool c_kernel::cancel_alarm(uint32_t callback, uint32_t argument)
+{
+    for (auto it = m_alarms.begin(); it != m_alarms.end(); ++it)
+    {
+        s_kernel_alarm& alarm = it->second;
+        if (alarm.m_callback != callback ||
+            alarm.m_argument != argument || alarm.m_cancelled)
+        {
+            continue;
+        }
+        auto thread = m_threads.find(alarm.m_thread_id);
+        if (thread == m_threads.end())
+        {
+            return false;
+        }
+        if (thread->second.m_status == e_thread_status::running)
+        {
+            // A callback may cancel itself. Retire it on return.
+            alarm.m_cancelled = true;
+        }
+        else
+        {
+            m_allocations.erase(thread->second.m_stack_base);
+            m_threads.erase(thread);
+            m_alarms.erase(it);
+        }
+        return true;
+    }
     return false;
 }
 
@@ -556,11 +887,112 @@ bool c_kernel::start_thread_with_argument(
     uint32_t id, uint32_t argument
 )
 {
+    return start_thread_with_arguments(id, argument, 0u);
+}
+
+bool c_kernel::start_thread_with_arguments(
+    uint32_t id, uint32_t a0, uint32_t a1
+)
+{
     if (!start_thread(id))
     {
         return false;
     }
-    m_threads.at(id).m_cpu.m_gpr[4] = argument;
+    s_kernel_thread& thread = m_threads.at(id);
+    s_cpu_state initial{};
+    initial.m_pc = thread.m_entry;
+    initial.m_next_pc = thread.m_entry + 4u;
+    initial.m_gpr[28] = thread.m_gp;
+    initial.m_gpr[29] =
+        thread.m_stack_base + thread.m_stack_size - 16u;
+    initial.m_gpr[4] = a0;
+    initial.m_gpr[5] = a1;
+    thread.m_cpu = initial;
+    thread.m_priority = thread.m_initial_priority;
+    thread.m_wakeup_count = 0u;
+    thread.m_wait_type = 0u;
+    thread.m_delete_on_exit = false;
+    return true;
+}
+
+bool c_kernel::start_module_thread_with_arguments(
+    uint32_t thread_id,
+    const std::string& module_path,
+    const std::vector<std::string>& arguments
+)
+{
+    const auto found = m_threads.find(thread_id);
+    if (found == m_threads.end() ||
+        found->second.m_status != e_thread_status::dormant ||
+        module_path.empty() || module_path.size() > 252u ||
+        arguments.size() > 252u)
+    {
+        return false;
+    }
+
+    // The IOP modload ABI passes argv[0] as the module path, and
+    // further NUL-separated LOADFILE arguments in argv[1..argc-1].
+    // Stage pointers and all strings in the actual thread's stack
+    // allocation rather than a temporary HLE buffer.
+    const uint32_t argc =
+        1u + static_cast<uint32_t>(arguments.size());
+    const uint64_t pointer_bytes =
+        (static_cast<uint64_t>(argc) + 1u) * 4u;
+    uint64_t storage_bytes = pointer_bytes + module_path.size() + 1u;
+    for (const std::string& argument : arguments)
+    {
+        storage_bytes += argument.size() + 1u;
+    }
+    // Leave a 128-byte MIPS entry frame below argv and a top redzone.
+    const uint64_t aligned_bytes = align16(storage_bytes);
+    const s_kernel_thread& thread = found->second;
+    if (aligned_bytes + 144u > thread.m_stack_size)
+    {
+        return false;
+    }
+    const uint32_t end =
+        thread.m_stack_base + thread.m_stack_size - 16u;
+    const uint32_t argv =
+        static_cast<uint32_t>(
+            (static_cast<uint64_t>(end) - aligned_bytes) &
+            ~uint64_t(15u));
+    const uint32_t initial_sp = argv - 128u;
+    if (initial_sp < thread.m_stack_base)
+    {
+        return false;
+    }
+
+    std::vector<uint8_t> frame(
+        static_cast<size_t>(aligned_bytes), 0u);
+    uint32_t cursor = static_cast<uint32_t>(pointer_bytes);
+    const auto add_argument =
+        [&](uint32_t index, const std::string& argument)
+    {
+        const uint32_t address = argv + cursor;
+        for (uint32_t byte = 0u; byte < 4u; ++byte)
+        {
+            frame[index * 4u + byte] =
+                static_cast<uint8_t>(address >> (byte * 8u));
+        }
+        for (unsigned char character : argument)
+        {
+            frame[cursor++] = character;
+        }
+        frame[cursor++] = 0u;
+    };
+
+    add_argument(0u, module_path);
+    for (uint32_t index = 0u; index < arguments.size(); ++index)
+    {
+        add_argument(index + 1u, arguments[index]);
+    }
+    if (!m_cpu.dma_write(
+            argv, frame.data(), static_cast<uint32_t>(frame.size())) ||
+        !start_thread_with_arguments(thread_id, argc, argv))
+    {
+        return false;
+    }
+    m_threads.at(thread_id).m_cpu.m_gpr[29] = initial_sp;
     return true;
 }
 
@@ -574,6 +1006,17 @@ bool c_kernel::wake_thread(uint32_t id)
     }
     found->second.m_status = e_thread_status::ready;
     found->second.m_wake_cycle = 0u;
+    found->second.m_wait_type = 0u;
+    return true;
+}
+
+bool c_kernel::wake_thread_with_result(uint32_t id, uint32_t result)
+{
+    if (!wake_thread(id))
+    {
+        return false;
+    }
+    m_threads.at(id).m_cpu.m_gpr[2] = result;
     return true;
 }
 
@@ -587,10 +1030,118 @@ bool c_kernel::stop_thread(uint32_t id)
     }
     found->second.m_status = e_thread_status::dormant;
     found->second.m_wake_cycle = 0u;
+    found->second.m_wait_type = 0u;
+    found->second.m_wakeup_count = 0u;
+    found->second.m_delete_on_exit = false;
     return true;
 }
 
-bool c_kernel::block_current()
+bool c_kernel::delete_thread(uint32_t id)
+{
+    const auto found = m_threads.find(id);
+    if (found == m_threads.end() ||
+        found->second.m_status != e_thread_status::dormant ||
+        found->second.m_alarm_id != 0u ||
+        m_allocations.find(found->second.m_stack_base) ==
+            m_allocations.end())
+    {
+        return false;
+    }
+    m_allocations.erase(found->second.m_stack_base);
+    m_threads.erase(found);
+    return true;
+}
+
+bool c_kernel::exit_current_thread(bool delete_on_exit)
+{
+    const auto found = m_threads.find(m_current_thread_id);
+    if (found == m_threads.end() ||
+        found->second.m_status != e_thread_status::running)
+    {
+        return false;
+    }
+    found->second.m_status = e_thread_status::dormant;
+    found->second.m_wake_cycle = 0u;
+    found->second.m_wait_type = 0u;
+    found->second.m_delete_on_exit = delete_on_exit;
+    return true;
+}
+
+bool c_kernel::change_thread_priority(
+    uint32_t id, uint32_t priority
+)
+{
+    if (id == 0u)
+    {
+        id = m_current_thread_id;
+    }
+    const auto found = m_threads.find(id);
+    if (found == m_threads.end())
+    {
+        return false;
+    }
+    const uint32_t new_priority =
+        priority == 0u ? found->second.m_initial_priority : priority;
+    if (new_priority < 1u || new_priority > 126u)
+    {
+        return false;
+    }
+    found->second.m_priority = new_priority;
+    return true;
+}
+
+bool c_kernel::sleep_thread()
+{
+    const auto found = m_threads.find(m_current_thread_id);
+    if (found == m_threads.end() ||
+        found->second.m_status != e_thread_status::running)
+    {
+        return false;
+    }
+    if (found->second.m_wakeup_count != 0u)
+    {
+        --found->second.m_wakeup_count;
+        return true;
+    }
+    return block_current(1u);
+}
+
+bool c_kernel::wakeup_thread(uint32_t id)
+{
+    const auto found = m_threads.find(id);
+    if (found == m_threads.end())
+    {
+        return false;
+    }
+    if (found->second.m_status == e_thread_status::blocked &&
+        found->second.m_wait_type == 1u)
+    {
+        return wake_thread(id);
+    }
+    if (found->second.m_wakeup_count ==
+        std::numeric_limits<uint32_t>::max())
+    {
+        return false;
+    }
+    ++found->second.m_wakeup_count;
+    return true;
+}
+
+bool c_kernel::cancel_wakeup_thread(
+    uint32_t id, uint32_t* previous
+)
+{
+    const auto found = m_threads.find(id);
+    if (found == m_threads.end() || previous == nullptr)
+    {
+        return false;
+    }
+    *previous = found->second.m_wakeup_count;
+    found->second.m_wakeup_count = 0u;
+    return true;
+}
+
+bool c_kernel::block_current(uint32_t wait_type)
 {
     const auto found = m_threads.find(m_current_thread_id);
     if (found == m_threads.end() ||
@@ -600,6 +1151,7 @@ bool c_kernel::block_current()
     }
     found->second.m_status = e_thread_status::blocked;
     found->second.m_wake_cycle = 0u;
+    found->second.m_wait_type = wait_type;
     return true;
 }
 
@@ -616,6 +1168,7 @@ bool c_kernel::sleep_current(uint64_t delay_cycles)
     }
     found->second.m_status = e_thread_status::blocked;
     found->second.m_wake_cycle = m_cycles + delay_cycles;
+    found->second.m_wait_type = 2u;
     return true;
 }
 
@@ -661,6 +1214,40 @@ uint32_t c_kernel::next_ready() const
 
 void c_kernel::wake_due()
 {
+    // Events may schedule additional future events while executing.
+    while (!m_hle_events.empty() &&
+           m_hle_events.begin()->first <= m_cycles)
+    {
+        std::function<void()> callback =
+            std::move(m_hle_events.begin()->second);
+        m_hle_events.erase(m_hle_events.begin());
+        callback();
+    }
+    for (auto& item : m_alarms)
+    {
+        s_kernel_alarm& alarm = item.second;
+        if (alarm.m_cancelled || alarm.m_deadline > m_cycles)
+        {
+            continue;
+        }
+        auto found = m_threads.find(alarm.m_thread_id);
+        if (found == m_threads.end() ||
+            found->second.m_status != e_thread_status::dormant)
+        {
+            continue;
+        }
+        s_kernel_thread& thread = found->second;
+        s_cpu_state state{};
+        state.m_pc = alarm.m_callback;
+        state.m_next_pc = alarm.m_callback + 4u;
+        state.m_gpr[4] = alarm.m_argument;
+        state.m_gpr[28] = alarm.m_gp;
+        state.m_gpr[29] =
+            thread.m_stack_base + thread.m_stack_size - 16u;
+        state.m_gpr[31] = k_alarm_return_pc;
+        thread.m_cpu = state;
+        start_thread(alarm.m_thread_id);
+    }
     for (auto& item : m_threads)
     {
         s_kernel_thread& thread = item.second;
@@ -670,6 +1257,7 @@ void c_kernel::wake_due()
         {
             thread.m_status = e_thread_status::ready;
             thread.m_wake_cycle = 0u;
+            thread.m_wait_type = 0u;
         }
     }
 }
@@ -738,6 +1326,23 @@ s_kernel_run_result c_kernel::run(
                     );
                 }
             }
+            for (const auto& item : m_alarms)
+            {
+                if (!item.second.m_cancelled &&
+                    item.second.m_deadline > m_cycles)
+                {
+                    next_wake = std::min(
+                        next_wake, item.second.m_deadline
+                    );
+                }
+            }
+            if (!m_hle_events.empty() &&
+                m_hle_events.begin()->first > m_cycles)
+            {
+                next_wake = std::min(
+                    next_wake, m_hle_events.begin()->first
+                );
+            }
             if (next_wake ==
                 std::numeric_limits<uint64_t>::max())
             {
@@ -767,6 +1372,56 @@ s_kernel_run_result c_kernel::run(
         m_cycles += step_result.m_instructions;
         result.m_executed += step_result.m_instructions;
         remaining -= step_result.m_instructions;
+
+        // A hosted CDVD completion invokes a real guest callback.
+        // Once the original R3000 function returns through $ra, retire
+        // only that one-shot thread; never reschedule it as an alarm.
+        if (step_result.m_result == e_step_result::breakpoint &&
+            step_result.m_pc == k_hle_callback_return_pc &&
+            thread.m_hle_guest_callback)
+        {
+            m_allocations.erase(thread.m_stack_base);
+            m_threads.erase(id);
+            m_current_thread_id = 0u;
+            continue;
+        }
+
+        if (step_result.m_result == e_step_result::breakpoint &&
+            step_result.m_pc == k_alarm_return_pc &&
+            thread.m_alarm_id != 0u)
+        {
+            const uint32_t alarm_id = thread.m_alarm_id;
+            const uint32_t repeat_ticks = m_cpu.state().m_gpr[2];
+            auto alarm = m_alarms.find(alarm_id);
+            if (alarm == m_alarms.end() ||
+                (repeat_ticks != 0u &&
+                 repeat_ticks >
+                     std::numeric_limits<uint64_t>::max() - m_cycles))
+            {
+                thread.m_status = e_thread_status::faulted;
+                thread.m_cpu = m_cpu.state();
+                result.m_stop = e_kernel_stop::arithmetic_overflow;
+                result.m_thread_id = id;
+                result.m_guest_pc = step_result.m_pc;
+                result.m_opcode = step_result.m_opcode;
+                m_current_thread_id = 0u;
+                return result;
+            }
+            if (repeat_ticks == 0u || alarm->second.m_cancelled)
+            {
+                m_allocations.erase(thread.m_stack_base);
+                m_threads.erase(id);
+                m_alarms.erase(alarm);
+            }
+            else
+            {
+                alarm->second.m_deadline = m_cycles + repeat_ticks;
+                thread.m_status = e_thread_status::dormant;
+                thread.m_cpu = m_cpu.state();
+            }
+            m_current_thread_id = 0u;
+            continue;
+        }
 
         if (step_result.m_result == e_step_result::syscall)
         {
@@ -809,7 +1464,13 @@ s_kernel_run_result c_kernel::run(
         }
 
         thread.m_cpu = m_cpu.state();
-        if (thread.m_status == e_thread_status::running)
+        if (thread.m_status == e_thread_status::dormant &&
+            thread.m_delete_on_exit)
+        {
+            m_allocations.erase(thread.m_stack_base);
+            m_threads.erase(id);
+        }
+        else if (thread.m_status == e_thread_status::running)
         {
             thread.m_status = e_thread_status::ready;
         }

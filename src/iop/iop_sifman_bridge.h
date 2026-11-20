@@ -9,11 +9,11 @@
 
 namespace iop
 {
-// A minimal, explicit IOP SIFMAN high-level service implementation.
-//
-// Installing the service registers two concrete guest-callable R3000 stubs,
-// but does NOT publish any SIF mailbox, readiness bit, or RPC response.
-// An IOP thread has to execute the import stub for the register to change.
+// Explicit HLE of IOP SIFMAN initialization, synchronous DMA status and
+// owned SIF mailbox operations. Stub installation never initializes
+// the SIF or publishes readiness. Only guest execution mutates state.
+// Callback-driven DMA, interrupt handling and asynchronous transfers are
+// deliberately outside this bridge.
 //
 // Stubs occupy the otherwise reserved low IOP kernel area, outside the
 // allocator's 0x20000.. RAM region. Other HLE kernel services must use
@@ -27,6 +27,9 @@ public:
     static constexpr uint32_t k_set_smflag_stub = 0x00018020u;
     static constexpr uint32_t k_get_smflag_syscall = 0x494f0017u;
     static constexpr uint32_t k_set_smflag_syscall = 0x494f0018u;
+    static constexpr uint32_t k_service_base = 0x494f0000u;
+    // The separate CDVDMAN bridge occupies 0x18200..0x18680.
+    static constexpr uint32_t k_extra_stub_base = 0x00018700u;
 
     c_sifman_bridge(
         c_kernel& kernel, ee::c_ee_sif& sif,
@@ -34,8 +37,9 @@ public:
         ee::ee_memory* ee_ram = nullptr
     );
 
-    // Registers sifman ordinals 7, 23 and 24 as executable guest-callable
-    // import destinations. Returns false instead of overriding exports.
+    // Registers real guest-callable service-family stubs. Duplicate
+    // library exports are not overwritten, and unsupported ordinals
+    // (notably SIF interrupt callbacks) remain unresolved.
     bool install();
 
     // Can be composed with other kernel syscall handlers. Unknown services
@@ -43,10 +47,16 @@ public:
     bool handle_syscall(c_kernel& kernel, uint32_t service);
 
 private:
+    bool initialize_dma2();
+    bool configure_dma_chain();
+
     c_kernel& m_kernel;
     ee::c_ee_sif& m_sif;
     ee::c_ee_dmac* m_dmac = nullptr;
     ee::ee_memory* m_ee_ram = nullptr;
     uint32_t m_next_dma_id = 1u;
+    bool m_dma2_initialized = false;
+    bool m_initialized = false;
+    bool m_dma_chain_configured = false;
 };
 } // namespace iop

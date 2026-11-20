@@ -221,7 +221,10 @@ def make_sif_guest_irx(path, unknown_import=False, unhandled_syscall=False):
     struct.pack_into("<II", image, 0x134, 0x03e00008, 0x24000017)
     struct.pack_into(
         "<II", image, 0x13c, 0x03e00008,
-        0x24000019 if unknown_import else 0x24000018,
+        # SIFMAN #25 (GetMainAddr) is now implemented. Use #32,
+        # sceSifSetDmaIntr, which correctly remains unimplemented:
+        # invoking it requires real IOP callback/interrupt completion.
+        0x24000020 if unknown_import else 0x24000018,
     )
     path.write_bytes(image)
 

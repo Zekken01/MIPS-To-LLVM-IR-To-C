@@ -182,8 +182,8 @@ def main(argv=None):
         help=argparse.SUPPRESS,
     )
     args, forwarded = parser.parse_known_args(argv)
-    if not 1 <= args.expansion_passes <= 8:
-        parser.error("--expansion-passes must be between 1 and 8")
+    if not 1 <= args.expansion_passes <= 64:
+        parser.error("--expansion-passes must be between 1 and 64")
     if not 1 <= args.expansion_per_pass <= 128:
         parser.error("--expansion-per-pass must be between 1 and 128")
     if any(item == "--trace" or item == "--link-only" or
@@ -217,6 +217,13 @@ def main(argv=None):
                 f"IOP disc discovery: {catalog['resolved_count']}/"
                 f"{len(catalog['candidates'])} candidate files resolved "
                 f"({catalog_path}); no IOP modules started",
+                flush=True,
+            )
+            print(
+                f"IOP static import inventory: "
+                f"{catalog['static_import_count']} symbols in "
+                f"{catalog['static_import_module_count']} file-backed IRXs; "
+                "see iop-disc-catalog.json (not runtime load evidence)",
                 flush=True,
             )
         except (OSError, ValueError) as exc:

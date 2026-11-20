@@ -33,3 +33,15 @@ Next port upstream Q/P scalar pipelines, lower DIV/SQRT/RSQRT, register-hazard s
 - Implemented VU1 ACC operations, MADD/MSUB, FTOI/ITOF, CLIP, VF0 suppression, MAC/status/clip results and four-issued-pair flag visibility, with lower flag instructions.
 - Corrected synthetic XGKICK GIFtag fixture: NREG=0 means sixteen payload registers; the fixture now encodes NREG=1 for its single payload.
 - Added ACC/MADD, FTOI4 and delayed CLIP->FCGET regression vectors. No real-game boot progression is claimed.
+
+
+## Batch C — Q/P, specials, and dependency scoreboard (new PR)
+
+- **Integration:** PR #142 was squash-merged as `c576a0cec1732d21efb04889cc95a627f0883ece`. This batch lives on `feature/sdbz-m2-7-vu1-q-p-pipelines` based on that commit; do not add further Batch C changes to PR #142.
+- Ported Q FDIV instruction effects (DIV, SQRT, RSQRT), seven- and thirteen-cycle pending Q results, WAITQ interlock, and upper MULq/ADDq/MADDq/SUBq/MSUBq plus accumulator variants. Early Q reads observe the previous value; a new FDIV producer stalls until the prior one completes.
+- Added VU1 EFU families ESADD, ERSADD, ELENG, ERLENG, EATANxy/xz, ESUM, ESQRT, ERSQRT, ERCPR, ESIN, EATAN and EEXP using reference arithmetic. Pending P is visible only after its instruction-specific latency. MFP can observe old P; WAITP and a new EFU producer synchronize it.
+- Added lower LQI/LQD/SQI/SQD, MTIR/MFIR, ILWR/ISWR, RINIT/RNEXT/RGET/RXOR and MFP. Random number recurrence is taken directly from the reference. VF/VI register dependency scoreboarding uses the reference four-cycle lane-specific vector availability and integer-load hazard model.
+- The interpreter remains bounded; unknown opcodes, reserved EFU specials and D/T debug interrupt requests reject instead of silently completing. Existing VIF1 staging still gates GIF/DMA commit. No change to LLVM-IR EE execution, VIF DMA completion semantics or native rendering is asserted.
+- The separate `ee_vu1_pipeline` CTest exercises Q/P old-to-new visibility and waits, Q/EFU computation, RNG, sign extension, memory update, VF dependency stalls and unsupported debug-bit rejection. The existing `ee_vif1_device` test retains VIF1 rollback and PATH1 integration checks.
+
+**Remaining to close M2.7:** complete instruction/branch-delay parity against the original game VU programs, precise hardware flag/VI pipeline corner cases, reference differential vector sweeps, and confirmed GIF back-pressure semantics. The reference VU interpreter currently performs EFU effects immediately; this port adds manual-derived latencies without claiming a complete cycle-accurate reference differential. M2.8 GIF arbitration and M2.9 DMA scheduling are separate milestones. A green synthetic test is not a new matched Windows boot.

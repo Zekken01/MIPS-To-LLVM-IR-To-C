@@ -1897,3 +1897,239 @@ Implemented a **strict subset** of VU1 micro execution from the primary ps2-web-
 ### M2.7 Batch B — Reference FMAC/flags and XGKICK fixture (19 November 2026)
 
 Ported ps2-web-recomp PS2 floating-point bit arithmetic to C++17 and expanded VU1 ACC, MADD/MSUB, FTOI/ITOF, CLIP, MAC/status/clip flags and a four-issued-pair flag delay buffer. Added lower flag opcodes and focused arithmetic/CLIP regressions. Fixed synthetic GIFtag NREG to one. Q/P latency, precise VF/VI stalls, lower special opcodes, MSCALF, GIF arbitration and VIF IRQ remain unsupported and fail closed. Native USA boot advancement remains unverified. PR #142 stays draft/unmerged.
+
+
+## M2.7 Batch C on a new post-merge branch — 2026-11-19
+
+PR #142 is squash-merged to `main` as `c576a0cec1732d21efb04889cc95a627f0883ece`. Follow-on `feature/sdbz-m2-7-vu1-q-p-pipelines` adds reference-derived VU1 Q/P instruction execution, pipeline synchronization, EFU/RNG/lower-specials, VF/VI dependency scoreboarding, and an independent CTest regression. The four-shard build-once workflow remains unchanged. This is source/regression work, **not verified USA game progression**.
+
+**Last matched real game evidence remains** the command-slot pending/VIF1 CHCR `0x1c5`, TADR `0x00771400` and red fallback. No local Windows boot rerun has yet established game VIF packet acceptance or a new framebuffer. Continue to fail closed on unsupported DMA/VIF/GIF operations; never clear STR, raise D_STAT, free the guest command slot or invent graphics as a substitute for hardware execution.
+
+Before requesting another local Windows run, require exact-commit CI success for Build and test (game and fast-0/1/2), SIF DMA, ROM0 and Native WebGPU, followed by coherent M2.8 GIF path arbitration as needed.
+
+## M2.5/VIF1 NEXT DMA address bug found in matched 16:14 Windows batch — 2026-11-19
+
+The completed USA run still reached dispatch 10495 with pending command flag 1, VIF1 CHCR `0x1C5` and TADR `0x00771400`, and reached its red fallback at dispatch 36205. It ended after the 100000-dispatch budget with the flag and registers unchanged. New read-only probe `chain_reject=3` is specifically **invalid_tag_address**. The captured tag at `0x00771400` is `0x0077144020000003` (NEXT, QWC 3, destination `0x00771440`) and TTE code `0x5000000313000000`. The DMAC walker wrongly read ADDR from TTE data, generating `0x13000000`, and was corrected on the follow-on PR #143 branch. Regression fixtures now use the architectural first-word encoding, with real-tag and rollback tests. This bug predates Batch C.
+
+Same-invocation snapshots: GS display and GS upload are all black; WebGPU readback has one nonblack red pixel. Diagnostic GS counters still report 2275 nonblack untextured sprite kicks; these are not proof of correctly displayed graphics. The disc catalog records 7 static candidate IRX paths but just 1 final-replay committed runtime load (`SIO2MAN.IRX`) and 13 SIFRPC commits, not seven runtime module starts. Do not claim progress before the next post-fix run.
+
+The pre-fix batch is matched by `20261119-161404` through `20261119-161408` filenames. The translation-cache input hash includes the current VU1 code; compilation/rebuild happens through `run_ps2_game.bat`. Do not blame stale executable without evidence. Continue HLE-first, preserve transactional DMA semantics, and do not fake guest completion or graphics.
+
+
+## Windows expansion configuration (2026-11-19)
+
+`run_ps2_game.bat` accepts two independent environment variables without changing the HLE-first execution path:
+
+```bat
+set EXPANSION_PASSES=64
+set EXPANSION_PER_PASS=128
+run_ps2_game.bat
+```
+
+Defaults remain **8 passes** and **128 new functions per pass**. Valid values: `EXPANSION_PASSES=1..64`, `EXPANSION_PER_PASS=1..128`. The wrapper passes both values through as `--expansion-passes` and `--expansion-per-pass`, and reports them at boot-session start. The max pass count increases from eight to 64; the 128-per-pass safety cap in `run_game.py` is unchanged. As before, each pass stops early on genuine guest blockers or when it does not hit its budget. `LLVM IR [N/7901]` is a compilation progress indicator, not proof of native boot advancement or rendering correctness. The already-running process cannot be reconfigured until its next invocation.
+
+
+## Matched USA Windows 17:50 boot — VIF1 fixed, first IOP LOADCORE and EE syscall gaps
+
+Match these eight artifacts by invocation and runtime state: `boot(20261119-175056).log`, `expansion(20261119-175057).log`, `first-boot(20261119-175056).json`, `iop-disc-catalog(20261119-175059).json`, `translation-cache(20261119-175059).json`, `gs-display(20261119-175056).ppm`, `gs-upload(20261119-175056).ppm`, `gs-webgpu(5).ppm`. The USA `SLUS_214.42` ELF hash remains `1b213a85a2c305dc0f893c007a502c93e0851d1bb7db6164f9e0b72adb074a16`.
+
+This is real progress beyond the previously blocked 16:14 VIF1 source-chain NEXT tag (TADR `0x00771400`, CHCR `0x1C5`, `invalid_tag_address`). New command-wait snapshot at dispatch **10411** has VIF1 CHCR/MADR/QWC/TADR **all zero** and no pending DMA. Previous 100000-dispatch red-loop stall is absent. It does **not** prove full VU1/GIF completion or display correctness.
+
+Bounded expansion consumed 12 passes (the 12th added 43 newly compiled functions) and stopped early on a different real guest exception, not the configured 64-pass limit. Cached translation count: **3500 LLVM-IR functions**. Final traced replay exited after **13909 dispatches**; EE COP0 Cause `0x20` indicates SYSCALL (code 8), at EPC `0x00175104`, V1=**0x7F**. This is PS2 EE `GetMemorySize`; `ps2-web-recomp:SDBZ/runtime/src/kernel.cpp::handle_syscall` returns `kRamSize` (32 MiB). The missing explicit handler now returns configured EE RAM size to V0, with no invented guest memory or GPU side effects. A translated synthetic ELF test asserts V0=0x02000000 and still rejects the following unknown syscall.
+
+The final-replay catalog shows 7 ELF-static IRX path candidates, **14** genuine committed SIFRPC operations, **2** attempted IRX loads but **only 1 success**: seq13 `SIO2MAN.IRX` linked and started; seq14 `MCMAN.IRX` returned load_status=7, link_status=5, `unresolved=loadcore#7` (no module/thread fabricated). The IOP HLE bridge previously registered only `loadcore#6` (`RegisterLibraryEntries`). `loadcore#7` is `ReleaseLibraryEntries`. The follow-on implementation registers both, validates a real loaded IRX's export-table ownership and exact entries, supports release and subsequent register, and refuses forged, conflicting and duplicate releases transactionally. Further MCMAN imports or guest IOP execution may still fail later; a successful boot is NOT asserted.
+
+All three same-run GS snapshots are **uniform black** (`gs-display` 512×448, `gs-upload` 1024×64, `gs-webgpu` 512×448). The runner reports 2 scheduled GS fields, 37 accepted GS batches, 40 tags, 2 vertex kicks, and IMAGE transfers; those are diagnostics, not a visible game frame. PR #144's raylib presentation was merged separately into `main`; this PR #143 remains a separate draft pending combined-tree validation and Windows rerun.
+
+Acceptance for this next HLE batch is all four GitHub workflows green on the *final* exact commit plus a matched new Windows run demonstrating whether `GetMemorySize` returns and `MCMAN.IRX` import linking advances. Do not manufacture completion, IOP exports, GS events, or frame presentation.
+
+## 2026-11-19 20:13 matched native Windows boot — IOP SYSCLIB memory functions
+
+The user's `20261119-201359` final replay, expansion and report agree with
+`201402` IOP catalog and translation-cache metadata (same USA
+`SLUS_214.42` ELF SHA-256
+`1b213a85a2c305dc0f893c007a502c93e0851d1bb7db6164f9e0b72adb074a16`).
+The expansion session reused its translation cache, added **zero** new functions
+in the recorded pass, and retained 3,524 hashed IR modules. Do not confuse
+this with the 7,901 total static discovery count or the number of functions
+executed.
+
+**Boot progress:** The prior VIF1 source-chain invalid-tag rejection did not
+recur (observed CHCR/TADR zero and no pending DMA at dispatch 10,411).
+The previously unsupported EE `GetMemorySize` syscall now committed its
+32-MiB result and execution continued from dispatch 13,909.
+Final replay reached **14,240** native dispatches (previously 13,909)
+before stopping at guest RAM callback PC `0x800750D4`
+(`0x40840000`, `MTC0 a0, Index`), with
+`UNSUPPORTED(4)`. The surrounding installed handler writes COP0 Index,
+PageMask, EntryHi, EntryLo0, EntryLo1 and issues `TLBWI`. The bounded
+RAM interpreter deliberately lacks that full TLB behavior: no writes
+or virtual-memory translation are fabricated here.
+
+**Earlier demonstrated IOP failure:** SIFRPC seq 13 loaded and started
+`SIO2MAN.IRX` normally. Seq 14 advanced beyond the previous
+`loadcore#7` failure but rejected `MCMAN.IRX` with
+`unresolved=sysclib#12`; no MCMAN thread was started.
+PS2SDK's IOP SYSCLIB import table identifies ordinal #12 as `memcpy`.
+
+**Coherent IOP HLE batch:** Implement ordinals #10–#17
+(`memchr`, `memcmp`, `memcpy`, `memmove`, `memset`, `bcmp`,
+`bcopy`, `bzero`) with validated IOP RAM/KSEG0/KSEG1 spans,
+bounded length and overlap-safe source snapshots. Return the correct
+guest pointer/value for the non-void functions and leave void results
+unfabricated. Reject unsupported ranges and imports without writes.
+The new `iop_sysclib_memory` regression covers import registration,
+byte results, overlapping copies, aliases, invalid spans, oversized
+lengths, zero-length behavior and unknown ordinals.
+
+**GS:** The final raylib HWND / wgpu-native DX12 surface initialized.
+The runtime counted 37 accepted GIF batches, 40 tags, 16 image events,
+two vertex kicks and one GPU draw. The three uploads named
+`gs-display(20261119-201359).ppm`,
+`gs-upload(20261119-201359).ppm` and `gs-webgpu(6).ppm`
+are all black, not visible game frames or proof of scanout.
+
+**Validation boundary:** The HLE changes are source-level updates
+motivated by this new real run; only CI can validate their synthetic
+regressions. This 20:13 capture predates these changes.
+The next matched local Windows batch must show whether
+`MCMAN.IRX` now links/starts or encounters another import and whether
+the registered EE RAM TLB callback is still the first terminal failure.
+Do not add TLB no-op fallbacks solely to bypass the stop.
+
+## Proactive next batch: real SDBZ EE _SetTLBEntry RAM callback
+
+**User-authorized work ahead of another Windows boot:** The 20:13 matched final
+replay stopped at `0x800750D4`, word `0x40840000`, inside the guest-installed
+syscall `0x56` (`_SetTLBEntry`). The diagnostic surrounding code shows this
+specific `SLUS_214.42` handler checking `index < 48`, writing
+COP0.Index, PageMask, EntryHi, EntryLo0 and EntryLo1, issuing `SYNC.P`,
+then `TLBWI` and returning the index; invalid indices return `-1`.
+This is concrete reachable code, not an arbitrary speculative opcode.
+
+- `ee_ram_interpreter.cpp` now decodes a bounded COP0 MFC0/MTC0
+  register subset, SYNC.P, TLBR, TLBP and TLBWI. MTC0 delegates to
+  `ee_cop0_write` to retain Compare/timer side effects. Unknown register
+  encodings and TLBWR (which needs genuine Random/Wired timing) remain
+  unsupported, never silently treated as success.
+- `c_ee_tlb` holds exactly 48 persistent guest-visible entries in
+  `ee_memory`, independent of thread-context snapshots. It accepts only
+  documented PS2 PageMask sizes; TLBWI validates index and mask before
+  committing all entry words. TLBP compares VPN2/ASID or global pairs;
+  TLBR reads back committed values. Its explicit translation helper
+  distinguishes even/odd PFNs, valid/dirty pages, ASID mismatch and
+  invalid scratchpad mappings.
+- **Important architectural boundary:** The native HLE memory fast path
+  still follows the existing `ps2-web-recomp:SDBZ` physical/RAM policy.
+  Merely recording authentic TLB entries does **not** activate
+  an unverified virtual memory translation mechanism: TLB lookup and
+  fault delivery are not yet integrated into every native EE memory
+  access, and full hardware TLB parity is not claimed. A caller must
+  explicitly request translation and handle any failure. This is
+  preferable to claiming virtual-memory correctness through a no-op.
+- New `ee_ram_tlb` regression replays the exact observed instruction
+  words at `0x800750C8`, checks real committed entry state and return
+  value, invalid-index and invalid-mask failure paths, independent PFNs,
+  read-only dirty bit, ASID, TLBR/MFC0, TLBP miss/Index.P and continued
+  fail-closed TLBWR behavior. Runtime traces record `tlb_writes` on
+  successful RAM callback returns.
+
+**Reference and scope:** The primary `ps2-web-recomp:SDBZ` reference uses
+direct HLE physical memory and does not provide full EE TLB hardware
+translation. The original guest sequence was taken from the user's
+`boot(20261119-201359).log`. Argument order and the 48-entry size
+are cross-checked with PS2SDK `ee/kernel/include/kernel.h` and
+`ee/kernel/src/tlbfunc.c`, and page-mask interpretation with PS2TEK.
+
+This source change is **not** evidence of a new Windows guest progression.
+A later matched run must confirm that this actual RAM handler completes,
+the prior `MCMAN.IRX` import failure is cleared, and the next stop is
+diagnosed without inventing a working boot or GS frame.
+
+### Windows WebGPU SDK startup repair
+
+The user's 19 November 2026 Windows launcher initially aborted with
+`[wgpu-native] SDK directory exists but is incomplete:
+C:\\Dev\\MIPS-To-LLVM-IR-To-C`. The validator correctly refused to
+overwrite user files; the actual fault was in `run_ps2_game.bat`.
+`cmd.exe` expands percent variables before executing a parenthesized block,
+so assigning `EE_WEBGPU_ROOT` and reading `%EE_WEBGPU_ROOT%` inside the
+same block passed an empty `--root`, resolving to the repository directory.
+Assigning it immediately *before* the installer block now passes
+`build\\_deps\\wgpu-native` and preserves a user-provided SDK path.
+This fixes fresh setups without removing the SDK path safety check.
+
+## Proactive IOP SYSCLIB string-family batch
+
+Before another Windows SDBZ run, the user requested further proactive kernel
+work rather than blocking on repeated local auto-expansion. The real
+`MCMAN.IRX` seq14 import failure proves that this game boots through
+IOP SYSCLIB dependencies. The PS2SDK source
+`iop/system/sysclib/src/exports.tab` is the ordinal authority (0-based).
+It maps #20–#34 to `strcat`, `strchr`, `strcmp`, `strcpy`,
+`strcspn`, `index`, `rindex`, `strlen`, `strncat`, `strncmp`,
+`strncpy`, `strpbrk`, `strrchr`, `strspn` and `strstr`.
+
+The `iop_sysclib_strings` implementation exports that coherent family and
+executes real guest-memory effects through IOP c_cpu, never host addresses.
+CString scans are bounded to 65536 bytes; source and destination accesses
+are limited to IOP RAM and its KSEG0/KSEG1 aliases. Guest return values,
+NUL terminators, overlap-free checked writes, exact/truncated comparison
+semantics and unknown-address rejection are implemented. No write begins
+without full destination-span validation. #29 `strncmp` now uses the same
+bounded path; the older isolated implementation is removed.
+
+The `iop_sysclib_string` CTest exercises all 15 imported symbols, correct
+pointer/length/difference values, NUL search, substring and span semantics,
+concat/truncation/padding, KSEG aliases, invalid-source/destination rollback
+and unsupported ordinal #35 rejection.
+
+**Deliberate exclusions:** SYSCLIB `setjmp`/`longjmp` (#4/#5),
+formatting (#18/#19/#42), stateful `strtok` (#35/#43), and hardware
+services remain unknown/unimplemented, never silent success. Exact
+PS2 `MCMAN.IRX` post-#12 demand and the EE `_SetTLBEntry` continuation
+still require new matched Windows diagnostics; these source additions do
+not establish runtime advancement or new visible GS frames.
+
+### SYSCLIB ASCII classification follow-on
+
+The PS2SDK `iop/system/sysclib/src/exports.tab` also identifies #6
+(`_toupper`), #7 (`_tolower`), #8 (`look_ctype_table`) and #9
+(`get_ctype_table`). Its `src/nonstd/ctype.c` defines a 128-byte
+ASCII classification table. The old #8 HLE used host `std::is*`
+categories and did not match this guest table (e.g. digit '0' is
+`0x04`, space is `0x18`, TAB is `0x08`).
+
+The bridge now explicitly computes reference-compatible ASCII flags,
+provides guest `_toupper`/`_tolower`, and reserves/stages the actual
+128-byte classification array in IOP RAM immediately before the
+kernel HLE stub block. SYSCLIB #9 returns that guest pointer; #8 reads
+the same bounded classification domain and rejects out-of-range input.
+The `iop_sysclib_ctype` CTest checks exported ordinals, the guest
+table bytes, case conversion and fail-closed bounds. This does not
+manufacture any IOP module start or proof of live game progression.
+
+### Static IRX import inventory — proactive dependency visibility
+
+`tools/iop_irx_imports.py` now reads the imported library name and ordinal
+from **file-backed PT_LOAD** sections of a bounded ELF32/MIPS IRX.
+Its signature matches `src/iop/irx_loader.cpp::resolve_imports`:
+`0x41e00000` import header, eight-byte library name at +12, followed by
+actual `JR RA / ADDIU zero,zero,ordinal` stubs. It never executes, links,
+relocates or loads an IRX, and ignores non-file-backed and unsupported tables.
+
+`tools/iop_disc_catalog.py` records each resolved static candidate's
+`static_imports`, `static_import_count` and `static_import_status`,
+plus a catalog-wide static count. Malformed or unfamiliar IRX import layouts
+are reported as scan failure diagnostics without blocking a valid game boot.
+`run_boot_session.py` prints one static import summary before native
+translation; the already-uploaded `iop-disc-catalog.json` format now
+carries the detail needed to plan *coherent future IOP HLE batches*
+without discovering one unresolved import per separate Windows session.
+
+The synthetic `iop_irx_import_scan` and existing extended
+`iop_disc_catalog` CTests verify real PT_LOAD signatures, import order,
+per-library ordinals, malformed headers, non-loaded data exclusion, and
+catalog-to-runtime evidence isolation. Static imports remain candidate
+evidence, **not** proof of actual SIFRPC requests, module starts, or
+execution. No user game IRX contents are committed to this repo.

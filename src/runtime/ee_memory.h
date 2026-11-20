@@ -1,5 +1,6 @@
 #pragma once
 #include "ee_state.h"
+#include "ee_tlb.h"
 #include <cstdint>
 #include <cstddef>
 
@@ -36,6 +37,10 @@ public:
     // are still checked. This does not implement the TLB.
     void set_kseg_ram_aliases(bool enabled);
 
+    // Persistent across EE thread switches; guest TLBWI/TLBR/TLBP state.
+    c_ee_tlb& tlb();
+    const c_ee_tlb& tlb() const;
+
     // Returns the physical bus address for known, enabled direct aliases,
     // even when the target is a device rather than RAM. Leaves all other
     // guest addresses unchanged. Used by the guest MMIO/VU dispatcher.
@@ -61,6 +66,7 @@ private:
     uint32_t m_ram_size = 0;
     bool m_ram_configured = false;
     bool m_kseg_ram_aliases = false;
+    c_ee_tlb m_tlb{};
 
     bool in_ram_range(uint32_t addr, size_t len) const;
     uint32_t normalize_ram_address(uint32_t addr) const;

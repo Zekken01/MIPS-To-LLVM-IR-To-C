@@ -34,30 +34,35 @@ bool normalize_ee_ram(uint32_t pointer, uint32_t* physical)
 
 bool read_guest_path(
     ee::ee_memory& memory, uint32_t buffer,
-    uint32_t size, std::string* output
+    uint32_t size, std::string* output,
+    std::vector<std::string>* arguments
 )
 {
-    // LOADFILE method 0: word arglen, word unused, 252-byte path,
-    // followed by up to 252 bytes of IOP module arguments. Module
-    // arguments are not yet supported: reject rather than discard.
-    if (output == nullptr || size < 260u ||
-        !memory.contains(buffer, size) ||
-        memory.read32(buffer) != 0u)
+    // PS2SDK _lf_module_load_arg, exactly 512 bytes in retail:
+    // +0 arg_len (0..252), +4 modres, +8 path[252],
+    // +260 args[252]. A short zero-argument test envelope remains
+    // valid, but nonempty arguments require their staged bytes.
+    if (output == nullptr || arguments == nullptr || size < 260u ||
+        !memory.contains(buffer, size))
+    {
+        return false;
+    }
+
+    const uint32_t argument_bytes = memory.read32(buffer);
+    if (argument_bytes > 252u ||
+        argument_bytes > size - 260u)
     {
         return false;
     }
     std::string path;
+    bool terminated = false;
     for (uint32_t index = 0u; index < 252u; ++index)
     {
         const uint8_t ch = memory.read8(buffer + 8u + index);
         if (ch == 0u)
         {
-            if (path.empty())
-            {
-                return false;
-            }
-            *output = std::move(path);
-            return true;
+            terminated = true;
+            break;
         }
         if (ch < 0x20u || ch > 0x7eu)
         {
@@ -65,7 +70,38 @@ bool read_guest_path(
         }
         path.push_back(static_cast<char>(ch));
     }
-    return false;
+    if (!terminated || path.empty())
+    {
+        return false;
+    }
+
+    std::vector<std::string> parsed;
+    std::string word;
+    for (uint32_t index = 0u; index < argument_bytes; ++index)
+    {
+        const uint8_t ch = memory.read8(buffer + 260u + index);
+        if (ch == 0u)
+        {
+            parsed.push_back(std::move(word));
+            word.clear();
+        }
+        else
+        {
+            // Preserve the caller's literal module arguments. They
+            // are delivered as guest strings, not interpreted by HLE.
+            word.push_back(static_cast<char>(ch));
+        }
+    }
+    if (!word.empty() ||
+        (argument_bytes != 0u &&
+         memory.read8(buffer + 260u + argument_bytes - 1u) != 0u))
+    {
+        // Partial final argument would leak beyond the DMA payload.
+        return false;
+    }
+    *output = std::move(path);
+    *arguments = std::move(parsed);
+    return true;
 }
 } // namespace
 
@@ -77,6 +113,7 @@ c_sif_rpc_bridge::c_sif_rpc_bridge(
     : m_loader(loader), m_kernel(kernel), m_sifcmd(sifcmd),
       m_ee_ram(ee_ram), m_dmac(dmac), m_sectors(sectors)
 {
+    m_sifcmd.bind_rpc_bridge(this);
 }
 
 bool c_sif_rpc_bridge::configure_reboot_image_version(
@@ -224,7 +261,8 @@ bool c_sif_rpc_bridge::prepare_command(
             packet[8] == k_cdvd_ready_alt_server;
         if (packet[8] != k_loadfile_server &&
             packet[8] != k_iop_heap_server &&
-            packet[8] != k_cdvd_init_server && !cdvd_server)
+            packet[8] != k_cdvd_init_server && !cdvd_server &&
+            !m_sifcmd.has_guest_rpc_server(packet[8]))
         {
             return refuse(e_rpc_rejection::unknown_server);
         }
@@ -287,7 +325,8 @@ bool c_sif_rpc_bridge::prepare_command(
                  !m_ee_ram.contains(payload_source, packet[9]) ||
                  !read_guest_path(
                      m_ee_ram, payload_source, packet[9],
-                     &candidate.m_guest_path))
+                     &candidate.m_guest_path,
+                     &candidate.m_module_arguments))
         {
             return refuse(e_rpc_rejection::invalid_arguments);
         }
@@ -618,6 +657,24 @@ bool c_sif_rpc_bridge::prepare_command(
             return refuse(e_rpc_rejection::invalid_arguments);
         }
     }
+    else if (m_sifcmd.has_guest_rpc_server(server_id))
+    {
+        if (!m_sifcmd.can_queue_guest_rpc(server_id, packet[9]) ||
+            !m_ee_ram.contains(result, packet[11]) ||
+            m_guest_pending.size() + m_replies.size() >= 64u ||
+            (packet[9] != 0u &&
+             !m_ee_ram.contains(payload_source, packet[9])))
+        {
+            return refuse(e_rpc_rejection::unavailable_backend);
+        }
+        candidate.m_guest_rpc = true;
+        candidate.m_guest_rpc_bytes.reserve(packet[9]);
+        for (uint32_t i = 0u; i < packet[9]; ++i)
+        {
+            candidate.m_guest_rpc_bytes.push_back(
+                m_ee_ram.read8(payload_source + i));
+        }
+    }
     else
     {
         return refuse(e_rpc_rejection::unknown_server);
@@ -666,6 +723,25 @@ void c_sif_rpc_bridge::commit_command(const s_request& request)
     response.m_words[7] = request.m_words[7];
     response.m_words[8] = request.m_words[2];
 
+    if (request.m_guest_rpc &&
+        request.m_words[2] == k_call_cid)
+    {
+        const uint32_t token = m_next_guest_token++;
+        m_guest_pending.emplace(token, s_guest_pending{
+            response, request.m_result_destination, request.m_words[11]});
+        if (!m_sifcmd.enqueue_guest_rpc(
+                token, request.m_server_id, request.m_words[8],
+                request.m_guest_rpc_bytes))
+        {
+            m_guest_pending.erase(token);
+            return;
+        }
+        // Only the actual R3000 handler's finish trampoline may
+        // publish a reply or change the EE receive destination.
+        m_last_observation = std::move(observed);
+        return;
+    }
+
     if (request.m_words[2] == k_bind_cid)
     {
         response.m_words[9] = request.m_server_id ^ k_server_xor;
@@ -687,7 +763,8 @@ void c_sif_rpc_bridge::commit_command(const s_request& request)
         {
             ++m_load_requests;
             const s_disc_load_result loaded = m_loader.load_requested(
-                request.m_guest_path, true
+                request.m_guest_path, true, 1u,
+                request.m_module_arguments
             );
             observed.m_load_status = loaded.m_result;
             observed.m_link_status = loaded.m_link_status;
@@ -929,6 +1006,121 @@ void c_sif_rpc_bridge::commit_command(const s_request& request)
     (void)pump();
 }
 
+bool c_sif_rpc_bridge::queue_iop_command(
+    const std::vector<uint32_t>& words,
+    uint32_t ee_payload_destination,
+    const std::vector<uint8_t>& payload
+)
+{
+    if (!m_sifcmd.initialized() ||
+        words.size() < 9u || words.size() > 16u ||
+        (words.size() != 9u && words.size() != 14u) ||
+        (words[0] & 0xffu) != words.size() * 4u ||
+        (words[2] != k_bind_cid && words[2] != k_call_cid) ||
+        m_replies.size() + m_guest_pending.size() >= 64u ||
+        payload.size() > 4096u)
+    {
+        return false;
+    }
+    if (!payload.empty() &&
+        (ee_payload_destination == 0u ||
+         !m_ee_ram.contains(ee_payload_destination, payload.size())))
+    {
+        return false;
+    }
+    if (payload.empty() && ee_payload_destination != 0u)
+    {
+        return false;
+    }
+    s_reply packet{};
+    packet.m_word_count = static_cast<uint32_t>(words.size());
+    std::copy(words.begin(), words.end(), std::begin(packet.m_words));
+    packet.m_extra_destination = ee_payload_destination;
+    packet.m_extra_data = payload;
+    m_replies.push_back(std::move(packet));
+    (void)pump();
+    return true;
+}
+
+bool c_sif_rpc_bridge::queue_iop_guest_command(
+    const std::vector<uint32_t>& words,
+    uint32_t ee_payload_destination,
+    const std::vector<uint8_t>& payload
+)
+{
+    // The SIF command header's low byte is the packet length,
+    // while its upper 24 bits carry the optional extra DMA length.
+    // SIF0 uses the same bounded, queued delivery path as RPC
+    // replies, preserving receiver ownership and DMAC acknowledgments.
+    if (!m_sifcmd.initialized() || words.size() < 4u ||
+        words.size() > 16u ||
+        (words[0] & 0xffu) != words.size() * 4u ||
+        (words[0] >> 8u) != payload.size() ||
+        words[1] != (payload.empty() ? 0u : ee_payload_destination) ||
+        words[2] == 0u ||
+        m_replies.size() + m_guest_pending.size() >= 64u ||
+        payload.size() > 4096u ||
+        (!payload.empty() &&
+         (ee_payload_destination == 0u ||
+          !m_ee_ram.contains(ee_payload_destination, payload.size()))))
+    {
+        return false;
+    }
+    s_reply command{};
+    command.m_word_count = static_cast<uint32_t>(words.size());
+    std::copy(words.begin(), words.end(), std::begin(command.m_words));
+    command.m_extra_destination = ee_payload_destination;
+    command.m_extra_data = payload;
+    m_replies.push_back(std::move(command));
+    (void)pump();
+    return true;
+}
+
+bool c_sif_rpc_bridge::finish_guest_rpc(
+    uint32_t token, uint32_t guest_result
+)
+{
+    const auto waiting = m_guest_pending.find(token);
+    if (waiting == m_guest_pending.end() ||
+        m_replies.size() >= 64u)
+    {
+        return false;
+    }
+    const s_guest_pending& call = waiting->second;
+    if (call.m_recv_size != 0u && guest_result != 0u)
+    {
+        const uint32_t physical = guest_result & 0x1fffffffu;
+        const uint32_t region = guest_result & 0xe0000000u;
+        if ((region != 0u && region != 0x80000000u &&
+             region != 0xa0000000u) ||
+            physical == 0u || physical >= c_cpu::k_ram_size ||
+            call.m_recv_size > c_cpu::k_ram_size - physical ||
+            !m_ee_ram.contains(call.m_destination, call.m_recv_size))
+        {
+            return false;
+        }
+        // Validate and snapshot all guest bytes before touching EE RAM.
+        std::vector<uint8_t> data(call.m_recv_size);
+        for (uint32_t i = 0u; i < call.m_recv_size; ++i)
+        {
+            if (!m_kernel.cpu().read8(guest_result + i, &data[i]))
+            {
+                return false;
+            }
+        }
+        for (uint32_t i = 0u; i < data.size(); ++i)
+        {
+            m_ee_ram.write8(call.m_destination + i, data[i]);
+        }
+    }
+    // Zero return pointers still complete the guest RPC, with no
+    // unsolicited changes to the EE's receive buffer.
+    m_replies.push_back(call.m_reply);
+    m_guest_pending.erase(waiting);
+    (void)pump();
+    return true;
+}
+
 void c_sif_rpc_bridge::reset_for_reboot()
 {
     m_loadfile_version_known = false;
@@ -937,6 +1129,8 @@ void c_sif_rpc_bridge::reset_for_reboot()
     m_cdvd_streaming = false;
     m_cdvd_stream_position = 0u;
     m_replies.clear();
+    m_guest_pending.clear();
+    m_next_guest_token = 1u;
     m_load_requests = 0u;
     m_last_observation = {};
     m_reply_in_flight = false;
@@ -944,7 +1138,8 @@ void c_sif_rpc_bridge::reset_for_reboot()
 
 bool c_sif_rpc_bridge::can_queue_replies(size_t count) const
 {
-    return count <= 64u && m_replies.size() <= 64u - count;
+    return count <= 64u &&
+        m_replies.size() + m_guest_pending.size() <= 64u - count;
 }
 
 void c_sif_rpc_bridge::queue_init_sreg_reply()
@@ -991,6 +1186,20 @@ bool c_sif_rpc_bridge::pump()
         return false;
     }
 
+    if (!reply.m_extra_data.empty())
+    {
+        if (!m_ee_ram.contains(
+                reply.m_extra_destination, reply.m_extra_data.size()))
+        {
+            return false;
+        }
+        for (uint32_t index = 0u;
+             index < reply.m_extra_data.size(); ++index)
+        {
+            m_ee_ram.write8(reply.m_extra_destination + index,
+                            reply.m_extra_data[index]);
+        }
+    }
     for (uint32_t index = 0u; index < reply.m_word_count; ++index)
     {
         m_ee_ram.write32(destination + index * 4u,

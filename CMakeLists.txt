@@ -60,6 +60,7 @@ add_library(iop_cpu STATIC
     src/iop/irx_loader.cpp
     src/iop/iop_kernel.cpp
     src/iop/iop_kernel_hle_bridge.cpp
+    src/iop/iop_sysclib_strings.cpp
     src/iop/iop_sifman_bridge.cpp
     src/iop/iop_sif1_bridge.cpp
     src/iop/iop_sif1_dma_transport.cpp
@@ -112,6 +113,12 @@ add_executable(iop_irx_loader_test tests/smoke/iop_irx_loader_test.cpp)
 target_link_libraries(iop_irx_loader_test PRIVATE iop_cpu)
 add_executable(iop_irx_export_link_test tests/smoke/iop_irx_export_link_test.cpp)
 target_link_libraries(iop_irx_export_link_test PRIVATE iop_cpu)
+add_executable(iop_sysclib_memory_test tests/smoke/iop_sysclib_memory_test.cpp)
+target_link_libraries(iop_sysclib_memory_test PRIVATE iop_cpu)
+add_executable(iop_sysclib_string_test tests/smoke/iop_sysclib_string_test.cpp)
+target_link_libraries(iop_sysclib_string_test PRIVATE iop_cpu)
+add_executable(iop_sysclib_ctype_test tests/smoke/iop_sysclib_ctype_test.cpp)
+target_link_libraries(iop_sysclib_ctype_test PRIVATE iop_cpu)
 add_executable(iop_kernel_hle_bridge_test tests/smoke/iop_kernel_hle_bridge_test.cpp)
 target_link_libraries(iop_kernel_hle_bridge_test PRIVATE iop_cpu)
 add_executable(iop_kernel_test tests/smoke/iop_kernel_test.cpp)
@@ -383,6 +390,8 @@ endif()
 
 add_executable(ee_ram_interpreter_test tests/smoke/ee_ram_interpreter_test.cpp)
 target_link_libraries(ee_ram_interpreter_test PRIVATE ee_core)
+add_executable(ee_ram_tlb_test tests/smoke/ee_ram_tlb_test.cpp)
+target_link_libraries(ee_ram_tlb_test PRIVATE ee_core)
 
 add_executable(ee_memory_alias_test tests/smoke/ee_memory_alias_test.cpp)
 target_link_libraries(ee_memory_alias_test PRIVATE ee_core)
@@ -425,6 +434,10 @@ add_test(NAME ee_vif1_chain COMMAND ee_vif1_chain_test)
 add_executable(ee_vif1_device_test tests/smoke/ee_vif1_device_test.cpp)
 target_link_libraries(ee_vif1_device_test PRIVATE ee_core)
 add_test(NAME ee_vif1_device COMMAND ee_vif1_device_test)
+
+add_executable(ee_vu1_pipeline_test tests/smoke/ee_vu1_pipeline_test.cpp)
+target_link_libraries(ee_vu1_pipeline_test PRIVATE ee_core)
+add_test(NAME ee_vu1_pipeline COMMAND ee_vu1_pipeline_test)
 
 add_executable(ee_sdbz_dma_wait_probe_test tests/smoke/ee_sdbz_dma_wait_probe_test.cpp)
 target_link_libraries(ee_sdbz_dma_wait_probe_test PRIVATE ee_core)
@@ -585,6 +598,9 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME iop_disc_catalog
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_iop_disc_catalog.py)
+    add_test(NAME iop_irx_import_scan
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/tools/test_iop_irx_imports.py)
     add_test(NAME ps2_system_cnf_boot
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_ps2_boot_elf.py)
@@ -651,6 +667,9 @@ add_test(NAME iop_sif_handoff COMMAND iop_sif_handoff_test)
 add_test(NAME iop_sif_mmio_link COMMAND iop_sif_mmio_link_test)
 add_test(NAME iop_irx_loader COMMAND iop_irx_loader_test)
 add_test(NAME iop_irx_export_link COMMAND iop_irx_export_link_test)
+add_test(NAME iop_sysclib_memory COMMAND iop_sysclib_memory_test)
+add_test(NAME iop_sysclib_string COMMAND iop_sysclib_string_test)
+add_test(NAME iop_sysclib_ctype COMMAND iop_sysclib_ctype_test)
 add_test(NAME iop_kernel COMMAND iop_kernel_test)
 add_test(NAME iop_kernel_hle_bridge COMMAND iop_kernel_hle_bridge_test)
 add_test(NAME iop_sifman_bridge COMMAND iop_sifman_bridge_test)
@@ -694,6 +713,7 @@ add_test(NAME ee_gs_download_dma COMMAND ee_gs_download_dma_test)
 add_test(NAME ee_gs_hwreg COMMAND ee_gs_hwreg_test)
 add_test(NAME ee_gs_hwreg_gif_dma COMMAND ee_gs_hwreg_gif_dma_test)
 add_test(NAME ee_ram_interpreter COMMAND ee_ram_interpreter_test)
+add_test(NAME ee_ram_tlb COMMAND ee_ram_tlb_test)
 add_test(NAME ee_scratchpad COMMAND ee_scratchpad_test)
 add_test(NAME ee_vu0_memory_map COMMAND ee_vu0_memory_map_test)
 add_test(NAME ee_unaligned_memory COMMAND ee_unaligned_memory_test)
@@ -770,6 +790,12 @@ if(EE_HAVE_LLVM_JIT_TEST)
                 --build-dir ${CMAKE_BINARY_DIR}
                 --work-dir ${CMAKE_BINARY_DIR}/ee-sif0-stop-test)
     set_tests_properties(ee_sif0_stop_dma PROPERTIES TIMEOUT 180)
+    add_test(NAME ee_memory_size_hle
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/tools/test_ee_memory_size.py
+                --build-dir ${CMAKE_BINARY_DIR}
+                --work-dir ${CMAKE_BINARY_DIR}/ee-memory-size-test)
+    set_tests_properties(ee_memory_size_hle PROPERTIES TIMEOUT 180)
 
     # Native Python integration tests select their own compatible linker:
     # Windows LLVM clang++ accepts the generated GNU-style driver flags,

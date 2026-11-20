@@ -47,11 +47,33 @@ struct s_kernel_thread
 {
     uint32_t m_id = 0u;
     uint32_t m_priority = 0u;
+    uint32_t m_initial_priority = 0u;
+    uint32_t m_entry = 0u;
+    uint32_t m_gp = 0u;
+    uint32_t m_wakeup_count = 0u;
+    bool m_delete_on_exit = false;
+    bool m_hle_guest_callback = false;
+    uint32_t m_wait_type = 0u;
     uint32_t m_stack_base = 0u;
     uint32_t m_stack_size = 0u;
     uint64_t m_wake_cycle = 0u;
+    uint32_t m_alarm_id = 0u;
     e_thread_status m_status = e_thread_status::dormant;
     s_cpu_state m_cpu{};
+};
+
+// A scheduled IOP timer runs the original guest callback, never a
+// synthetic successful completion. Timing uses the current uncalibrated
+// IOP guest-instruction clock until the EE/IOP scheduler is synchronized.
+struct s_kernel_alarm
+{
+    uint32_t m_id = 0u;
+    uint32_t m_thread_id = 0u;
+    uint32_t m_callback = 0u;
+    uint32_t m_argument = 0u;
+    uint32_t m_gp = 0u;
+    uint64_t m_deadline = 0u;
+    bool m_cancelled = false;
 };
 
 struct s_kernel_module
@@ -107,10 +129,15 @@ public:
     bool register_library(
         const std::string& name, uint16_t ordinal, uint32_t entry
     );
+    // Register/release only a verified export table belonging to a
+    // successfully loaded guest IRX. Never remove HLE-owned imports.
+    // All ordinals are validated before the library registry changes.
+    bool set_module_library_registration(uint32_t table, bool registered);
     s_module_load_result load_module(
         const std::vector<uint8_t>& bytes
     );
     const s_kernel_module* module(uint32_t id) const;
+    const std::map<uint32_t, s_kernel_module>& modules() const;
 
     // HLE IOPHEAP shares the same first-fit IOP RAM address space
     // as linked IRX modules and guest thread stacks. Only addresses
@@ -121,6 +148,8 @@ public:
     bool owns_heap_span(uint32_t address, uint32_t size) const;
     uint32_t heap_max_free() const;
     uint32_t heap_total_free() const;
+    bool query_heap_block(uint32_t address, uint32_t* base,
+                          uint32_t* size) const;
 
     // Create an initially dormant R3000 thread. Priority 0 is highest.
     // A kernel will eventually publish proper thread APIs to IRX imports.
@@ -135,14 +164,45 @@ public:
     );
     bool start_thread(uint32_t id);
     bool start_thread_with_argument(uint32_t id, uint32_t argument);
+    bool start_thread_with_arguments(uint32_t id,
+                                     uint32_t a0, uint32_t a1);
+    // Start a linked IRX with the real _start(argc, argv) guest ABI.
+    // argv[0] is the module path; further NUL-separated LOADFILE
+    // arguments reside in the thread-owned IOP stack allocation.
+    bool start_module_thread_with_arguments(
+        uint32_t thread_id,
+        const std::string& module_path,
+        const std::vector<std::string>& arguments
+    );
     bool wake_thread(uint32_t id);
+    bool wake_thread_with_result(uint32_t id, uint32_t result);
     bool stop_thread(uint32_t id);
+    bool delete_thread(uint32_t id);
+    bool exit_current_thread(bool delete_on_exit = false);
+    bool change_thread_priority(uint32_t id, uint32_t priority);
+    bool sleep_thread();
+    bool wakeup_thread(uint32_t id);
+    bool cancel_wakeup_thread(uint32_t id, uint32_t* previous);
     bool sleep_current(uint64_t delay_cycles);
-    bool block_current();
+    bool block_current(uint32_t wait_type = 0u);
     const s_kernel_thread* thread(uint32_t id) const;
     // Only scheduled guest work permits an HLE transport-triggered
     // IOP execution turn; absent modules cannot advance IOP time.
     bool has_guest_work() const;
+
+    // Timers use the same bounded virtual-clock domain as sleep_current.
+    // Callback return values of zero disarm, otherwise they reschedule by
+    // the returned system-clock tick count. This is not a calibrated IRQ.
+    bool set_alarm(uint64_t ticks, uint32_t callback,
+                   uint32_t argument, uint32_t gp);
+    bool cancel_alarm(uint32_t callback, uint32_t argument);
+    // Deterministic HLE tasks in IOP guest-instruction time, not host time.
+    // Scheduling a task does not imply a hardware IRQ or DMA completion.
+    bool schedule_hle_event(uint64_t ticks, std::function<void()> callback);
+    // Execute the original R3000 guest function as a bounded one-shot
+    // callback with a real MIPS return trampoline, not a host fake.
+    bool start_guest_callback(uint32_t callback, uint32_t gp,
+                              uint32_t argument);
 
     void bind_syscall(t_kernel_syscall handler);
     // Explicit IOP cycle budget. The EE must eventually provide this from
@@ -166,11 +226,14 @@ private:
     std::map<std::string, std::map<uint16_t, uint32_t>> m_libraries;
     std::map<uint32_t, s_kernel_module> m_modules;
     std::map<uint32_t, s_kernel_thread> m_threads;
+    std::map<uint32_t, s_kernel_alarm> m_alarms;
+    std::multimap<uint64_t, std::function<void()>> m_hle_events;
     t_kernel_syscall m_syscall;
     uint64_t m_cycles = 0u;
     bool m_rom0_boot_active = false;
     uint32_t m_next_module_id = 1u;
     uint32_t m_next_thread_id = 1u;
+    uint32_t m_next_alarm_id = 1u;
     uint32_t m_last_scheduled_id = 0u;
     uint32_t m_current_thread_id = 0u;
 };

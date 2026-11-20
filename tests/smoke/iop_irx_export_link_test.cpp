@@ -1,4 +1,5 @@
 #include "iop_kernel.h"
+#include "iop_kernel_hle_bridge.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -247,6 +248,86 @@ int main()
         !conflicting.cpu().read32(k_base, &word) || word != k_sentinel)
     {
         return fail("guest export overwrote an explicitly registered HLE");
+    }
+
+    // Real LOADCORE #6/#7 export lifecycle on a successfully linked
+    // guest IRX. Never allow an arbitrary IOP RAM table to unregister
+    // an HLE provider or modify the export registry.
+    {
+        iop::c_kernel lifecycle;
+        iop::c_kernel_hle_bridge hle(lifecycle);
+        if (!hle.install())
+        {
+            return fail("could not install LOADCORE HLE");
+        }
+        const iop::s_module_load_result real = lifecycle.load_module(provider);
+        const iop::s_kernel_module* image = lifecycle.module(real.m_id);
+        if (real.m_status != iop::e_irx_load_result::success ||
+            image == nullptr || image->m_irx.m_exports.size() != 1u)
+        {
+            return fail("could not prepare real export-table owner");
+        }
+        const uint32_t table = image->m_irx.m_base + 0x20u;
+        uint32_t entry = 0u;
+        uint32_t loadcore_entry = 0u;
+        if (!lifecycle.lookup_library("PROVIDER", 0u, &entry) ||
+            !lifecycle.lookup_library("loadcore", 7u, &loadcore_entry))
+        {
+            return fail("genuine provider / ReleaseLibraryEntries missing");
+        }
+        lifecycle.cpu().state().m_gpr[4] = table;
+        lifecycle.cpu().state().m_gpr[2] = 0xffffffffu;
+        if (!hle.handle_syscall(
+                lifecycle, iop::c_kernel_hle_bridge::k_service_base +
+                    0x100u + 7u) ||
+            lifecycle.cpu().state().m_gpr[2] != 0u ||
+            lifecycle.lookup_library("PROVIDER", 0u, &entry) ||
+            !lifecycle.lookup_library(
+                "loadcore", 7u, &loadcore_entry))
+        {
+            return fail("LOADCORE #7 did not safely release a genuine IRX");
+        }
+        if (hle.handle_syscall(
+                lifecycle, iop::c_kernel_hle_bridge::k_service_base +
+                    0x100u + 7u))
+        {
+            return fail("LOADCORE #7 released the same table twice");
+        }
+        if (!hle.handle_syscall(
+                lifecycle, iop::c_kernel_hle_bridge::k_service_base +
+                    0x100u + 6u) ||
+            !lifecycle.lookup_library("PROVIDER", 0u, &entry) ||
+            entry != image->m_irx.m_base + 0x10u)
+        {
+            return fail("LOADCORE #6 could not restore released provider");
+        }
+
+        // Corrupting a real table must fail before changing any ordinal.
+        if (!lifecycle.cpu().write32(table + 20u, 0x00123456u))
+        {
+            return fail("could not corrupt temporary guest export fixture");
+        }
+        if (hle.handle_syscall(
+                lifecycle, iop::c_kernel_hle_bridge::k_service_base +
+                    0x100u + 7u) ||
+            !lifecycle.lookup_library("PROVIDER", 0u, &entry))
+        {
+            return fail("LOADCORE #7 modified registry for corrupted table");
+        }
+        if (!lifecycle.cpu().write32(table + 20u, entry))
+        {
+            return fail("could not restore temporary guest export fixture");
+        }
+        lifecycle.cpu().state().m_gpr[4] = 0x18000u;
+        if (!lifecycle.cpu().write32(0x18000u, 0x41c00000u) ||
+            hle.handle_syscall(
+                lifecycle, iop::c_kernel_hle_bridge::k_service_base +
+                    0x100u + 7u) ||
+            !lifecycle.lookup_library("PROVIDER", 0u, &entry) ||
+            !lifecycle.lookup_library("loadcore", 7u, &loadcore_entry))
+        {
+            return fail("LOADCORE #7 accepted an unowned table");
+        }
     }
 
     std::printf("IOP IRX export linker: PASS\n");

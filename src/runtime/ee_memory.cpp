@@ -48,6 +48,16 @@ void ee_memory::set_kseg_ram_aliases(bool enabled)
     m_kseg_ram_aliases = enabled;
 }
 
+c_ee_tlb& ee_memory::tlb()
+{
+    return m_tlb;
+}
+
+const c_ee_tlb& ee_memory::tlb() const
+{
+    return m_tlb;
+}
+
 uint32_t ee_memory::translate_direct_address(uint32_t addr) const
 {
     if (!m_kseg_ram_aliases)

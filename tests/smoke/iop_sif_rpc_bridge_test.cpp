@@ -131,6 +131,796 @@ struct s_temp_dir
     }
 };
 
+
+bool test_guest_rpc_lifecycle(const std::filesystem::path& disc_root)
+{
+    // A registered guest IOP server cannot satisfy a bind before
+    // sceSifInitRpc/SetRpcQueue/RegisterRpc have run. An EE RPC call
+    // may only complete after the actual R3000 handler returns.
+    constexpr uint32_t k_list = 0x10000u;
+    constexpr uint32_t k_packet = 0x12000u;
+    constexpr uint32_t k_payload = 0x14000u;
+    constexpr uint32_t k_receive = 0x00180000u;
+    constexpr uint32_t k_result = 0x00190000u;
+    constexpr uint32_t k_queue = 0x00024000u;
+    constexpr uint32_t k_descriptor = 0x00024100u;
+    constexpr uint32_t k_function = 0x00024200u;
+    constexpr uint32_t k_buffer = 0x00024300u;
+    constexpr uint32_t k_loop = 0x00024500u;
+    constexpr uint32_t k_stack = 0x00025000u;
+    constexpr uint32_t k_server = 0x8000badau;
+
+    ee::ee_memory memory(32u * 1024u * 1024u);
+    ee::s_ee_cpu_state ee_cpu{};
+    ee::c_ee_sif sif;
+    ee::c_ee_dmac dmac;
+    sif.reset();
+    dmac.bind_cpu(&ee_cpu);
+    dmac.bind_memory(&memory);
+    dmac.reset();
+    iop::c_kernel kernel;
+    iop::c_sifcmd_bridge commands(kernel, sif, &memory);
+    iop::c_disc_loader loader(kernel, disc_root);
+    iop::c_folder_sector_source sectors(disc_root);
+    iop::c_sif_rpc_bridge rpc(
+        loader, kernel, commands, memory, dmac, &sectors);
+    iop::c_sif1_bridge sif1(
+        memory, kernel.cpu(), dmac, &commands, &rpc);
+    if (!sectors.valid() || !commands.install())
+    {
+        return false;
+    }
+    kernel.bind_syscall(
+        [&](iop::c_kernel& active, uint32_t service)
+        {
+            return commands.handle_syscall(active, service);
+        });
+
+    uint32_t init_rpc_stub = 0u;
+    uint32_t loop_stub = 0u;
+    for (uint16_t ordinal : {14u, 17u, 18u, 19u,
+                             22u, 23u, 24u, 25u})
+    {
+        uint32_t entry = 0u;
+        uint32_t syscall_instruction = 0u;
+        if (!kernel.lookup_library("sifcmd", ordinal, &entry) ||
+            !kernel.cpu().read32(entry + 8u, &syscall_instruction) ||
+            syscall_instruction != 0x0000000cu)
+        {
+            return false;
+        }
+        if (ordinal == 14u)
+        {
+            init_rpc_stub = entry;
+        }
+        if (ordinal == 22u)
+        {
+            loop_stub = entry;
+        }
+    }
+    // Both newly supported SIFCMD send variants must be backed by
+    // executable import stubs; #13 remains unimplemented.
+    for (uint16_t ordinal : {12u, 28u})
+    {
+        uint32_t entry = 0u;
+        uint32_t opcode = 0u;
+        if (!kernel.lookup_library("sifcmd", ordinal, &entry) ||
+            !kernel.cpu().read32(entry + 8u, &opcode) ||
+            opcode != 0x0000000cu)
+        {
+            return false;
+        }
+    }
+    uint32_t unimplemented = 0u;
+    if (kernel.lookup_library("sifcmd", 13u, &unimplemented))
+    {
+        return false;
+    }
+
+    iop::c_sif_rpc_bridge::s_request preview{};
+    iop::e_rpc_rejection rejection = iop::e_rpc_rejection::none;
+    const std::vector<uint32_t> bind = {
+        36u, 0u, iop::c_sif_rpc_bridge::k_bind_cid, 0u,
+        1u, 0x11000u, 0x1234u, 0x15000u, k_server
+    };
+    if (!init_sifcmd_guest(kernel) ||
+        rpc.prepare_command(bind, 36u, 0u, 0u,
+                            &preview, &rejection) ||
+        rejection != iop::e_rpc_rejection::unknown_server)
+    {
+        return false;
+    }
+
+    // R3000 JAL -> exported #14 -> syscall -> original caller.
+    constexpr uint32_t k_init_rpc_entry = 0x0001c080u;
+    if (!kernel.cpu().write32(
+            k_init_rpc_entry,
+            0x0c000000u |
+                ((init_rpc_stub >> 2u) & 0x03ffffffu)) ||
+        !kernel.cpu().write32(k_init_rpc_entry + 4u, 0u) ||
+        !kernel.cpu().write32(
+            k_init_rpc_entry + 8u, 0x0000000du))
+    {
+        return false;
+    }
+    const uint32_t init_id = kernel.create_thread(
+        k_init_rpc_entry, 0u, 1u, 0x400u);
+    if (init_id == 0u || !kernel.start_thread(init_id))
+    {
+        return false;
+    }
+    const iop::s_kernel_run_result initialized = kernel.run(64u);
+    if (initialized.m_stop != iop::e_kernel_stop::breakpoint ||
+        initialized.m_guest_pc != k_init_rpc_entry + 8u)
+    {
+        return false;
+    }
+    // Actual guest callback increments the incoming argument word and
+    // returns its buffer pointer in v0 to the SIFCMD finish trampoline.
+    const uint32_t handler[] = {
+        0x8ca80000u, // lw t0, 0(a1)
+        0x25080001u, // addiu t0, t0, 1
+        0xaca80000u, // sw t0, 0(a1)
+        0x3c020002u, // lui v0, 2
+        0x34424300u, // ori v0, v0, 0x4300
+        0x03e00008u, // jr ra
+        0x00000000u
+    };
+    for (uint32_t i = 0u; i < 7u; ++i)
+    {
+        if (!kernel.cpu().write32(
+                k_function + i * 4u, handler[i]))
+        {
+            return false;
+        }
+    }
+    if (!kernel.cpu().write32(
+            k_loop,
+            0x0c000000u | ((loop_stub >> 2u) & 0x03ffffffu)) ||
+        !kernel.cpu().write32(k_loop + 4u, 0u) ||
+        !kernel.cpu().write32(k_loop + 8u, 0x0000000du))
+    {
+        return false;
+    }
+    const uint32_t loop_id = kernel.create_thread(
+        k_loop, 0u, 1u, 0x400u, k_queue);
+    if (loop_id == 0u)
+    {
+        return false;
+    }
+
+    kernel.cpu().state().m_gpr[4] = k_queue;
+    kernel.cpu().state().m_gpr[5] = loop_id;
+    if (!commands.handle_syscall(
+            kernel, iop::c_sifcmd_bridge::k_service_base + 19u) ||
+        kernel.cpu().state().m_gpr[2] != 0u)
+    {
+        return false;
+    }
+    if (!kernel.cpu().write32(k_stack + 24u, k_queue))
+    {
+        return false;
+    }
+    kernel.cpu().state().m_gpr[4] = k_descriptor;
+    kernel.cpu().state().m_gpr[5] = k_server;
+    kernel.cpu().state().m_gpr[6] = k_function;
+    kernel.cpu().state().m_gpr[7] = k_buffer;
+    kernel.cpu().state().m_gpr[29] = k_stack;
+    if (!commands.handle_syscall(
+            kernel, iop::c_sifcmd_bridge::k_service_base + 17u) ||
+        kernel.cpu().state().m_gpr[2] != 0u ||
+        !commands.has_guest_rpc_server(k_server) ||
+        !kernel.start_thread(loop_id))
+    {
+        return false;
+    }
+
+    const iop::s_kernel_run_result idle = kernel.run(128u);
+    const iop::s_kernel_thread* loop_thread =
+        kernel.thread(loop_id);
+    if (idle.m_stop != iop::e_kernel_stop::idle ||
+        loop_thread == nullptr ||
+        loop_thread->m_status != iop::e_thread_status::blocked ||
+        rpc.pending_replies() != 0u)
+    {
+        return false;
+    }
+
+    // EE establishes the receive buffer using an actual SIF1
+    // SIFCMD packet, then binds to the newly registered guest server.
+    uint32_t dma_id = 0u;
+    packet(memory, k_packet, {
+        24u, 0u, 0x80000002u, 0u, k_receive, 0u, 0u, 0u
+    });
+    descriptor(memory, k_list, k_packet,
+               iop::c_sifcmd_bridge::k_command_buffer, 24u);
+    if (!sif1.set_dma(k_list, 1u, &dma_id))
+    {
+        return false;
+    }
+    dmac.acknowledge(6u);
+    packet(memory, k_packet, bind);
+    descriptor(memory, k_list, k_packet,
+               iop::c_sifcmd_bridge::k_command_buffer, 36u);
+    if (!sif1.set_dma(k_list, 1u, &dma_id) ||
+        rpc.pending_replies() != 1u)
+    {
+        return false;
+    }
+    const ee::s_ee_u128 armed{0x184u, 0u};
+    if (!ee::c_ee_dmac::mmio_write(
+            &dmac, ee::c_ee_dmac::k_sif0_base,
+            4u, &armed) ||
+        !rpc.pump() ||
+        rpc.pending_replies() != 0u ||
+        memory.read32(k_receive + 8u) !=
+            iop::c_sif_rpc_bridge::k_reply_cid ||
+        memory.read32(k_receive + 32u) !=
+            iop::c_sif_rpc_bridge::k_bind_cid)
+    {
+        return false;
+    }
+
+    // A real 4-byte payload and 56-byte RPC call. Merely committing
+    // the SIF1 request MUST NOT write EE output or deliver a SIF0 reply.
+    memory.write32(k_payload, 41u);
+    memory.write32(k_result, 0xcafebabeu);
+    packet(memory, k_packet, {
+        56u, 0u, iop::c_sif_rpc_bridge::k_call_cid, 0u,
+        2u, 0x11000u, 0x1234u, 0x15000u,
+        0x24u, 4u, k_result, 4u, 1u,
+        k_server ^ iop::c_sif_rpc_bridge::k_server_xor
+    });
+    descriptor(memory, k_list, k_payload,
+               iop::c_sif_rpc_bridge::k_rpc_data_destination, 4u);
+    descriptor(memory, k_list + 16u, k_packet,
+               iop::c_sifcmd_bridge::k_command_buffer, 56u);
+    dmac.acknowledge(5u);
+    dmac.acknowledge(6u);
+    if (!sif1.set_dma(k_list, 2u, &dma_id) ||
+        memory.read32(k_result) != 0xcafebabeu ||
+        rpc.pending_replies() != 0u ||
+        (dmac.status() & (1u << 5u)) != 0u)
+    {
+        return false;
+    }
+
+    const iop::s_kernel_run_result finished = kernel.run(160u);
+    uint32_t guest_value = 0u;
+    loop_thread = kernel.thread(loop_id);
+    if ((finished.m_stop != iop::e_kernel_stop::idle &&
+         finished.m_stop != iop::e_kernel_stop::budget_exhausted) ||
+        loop_thread == nullptr ||
+        loop_thread->m_status != iop::e_thread_status::blocked ||
+        !kernel.cpu().read32(k_buffer, &guest_value) ||
+        guest_value != 42u ||
+        memory.read32(k_result) != 42u ||
+        (dmac.status() & (1u << 5u)) == 0u ||
+        memory.read32(k_receive + 8u) !=
+            iop::c_sif_rpc_bridge::k_reply_cid ||
+        memory.read32(k_receive + 32u) !=
+            iop::c_sif_rpc_bridge::k_call_cid)
+    {
+        return false;
+    }
+
+    // No outstanding requests may remain after executing the handler.
+    kernel.cpu().state().m_gpr[4] = k_descriptor;
+    if (!commands.handle_syscall(
+            kernel, iop::c_sifcmd_bridge::k_service_base + 24u) ||
+        kernel.cpu().state().m_gpr[2] != 0u)
+    {
+        return false;
+    }
+    kernel.cpu().state().m_gpr[4] = k_queue;
+    if (!commands.handle_syscall(
+            kernel, iop::c_sifcmd_bridge::k_service_base + 25u) ||
+        kernel.cpu().state().m_gpr[2] != 0u ||
+        commands.has_guest_rpc_server(k_server))
+    {
+        return false;
+    }
+    return true;
+}
+
+
+bool test_iop_to_ee_rpc(const std::filesystem::path& disc_root)
+{
+    // IOP-originated BIND/CALL must traverse an armed EE SIF0 DMAC,
+    // and only a matching EE SIF1 Rend may wake the guest caller.
+    const auto fail_stage = [](int line) -> bool
+    {
+        std::fprintf(stderr,
+                     "IOP reverse SIFRPC stage failed at line %d\n",
+                     line);
+        return false;
+    };
+    constexpr uint32_t list = 0x10000u;
+    constexpr uint32_t packet_source = 0x12000u;
+    constexpr uint32_t data_source = 0x14000u;
+    constexpr uint32_t ee_receive = 0x00180000u;
+    constexpr uint32_t ee_buffer = 0x00190000u;
+    constexpr uint32_t client = 0x00028100u;
+    constexpr uint32_t iop_payload = 0x00028200u;
+    constexpr uint32_t iop_result = 0x00028300u;
+    constexpr uint32_t server_id = 0x80005555u;
+    constexpr uint32_t ee_server = 0x00188000u;
+
+    ee::ee_memory memory(32u * 1024u * 1024u);
+    ee::s_ee_cpu_state ee_cpu{};
+    ee::c_ee_sif sif;
+    ee::c_ee_dmac dmac;
+    sif.reset();
+    dmac.bind_cpu(&ee_cpu);
+    dmac.bind_memory(&memory);
+    dmac.reset();
+    iop::c_kernel kernel;
+    iop::c_sifcmd_bridge cmd(kernel, sif, &memory);
+    iop::c_disc_loader loader(kernel, disc_root);
+    iop::c_folder_sector_source sectors(disc_root);
+    iop::c_sif_rpc_bridge rpc(
+        loader, kernel, cmd, memory, dmac, &sectors);
+    iop::c_sif1_bridge sif1(
+        memory, kernel.cpu(), dmac, &cmd, &rpc);
+    if (!sectors.valid() || !cmd.install())
+    {
+        return fail_stage(__LINE__);
+    }
+    kernel.bind_syscall(
+        [&](iop::c_kernel& active, uint32_t service)
+        {
+            return cmd.handle_syscall(active, service);
+        });
+    if (!init_sifcmd_guest(kernel))
+    {
+        return fail_stage(__LINE__);
+    }
+
+    uint32_t init_stub = 0u;
+    uint32_t bind_stub = 0u;
+    uint32_t call_stub = 0u;
+    for (uint16_t ordinal : {14u, 15u, 16u})
+    {
+        uint32_t entry = 0u;
+        uint32_t instruction = 0u;
+        if (!kernel.lookup_library("sifcmd", ordinal, &entry) ||
+            !kernel.cpu().read32(entry + 8u, &instruction) ||
+            instruction != 0x0000000cu)
+        {
+            return fail_stage(__LINE__);
+        }
+        if (ordinal == 14u)
+        {
+            init_stub = entry;
+        }
+        if (ordinal == 15u)
+        {
+            bind_stub = entry;
+        }
+        if (ordinal == 16u)
+        {
+            call_stub = entry;
+        }
+    }
+    // Execute sceSifInitRpc through an actual R3000 guest JAL.
+    constexpr uint32_t init_pc = 0x00024000u;
+    const auto make_call = [&](uint32_t pc, uint32_t dest,
+                               bool stack_frame)
+    {
+        const uint32_t instruction =
+            0x0c000000u | ((dest >> 2u) & 0x03ffffffu);
+        const uint32_t shift = stack_frame ? 4u : 0u;
+        return (!stack_frame ||
+                kernel.cpu().write32(pc, 0x27bdffc0u)) &&
+            kernel.cpu().write32(pc + shift, instruction) &&
+            kernel.cpu().write32(pc + shift + 4u, 0u) &&
+            kernel.cpu().write32(
+                pc + shift + 8u, 0x0000000du);
+    };
+    if (!make_call(init_pc, init_stub, false))
+    {
+        return fail_stage(__LINE__);
+    }
+    const uint32_t init_thread = kernel.create_thread(
+        init_pc, 0u, 1u, 0x400u);
+    if (init_thread == 0u || !kernel.start_thread(init_thread) ||
+        kernel.run(64u).m_stop != iop::e_kernel_stop::breakpoint)
+    {
+        return fail_stage(__LINE__);
+    }
+
+    // EE publishes a genuine SIF0 receive buffer via SIF1.
+    packet(memory, packet_source, {
+        24u, 0u, 0x80000002u, 0u, ee_receive, 0u
+    });
+    descriptor(memory, list, packet_source,
+               iop::c_sifcmd_bridge::k_command_buffer, 24u);
+    uint32_t dma_id = 0u;
+    if (!sif1.set_dma(list, 1u, &dma_id) ||
+        cmd.ee_receive_address() != ee_receive)
+    {
+        return fail_stage(__LINE__);
+    }
+    dmac.acknowledge(6u);
+
+    // Guest sceSifBindRpc blocks. The unarmed EE SIF0 receiver must
+    // not be modified merely because a BIND request was enqueued.
+    constexpr uint32_t bind_pc = 0x00024040u;
+    if (!make_call(bind_pc, bind_stub, false))
+    {
+        return fail_stage(__LINE__);
+    }
+    const uint32_t bind_thread = kernel.create_thread(
+        bind_pc, 0u, 1u, 0x400u, client, server_id);
+    if (bind_thread == 0u || !kernel.start_thread(bind_thread) ||
+        kernel.run(64u).m_stop != iop::e_kernel_stop::idle ||
+        kernel.thread(bind_thread)->m_status !=
+            iop::e_thread_status::blocked ||
+        rpc.pending_replies() != 1u ||
+        memory.read32(ee_receive + 8u) != 0u)
+    {
+        return fail_stage(__LINE__);
+    }
+    const ee::s_ee_u128 armed{0x184u, 0u};
+    if (!ee::c_ee_dmac::mmio_write(
+            &dmac, ee::c_ee_dmac::k_sif0_base, 4u, &armed) ||
+        !rpc.pump() ||
+        memory.read32(ee_receive + 8u) !=
+            iop::c_sif_rpc_bridge::k_bind_cid ||
+        memory.read32(ee_receive + 32u) != server_id ||
+        (dmac.status() & (1u << 5u)) == 0u)
+    {
+        return fail_stage(__LINE__);
+    }
+
+    uint32_t packet_id = 0u;
+    if (!kernel.cpu().read32(client + 4u, &packet_id) ||
+        packet_id == 0u)
+    {
+        return fail_stage(__LINE__);
+    }
+    const std::vector<uint32_t> bind_reply = {
+        48u, 0u, iop::c_sif_rpc_bridge::k_reply_cid, 0u,
+        packet_id, client, packet_id, client,
+        iop::c_sif_rpc_bridge::k_bind_cid,
+        ee_server, ee_buffer, 0u
+    };
+    packet(memory, packet_source, bind_reply);
+    memory.write32(packet_source + 16u, packet_id + 1u);
+    descriptor(memory, list, packet_source,
+               iop::c_sifcmd_bridge::k_command_buffer, 48u);
+    dmac.acknowledge(5u);
+    dmac.acknowledge(6u);
+    if (sif1.set_dma(list, 1u, &dma_id) ||
+        dmac.status() != 0u ||
+        kernel.thread(bind_thread)->m_status !=
+            iop::e_thread_status::blocked)
+    {
+        return fail_stage(__LINE__);
+    }
+    packet(memory, packet_source, bind_reply);
+    if (!sif1.set_dma(list, 1u, &dma_id) ||
+        kernel.thread(bind_thread)->m_status !=
+            iop::e_thread_status::ready ||
+        kernel.run(64u).m_stop != iop::e_kernel_stop::breakpoint)
+    {
+        return fail_stage(__LINE__);
+    }
+    uint32_t bound_server = 0u;
+    uint32_t bound_buffer = 0u;
+    uint32_t status = 0xffffffffu;
+    if (!kernel.cpu().read32(client + 36u, &bound_server) ||
+        !kernel.cpu().read32(client + 20u, &bound_buffer) ||
+        !kernel.cpu().read32(client, &status) ||
+        bound_server != ee_server || bound_buffer != ee_buffer ||
+        status != 0u)
+    {
+        return fail_stage(__LINE__);
+    }
+
+    // Real R3000 sceSifCallRpc, with five stack-passed arguments,
+    // copies a guest payload into the EE buffer when SIF0 is armed.
+    // Its calling thread remains blocked until a *matched* EE Rend.
+    constexpr uint32_t call_pc = 0x00024100u;
+    // The caller's fifth and later parameters live at sp+16.
+    // Explicitly populate a3 with the IOP source buffer as a
+    // guest instruction, rather than modifying a saved CPU snapshot.
+    if (!make_call(call_pc, call_stub, true) ||
+        !kernel.cpu().write32(call_pc, 0x3c070002u) ||
+        !kernel.cpu().write32(call_pc + 4u, 0x34e78200u) ||
+        !kernel.cpu().write32(call_pc + 8u, 0x27bdffc0u) ||
+        !kernel.cpu().write32(
+            call_pc + 12u,
+            0x0c000000u | ((call_stub >> 2u) & 0x03ffffffu)) ||
+        !kernel.cpu().write32(call_pc + 16u, 0u) ||
+        !kernel.cpu().write32(call_pc + 20u, 0x0000000du) ||
+        !kernel.cpu().write32(iop_payload, 41u) ||
+        !kernel.cpu().write32(iop_result, 0xdeadbeefu))
+    {
+        return fail_stage(__LINE__);
+    }
+    // This is EE memory: SIF1 reads its DMA source from the EE,
+    // not from the IOP CPU's guest RAM.
+    memory.write32(data_source, 42u);
+    const uint32_t call_thread = kernel.create_thread(
+        call_pc, 0u, 1u, 0x400u, client, 3u);
+    const iop::s_kernel_thread* caller = kernel.thread(call_thread);
+    if (call_thread == 0u || caller == nullptr)
+    {
+        return fail_stage(__LINE__);
+    }
+    const uint32_t frame_sp = caller->m_cpu.m_gpr[29] - 64u;
+    if (!kernel.cpu().write32(frame_sp + 16u, 4u) ||
+        !kernel.cpu().write32(frame_sp + 20u, iop_result) ||
+        !kernel.cpu().write32(frame_sp + 24u, 4u) ||
+        !kernel.cpu().write32(frame_sp + 28u, 0u) ||
+        !kernel.cpu().write32(frame_sp + 32u, 0u) ||
+        !kernel.start_thread(call_thread))
+    {
+        return fail_stage(__LINE__);
+    }
+    dmac.acknowledge(5u);
+    dmac.acknowledge(6u);
+    if (kernel.run(64u).m_stop != iop::e_kernel_stop::idle ||
+        kernel.thread(call_thread)->m_status !=
+            iop::e_thread_status::blocked ||
+        !kernel.cpu().read32(client, &status) || status != 1u ||
+        memory.read32(ee_receive + 8u) !=
+            iop::c_sif_rpc_bridge::k_call_cid ||
+        memory.read32(ee_receive + 32u) != 3u ||
+        memory.read32(ee_buffer) != 41u ||
+        (dmac.status() & (1u << 5u)) == 0u)
+    {
+        return fail_stage(__LINE__);
+    }
+    uint32_t call_id = 0u;
+    if (!kernel.cpu().read32(client + 4u, &call_id) ||
+        call_id == packet_id)
+    {
+        return fail_stage(__LINE__);
+    }
+    const std::vector<uint32_t> call_reply = {
+        48u, 0u, iop::c_sif_rpc_bridge::k_reply_cid, 0u,
+        call_id, client, call_id, client,
+        iop::c_sif_rpc_bridge::k_call_cid,
+        0u, 0u, 0u
+    };
+    // Atomic staging: malformed Rend must not partially commit the
+    // earlier data DMA in its same SIF1 descriptor list.
+    packet(memory, packet_source, call_reply);
+    memory.write32(packet_source + 16u, call_id + 1u);
+    descriptor(memory, list, data_source, iop_result, 16u);
+    descriptor(memory, list + 16u, packet_source,
+               iop::c_sifcmd_bridge::k_command_buffer, 48u);
+    dmac.acknowledge(5u);
+    dmac.acknowledge(6u);
+    if (sif1.set_dma(list, 2u, &dma_id) ||
+        !kernel.cpu().read32(iop_result, &status) ||
+        status != 0xdeadbeefu ||
+        kernel.thread(call_thread)->m_status !=
+            iop::e_thread_status::blocked ||
+        dmac.status() != 0u)
+    {
+        return fail_stage(__LINE__);
+    }
+    packet(memory, packet_source, call_reply);
+    const bool completed_dma = sif1.set_dma(list, 2u, &dma_id);
+    uint32_t copied_result = 0u;
+    uint32_t finished_status = 0xffffffffu;
+    const bool copied = kernel.cpu().read32(
+        iop_result, &copied_result);
+    const iop::e_thread_status prior_thread_status =
+        kernel.thread(call_thread)->m_status;
+    const iop::s_kernel_run_result resumed =
+        kernel.run(64u);
+    const bool read_status = kernel.cpu().read32(
+        client, &finished_status);
+    if (!completed_dma || !copied || copied_result != 42u ||
+        prior_thread_status != iop::e_thread_status::ready ||
+        resumed.m_stop != iop::e_kernel_stop::breakpoint ||
+        !read_status || finished_status != 0u)
+    {
+        std::fprintf(stderr,
+            "reverse RPC completion: dma=%u copied=%u value=%u "
+            "before=%u stop=%u pc=%08x status_read=%u status=%08x\n",
+            completed_dma ? 1u : 0u, copied ? 1u : 0u,
+            copied_result,
+            static_cast<uint32_t>(prior_thread_status),
+            static_cast<uint32_t>(resumed.m_stop),
+            resumed.m_guest_pc,
+            read_status ? 1u : 0u, finished_status);
+        return fail_stage(__LINE__);
+    }
+    // A previously completed Rend may not be replayed as a second
+    // callback or a new IOP DMA completion.
+    dmac.acknowledge(6u);
+    if (sif1.set_dma(list + 16u, 1u, &dma_id) ||
+        (dmac.status() & (1u << 6u)) != 0u)
+    {
+        return fail_stage(__LINE__);
+    }
+    return true;
+}
+
+bool test_guest_sifcmd_send(const std::filesystem::path& disc_root)
+{
+    const auto fail_at = [](int line) -> bool
+    {
+        std::fprintf(stderr,
+                     "IOP guest SIFCMD send failed at line %d\n", line);
+        return false;
+    };
+    // The original R3000 ABI puts extra destination/size in the
+    // caller's stack. No command may appear on the EE until its
+    // SIF0 receiver is actually armed.
+    ee::ee_memory memory(32u * 1024u * 1024u);
+    ee::s_ee_cpu_state ee_cpu{};
+    ee::c_ee_sif sif;
+    ee::c_ee_dmac dmac;
+    sif.reset();
+    dmac.bind_cpu(&ee_cpu);
+    dmac.bind_memory(&memory);
+    dmac.reset();
+
+    iop::c_kernel kernel;
+    iop::c_sifcmd_bridge cmd(kernel, sif, &memory);
+    iop::c_disc_loader loader(kernel, disc_root);
+    iop::c_folder_sector_source sectors(disc_root);
+    iop::c_sif_rpc_bridge rpc(
+        loader, kernel, cmd, memory, dmac, &sectors);
+    iop::c_sif1_bridge sif1(
+        memory, kernel.cpu(), dmac, &cmd, &rpc);
+    if (!sectors.valid() || !cmd.install() ||
+        !cmd.initialize_hle_bootstrap())
+    {
+        return fail_at(__LINE__);
+    }
+    kernel.bind_syscall([&](iop::c_kernel& active, uint32_t service)
+    {
+        return cmd.handle_syscall(active, service);
+    });
+    constexpr uint32_t k_list = 0x10000u;
+    constexpr uint32_t k_handshake = 0x12000u;
+    constexpr uint32_t k_receive = 0x00180000u;
+    constexpr uint32_t k_extra_destination = 0x00190000u;
+    constexpr uint32_t k_packet = 0x27000u;
+    constexpr uint32_t k_extra = 0x28000u;
+    constexpr uint32_t k_program = 0x2a000u;
+    packet(memory, k_handshake,
+           {20u, 0u, 0x80000002u, 0u, k_receive});
+    descriptor(memory, k_list, k_handshake,
+               iop::c_sifcmd_bridge::k_command_buffer, 20u);
+    uint32_t dma_id = 0u;
+    if (!sif1.set_dma(k_list, 1u, &dma_id) ||
+        cmd.ee_receive_address() != k_receive)
+    {
+        return fail_at(__LINE__);
+    }
+    dmac.acknowledge(6u);
+
+    const uint32_t original[] = {
+        0xaaaaaaaau, 0x12345678u, 0x12345678u,
+        0u, 0x11223344u, 0x55667788u
+    };
+    for (uint32_t i = 0u; i < 6u; ++i)
+    {
+        if (!kernel.cpu().write32(k_packet + i * 4u, original[i]))
+        {
+            return fail_at(__LINE__);
+        }
+    }
+    if (!kernel.cpu().write32(k_extra, 0xdeadbeefu))
+    {
+        return fail_at(__LINE__);
+    }
+    for (uint32_t ordinal : {12u, 28u})
+    {
+        const uint32_t guest_program = k_program + ordinal * 0x40u;
+        uint32_t stub = 0u;
+        if (!kernel.lookup_library(
+                "sifcmd", static_cast<uint16_t>(ordinal), &stub))
+        {
+            return fail_at(__LINE__);
+        }
+        const uint32_t instructions[] = {
+            0x34060018u, // ori a2, zero, 24-byte packet
+            0x3c070002u, // lui a3, 2
+            0x34e78000u, // ori a3, a3, 0x8000
+            0x0c000000u | ((stub >> 2u) & 0x03ffffffu),
+            0u,          // delay slot
+            0x0000000du // break after returning from the import
+        };
+        for (uint32_t i = 0u; i < 6u; ++i)
+        {
+            if (!kernel.cpu().write32(
+                    guest_program + 4u * i, instructions[i]))
+            {
+                return fail_at(__LINE__);
+            }
+        }
+        const uint32_t id = kernel.create_thread(
+            guest_program, 0u, 1u, 0x400u,
+            0x80000200u + ordinal, k_packet);
+        if (id == 0u)
+        {
+            return fail_at(__LINE__);
+        }
+        const iop::s_kernel_thread* thread = kernel.thread(id);
+        const uint32_t sp = thread->m_cpu.m_gpr[29];
+        if (!kernel.cpu().write32(sp + 16u, k_extra_destination) ||
+            !kernel.cpu().write32(sp + 20u, 4u) ||
+            !kernel.start_thread(id))
+        {
+            return fail_at(__LINE__);
+        }
+        const iop::s_kernel_run_result ran = kernel.run(64u);
+        thread = kernel.thread(id);
+        if (ran.m_stop != iop::e_kernel_stop::breakpoint ||
+            ran.m_guest_pc != guest_program + 20u ||
+            thread == nullptr || thread->m_cpu.m_gpr[2] != 1u ||
+            rpc.pending_replies() != 1u ||
+            memory.read32(k_receive + 8u) ==
+                (0x80000200u + ordinal) ||
+            memory.read32(k_extra_destination) == 0xdeadbeefu)
+        {
+            std::fprintf(stderr,
+                "SIFCMD send #%u: stop=%u pc=%08x expected=%08x v0=%08x "
+                "queued=%zu cid=%08x extra=%08x\n",
+                ordinal, static_cast<uint32_t>(ran.m_stop),
+                ran.m_guest_pc, guest_program + 20u,
+                thread != nullptr ? thread->m_cpu.m_gpr[2] : 0xffffffffu,
+                rpc.pending_replies(),
+                memory.read32(k_receive + 8u),
+                memory.read32(k_extra_destination));
+            return fail_at(__LINE__);
+        }
+        // The DMA commits only after the EE explicitly arms SIF0.
+        const ee::s_ee_u128 armed{0x184u, 0u};
+        if (!ee::c_ee_dmac::mmio_write(
+                &dmac, ee::c_ee_dmac::k_sif0_base,
+                4u, &armed) ||
+            !rpc.pump() || rpc.pending_replies() != 0u ||
+            memory.read32(k_receive) != (24u | (4u << 8u)) ||
+            memory.read32(k_receive + 4u) != k_extra_destination ||
+            memory.read32(k_receive + 8u) !=
+                (0x80000200u + ordinal) ||
+            memory.read32(k_receive + 16u) != 0x11223344u ||
+            memory.read32(k_extra_destination) != 0xdeadbeefu ||
+            (dmac.status() & (1u << 5u)) == 0u)
+        {
+            return fail_at(__LINE__);
+        }
+        dmac.acknowledge(5u);
+        // Acknowledging the previous SIF0 IRQ alone does not clear
+        // the receiver's CHCR. Explicitly disarm it so the next
+        // guest command is verified queued, not auto-delivered into
+        // an intentionally still-armed EE destination.
+        const ee::s_ee_u128 disarmed{0x84u, 0u};
+        if (!ee::c_ee_dmac::mmio_write(
+                &dmac, ee::c_ee_dmac::k_sif0_base,
+                4u, &disarmed))
+        {
+            return fail_at(__LINE__);
+        }
+        memory.write32(k_receive + 8u, 0u);
+        memory.write32(k_extra_destination, 0u);
+    }
+    // Malformed guest command payloads must not enqueue, alter the EE
+    // receiver or report a successful SIF packet.
+    kernel.cpu().state().m_gpr[4] = 0x80000901u;
+    kernel.cpu().state().m_gpr[5] = 0x001ffffcu;
+    kernel.cpu().state().m_gpr[6] = 24u;
+    kernel.cpu().state().m_gpr[7] = k_extra;
+    if (!cmd.handle_syscall(
+            kernel, iop::c_sifcmd_bridge::k_service_base + 12u) ||
+        kernel.cpu().state().m_gpr[2] != 0u ||
+        rpc.pending_replies() != 0u)
+    {
+        return fail_at(__LINE__);
+    }
+    return true;
+}
+
 } // namespace
 
 int main()
@@ -1225,6 +2015,129 @@ int main()
         return fail("malformed RPC envelope was not distinguished");
     }
 
+
+    // Retail SDBZ's next LOADFILE call sends 512 bytes with a
+    // nonzero argument length (observed after LIBSD.IRX). The
+    // PS2SDK arg_len and args[] fields are not reserved padding.
+    // First verify transactional validation without mutating IOP RAM.
+    const std::string with_args_path = "cdrom0:\\PADMAN.IRX;1";
+    const std::vector<uint8_t> module_args = {
+        'm', 'c', '0', ':', 0u,
+        '-', 'p', 'o', 'r', 't', '=', '0', 0u
+    };
+    for (uint32_t offset = 0u; offset < 512u; offset += 4u)
+    {
+        memory.write32(args_source + offset, 0u);
+    }
+    memory.write32(args_source, static_cast<uint32_t>(module_args.size()));
+    for (uint32_t index = 0u; index <= with_args_path.size(); ++index)
+    {
+        memory.write8(
+            args_source + 8u + index,
+            index == with_args_path.size() ? 0u :
+                static_cast<uint8_t>(with_args_path[index]));
+    }
+    for (uint32_t index = 0u; index < module_args.size(); ++index)
+    {
+        memory.write8(args_source + 260u + index, module_args[index]);
+    }
+    const std::vector<uint32_t> load_with_args = {
+        0x00020040u,
+        iop::c_sif_rpc_bridge::k_rpc_data_destination,
+        iop::c_sif_rpc_bridge::k_call_cid, 0u,
+        5u, 0x20561900u, 13u, 0x00564d40u,
+        0u, 512u, rpc_result, 8u, 1u,
+        iop::c_sif_rpc_bridge::k_loadfile_server ^
+            iop::c_sif_rpc_bridge::k_server_xor,
+        0u, 0u
+    };
+    staged.m_guest_path = "unchanged";
+    staged.m_module_arguments = {"untouched"};
+    if (!rpc.prepare_command(
+            load_with_args, 64u, args_source, 512u,
+            &staged, &status) ||
+        status != iop::e_rpc_rejection::none ||
+        staged.m_guest_path != with_args_path ||
+        staged.m_module_arguments !=
+            std::vector<std::string>({"mc0:", "-port=0"}))
+    {
+        return fail("LOADFILE nonzero arglen did not decode NUL argv");
+    }
+    memory.write32(args_source, 253u);
+    if (rpc.prepare_command(
+            load_with_args, 64u, args_source, 512u,
+            &staged, &status) ||
+        status != iop::e_rpc_rejection::invalid_arguments ||
+        staged.m_guest_path != with_args_path)
+    {
+        return fail("LOADFILE oversized arglen was accepted");
+    }
+    memory.write32(args_source, 13u);
+    memory.write8(args_source + 260u + 12u, 'X');
+    if (rpc.prepare_command(
+            load_with_args, 64u, args_source, 512u,
+            &staged, &status) ||
+        status != iop::e_rpc_rejection::invalid_arguments)
+    {
+        return fail("LOADFILE unterminated module argument was accepted");
+    }
+    memory.write8(args_source + 260u + 12u, 0u);
+
+    // Exercise the same retail-form packet through the actual
+    // transactional SIF1 descriptor list and LOADFILE backend.
+    packet(memory, call_source, load_with_args);
+    descriptor(memory, list, args_source,
+               iop::c_sif_rpc_bridge::k_rpc_data_destination, 512u);
+    descriptor(memory, list + 16u, call_source,
+               iop::c_sifcmd_bridge::k_command_buffer, 64u);
+    memory.write32(list + 28u, 0x44u);
+    dmac.acknowledge(5u);
+    dmac.acknowledge(6u);
+    if (!sif1.set_dma(list, 2u, &dma_id) ||
+        rpc.last_observation().m_guest_path != with_args_path ||
+        rpc.last_observation().m_load_status !=
+            iop::e_disc_load_result::success ||
+        !rpc.last_observation().m_module_started ||
+        rpc.last_observation().m_module_id != 2u ||
+        memory.read32(rpc_result) != 2u)
+    {
+        return fail("LOADFILE argument-bearing SIF1 packet was refused");
+    }
+    const iop::s_kernel_thread* args_thread =
+        kernel.thread(rpc.last_observation().m_thread_id);
+    if (args_thread == nullptr ||
+        args_thread->m_cpu.m_gpr[4] != 3u)
+    {
+        return fail("LOADFILE argument-bearing IRX received wrong argc");
+    }
+    const uint32_t argv_base = args_thread->m_cpu.m_gpr[5];
+    const std::vector<std::string> expected_args = {
+        with_args_path, "mc0:", "-port=0"
+    };
+    for (uint32_t index = 0u; index < expected_args.size(); ++index)
+    {
+        uint32_t guest_pointer = 0u;
+        if (!kernel.cpu().read32(
+                argv_base + index * 4u, &guest_pointer))
+        {
+            return fail("LOADFILE guest argv pointer unreadable");
+        }
+        for (uint32_t byte = 0u;
+             byte <= expected_args[index].size(); ++byte)
+        {
+            uint8_t actual_byte = 0xffu;
+            const uint8_t expected_byte =
+                byte == expected_args[index].size() ? 0u :
+                    static_cast<uint8_t>(expected_args[index][byte]);
+            if (!kernel.cpu().read8(
+                    guest_pointer + byte, &actual_byte) ||
+                actual_byte != expected_byte)
+            {
+                return fail("LOADFILE did not preserve argument bytes");
+            }
+        }
+    }
+
     // Reset may not retain the previous IOPRP's LOADFILE version.
     rpc.reset_for_reboot();
     packet(memory, call_source, version_call);
@@ -1238,6 +2151,19 @@ int main()
     {
         return fail("reset retained stale LOADFILE version");
     }
+    if (!test_guest_rpc_lifecycle(folder.m_path))
+    {
+        return fail("real guest IOP SIFRPC lifecycle failed");
+    }
+    if (!test_iop_to_ee_rpc(folder.m_path))
+    {
+        return fail("IOP-initiated SIFRPC bind/call lifecycle failed");
+    }
+    if (!test_guest_sifcmd_send(folder.m_path))
+    {
+        return fail("guest SIFCMD send did not traverse armed SIF0");
+    }
+
     std::printf("IOP LOADFILE RPC: PASS\n");
     return 0;
 }

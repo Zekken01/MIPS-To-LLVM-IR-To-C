@@ -178,6 +178,144 @@ int main()
         return fail("subsequent IOP set did not OR with remaining flags");
     }
 
+
+    // SIFMAN initialization is stateful, not an installed-stub
+    // side-effect. Test the actual IOP DMA registers and mailbox.
+    // MCSERV statically imports #5/#7/#8/#29, while #32 still
+    // requires real interrupt/callback semantics and stays unresolved.
+    for (uint16_t ordinal : {
+             4u, 5u, 6u, 7u, 8u, 21u, 22u,
+             23u, 24u, 25u, 26u, 27u, 29u})
+    {
+        uint32_t entry = 0u;
+        uint32_t instruction = 0u;
+        if (!kernel.lookup_library("sifman", ordinal, &entry) ||
+            !kernel.cpu().read32(entry + 8u, &instruction) ||
+            instruction != 0x0000000cu)
+        {
+            return fail("SIFMAN service has no guest R3000 import stub");
+        }
+    }
+    for (uint16_t ordinal : {9u, 30u, 31u, 32u})
+    {
+        uint32_t entry = 0u;
+        if (kernel.lookup_library("sifman", ordinal, &entry))
+        {
+            return fail("unimplemented SIFMAN callback was registered");
+        }
+    }
+    uint32_t sysreg = 0u;
+    if (!bridge.handle_syscall(
+            kernel, iop::c_sifman_bridge::k_service_base + 29u) ||
+        kernel.cpu().state().m_gpr[2] != 0u ||
+        !kernel.hardware().read(iop::c_hw::k_dma_pcr2, 4u, &sysreg) ||
+        sysreg != 0u)
+    {
+        return fail("unexecuted SIFMAN initializer modified DMA state");
+    }
+
+    // Call sceSifInit through a real guest JAL/syscall/return, not a
+    // host-only direct invocation.
+    constexpr uint32_t k_init_entry = 0x5000u;
+    uint32_t init_stub = 0u;
+    if (!kernel.lookup_library("sifman", 5u, &init_stub) ||
+        !kernel.cpu().write32(
+            k_init_entry,
+            0x0c000000u | ((init_stub >> 2u) & 0x03ffffffu)) ||
+        !kernel.cpu().write32(k_init_entry + 4u, 0u) ||
+        !kernel.cpu().write32(k_init_entry + 8u, 0x0000000du))
+    {
+        return fail("could not author guest SIFMAN init call");
+    }
+    const uint32_t init_thread = kernel.create_thread(
+        k_init_entry, 0u, 0u, 0x400u
+    );
+    if (init_thread == 0u || !kernel.start_thread(init_thread))
+    {
+        return fail("could not schedule guest SIFMAN init call");
+    }
+    const iop::s_kernel_run_result init_run = kernel.run(64u);
+    uint32_t smflag_after_init = 0xffffffffu;
+    if (init_run.m_stop != iop::e_kernel_stop::breakpoint ||
+        init_run.m_guest_pc != k_init_entry + 8u ||
+        !kernel.hardware().read(iop::c_hw::k_dma_pcr, 4u, &sysreg) ||
+        (sysreg & 0x800u) == 0u ||
+        !kernel.hardware().read(iop::c_hw::k_dma_pcr2, 4u, &sysreg) ||
+        (sysreg & 0x8800u) != 0x8800u ||
+        !kernel.hardware().read(
+            iop::c_hw::k_sif1_dma_base + 4u, 4u, &sysreg) ||
+        (sysreg & 0xffffu) != 0x20u ||
+        !ee_sif.get_reg(4u, &smflag_after_init) ||
+        smflag_after_init != 0x60000u ||
+        !bridge.handle_syscall(
+            kernel, iop::c_sifman_bridge::k_service_base + 29u) ||
+        kernel.cpu().state().m_gpr[2] != 1u)
+    {
+        return fail("guest sceSifInit did not initialize real DMA controls");
+    }
+    if (!bridge.handle_syscall(
+            kernel, iop::c_sifman_bridge::k_service_base + 8u) ||
+        kernel.cpu().state().m_gpr[2] !=
+            static_cast<uint32_t>(-1))
+    {
+        return fail("SIFMAN synchronous DMA completion status was wrong");
+    }
+    // The only supported IOP flag changes are actual guest calls.
+    // Check the shared EE register model, including ownership of
+    // MSFLAG bits and actual IOP publication of SUBADDR.
+    if (!ee_sif.set_reg(3u, 0x30000u) ||
+        !ee_sif.set_reg(1u, 0x00120000u) ||
+        !bridge.handle_syscall(
+            kernel, iop::c_sifman_bridge::k_service_base + 21u) ||
+        kernel.cpu().state().m_gpr[2] != 0x30000u)
+    {
+        return fail("SIFMAN MSFLAG read did not use EE SIF state");
+    }
+    kernel.cpu().state().m_gpr[4] = 0x10000u;
+    if (!bridge.handle_syscall(
+            kernel, iop::c_sifman_bridge::k_service_base + 22u) ||
+        kernel.cpu().state().m_gpr[2] != 0x20000u ||
+        !ee_sif.get_reg(3u, &sysreg) ||
+        sysreg != 0x20000u ||
+        !bridge.handle_syscall(
+            kernel, iop::c_sifman_bridge::k_service_base + 25u) ||
+        kernel.cpu().state().m_gpr[2] != 0x00120000u)
+    {
+        return fail("IOP SIFMAN flags or main address ownership failed");
+    }
+    kernel.cpu().state().m_gpr[4] = 0x0001d000u;
+    if (!bridge.handle_syscall(
+            kernel, iop::c_sifman_bridge::k_service_base + 27u) ||
+        kernel.cpu().state().m_gpr[2] != 0x0001d000u ||
+        !bridge.handle_syscall(
+            kernel, iop::c_sifman_bridge::k_service_base + 26u) ||
+        kernel.cpu().state().m_gpr[2] != 0x0001d000u ||
+        !ee_sif.get_reg(2u, &sysreg) ||
+        sysreg != 0x0001d000u)
+    {
+        return fail("SIFMAN IOP SUBADDR was not published by guest call");
+    }
+    kernel.cpu().state().m_gpr[4] = 0x001fffffu;
+    if (bridge.handle_syscall(
+            kernel, iop::c_sifman_bridge::k_service_base + 27u) ||
+        !ee_sif.get_reg(2u, &sysreg) ||
+        sysreg != 0x0001d000u)
+    {
+        return fail("invalid SIFMAN subaddress was accepted");
+    }
+    // One actual IOP reboot and service reinstall must clear modeled
+    // SIFMAN init state without manufacturing another SIF reply.
+    kernel.reset();
+    if (!bridge.install() ||
+        !bridge.handle_syscall(
+            kernel, iop::c_sifman_bridge::k_service_base + 29u) ||
+        kernel.cpu().state().m_gpr[2] != 0u ||
+        !kernel.hardware().read(iop::c_hw::k_dma_pcr2, 4u, &sysreg) ||
+        sysreg != 0u)
+    {
+        return fail("SIFMAN state persisted across IOP kernel reset");
+    }
+
     std::printf("IOP SIFMAN guest bridge: PASS\n");
     return 0;
 }

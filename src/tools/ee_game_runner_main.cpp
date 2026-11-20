@@ -1412,7 +1412,7 @@ int main(int argc, char** argv)
     std::string last_iop_rpc_path;
     std::unique_ptr<s_cdvd_context> cdvd;
     std::unique_ptr<iop::c_cdvdman_bridge> iop_cdvdman;
-    const iop::c_folder_sector_source* folder_disc_source = nullptr;
+    iop::c_folder_sector_source* folder_disc_source = nullptr;
     bool hle_iop_reboot_bootstrap_pending = false;
     bool hle_iop_reboot_ee_reset_seen = false;
     if (!iop_irx_paths.empty() || iop_rom0_path != nullptr ||
@@ -1524,7 +1524,7 @@ int main(int argc, char** argv)
                 return 1;
             }
             iop_sifcmd = std::make_unique<iop::c_sifcmd_bridge>(
-                *iop_kernel, hardware.sif()
+                *iop_kernel, hardware.sif(), memory.get()
             );
             if (!iop_sifcmd->install())
             {
@@ -1566,6 +1566,7 @@ int main(int argc, char** argv)
                     return 1;
                 }
                 folder_disc_source = folder_source.get();
+                iop_hle->attach_disc_source(folder_disc_source);
                 cdvd = std::make_unique<s_cdvd_context>();
                 cdvd->m_source = std::move(folder_source);
                 cdvd->m_transport =
@@ -2225,10 +2226,10 @@ int main(int argc, char** argv)
             {
                 std::printf(
                     "HLE guest RAM syscall returned: entry=0x%08x "
-                    "resume=0x%08x v0=0x%08x instructions=%u\n",
+                    "resume=0x%08x v0=0x%08x instructions=%u tlb_writes=%u\n",
                     ram_entry, cpu.m_pc,
                     static_cast<uint32_t>(cpu.m_gpr[2].m_lo),
-                    result.m_instructions
+                    result.m_instructions, result.m_tlb_writes
                 );
             }
             continue;
@@ -2402,6 +2403,7 @@ int main(int argc, char** argv)
         // Timer COUNT reads inside a long native loop sample the live
         // instruction budget rather than this after-dispatch checkpoint.
         host_timers.service();
+        const uint64_t fields_before = hardware.scanout().fields_started();
         const auto scanout_result = runtime.m_ee_cycle_scheduler.service_scanout(
             hardware, vsync_flags, *memory);
         if (scanout_result == ee::e_ee_scheduled_event_result::INVALID_TIMESTAMP_OR_DELIVERY)
@@ -2409,6 +2411,14 @@ int main(int argc, char** argv)
             std::fprintf(stderr, "EE scheduler rejected scanout delivery at cycle=%llu\n",
                 static_cast<unsigned long long>(runtime.m_ee_cycle_scheduler.current_cycle()));
             return 1;
+        }
+        // Only signal IOP VBlank *start* for an actually delivered
+        // GS field. There is no validated VBlank-end producer yet:
+        // WaitVblankEnd must remain blocked instead of timing out.
+        if (iop_hle != nullptr &&
+            hardware.scanout().fields_started() > fields_before)
+        {
+            iop_hle->signal_vblank_edge(true);
         }
 #ifdef EE_ENABLE_RAYLIB_WINDOW
         if (gs_webgpu_window)
@@ -2857,7 +2867,8 @@ int main(int argc, char** argv)
                 service == 0x74u ||
                 service == 0x76u || service == 0x77u ||
                 service == 0x78u || service == 0x79u ||
-                service == 0x7au || service == 0x7cu)
+                service == 0x7au || service == 0x7cu ||
+                service == 0x7fu)
             {
                 // In interrupt context R5900 EPC still refers to the
                 // interrupted thread, not the nested syscall. The runtime
@@ -4843,6 +4854,21 @@ int main(int argc, char** argv)
                         {
                             repeated_sif_smflag_reads = 0u;
                         }
+                    }
+                }
+
+                else if (service == 0x7fu)
+                {
+                    // EE GetMemorySize (0x7F) reports installed EE RDRAM
+                    // capacity in bytes, not the remaining heap capacity.
+                    // Reference: ps2-web-recomp:SDBZ/runtime/src/kernel.cpp.
+                    // This read-only service cannot create guest progress.
+                    cpu.m_gpr[2].m_lo = k_ee_ram_size;
+                    cpu.m_gpr[2].m_hi = 0u;
+                    if (trace)
+                    {
+                        std::printf("HLE GetMemorySize: bytes=0x%08x\\n",
+                                    k_ee_ram_size);
                     }
                 }
 

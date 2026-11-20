@@ -18,7 +18,8 @@ enum class e_ee_ram_result : uint32_t
     UNSUPPORTED,
     BRANCH_IN_DELAY_SLOT,
     INSTRUCTION_BUDGET,
-    TIMING_OBSERVER_REJECTED
+    TIMING_OBSERVER_REJECTED,
+    INVALID_TLB_STATE
 };
 
 struct s_ee_ram_execution
@@ -27,6 +28,7 @@ struct s_ee_ram_execution
     uint32_t m_pc = 0;
     uint32_t m_opcode = 0;
     uint32_t m_instructions = 0;
+    uint32_t m_tlb_writes = 0;
 };
 
 s_ee_ram_execution ee_execute_ram_callback(

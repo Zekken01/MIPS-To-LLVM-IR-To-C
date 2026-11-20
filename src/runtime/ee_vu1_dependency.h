@@ -1,0 +1,295 @@
+// VU1 register dependency timing adapted from ps2-web-recomp:SDBZ
+// runtime/include/ps2/vu_ops.hpp (Samir Nuri, 2026, MIT).
+// License: src/runtime/ps2_webgpu/gs/LICENSE.upstream
+#pragma once
+
+#include <algorithm>
+#include <array>
+#include <cstdint>
+
+namespace ee
+{
+struct s_ee_vu1_use
+{
+    std::array<uint8_t, 4> m_reg{};
+    std::array<uint8_t, 4> m_mask{};
+    std::array<uint8_t, 2> m_wreg{};
+    std::array<uint8_t, 2> m_wmask{};
+    uint32_t m_n = 0u;
+    uint32_t m_wn = 0u;
+    uint16_t m_vi_reads = 0u;
+    uint32_t m_vi_load = 0u;
+
+    void read_vi(uint32_t register_index)
+    {
+        if (register_index != 0u)
+        {
+            m_vi_reads |= static_cast<uint16_t>(1u << (register_index & 15u));
+        }
+    }
+
+    void read(uint32_t register_index, uint32_t mask)
+    {
+        if (register_index != 0u && mask != 0u && m_n < m_reg.size())
+        {
+            m_reg[m_n] = static_cast<uint8_t>(register_index);
+            m_mask[m_n++] = static_cast<uint8_t>(mask);
+        }
+    }
+
+    void write(uint32_t register_index, uint32_t mask)
+    {
+        if (register_index != 0u && mask != 0u && m_wn < m_wreg.size())
+        {
+            m_wreg[m_wn] = static_cast<uint8_t>(register_index);
+            m_wmask[m_wn++] = static_cast<uint8_t>(mask);
+        }
+    }
+};
+
+struct s_ee_vu1_dependency
+{
+    std::array<std::array<uint32_t, 4>, 32> m_vf_ready{};
+    std::array<uint32_t, 16> m_vi_ready{};
+
+    static s_ee_vu1_use decode(uint32_t lo, uint32_t hi)
+    {
+        s_ee_vu1_use result{};
+        const uint32_t dest = (hi >> 21u) & 15u;
+        const uint32_t ft = (hi >> 16u) & 31u;
+        const uint32_t fs = (hi >> 11u) & 31u;
+        const uint32_t fd = (hi >> 6u) & 31u;
+        const uint32_t bc = 8u >> (hi & 3u);
+        const uint32_t funct = hi & 63u;
+
+        if (funct < 0x3cu)
+        {
+            if (funct < 0x1cu)
+            {
+                result.read(fs, dest);
+                result.read(ft, bc);
+            }
+            else if (funct < 0x28u)
+            {
+                result.read(fs, dest);
+            }
+            else if (funct == 0x2eu)
+            {
+                result.read(fs, 0xeu);
+                result.read(ft, 0xeu);
+            }
+            else
+            {
+                result.read(fs, dest);
+                result.read(ft, dest);
+            }
+            result.write(fd, funct == 0x2eu ? 0xeu : dest);
+        }
+        else
+        {
+            const uint32_t index = (((hi >> 6u) & 31u) << 2u) |
+                (funct & 3u);
+            if (index < 0x10u || (index >= 0x18u && index < 0x1cu))
+            {
+                result.read(fs, dest);
+                result.read(ft, bc);
+            }
+            else if (index < 0x18u || index == 0x1du)
+            {
+                result.read(fs, dest);
+                result.write(ft, dest);
+            }
+            else if (index == 0x1fu)
+            {
+                result.read(fs, 0xeu);
+                result.read(ft, 1u);
+            }
+            else if (index < 0x28u)
+            {
+                result.read(fs, dest);
+            }
+            else if (index == 0x2eu)
+            {
+                result.read(fs, 0xeu);
+                result.read(ft, 0xeu);
+            }
+            else if (index < 0x2fu)
+            {
+                result.read(fs, dest);
+                result.read(ft, dest);
+            }
+        }
+
+        if ((hi & 0x80000000u) != 0u)
+        {
+            return result;
+        }
+
+        const uint32_t ldest = (lo >> 21u) & 15u;
+        const uint32_t lft = (lo >> 16u) & 31u;
+        const uint32_t lfs = (lo >> 11u) & 31u;
+        const uint32_t fsf = 8u >> ((lo >> 21u) & 3u);
+        const uint32_t ftf = 8u >> ((lo >> 23u) & 3u);
+        const uint32_t it = (lo >> 16u) & 15u;
+        const uint32_t is = (lo >> 11u) & 15u;
+        const uint32_t major = lo >> 25u;
+
+        if (major == 0x00u || major == 0x08u || major == 0x09u ||
+            major == 0x18u || major == 0x1au || major == 0x1bu ||
+            major == 0x24u || major == 0x25u ||
+            (major >= 0x2cu && major <= 0x2fu))
+        {
+            result.read_vi(is);
+        }
+        if (major == 0x01u)
+        {
+            result.read_vi(it);
+        }
+        if (major == 0x04u || major == 0x05u ||
+            major == 0x28u || major == 0x29u)
+        {
+            result.read_vi(is);
+        }
+        if (major == 0x05u || major == 0x28u || major == 0x29u)
+        {
+            result.read_vi(it);
+        }
+        if (major == 0x04u)
+        {
+            result.m_vi_load = it;
+        }
+        if (major == 0x40u && (lo & 0x3cu) != 0x3cu)
+        {
+            const uint32_t function = lo & 63u;
+            if (function == 0x30u || function == 0x31u ||
+                function == 0x32u || function == 0x34u || function == 0x35u)
+            {
+                result.read_vi(is);
+            }
+            if (function == 0x30u || function == 0x31u ||
+                function == 0x34u || function == 0x35u)
+            {
+                result.read_vi(it);
+            }
+        }
+        if (major == 0x40u && (lo & 0x3cu) == 0x3cu)
+        {
+            const uint32_t index = (((lo >> 6u) & 31u) << 2u) |
+                (lo & 3u);
+            if (index == 0x34u || index == 0x36u ||
+                index == 0x3du || index == 0x3eu ||
+                index == 0x3fu || index == 0x6cu)
+            {
+                result.read_vi(is);
+            }
+            if (index == 0x35u || index == 0x37u || index == 0x3fu)
+            {
+                result.read_vi(it);
+            }
+            if (index == 0x3eu)
+            {
+                result.m_vi_load = it;
+            }
+        }
+
+        if (major == 0x00u)
+        {
+            result.write(lft, ldest);
+        }
+        else if (major == 0x01u)
+        {
+            result.read(lfs, ldest);
+        }
+        else if (major == 0x40u && (lo & 0x3cu) == 0x3cu)
+        {
+            const uint32_t index = (((lo >> 6u) & 31u) << 2u) |
+                (lo & 3u);
+            switch (index)
+            {
+            case 0x30u:
+                result.read(lfs, ldest);
+                result.write(lft, ldest);
+                break;
+            case 0x31u:
+                result.read(lfs, ((ldest >> 1u) | (ldest << 3u)) & 15u);
+                result.write(lft, ldest);
+                break;
+            case 0x34u:
+            case 0x36u:
+            case 0x3du:
+            case 0x40u:
+            case 0x41u:
+            case 0x64u:
+                result.write(lft, ldest);
+                break;
+            case 0x35u:
+            case 0x37u:
+                result.read(lfs, ldest);
+                break;
+            case 0x38u:
+            case 0x3au:
+                result.read(lfs, fsf);
+                result.read(lft, ftf);
+                break;
+            case 0x39u:
+                result.read(lft, ftf);
+                break;
+            case 0x3cu:
+            case 0x42u:
+            case 0x43u:
+                result.read(lfs, fsf);
+                break;
+            default:
+                if (index >= 0x70u)
+                {
+                    result.read(lfs, 15u);
+                }
+                break;
+            }
+        }
+        return result;
+    }
+
+    uint32_t issue(const s_ee_vu1_use& use, uint32_t next_cycle) const
+    {
+        uint32_t cycle = next_cycle;
+        for (uint32_t index = 0u; index < use.m_n; ++index)
+        {
+            for (uint32_t lane = 0u; lane < 4u; ++lane)
+            {
+                if ((use.m_mask[index] & (8u >> lane)) != 0u)
+                {
+                    cycle = std::max(cycle,
+                        m_vf_ready[use.m_reg[index]][lane]);
+                }
+            }
+        }
+        for (uint32_t register_index = 1u; register_index < 16u; ++register_index)
+        {
+            if ((use.m_vi_reads & (1u << register_index)) != 0u)
+            {
+                cycle = std::max(cycle, m_vi_ready[register_index]);
+            }
+        }
+        return cycle;
+    }
+
+    void retire(const s_ee_vu1_use& use, uint32_t cycle)
+    {
+        for (uint32_t index = 0u; index < use.m_wn; ++index)
+        {
+            for (uint32_t lane = 0u; lane < 4u; ++lane)
+            {
+                if ((use.m_wmask[index] & (8u >> lane)) != 0u)
+                {
+                    m_vf_ready[use.m_wreg[index]][lane] = cycle + 4u;
+                }
+            }
+        }
+        if (use.m_vi_load != 0u)
+        {
+            m_vi_ready[use.m_vi_load] = cycle + 4u;
+        }
+    }
+};
+} // namespace ee
