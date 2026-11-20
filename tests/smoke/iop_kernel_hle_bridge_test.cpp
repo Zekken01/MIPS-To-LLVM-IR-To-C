@@ -172,8 +172,9 @@ bool test_vblank_wait(uint16_t ordinal, bool start)
     uint32_t unsupported = 0u;
     if (!hle.install() ||
         !kernel.lookup_library("vblank", ordinal, &import_pc) ||
-        kernel.lookup_library("vblank", 8u, &unsupported) ||
-        kernel.lookup_library("vblank", 9u, &unsupported))
+        !kernel.lookup_library("vblank", 8u, &unsupported) ||
+        !kernel.lookup_library("vblank", 9u, &unsupported) ||
+        kernel.lookup_library("vblank", 10u, &unsupported))
     {
         return false;
     }
@@ -228,6 +229,95 @@ bool test_vblank_wait(uint16_t ordinal, bool start)
            completed.m_guest_pc == k_program + 8u &&
            thread != nullptr &&
            thread->m_cpu.m_gpr[2] == 0u;
+}
+bool test_vblank_guest_callbacks()
+{
+    // Genuine guest code is called only by the matching scanout edge.
+    iop::c_kernel kernel;
+    iop::c_kernel_hle_bridge hle(kernel);
+    if (!hle.install())
+    {
+        return false;
+    }
+    kernel.bind_syscall([&](iop::c_kernel& active, uint32_t service)
+    {
+        return hle.handle_syscall(active, service);
+    });
+    constexpr uint32_t k_handler = 0x38000u;
+    constexpr uint32_t k_result = 0x37000u;
+    const uint32_t program[] = {
+        0x3c080003u, // lui t0, 3
+        0x35087000u, // ori t0, t0, 0x7000
+        0xad040000u, // sw a0, 0(t0)
+        0x03e00008u, // jr ra
+        0u
+    };
+    for (uint32_t i = 0u; i < sizeof(program) / sizeof(program[0]); ++i)
+    {
+        if (!kernel.cpu().write32(k_handler + 4u * i, program[i]))
+        {
+            return false;
+        }
+    }
+    if (!kernel.cpu().write32(k_result, 0xdeadbeefu))
+    {
+        return false;
+    }
+    uint32_t value = 0u;
+    if (!call_guest(
+            kernel, "vblank", 8u,
+            {0u, 1u, k_handler, 0x12345678u}, &value) ||
+        value != 0u || !kernel.cpu().read32(k_result, &value) ||
+        value != 0xdeadbeefu)
+    {
+        return false;
+    }
+    hle.signal_vblank_edge(false);
+    (void)kernel.run(32u);
+    if (!kernel.cpu().read32(k_result, &value) ||
+        value != 0xdeadbeefu)
+    {
+        return false;
+    }
+    hle.signal_vblank_edge(true);
+    if (!kernel.cpu().read32(k_result, &value) ||
+        value != 0xdeadbeefu)
+    {
+        return false;
+    }
+    (void)kernel.run(128u);
+    if (!kernel.cpu().read32(k_result, &value) ||
+        value != 0x12345678u)
+    {
+        return false;
+    }
+    // Remove by the original (edge, function) pair. A subsequent
+    // identical edge is not permission to call a stale guest pointer.
+    if (!call_guest(
+            kernel, "vblank", 9u,
+            {0u, k_handler, 0u, 0u}, &value) ||
+        value != 0u || !kernel.cpu().write32(k_result, 0xbadc0deu))
+    {
+        return false;
+    }
+    hle.signal_vblank_edge(true);
+    (void)kernel.run(128u);
+    if (!kernel.cpu().read32(k_result, &value) ||
+        value != 0xbadc0deu)
+    {
+        return false;
+    }
+    // Invalid callbacks cannot be registered with a success value.
+    if (!call_guest(
+            kernel, "vblank", 8u,
+            {0u, 1u, 0x001fffffu, 3u}, &value) ||
+        value != static_cast<uint32_t>(-1))
+    {
+        return false;
+    }
+    kernel.reset();
+    hle.reset_for_reboot();
+    return hle.install() && !kernel.has_guest_work();
 }
 } // namespace
 
@@ -305,6 +395,11 @@ int main()
         {
             return fail("VBLANK wait did not block until the real matching edge");
         }
+    }
+
+    if (!test_vblank_guest_callbacks())
+    {
+        return fail("VBLANK registered guest callback/edge/removal failed");
     }
 
     uint32_t result = 0u;
