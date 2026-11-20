@@ -688,3 +688,59 @@ they remain bounded by queue capacity but can wait indefinitely.
 The next matched Windows archive must establish whether ARKD_DVD's
 guest thread really registers server `0x500` and can service its
 subsequent RPC operations; passing synthetic CI is not boot validation.
+
+## 2026-11-20 03:20 — Guest IOP progress while EE waits for ARKD bind
+
+Matched archive: `ps2-game-hle(20261120-032006).zip`. Same USA
+`SLUS_214.42` SHA-256 `1b213a85a2c305dc0f893c007a502c93e0851d1bb7db6164f9e0b72adb074a16`,
+same extracted disc and final committed replay (`replay=0`); no expansion
+retry or new function generation. All six LOADFILE modules still link
+and start; `ARKD_DVD.IRX` is module 6, initial guest thread 8.
+
+PR #145's deferred `0x500` BIND now commits as SIFRPC sequence **19**
+(client `0x005A9330`). Its registered guest server has not yet been
+observed. The runtime executes one 256-instruction IOP scheduler turn
+after the SIF1 transaction, but this is not proof of server registration;
+the diagnostic `thread=0` is an unpopulated result field on
+`budget_exhausted`, not evidence that no IOP thread executed.
+
+The EE next traps at a real **WaitSema** (`v1=0x44`, A0 semaphore 8),
+not `_SetAlarm` (`v0=0x18` is a stale return register). The runner
+refuses the zero-count wait because there are no ready EE peers and its
+existing IOP-completion advancement is enabled only for ROM0 boot.
+Final replay: **11,434 EE dispatches** (+5), 19 committed RPCs,
+terminal EPC `0x00174CE4`, Cause `0x20`. The three GS PPMs are
+entirely zero. No new import, unsupported instruction or MMIO fault
+is demonstrated by this archive. The translation cache does not report
+a new function in the final replay.
+
+**Change:** Extend the existing no-ready-EE-peer WaitSema rendezvous
+to the HLE-first path only while a real deferred EE RPC BIND exists
+**and** `c_kernel::has_guest_work()` finds ready/timed IOP work.
+The IOP executes a bounded guest R3000 quantum; the RPC bridge may
+pump only an already-queued SIF0 reply, and the EE still requires the
+actual DMAC5 interrupt and original guest iSignalSema to finish
+WaitSema. No fabricated server, reply, interrupt, wakeup or virtual
+clock completion is permitted. Preserve the ROM0-only path unchanged.
+
+The reference `ps2-web-recomp/SDBZ` drives its IOP kernel from elapsed
+EE cycles (see `runtime/src/iop/kernel.cpp::run`), processes guest
+thread scheduling and commands while EE services are blocked, and
+defers SIFRPC BIND until the guest registers a matching server
+(`runtime/src/iop/sif.cpp`). The native runner is still using a
+bounded uncalibrated IOP guest-instruction compatibility clock; this
+batch is a targeted EE/IOP rendezvous, **not** calibrated full
+EE/IOP parallel scheduling.
+
+Regression: no IOP guest thread -> no wait advancement; dormant guest
+thread -> no advancement; genuine started R3000 thread -> bounded
+execution but no premature Rend; only registration moves the pending
+bind into a SIF0 reply, and only an armed SIF0 can deliver it.
+Existing standalone EE WaitSema negative tests continue to require
+fail-closed when no work or peer exists.
+
+**Next matched Windows validation:** confirm whether the HLE WaitSema
+guest turns reach actual ARKD guest registration for server `0x500`,
+whether a real DMAC5 callback signals the semaphore, and identify
+the next supported or faulting guest instruction. A bounded wait
+exhaustion remains a reported blocker, not synthetic success.
