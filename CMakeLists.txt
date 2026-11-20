@@ -351,6 +351,16 @@ if(EE_ENABLE_WEBGPU)
         "${EE_WGPU_EXTRAS_INCLUDE_DIR}"
         "${CMAKE_SOURCE_DIR}/src/runtime")
     target_link_libraries(ee_webgpu_native PUBLIC "${EE_WGPU_NATIVE_LIBRARY}")
+    if(WIN32)
+        # The pinned MSVC wgpu-native SDK includes Rust std objects in
+        # wgpu_native.lib. clang++/lld-link does not infer their Windows
+        # system imports from Rust link metadata; link the required SDK
+        # providers explicitly and propagate them to runner/smoke targets.
+        # ws2_32: getaddrinfo, WSA*; ntdll: NtReadFile/NtOpenFile;
+        # userenv: GetUserProfileDirectoryW.
+        target_link_libraries(ee_webgpu_native PUBLIC
+            ws2_32 ntdll userenv)
+    endif()
     if(UNIX AND NOT APPLE)
         target_link_libraries(ee_webgpu_native PUBLIC ${CMAKE_DL_LIBS} pthread m)
     endif()
