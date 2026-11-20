@@ -846,3 +846,61 @@ require real `sceSifRegisterRpc`, armed SIF0 transfer, and original
 DMAC5/iSignalSema completion. Do not fabricate a server, inject a
 callback, alter EE semaphore count, assume unlimited budget, or
 blindly mark the bind successful.
+
+## 2026-11-20 03:57:15 — IRX module-start thread priority and return lifecycle
+
+Matched archive `ps2-game-hle(20261120-035715).zip`: one final replay
+(`replay=0`), six linked/started IRX loads, 19 committed RPCs, one
+pending server `0x500` bind, 11,434 EE dispatches, and a blocked
+`WaitSema(8)` at EPC `0x00174CE4`. The 2,048 IOP wait turns execute
+524,288 guest R3000 instruction slots without registration or SIF0
+response. All three GS PPM captures remain completely black.
+
+The bounded snapshots prove that several IOP module-start threads are
+running at priority **1** after leaving their linked IRX images and
+advancing through zero-filled mirrored RAM; their retained `ra=0`
+allows the original `JR $ra` to return into address zero and run NOPs.
+At turn 2,048 SIO2MAN startup thread 1 has PC `0x0020FA38`, and
+ARKD_DVD startup thread 8 has PC `0x0020B920`, both mapped as
+`image_module=0` with zero opcodes. ARKD's guest-created worker
+threads **9–12** are ready at priority **50** but remain at their
+unchanged entrypoints inside module 6; module-start priority 1
+starves them. A separate worker thread 13 has priority 39 and also
+remains at its entry. These are actual guest-created threads, not
+invented RPC services. The log supports a scheduler/lifecycle
+starvation diagnosis; it does **not** establish that the ARKD server
+would have registered after worker execution.
+
+**Primary reference:** `ps2-web-recomp/SDBZ/runtime/src/iop/kernel.cpp`
+uses `kDefaultModulePriority = 8` for `start_module`, calls the guest
+`_start(argc, argv)` with `ra=g_exit_stub`, and only when the guest
+returns does its exit callback mark that startup thread dormant and
+publish the actual module result. Its general `start_thread` also
+installs this exit trampoline. Our HLE-first runner instead used
+priority 1 and seeded module `ra=0`; the kernel only implemented
+special return trampolines for alarms and one-shot callbacks.
+
+**Fix in the existing draft PR #145:** use default priority 8 for
+LOADFILE-created startup threads; keep an explicitly supplied
+priority unchanged. Tag the module's real initial guest thread and
+install a reserved MIPS BREAK return trampoline at `0x00013FD0`
+(next to existing alarm/callback return stubs), setting the guest
+`ra` whenever that module thread is started, including its
+`StartThreadArgs` context reset. Only an actual guest `JR $ra`
+followed by execution of the trampoline retires that module-start
+thread as dormant while preserving its guest `v0` result.
+This does not synthesize a successful module result, bind a server,
+or signal an EE semaphore; guest background worker creation and
+priority rules continue to come from executed IOP instructions.
+
+Regressions cover a real R3000 `JR $ra` plus delay-slot result,
+no further scheduling after a module returns, matching default 8
+priority, and preservation of explicit caller-chosen priority.
+
+**Limitations and next Windows replay:** The present LOADFILE bridge
+publishes the module ID before observing the entrypoint's return;
+full load-module completion/result timing parity remains a separate
+issue. Observe genuine guest startup returns and worker execution,
+then `sceSifRegisterRpc` for server `0x500`, any real SIF0 reply,
+and EE `WaitSema(8)` DMA5 callback wakeup. Do not claim these steps
+from CI alone.
