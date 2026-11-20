@@ -198,13 +198,23 @@ bool test_guest_rpc_lifecycle(const std::filesystem::path& disc_root)
             loop_stub = entry;
         }
     }
-    for (uint16_t ordinal : {12u, 13u, 28u})
+    // Both newly supported SIFCMD send variants must be backed by
+    // executable import stubs; #13 remains unimplemented.
+    for (uint16_t ordinal : {12u, 28u})
     {
         uint32_t entry = 0u;
-        if (kernel.lookup_library("sifcmd", ordinal, &entry))
+        uint32_t opcode = 0u;
+        if (!kernel.lookup_library("sifcmd", ordinal, &entry) ||
+            !kernel.cpu().read32(entry + 8u, &opcode) ||
+            opcode != 0x0000000cu)
         {
             return false;
         }
+    }
+    uint32_t unimplemented = 0u;
+    if (kernel.lookup_library("sifcmd", 13u, &unimplemented))
+    {
+        return false;
     }
 
     iop::c_sif_rpc_bridge::s_request preview{};
