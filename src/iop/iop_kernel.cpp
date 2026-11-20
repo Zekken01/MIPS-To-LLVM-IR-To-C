@@ -870,6 +870,87 @@ bool c_kernel::start_thread_with_arguments(
     return true;
 }
 
+bool c_kernel::start_module_thread_with_arguments(
+    uint32_t thread_id,
+    const std::string& module_path,
+    const std::vector<std::string>& arguments
+)
+{
+    const auto found = m_threads.find(thread_id);
+    if (found == m_threads.end() ||
+        found->second.m_status != e_thread_status::dormant ||
+        module_path.empty() || module_path.size() > 252u ||
+        arguments.size() > 252u)
+    {
+        return false;
+    }
+
+    // The IOP modload ABI passes argv[0] as the module path, and
+    // further NUL-separated LOADFILE arguments in argv[1..argc-1].
+    // Stage pointers and all strings in the actual thread's stack
+    // allocation rather than a temporary HLE buffer.
+    const uint32_t argc =
+        1u + static_cast<uint32_t>(arguments.size());
+    const uint64_t pointer_bytes =
+        (static_cast<uint64_t>(argc) + 1u) * 4u;
+    uint64_t storage_bytes = pointer_bytes + module_path.size() + 1u;
+    for (const std::string& argument : arguments)
+    {
+        storage_bytes += argument.size() + 1u;
+    }
+    // Leave a 128-byte MIPS entry frame below argv and a top redzone.
+    const uint64_t aligned_bytes = align16(storage_bytes);
+    const s_kernel_thread& thread = found->second;
+    if (aligned_bytes + 144u > thread.m_stack_size)
+    {
+        return false;
+    }
+    const uint32_t end =
+        thread.m_stack_base + thread.m_stack_size - 16u;
+    const uint32_t argv =
+        static_cast<uint32_t>(
+            (static_cast<uint64_t>(end) - aligned_bytes) &
+            ~uint64_t(15u));
+    const uint32_t initial_sp = argv - 128u;
+    if (initial_sp < thread.m_stack_base)
+    {
+        return false;
+    }
+
+    std::vector<uint8_t> frame(
+        static_cast<size_t>(aligned_bytes), 0u);
+    uint32_t cursor = static_cast<uint32_t>(pointer_bytes);
+    const auto add_argument =
+        [&](uint32_t index, const std::string& argument)
+    {
+        const uint32_t address = argv + cursor;
+        for (uint32_t byte = 0u; byte < 4u; ++byte)
+        {
+            frame[index * 4u + byte] =
+                static_cast<uint8_t>(address >> (byte * 8u));
+        }
+        for (unsigned char character : argument)
+        {
+            frame[cursor++] = character;
+        }
+        frame[cursor++] = 0u;
+    };
+
+    add_argument(0u, module_path);
+    for (uint32_t index = 0u; index < arguments.size(); ++index)
+    {
+        add_argument(index + 1u, arguments[index]);
+    }
+    if (!m_cpu.dma_write(
+            argv, frame.data(), static_cast<uint32_t>(frame.size())) ||
+        !start_thread_with_arguments(thread_id, argc, argv))
+    {
+        return false;
+    }
+    m_threads.at(thread_id).m_cpu.m_gpr[29] = initial_sp;
+    return true;
+}
+
 bool c_kernel::wake_thread(uint32_t id)
 {
     const auto found = m_threads.find(id);
