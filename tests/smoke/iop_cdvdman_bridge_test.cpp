@@ -302,7 +302,7 @@ int main()
     // Clock and mounted-disc state are actual guest-callable imports,
     // not merely synthetic static registration. No unsupported read,
     // seek, interrupt, or callback completion may be registered.
-    for (uint16_t ordinal : {4u, 5u, 8u, 10u, 11u, 12u, 13u, 24u, 28u})
+    for (uint16_t ordinal : {4u, 5u, 6u, 8u, 10u, 11u, 12u, 13u, 24u, 28u})
     {
         uint32_t entry = 0u;
         uint32_t instruction = 0u;
@@ -313,7 +313,7 @@ int main()
             return fail("supported CDVDMAN import has no guest stub");
         }
     }
-    for (uint16_t ordinal : {6u, 7u, 22u, 37u})
+    for (uint16_t ordinal : {7u, 22u, 37u})
     {
         uint32_t entry = 0u;
         if (kernel.lookup_library("cdvdman", ordinal, &entry))
@@ -401,6 +401,92 @@ int main()
         sync_kernel.hardware().cdvd_ncmd_pending())
     {
         return fail("sceCdSync guest import did not observe idle media");
+    }
+
+    // Real ARKD_DVD sceCdRead import with one 2048-byte sector.
+    // The synthetic code puts the destination in a2 in JAL's delay
+    // slot. The actual guest R3000 imports the linked #6 stub.
+    iop::c_kernel read_kernel;
+    iop::c_cdvdman_bridge read_bridge(read_kernel, media);
+    std::vector<uint8_t> read_irx = make_irx(6u);
+    put32(read_irx, 0x100u, 0x3c040000u | (expected.m_lba >> 16u));
+    put32(read_irx, 0x104u, 0x34840000u | (expected.m_lba & 0xffffu));
+    put32(read_irx, 0x108u, 0x34050001u); // ori a1, zero, 1
+    put32(read_irx, 0x10cu, 0x3c060003u); // lui a2, 3
+    put32(read_irx, 0x114u, 0x34c61000u); // ori a2, a2, 0x1000
+    if (!read_bridge.install())
+    {
+        return fail("sceCdRead guest bridge installation failed");
+    }
+    const iop::s_module_load_result read_module =
+        read_kernel.load_module(read_irx);
+    if (read_module.m_status != iop::e_irx_load_result::success)
+    {
+        return fail("ARKD_DVD sceCdRead import did not link");
+    }
+    const uint32_t read_thread =
+        read_kernel.create_module_thread(read_module.m_id, 1u);
+    if (read_thread == 0u || !read_kernel.start_thread(read_thread))
+    {
+        return fail("sceCdRead guest thread did not start");
+    }
+    read_kernel.bind_syscall([&](iop::c_kernel& active, uint32_t service)
+    {
+        return read_bridge.handle_syscall(active, service);
+    });
+    const uint32_t expected_word =
+        static_cast<uint32_t>(static_cast<uint8_t>(payload[0])) |
+        (static_cast<uint32_t>(static_cast<uint8_t>(payload[1])) << 8u) |
+        (static_cast<uint32_t>(static_cast<uint8_t>(payload[2])) << 16u) |
+        (static_cast<uint32_t>(static_cast<uint8_t>(payload[3])) << 24u);
+    if (!read_kernel.cpu().write32(0x31000u, 0xdeadbeefu))
+    {
+        return fail("sceCdRead sentinel could not be written");
+    }
+    const iop::s_kernel_run_result queued = read_kernel.run(12u, 1u);
+    uint32_t sentinel = 0u;
+    read_kernel.cpu().state().m_gpr[4] = 1u;
+    if (queued.m_stop != iop::e_kernel_stop::budget_exhausted ||
+        !read_kernel.cpu().read32(0x31000u, &sentinel) ||
+        sentinel != 0xdeadbeefu ||
+        !read_bridge.handle_syscall(
+            read_kernel, iop::c_cdvdman_bridge::k_service_base + 11u) ||
+        read_kernel.cpu().state().m_gpr[2] != 1u ||
+        !read_bridge.handle_syscall(
+            read_kernel, iop::c_cdvdman_bridge::k_service_base + 28u) ||
+        read_kernel.cpu().state().m_gpr[2] != 6u)
+    {
+        return fail("sceCdRead did not queue a pending real sector read");
+    }
+
+    (void)read_kernel.run(256u, 64u);
+    read_kernel.cpu().state().m_gpr[4] = 1u;
+    if (!read_bridge.handle_syscall(
+            read_kernel, iop::c_cdvdman_bridge::k_service_base + 11u) ||
+        read_kernel.cpu().state().m_gpr[2] != 0u ||
+        !read_bridge.handle_syscall(
+            read_kernel, iop::c_cdvdman_bridge::k_service_base + 28u) ||
+        read_kernel.cpu().state().m_gpr[2] != 10u ||
+        !read_kernel.cpu().read32(0x31000u, &sentinel) ||
+        sentinel != expected_word ||
+        read_kernel.hardware().pending_interrupts() != 0u ||
+        read_kernel.hardware().cdvd_ncmd_pending())
+    {
+        return fail("sceCdRead did not commit authentic mounted sector bytes");
+    }
+    // An invalid LBA cannot write guest RAM or report success.
+    read_kernel.cpu().state().m_gpr[4] =
+        static_cast<uint32_t>(media.sector_count());
+    read_kernel.cpu().state().m_gpr[5] = 1u;
+    read_kernel.cpu().state().m_gpr[6] = 0x31000u;
+    read_kernel.cpu().state().m_gpr[7] = 0u;
+    if (!read_bridge.handle_syscall(
+            read_kernel, iop::c_cdvdman_bridge::k_service_base + 6u) ||
+        read_kernel.cpu().state().m_gpr[2] != 0u ||
+        !read_kernel.cpu().read32(0x31000u, &sentinel) ||
+        sentinel != expected_word)
+    {
+        return fail("sceCdRead accepted out-of-range mounted-disc LBA");
     }
 
     // Isolate a second authentic guest IRX import for sceCdReadClock.
