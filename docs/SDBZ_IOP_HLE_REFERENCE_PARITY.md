@@ -1858,3 +1858,22 @@ The underlying virtual IOP clock is still approximate and the
 callback runs in an existing one-shot guest R3000 thread rather
 than bit-exact hardware interrupt nesting. Do not claim first-frame
 success before a new retail replay. PR #145 remains draft and open.
+
+
+### CI correction — stale unknown-import fixture after exporting #32
+
+The first CI on commit `8f5219095f5c0aee37727ec703bb8823465faa74`
+passed the dedicated SIF DMA acceptance job and the ROM0 job, but
+`CTest (game-1)` failed in
+`tests/tools/test_game_runner.py::make_sif_guest_irx(unknown_import=True)`.
+The fixture still designated `sifman#32` as deliberately missing.
+Since #32 is now correctly installed, the synthetic IRX linked and
+executed the new import with an invalid zero descriptor count, stopping
+at `0x00018068`. This is **correct fail-closed DMA handling**, not a
+new retail regression or evidence that PADMAN failed.
+
+Update the negative fixture to unimplemented `sifman#33` and
+assert ordinal 33 remains absent from the SIFMAN import table. The
+actual negative test remains meaningful: unresolved guest IRX imports
+must fail linkage rather than execute or alter EE readiness. No HLE,
+DMA, guest execution, or callback behavior is changed by the fix.

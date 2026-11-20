@@ -196,7 +196,7 @@ int main()
             return fail("SIFMAN service has no guest R3000 import stub");
         }
     }
-    for (uint16_t ordinal : {9u, 30u, 31u})
+    for (uint16_t ordinal : {9u, 30u, 31u, 33u})
     {
         uint32_t entry = 0u;
         if (kernel.lookup_library("sifman", ordinal, &entry))
