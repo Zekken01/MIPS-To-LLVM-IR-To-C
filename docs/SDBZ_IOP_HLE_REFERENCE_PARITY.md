@@ -6,8 +6,8 @@ Main architectural reference: [twist84/ps2-web-recomp, `SDBZ` branch](https://gi
 
 Current native LLVM-IR implementation: [`src/iop/iop_kernel_hle_bridge.cpp`](../src/iop/iop_kernel_hle_bridge.cpp), audited blob `623875f9bacb21633a539ce2529570b81132c474`.
 
-The reference file defines **172 explicitly named `def("library", ordinal, ...)` handlers**. The HLE-first runtime now installs **177 guest-callable export ordinals** across
-the kernel bridge (146), CDVDMAN bridge (7), SIFCMD bridge (11) and
+The reference file defines **172 explicitly named `def("library", ordinal, ...)` handlers**. The HLE-first runtime now installs **179 guest-callable export ordinals** across
+the kernel bridge (146), CDVDMAN bridge (7), SIFCMD bridge (13) and
 SIFMAN bridge (13). **131** of the kernel bridge exports match explicitly
 named `libs.cpp` reference definitions. The earlier 152 count omitted
 seven pre-existing registrations in separate device/SIF bridges. Counts include no claim about full behavioral equivalence. The reference also uses loops/dynamic registrations (e.g. `secrman#4/#5`) and separate IOP modules (`io.cpp`, `sif.cpp`, `cdvd.cpp`, `spu2.cpp`) and EE kernel syscalls. The full reference runtime is larger than these 172 direct definitions.
@@ -319,3 +319,66 @@ Next Windows batch should confirm whether the new argument-bearing
 request is accepted, the exact next requested IRX path, actual
 IOP guest execution, and whether any new unresolved import,
 runtime service or GS producer becomes the next blocker.
+
+## 2026-11-20 00:47 — CRI_ADXI inbound import / reverse SIFRPC transport
+
+The matched `ps2-game-hle(5).zip` contains five diagnostics and
+three solid-black GS PPMs. Same USA ELF SHA-256 and mounted disc
+root as the last boot, **14,805 final EE dispatches** (previously
+11,043), with **zero new discovered EE functions** and 3,526 cached
+IR modules. Genuine committed LOADFILE RPC sequence 17 now attempts
+`cdrom0:\\CRI_ADXI.IRX;1`: `load_status=7`,
+`link_status=5`, `module=thread=0`, first unresolved
+import **`sifcmd#16`**. Earlier `SIO2MAN`, `MCMAN`,
+`MCSERV` and `LIBSD` remain linked/started. This is module
+thread creation evidence, not proof of their successful
+initialization. The EE terminates with `KExit` syscall at
+`EPC=0x001748C4`; no nonblack GS pixels.
+
+`sifcmd#16` is **`sceSifCallRpc`**, an IOP-originated call
+to an EE RPC server, not another EE-to-IOP LOADFILE operation.
+The paired `#15 sceSifBindRpc` is implemented as a coherent
+reverse-RPC client lifecycle using
+`ps2-web-recomp/runtime/src/iop/sif.cpp` and PS2SDK's
+`sifrpc-common.h` client-packet ABI:
+
+- Guest `sceSifBindRpc` validates its client descriptor,
+  server ID and mode and stages an actual IOP-to-EE 36-byte
+  RPC BIND packet. A synchronous guest caller blocks.
+  The client is **not bound** until a matching EE Rend arrives
+  with nonzero server data and a validated EE buffer.
+- Guest `sceSifCallRpc` checks the bound client,
+  stacked MIPS O32 arguments, source/receive memory spans,
+  method, mode and payload length. It snapshots real IOP
+  bytes and stages the original 56-byte CALL packet with
+  the client/server identity and EE destination.
+- The outbound packets use the existing queued SIF0
+  transport: **only an armed EE DMAC channel 5** transfers
+  the command and optional payload. There is no fake EE
+  server invocation or completion.
+- A real incoming 48-byte SIF1 Rend must match the
+  pending client pointer, packet/transaction ID and
+  BIND/CALL command. Only then are the guest client's
+  bound/busy fields updated, and any blocked guest
+  thread awakened. A mismatched/stale Rend rejects the
+  entire staged SIF1 descriptor list without DMA side
+  effects, including data transfers before the packet.
+- Asynchronous callback pointers are deliberately
+  **rejected**, not silently ignored: scheduling genuine
+  IOP R3000 callback execution needs a separate audited
+  callback trampoline. Callers using the supported
+  blocking or callback-free NOWAIT form retain genuine
+  pending/completion semantics.
+- The guest-R3000 regression executes actual
+  sceSifInitRpc, sceSifBindRpc and sceSifCallRpc import
+  stubs, validates SIF0 packet/data emission, a
+  blocked caller, forged reply rejection, matching
+  EE-to-IOP reply/data DMA and replay rejection.
+
+The native HLE registration count is now **179**.
+SIFCMD #15/#16 are defined in reference `sif.cpp`, so
+the **131/172** explicit reference `libs.cpp` audit
+is unchanged. Only the next matched real Windows boot
+can prove whether CRI_ADXI actually links/starts or
+uses an unimplemented callback/EE server path. Do not
+infer sound output or GS rendering from CI.
