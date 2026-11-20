@@ -445,6 +445,10 @@ bool test_guest_rpc_lifecycle(const std::filesystem::path& disc_root)
     // Actual guest callback increments the incoming argument word and
     // returns its buffer pointer in v0 to the SIFCMD finish trampoline.
     const uint32_t handler[] = {
+        0x2409012cu, // addiu t1, zero, 300
+        0x2529ffffu, // decrement guest counter
+        0x1520fffeu, // bne t1, zero, back to decrement
+        0u,          // delay slot
         0x8ca80000u, // lw t0, 0(a1)
         0x25080001u, // addiu t0, t0, 1
         0xaca80000u, // sw t0, 0(a1)
@@ -453,7 +457,7 @@ bool test_guest_rpc_lifecycle(const std::filesystem::path& disc_root)
         0x03e00008u, // jr ra
         0x00000000u
     };
-    for (uint32_t i = 0u; i < 7u; ++i)
+    for (uint32_t i = 0u; i < sizeof(handler) / sizeof(handler[0]); ++i)
     {
         if (!kernel.cpu().write32(
                 k_function + i * 4u, handler[i]))
@@ -573,7 +577,34 @@ bool test_guest_rpc_lifecycle(const std::filesystem::path& disc_root)
         return false;
     }
 
-    const iop::s_kernel_run_result finished = kernel.run(160u);
+    // Runner-equivalent bounded turns: an EE WaitSema may have no
+    // runnable EE peer while the original IOP RPC handler is still
+    // executing. Neither one slice nor a committed SIF1 request may
+    // create the EE reply or signal DMA5 prematurely.
+    const iop::s_kernel_run_result first = kernel.run(128u, 64u);
+    if (first.m_stop != iop::e_kernel_stop::budget_exhausted ||
+        rpc.pending_guest_calls() != 1u ||
+        memory.read32(k_result) != 0xcafebabeu ||
+        (dmac.status() & (1u << 5u)) != 0u)
+    {
+        return false;
+    }
+    iop::s_kernel_run_result finished = first;
+    for (uint32_t turn = 0u;
+         turn < 16u && rpc.pending_guest_calls() != 0u; ++turn)
+    {
+        if (!kernel.has_guest_work())
+        {
+            return false;
+        }
+        finished = kernel.run(128u, 64u);
+        if (finished.m_stop != iop::e_kernel_stop::budget_exhausted &&
+            finished.m_stop != iop::e_kernel_stop::idle)
+        {
+            return false;
+        }
+        (void)rpc.pump();
+    }
     uint32_t guest_value = 0u;
     loop_thread = kernel.thread(loop_id);
     if ((finished.m_stop != iop::e_kernel_stop::idle &&

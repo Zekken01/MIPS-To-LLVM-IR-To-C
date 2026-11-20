@@ -240,10 +240,69 @@ bool test_authentic_spu2_dma()
     return true;
 }
 
+bool test_spu2_irq_edges_and_spdif()
+{
+    iop::c_kernel kernel;
+    if (!kernel.attach_hle_hardware())
+    {
+        return false;
+    }
+    iop::c_hw& hw = kernel.hardware();
+    iop::c_cpu& cpu = kernel.cpu();
+    constexpr uint32_t spu = iop::c_spu2::k_base;
+    constexpr uint32_t dma7 = iop::c_hw::k_spu2_dma7_base;
+    constexpr uint32_t src = 0x00032000u;
+    uint32_t value = 0u;
+    // Core zero latches IRQ9, then I_STAT acknowledges the edge while
+    // the SPU2 core's internal latch remains set.
+    if (!hw.write(spu + 0x19au, 2u, 0x40u) ||
+        !hw.write(spu + 0x19eu, 2u, 0x0500u) ||
+        !hw.write(spu + 0x1aau, 2u, 0x0500u) ||
+        !hw.write(spu + 0x1acu, 2u, 0x1234u) ||
+        !hw.read(iop::c_hw::k_i_stat, 4u, &value) ||
+        (value & (1u << iop::c_spu2::k_irq_line)) == 0u ||
+        !hw.write(iop::c_hw::k_i_stat, 4u,
+                  ~(1u << iop::c_spu2::k_irq_line)))
+    {
+        return false;
+    }
+    // A NEW latch on core one, triggered by an actual DMA write,
+    // must reassert IRQ9 even while core zero's latch stays set.
+    if (!hw.write(spu + 0x59au, 2u, 0x40u) ||
+        !hw.write(spu + 0x59eu, 2u, 0x0600u) ||
+        !hw.write(spu + 0x5aau, 2u, 0x0600u) ||
+        !cpu.write32(src, 0x44332211u) ||
+        !hw.write(dma7, 4u, src) ||
+        !hw.write(dma7 + 4u, 4u, 0x00010001u) ||
+        !hw.write(dma7 + 8u, 4u, 0x01000001u) ||
+        !hw.read(iop::c_hw::k_i_stat, 4u, &value) ||
+        (value & (1u << iop::c_spu2::k_irq_line)) == 0u ||
+        !hw.read(spu + 0x7c2u, 2u, &value) ||
+        (value & 0x0cu) != 0x0cu)
+    {
+        return false;
+    }
+    // Reference SPDIF_OUT accepts a 32-bit store; its 0x7c2
+    // upper halfword is ignored, not treated as a partial-store fault.
+    if (!hw.write(spu + 0x7c0u, 4u, 0xdead1234u) ||
+        !hw.read(spu + 0x7c0u, 2u, &value) || value != 0x1234u ||
+        !hw.read(spu + 0x7c2u, 2u, &value) ||
+        (value & 0x0cu) != 0x0cu ||
+        hw.write(spu + 0x7c4u, 4u, 0xbadbeefu))
+    {
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
 int main()
 {
+    if (!test_spu2_irq_edges_and_spdif())
+    {
+        return fail("per-core SPU2 IRQ9 and SPDIF word parity");
+    }
     if (!test_authentic_spu2_dma())
     {
         return fail("authentic SPU2 DMA4/7 copy, timing or cancellation");

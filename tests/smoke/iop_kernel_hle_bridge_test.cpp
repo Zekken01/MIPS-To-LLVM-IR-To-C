@@ -319,6 +319,104 @@ bool test_vblank_guest_callbacks()
     hle.reset_for_reboot();
     return hle.install() && !kernel.has_guest_work();
 }
+bool test_registered_dma_guest_interrupt()
+{
+    iop::c_kernel kernel;
+    iop::c_kernel_hle_bridge hle(kernel);
+    if (!kernel.attach_hle_hardware() || !hle.install())
+    {
+        return false;
+    }
+    kernel.bind_syscall([&](iop::c_kernel& active, uint32_t service)
+    {
+        return hle.handle_syscall(active, service);
+    });
+
+    uint32_t query = 0u;
+    if (!kernel.lookup_library("intrman", 23u, &query))
+    {
+        return false;
+    }
+    constexpr uint32_t handler = 0x00039000u;
+    constexpr uint32_t result_addr = 0x00038000u;
+    constexpr uint32_t source = 0x00037000u;
+    constexpr uint32_t line = 36u;
+    const uint32_t code[] = {
+        0x03e08021u, // addu s0, ra, zero
+        0x3c080003u, // lui t0, 3
+        0x35088000u, // ori t0, t0, 0x8000
+        0xad040000u, // sw a0, 0(t0)
+        0x0c000000u | ((query >> 2u) & 0x03ffffffu), // jal QueryIntrContext
+        0u,
+        0xad020004u, // sw v0, 4(t0)
+        0x0200f821u, // addu ra, s0, zero
+        0x00001021u, // addu v0, zero, zero
+        0x03e00008u, // jr ra
+        0u
+    };
+    for (uint32_t i = 0u; i < sizeof(code) / sizeof(code[0]); ++i)
+    {
+        if (!kernel.cpu().write32(handler + i * 4u, code[i]))
+        {
+            return false;
+        }
+    }
+    uint32_t value = 0u;
+    if (!kernel.cpu().write32(result_addr, 0xdeadbeefu) ||
+        !kernel.cpu().write32(result_addr + 4u, 0xdeadbeefu) ||
+        !kernel.cpu().write32(source, 0x12345678u) ||
+        !call_guest(kernel, "intrman", 4u,
+                    {line, 0u, handler, 0x76543210u}, &value) ||
+        value != 0u ||
+        !call_guest(kernel, "intrman", 6u,
+                    {line, 0u, 0u, 0u}, &value) ||
+        value != 0u ||
+        !kernel.hardware().write(iop::c_hw::k_spu2_dma4_base, 4u,
+                                  source) ||
+        !kernel.hardware().write(iop::c_hw::k_spu2_dma4_base + 4u,
+                                  4u, 0x00010001u) ||
+        !kernel.hardware().write(iop::c_hw::k_spu2_dma4_base + 8u,
+                                  4u, 0x01000001u) ||
+        !kernel.cpu().read32(result_addr, &value) ||
+        value != 0xdeadbeefu)
+    {
+        return false;
+    }
+    const iop::s_kernel_run_result progressed = kernel.run(256u, 32u);
+    uint32_t context = 0u;
+    uint32_t icr = 0u;
+    if ((progressed.m_stop != iop::e_kernel_stop::idle &&
+         progressed.m_stop != iop::e_kernel_stop::budget_exhausted) ||
+        !kernel.cpu().read32(result_addr, &value) ||
+        value != 0x76543210u ||
+        !kernel.cpu().read32(result_addr + 4u, &context) ||
+        context != 1u ||
+        !kernel.hardware().read(iop::c_hw::k_dma_icr, 4u, &icr) ||
+        (icr & (1u << 28u)) != 0u ||
+        kernel.hardware().next_pending_interrupt() >= 0 ||
+        kernel.in_interrupt_context())
+    {
+        return false;
+    }
+    // A real ordinary IRQ9 handler returning zero masks that source
+    // as required by the primary reference, unlike a DMA line.
+    if (!call_guest(kernel, "intrman", 4u,
+                    {9u, 0u, handler, 0x11223344u}, &value) ||
+        !call_guest(kernel, "intrman", 6u,
+                    {9u, 0u, 0u, 0u}, &value) ||
+        !kernel.hardware().raise_interrupt(9u) ||
+        !kernel.cpu().write32(result_addr, 0xdeadbeefu))
+    {
+        return false;
+    }
+    (void)kernel.run(128u, 32u);
+    uint32_t mask = 0u;
+    return kernel.cpu().read32(result_addr, &value) &&
+           value == 0x11223344u &&
+           kernel.hardware().read(iop::c_hw::k_i_mask, 4u, &mask) &&
+           (mask & (1u << 9u)) == 0u;
+}
+
 } // namespace
 
 int main()
@@ -397,6 +495,10 @@ int main()
         }
     }
 
+    if (!test_registered_dma_guest_interrupt())
+    {
+        return fail("real DMA interrupt guest handler / IRQ context");
+    }
     if (!test_vblank_guest_callbacks())
     {
         return fail("VBLANK registered guest callback/edge/removal failed");
