@@ -135,6 +135,15 @@ public:
     // or EE return-buffer write is manufactured.
     bool finish_guest_rpc(uint32_t token, uint32_t guest_result);
 
+    // Real IOP-originated BIND/CALL commands are copied into the EE's
+    // armed SIF0 receiver. Optional payload is moved from IOP RAM to
+    // the EE destination in that same accepted DMA delivery.
+    bool queue_iop_command(
+        const std::vector<uint32_t>& words,
+        uint32_t ee_payload_destination = 0u,
+        const std::vector<uint8_t>& payload = {}
+    );
+
     // Invalidate outstanding RPC replies and CDVD streaming state
     // whenever the IOP kernel is actually reset.
     void reset_for_reboot();
@@ -156,8 +165,10 @@ public:
 private:
     struct s_reply
     {
-        uint32_t m_words[12]{};
+        uint32_t m_words[16]{};
         uint32_t m_word_count = 12u;
+        uint32_t m_extra_destination = 0u;
+        std::vector<uint8_t> m_extra_data;
     };
 
     struct s_guest_pending
