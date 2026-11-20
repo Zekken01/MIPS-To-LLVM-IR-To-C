@@ -203,6 +203,8 @@ void dump_pending_iop_guest_rpc(
     uint32_t ready = 0u;
     uint32_t blocked = 0u;
     uint32_t faulted = 0u;
+    uint32_t highest_ready_priority =
+        std::numeric_limits<uint32_t>::max();
     for (const auto& entry : kernel.threads())
     {
         switch (entry.second.m_status)
@@ -210,6 +212,8 @@ void dump_pending_iop_guest_rpc(
         case iop::e_thread_status::ready:
         case iop::e_thread_status::running:
             ++ready;
+            highest_ready_priority = std::min(
+                highest_ready_priority, entry.second.m_priority);
             break;
         case iop::e_thread_status::blocked:
             ++blocked;
@@ -272,12 +276,16 @@ void dump_pending_iop_guest_rpc(
             thread.m_last_syscall_number, thread.m_last_syscall_pc,
             thread.m_last_syscall_ra, thread.m_last_syscall_a0);
 
-        // At most two runnable guest PCs: preserve surrounding opcodes,
-        // their real GPRs and caller stack locals. A pending guest RPC
-        // may be processing data rather than polling or blocked.
+        // At most two highest-priority runnable guest PCs.
+        // Previously iterating IDs captured lower-priority ARKD
+        // workers instead of the higher-priority PADMAN threads
+        // responsible for consuming the budget. The full context
+        // lines above still include every non-dormant thread.
         // Do not synthesize any instruction, byte, return or wakeup.
         if (phase[0] == 'f' &&
-            thread.m_status == iop::e_thread_status::ready &&
+            (thread.m_status == iop::e_thread_status::ready ||
+             thread.m_status == iop::e_thread_status::running) &&
+            thread.m_priority == highest_ready_priority &&
             sampled_opcode_windows < 2u &&
             pc >= 0x100u &&
             pc < iop::c_cpu::k_ram_size - 0x180u)

@@ -2219,3 +2219,12 @@ Next retail run needs to check the actual increases in
 Only then decide whether a particular HLE behavior requires
 a compatibility fix. The first rendered frame and token 15
 completion remain unverified.
+
+The final-snapshot opcode-window selection now takes the **lowest
+numeric (highest runnable) priority** before sampling at most two
+ready/running guest PCs, rather than the two lowest thread IDs.
+This ensures PADMAN priority 46 guest code is captured ahead of
+ARKD priority 50 when both are ready. The full bounded context
+list still includes all non-dormant threads. This changes only
+which real RAM words are printed at the final checkpoint, not the
+kernel scheduler, guest memory or any device state.
