@@ -223,7 +223,7 @@ c_disc_loader::c_disc_loader(
 
 s_disc_load_result c_disc_loader::load_requested(
     const std::string& guest_path, bool start_entrypoint,
-    uint32_t priority
+    uint32_t priority, const std::vector<std::string>& arguments
 )
 {
     s_disc_load_result output{};
@@ -306,7 +306,8 @@ s_disc_load_result c_disc_loader::load_requested(
             loaded.m_id, priority
         );
         if (output.m_thread_id == 0u ||
-            !m_kernel.start_thread(output.m_thread_id))
+            !m_kernel.start_module_thread_with_arguments(
+                output.m_thread_id, guest_path, arguments))
         {
             output.m_result = e_disc_load_result::thread_failed;
             return output;
