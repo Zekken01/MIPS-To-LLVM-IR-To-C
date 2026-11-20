@@ -168,6 +168,47 @@ int main()
         return fail("little-endian LWL/LWR semantics");
     }
 
+    // Genuine IOP RAM is 2 MiB mirrored four times across the first
+    // 8 MiB of physical space, as in ps2-web-recomp/SDBZ and PCSX2.
+    // The retail SDBZ run attempted instruction fetch at 0x00202080;
+    // it must read 0x00002080, not fault merely for crossing 2 MiB.
+    cpu.reset(0x00202080u);
+    if (!cpu.write32(0x00002080u, 0x0000000du) ||
+        !cpu.write32(0x00200100u, 0x11223344u) ||
+        !cpu.write32(0x00600104u, 0xaabbccddu) ||
+        !cpu.read32(0x00000100u, &word) ||
+        word != 0x11223344u ||
+        !cpu.read32(0xa0000104u, &word) ||
+        word != 0xaabbccddu ||
+        !cpu.read32(0x00402080u, &word) ||
+        word != 0x0000000du ||
+        !cpu.read32(0xa0202080u, &word) ||
+        word != 0x0000000du)
+    {
+        return fail("2 MiB IOP RAM aliases do not share physical storage");
+    }
+    result = cpu.run(1u);
+    if (result.m_result != iop::e_step_result::breakpoint ||
+        result.m_pc != 0x00202080u ||
+        result.m_opcode != 0x0000000du)
+    {
+        return fail("R3000 failed to fetch an instruction through RAM mirror");
+    }
+
+    // The mirror stops at 8 MiB: an arbitrary larger physical address,
+    // a TLB-only KSEG2 alias, or an unaligned access must fail closed.
+    if (cpu.read32(0x00802080u, &word) ||
+        !cpu.last_memory_fault().m_valid ||
+        cpu.last_memory_fault().m_address != 0x00802080u ||
+        cpu.write32(0x00800100u, 0xfeedfaceu) ||
+        cpu.read32(0xc0202080u, &word) ||
+        cpu.write32(0x00202081u, 0x12345678u) ||
+        !cpu.read32(0x00000100u, &word) ||
+        word != 0x11223344u)
+    {
+        return fail("IOP RAM mirror accepted an invalid guest address");
+    }
+
     // Unknown MMIO must not alias low physical RAM. Unsupported opcodes
     // and bad alignment must stop without advancing or fabricating state.
     cpu.reset(0u);
