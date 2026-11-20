@@ -1279,6 +1279,11 @@ size_t c_sif_rpc_bridge::pending_binds() const
     return m_deferred_binds.size();
 }
 
+bool c_sif_rpc_bridge::has_waiting_bind_guest_work() const
+{
+    return !m_deferred_binds.empty() && m_kernel.has_guest_work();
+}
+
 uint32_t c_sif_rpc_bridge::load_requests() const
 {
     return m_load_requests;
