@@ -778,7 +778,8 @@ bool execute_sysclib_format(c_cpu& memory, uint32_t ordinal)
     const uint32_t destination = cpu.m_gpr[4];
     const uint32_t format_address = cpu.m_gpr[5];
     std::vector<uint8_t> format_bytes;
-    if (!ram_span(destination, 1u) ||
+    if (destination == 0u || format_address == 0u ||
+        !ram_span(destination, 1u) ||
         !read_string(memory, format_address, format_bytes) ||
         format_bytes.size() > k_max_format_bytes + 1u)
     {
@@ -791,7 +792,7 @@ bool execute_sysclib_format(c_cpu& memory, uint32_t ordinal)
     args.m_index = ordinal == 19u ? 2u : 0u;
     args.m_ap = cpu.m_gpr[6];
     if (args.m_guest_va_list &&
-        ((args.m_ap & 3u) != 0u ||
+        (args.m_ap == 0u || (args.m_ap & 3u) != 0u ||
          !ram_span(args.m_ap, 4u)))
     {
         return false;
