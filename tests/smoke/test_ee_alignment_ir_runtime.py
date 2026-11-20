@@ -104,7 +104,7 @@ def execute(fixture, directory, target, mode, address):
     before = dict(MEMORY)
 
     guest, engine, module, machine, offset = compile_jit(
-        fixture, directory, mode, target
+        fixture, pathlib.Path(directory), mode, target
     )
     require(offset + 8 < 0x4000, "JIT counter outside runtime backing")
     cpu_backing, cpu = aligned_instance(EEState)
