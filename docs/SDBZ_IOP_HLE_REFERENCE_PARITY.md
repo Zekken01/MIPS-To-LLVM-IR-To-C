@@ -2370,3 +2370,72 @@ from the updated guest-lowering sources by
 `run_ps2_game.bat --quick`. Avoid forcibly
 reusing stale IR against changed COP2 semantics.
 No successful game frame has been established.
+
+
+## 2026-11-20 — 16:28 matched retail run: VRSQRT / VMULq normalization
+
+The uploaded `ps2-game-hle(20261120-162811).zip` contains
+`quick-probe.log` (121,890,490 bytes),
+`quick-probe.json` (39,495 bytes), and a
+120,813-byte translation-cache manifest.
+It executed **55 expansion replay passes**, indices
+0–54. The final footer reports
+`replay=54 new_functions=62 dispatches=3654765
+stop=0x00106988 exit=3`: the linked function
+count advanced from **908 to 970** across the
+batch. The JSON is paired with the last replay
+only; never aggregate its counters across
+restart attempts.
+
+The last JSON reports `UNSUPPORTED` at
+`0x00106988`, opcode `0x4a6503be` (VU0
+SPECIAL2 **VRSQRT**, index 0x3a), after
+**3,654,765** EE dispatches and **80,575,633**
+guest instruction attempts, with 15 GS fields.
+This proves the previous `0x001069ec` VMUL
+instruction is now executing, but no displayed
+game frame is yet verified. Both genuine guest
+RPCs still complete: ARKD server0x501 method18
+token **15** entered/returned result zero
+(cycle **9,952,841**), and server0x502 method5
+token **16** entered/returned result zero
+(cycle **9,957,346**). There is no fabricated
+guest RPC completion, IRQ or SIO2 activity.
+
+The actual EE function at `0x0010697c`
+contains six original words:
+`0x4bc4216a` VMUL.xyz VF5,VF4,VF4;
+`0x4b052941` VADDy.x;
+`0x4b052942` VADDz.x;
+`0x4a6503be` VRSQRT Q,VF0.w,VF5.x;
+`0x4a0003bf` VWAITQ;
+`0x4bc0211c` VMULq.xyz VF4,VF4,Q.
+Together they normalize VF4.xyz without changing
+the W lane. This is original VU arithmetic,
+not an HLE shortcut.
+
+Implemented exact SPECIAL1 VMULq (funct 0x1c)
+and SPECIAL2 VRSQRT (index 0x3a) in decoder,
+LLVM macro lowering and existing VU0 helpers.
+The Q pipeline now holds a *pending* reciprocal
+result for **13 VU0 virtual cycles**, versus
+7 for VSQRT. VMULq fails closed while Q is
+pending, and VWAITQ retires the authentic
+result. Zero denominator follows the original
+PCSX2 VU interpreter: signed saturated max
+or signed zero for 0/0, with current I/D
+and sticky IS/DS flags; negative denominator
+uses absolute value and sets invalid.
+Source operands obey hardwired VF0.w=1 even
+if VF0 backing is corrupted. Do not infer EE
+hardware timing or scanout from these VU0
+virtual cycles.
+
+Smoke regression covers the actual six-word
+sequence, vector (3,4,0) -> (0.6,0.8,0),
+13-cycle Q, preserved VF4.w and ACC, premature
+VMULq fail-closed, negative denominator, signed
+zero, 0/0 and saturation; exhaustive decoder
+tests and exact original-word lifter tests
+include VRSQRT and VMULq. All other unimplemented
+COP2 instructions stay UNSUPPORTED.
