@@ -1,5 +1,8 @@
 #include "iop_sifcmd_bridge.h"
+#include "iop_sif_rpc_bridge.h"
 
+#include <algorithm>
+#include <array>
 #include <utility>
 
 namespace iop
@@ -27,29 +30,111 @@ bool create_stub(c_cpu& cpu, uint32_t pc, uint32_t service)
 } // namespace
 
 c_sifcmd_bridge::c_sifcmd_bridge(
-    c_kernel& kernel, ee::c_ee_sif& sif
+    c_kernel& kernel, ee::c_ee_sif& sif, ee::ee_memory* ee_ram
 )
-    : m_kernel(kernel), m_sif(sif)
+    : m_kernel(kernel), m_sif(sif), m_ee_ram(ee_ram)
 {
+}
+
+void c_sifcmd_bridge::bind_rpc_bridge(c_sif_rpc_bridge* bridge)
+{
+    m_rpc_bridge = bridge;
+}
+
+bool c_sifcmd_bridge::guest_ram_span(uint32_t address, uint32_t size)
+{
+    const uint32_t region = address & 0xe0000000u;
+    const uint32_t physical = address & 0x1fffffffu;
+    return address != 0u &&
+        (region == 0u || region == 0x80000000u ||
+         region == 0xa0000000u) &&
+        physical < c_cpu::k_ram_size &&
+        size <= c_cpu::k_ram_size - physical;
+}
+
+bool c_sifcmd_bridge::has_guest_rpc_server(uint32_t server_id) const
+{
+    return m_rpc_initialized &&
+        m_rpc_servers.find(server_id) != m_rpc_servers.end() &&
+        m_rpc_queue_threads.find(
+            m_rpc_servers.at(server_id).m_queue) !=
+                m_rpc_queue_threads.end();
+}
+
+bool c_sifcmd_bridge::can_queue_guest_rpc(
+    uint32_t server_id, uint32_t send_size) const
+{
+    const auto found = m_rpc_servers.find(server_id);
+    if (!has_guest_rpc_server(server_id) || found == m_rpc_servers.end() ||
+        send_size > 4096u ||
+        (send_size != 0u &&
+         !guest_ram_span(found->second.m_buffer, send_size)))
+    {
+        return false;
+    }
+    const auto waiting = m_rpc_requests.find(found->second.m_queue);
+    return waiting == m_rpc_requests.end() ||
+        waiting->second.size() < 64u;
+}
+
+bool c_sifcmd_bridge::enqueue_guest_rpc(
+    uint32_t token, uint32_t server_id, uint32_t method,
+    const std::vector<uint8_t>& bytes
+)
+{
+    if (!can_queue_guest_rpc(
+            server_id, static_cast<uint32_t>(bytes.size())))
+    {
+        return false;
+    }
+    const uint32_t queue = m_rpc_servers.at(server_id).m_queue;
+    m_rpc_requests[queue].push_back({token, server_id, method, bytes});
+    const auto thread = m_rpc_queue_threads.find(queue);
+    if (thread != m_rpc_queue_threads.end())
+    {
+        const s_kernel_thread* current = m_kernel.thread(thread->second);
+        if (current != nullptr &&
+            current->m_status == e_thread_status::blocked &&
+            current->m_wait_type == 50u)
+        {
+            (void)m_kernel.wake_thread(thread->second);
+        }
+    }
+    return true;
 }
 
 bool c_sifcmd_bridge::install()
 {
-    // These ordinals match the IOP sifcmd exports. Do not register
-    // unimplemented RPC or guest callback services as successful stubs.
-    if (!m_kernel.register_library("sifcmd", 4u, k_init_cmd_stub) ||
-        !m_kernel.register_library("sifcmd", 6u, k_get_sreg_stub) ||
-        !m_kernel.register_library("sifcmd", 7u, k_set_sreg_stub))
+    // Preserve original syscall entry points. Reserve separate stubs
+    // for actual guest-side RPC server lifecycle operations.
+    constexpr std::array<uint16_t, 11u> ordinals = {
+        4u, 6u, 7u, 14u, 17u, 18u, 19u, 22u, 23u, 24u, 25u
+    };
+    for (uint16_t ordinal : ordinals)
     {
-        return false;
+        uint32_t pc = k_extra_stub_base + ordinal * 0x20u;
+        if (ordinal == 4u)
+        {
+            pc = k_init_cmd_stub;
+        }
+        else if (ordinal == 6u)
+        {
+            pc = k_get_sreg_stub;
+        }
+        else if (ordinal == 7u)
+        {
+            pc = k_set_sreg_stub;
+        }
+        if (!create_stub(m_kernel.cpu(), pc, k_service_base + ordinal) ||
+            !m_kernel.register_library("sifcmd", ordinal, pc))
+        {
+            return false;
+        }
     }
-
+    // The guest returns from its service to this trampoline only
+    // after executing the actual IRX-registered RPC handler function.
     m_installed = create_stub(
-        m_kernel.cpu(), k_init_cmd_stub, k_init_cmd_syscall
-    ) && create_stub(
-        m_kernel.cpu(), k_get_sreg_stub, k_get_sreg_syscall
-    ) && create_stub(
-        m_kernel.cpu(), k_set_sreg_stub, k_set_sreg_syscall
+        m_kernel.cpu(), k_rpc_finish_stub, k_service_base + 0xfeu
     );
     return m_installed;
 }
@@ -95,10 +180,250 @@ void c_sifcmd_bridge::reset_for_reboot()
     m_initialized = false;
     m_installed = false;
     m_hle_bootstrapped = false;
+    m_rpc_initialized = false;
+    m_rpc_servers.clear();
+    m_rpc_queue_threads.clear();
+    m_rpc_requests.clear();
+    m_rpc_thread_queues.clear();
+    m_rpc_thread_active.clear();
     m_reboot_pending = false;
     m_reboot_argument.clear();
 }
 
+
+bool c_sifcmd_bridge::handle_rpc_syscall(uint32_t ordinal)
+{
+    s_cpu_state& cpu = m_kernel.cpu().state();
+    const uint32_t argument = cpu.m_gpr[4];
+    const auto fail = [&cpu]()
+    {
+        cpu.m_gpr[2] = static_cast<uint32_t>(-1);
+        return true;
+    };
+
+    if (ordinal == 14u) // sceSifInitRpc
+    {
+        if (!m_initialized)
+        {
+            return false;
+        }
+        m_rpc_initialized = true;
+        cpu.m_gpr[2] = 0u;
+        return true;
+    }
+    if (!m_rpc_initialized)
+    {
+        return false;
+    }
+    if (ordinal == 18u) // sceSifCheckStatRpc
+    {
+        uint32_t status = 0u;
+        if (!guest_ram_span(argument, 4u) ||
+            !m_kernel.cpu().read32(argument, &status))
+        {
+            return fail();
+        }
+        cpu.m_gpr[2] = status != 0u ? 1u : 0u;
+        return true;
+    }
+    if (ordinal == 19u) // sceSifSetRpcQueue(queue*, thread_id)
+    {
+        const uint32_t thread_id = cpu.m_gpr[5];
+        if (!guest_ram_span(argument, 4u) ||
+            m_kernel.thread(thread_id) == nullptr ||
+            m_rpc_queue_threads.count(argument) != 0u)
+        {
+            return fail();
+        }
+        m_rpc_queue_threads[argument] = thread_id;
+        m_rpc_thread_queues[thread_id] = argument;
+        cpu.m_gpr[2] = 0u;
+        return true;
+    }
+    if (ordinal == 17u) // sceSifRegisterRpc
+    {
+        const uint32_t server_id = cpu.m_gpr[5];
+        const uint32_t handler = cpu.m_gpr[6];
+        const uint32_t buffer = cpu.m_gpr[7];
+        const uint32_t sp = cpu.m_gpr[29];
+        uint32_t queue = 0u;
+        uint32_t instruction = 0u;
+        if (!guest_ram_span(argument, 12u) ||
+            !guest_ram_span(sp, 28u) ||
+            !m_kernel.cpu().read32(sp + 24u, &queue) ||
+            !guest_ram_span(queue, 4u) ||
+            !guest_ram_span(handler, 4u) ||
+            (handler & 3u) != 0u ||
+            !m_kernel.cpu().read32(handler, &instruction) ||
+            (buffer != 0u && !guest_ram_span(buffer, 1u)) ||
+            server_id == 0u || m_rpc_servers.count(server_id) != 0u ||
+            m_rpc_servers.size() >= 64u)
+        {
+            return fail();
+        }
+        if (!m_kernel.cpu().write32(argument, server_id) ||
+            !m_kernel.cpu().write32(argument + 4u, handler) ||
+            !m_kernel.cpu().write32(argument + 8u, buffer))
+        {
+            return false;
+        }
+        m_rpc_servers.emplace(
+            server_id, s_rpc_server{argument, handler, buffer, queue});
+        cpu.m_gpr[2] = 0u;
+        return true;
+    }
+    if (ordinal == 22u) // sceSifRpcLoop
+    {
+        const uint32_t thread_id = m_kernel.current_thread_id();
+        const auto queue_thread = m_rpc_queue_threads.find(argument);
+        if (thread_id == 0u ||
+            queue_thread == m_rpc_queue_threads.end() ||
+            queue_thread->second != thread_id ||
+            m_rpc_thread_active.count(thread_id) != 0u)
+        {
+            return false;
+        }
+        auto& requests = m_rpc_requests[argument];
+        if (requests.empty())
+        {
+            if (!m_kernel.block_current(50u))
+            {
+                return false;
+            }
+            // The thread resumes *inside* the HLE RPC loop, rather
+            // than returning to an IRX caller while no work exists.
+            cpu.m_next_pc =
+                k_extra_stub_base + 22u * 0x20u;
+            return true;
+        }
+        const s_rpc_request request = std::move(requests.front());
+        const auto server = m_rpc_servers.find(request.m_server_id);
+        if (server == m_rpc_servers.end() ||
+            server->second.m_queue != argument ||
+            (request.m_bytes.size() != 0u &&
+             !guest_ram_span(
+                 server->second.m_buffer,
+                 static_cast<uint32_t>(request.m_bytes.size()))))
+        {
+            return false;
+        }
+        if (!request.m_bytes.empty() &&
+            !m_kernel.cpu().dma_write(
+                server->second.m_buffer, request.m_bytes.data(),
+                static_cast<uint32_t>(request.m_bytes.size())))
+        {
+            return false;
+        }
+        requests.pop_front();
+        m_rpc_thread_active[thread_id] = request.m_token;
+        cpu.m_gpr[4] = request.m_method;
+        cpu.m_gpr[5] = server->second.m_buffer;
+        cpu.m_gpr[6] =
+            static_cast<uint32_t>(request.m_bytes.size());
+        cpu.m_gpr[31] = k_rpc_finish_stub;
+        cpu.m_next_pc = server->second.m_handler;
+        return true;
+    }
+    if (ordinal == 0xfeu) // actual guest handler return
+    {
+        const uint32_t thread_id = m_kernel.current_thread_id();
+        const auto active = m_rpc_thread_active.find(thread_id);
+        const auto queue = m_rpc_thread_queues.find(thread_id);
+        if (active == m_rpc_thread_active.end() ||
+            queue == m_rpc_thread_queues.end() ||
+            m_rpc_bridge == nullptr ||
+            !m_rpc_bridge->finish_guest_rpc(active->second, cpu.m_gpr[2]))
+        {
+            return false;
+        }
+        m_rpc_thread_active.erase(active);
+        cpu.m_gpr[4] = queue->second;
+        cpu.m_next_pc =
+            k_extra_stub_base + 22u * 0x20u;
+        return true;
+    }
+    if (ordinal == 23u) // sceSifGetOtherData
+    {
+        // Arguments: descriptor*, EE source, IOP dest, byte count.
+        const uint32_t source = cpu.m_gpr[5];
+        const uint32_t destination = cpu.m_gpr[6];
+        const uint32_t length = cpu.m_gpr[7];
+        const uint32_t region = source & 0xe0000000u;
+        const uint32_t physical = source & 0x1fffffffu;
+        if (m_ee_ram == nullptr || length > 65536u ||
+            (region != 0u && region != 0x80000000u &&
+             region != 0xa0000000u) ||
+            !m_ee_ram->contains(physical, length) ||
+            (length != 0u && !guest_ram_span(destination, length)))
+        {
+            return fail();
+        }
+        std::vector<uint8_t> data(length);
+        for (uint32_t i = 0u; i < length; ++i)
+        {
+            data[i] = m_ee_ram->read8(physical + i);
+        }
+        if (length != 0u &&
+            !m_kernel.cpu().dma_write(
+                destination, data.data(), length))
+        {
+            return false;
+        }
+        cpu.m_gpr[2] = 0u;
+        return true;
+    }
+    if (ordinal == 24u) // sceSifRemoveRpc
+    {
+        for (auto it = m_rpc_servers.begin();
+             it != m_rpc_servers.end(); ++it)
+        {
+            if (it->second.m_descriptor == argument)
+            {
+                for (const auto& active : m_rpc_thread_active)
+                {
+                    if (m_rpc_thread_queues.at(active.first) ==
+                        it->second.m_queue)
+                    {
+                        return fail();
+                    }
+                }
+                const auto pending =
+                    m_rpc_requests.find(it->second.m_queue);
+                if (pending != m_rpc_requests.end() &&
+                    !pending->second.empty())
+                {
+                    return fail();
+                }
+                m_rpc_servers.erase(it);
+                cpu.m_gpr[2] = 0u;
+                return true;
+            }
+        }
+        return fail();
+    }
+    if (ordinal == 25u) // sceSifRemoveRpcQueue
+    {
+        const auto found = m_rpc_queue_threads.find(argument);
+        if (found == m_rpc_queue_threads.end() ||
+            m_rpc_thread_active.count(found->second) != 0u)
+        {
+            return fail();
+        }
+        for (const auto& pair : m_rpc_servers)
+        {
+            if (pair.second.m_queue == argument)
+            {
+                return fail();
+            }
+        }
+        m_rpc_requests.erase(argument);
+        m_rpc_thread_queues.erase(found->second);
+        m_rpc_queue_threads.erase(found);
+        cpu.m_gpr[2] = 0u;
+        return true;
+    }
+    return false;
+}
 bool c_sifcmd_bridge::handle_syscall(
     c_kernel& kernel, uint32_t service
 )
@@ -106,6 +431,21 @@ bool c_sifcmd_bridge::handle_syscall(
     if (&kernel != &m_kernel)
     {
         return false;
+    }
+
+    if ((service >= k_service_base + 14u &&
+         service <= k_service_base + 25u) ||
+        service == k_service_base + 0xfeu)
+    {
+        const uint32_t ordinal = service - k_service_base;
+        if (ordinal == 14u || ordinal == 17u ||
+            ordinal == 18u || ordinal == 19u ||
+            ordinal == 22u || ordinal == 23u ||
+            ordinal == 24u || ordinal == 25u ||
+            ordinal == 0xfeu)
+        {
+            return handle_rpc_syscall(ordinal);
+        }
     }
 
     switch (service)
