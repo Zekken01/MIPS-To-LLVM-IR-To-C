@@ -140,6 +140,53 @@ int main()
         return fail("guest LIBSD SH to SPU2 master volume failed");
     }
 
+    // Retail SDBZ executes this exact SH v0, 0(a1) instruction at
+    // 0x0005A824 after the RPC worker receives WaitSema(0) = -408.
+    // PS2SDK LIBSD InitSpdif writes MODE=0x900, MEDIA=0x200 and
+    // the final SPDIF control halfword 0x7CA=8. The primary
+    // ps2-web-recomp/SDBZ model accepts 0x7CA without latching it.
+    // These are configuration writes, not proof of SPU readiness.
+    if (!audio_kernel.cpu().write32(0x0005a824u, 0xa4a20000u) ||
+        !audio_kernel.hardware().write(
+            iop::c_spu2::k_base + 0x7c0u, 2u, 0u) ||
+        !audio_kernel.hardware().write(
+            iop::c_spu2::k_base + 0x7c0u, 2u, 0x8000u) ||
+        !audio_kernel.hardware().write(
+            iop::c_spu2::k_base + 0x7c6u, 2u, 0x900u) ||
+        !audio_kernel.hardware().write(
+            iop::c_spu2::k_base + 0x7c8u, 2u, 0x200u))
+    {
+        return fail("cannot stage retail LIBSD SPDIF init");
+    }
+    audio_cpu.m_pc = 0x0005a824u;
+    audio_cpu.m_next_pc = 0x0005a828u;
+    audio_cpu.m_gpr[2] = 8u;
+    audio_cpu.m_gpr[5] = 0xbf9007cau;
+    if (audio_kernel.cpu().step() != iop::e_step_result::completed ||
+        audio_kernel.cpu().last_memory_fault().m_valid ||
+        !audio_kernel.hardware().read(
+            iop::c_spu2::k_base + 0x7c0u, 2u, &actual) ||
+        actual != 0x8000u ||
+        !audio_kernel.hardware().read(
+            iop::c_spu2::k_base + 0x7c6u, 2u, &actual) ||
+        actual != 0x900u ||
+        !audio_kernel.hardware().read(
+            iop::c_spu2::k_base + 0x7c8u, 2u, &actual) ||
+        actual != 0x200u ||
+        !audio_kernel.hardware().read(
+            iop::c_spu2::k_base + 0x7cau, 2u, &actual) ||
+        actual != 0u ||
+        audio_kernel.hardware().read(
+            iop::c_spu2::k_base + 0x7c4u, 2u, &actual) ||
+        audio_kernel.hardware().write(
+            iop::c_spu2::k_base + 0x7ccu, 2u, 8u) ||
+        audio_kernel.hardware().write(
+            iop::c_spu2::k_base + 0x7cau, 1u, 8u) ||
+        audio_kernel.hardware().pending_interrupts() != 0u)
+    {
+        return fail("guest LIBSD SPDIF init fabricated state or faulted");
+    }
+
     const uint32_t spu2 = iop::c_spu2::k_base;
     if (!hardware.read(spu2 + 0x760u, 2u, &actual) ||
         actual != 0x3fffu ||

@@ -292,6 +292,12 @@ bool c_spu2::read16(uint32_t offset, uint16_t* value)
     case 0x7c8u:
         *value = m_spdif_media;
         return true;
+    case 0x7cau:
+        // PS2SDK LIBSD writes 8 to this SPDIF control halfword during
+        // InitSpdif(). The primary ps2-web-recomp/SDBZ model leaves it
+        // unlatched and reads back zero. This is not a ready/status bit.
+        *value = 0u;
+        return true;
     default:
         // Unknown global status is not automatically a zero/ready bit.
         return false;
@@ -328,6 +334,12 @@ bool c_spu2::write16(uint32_t offset, uint16_t value)
         return true;
     case 0x7c8u:
         m_spdif_media = value;
+        return true;
+    case 0x7cau:
+        // PS2SDK LIBSD InitSpdif writes 8 here. The reference
+        // ps2-web-recomp/SDBZ write_global() deliberately ignores it.
+        // Accept the actual control write without inventing a latch,
+        // sound readiness, DMA completion, an interrupt, or an RPC reply.
         return true;
     default:
         return false;

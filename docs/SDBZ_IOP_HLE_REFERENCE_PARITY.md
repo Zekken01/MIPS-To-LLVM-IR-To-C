@@ -1130,3 +1130,49 @@ native WebGPU workflow with its published SHA-256; do not define
 `_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH` to suppress the STL
 version guard. Final CI acceptance still requires passing jobs on
 the replacement commit, not only on the earlier implementation.
+
+## 2026-11-20 05:39:29 — guest ARKD RPC scheduler reveals LIBSD SPDIF control write
+
+Matched Windows replay `ps2-game-hle(20261120-053929).zip` includes the
+complete five-report diagnostic set and three GS PPM captures. The preceding
+EE-cycle-driven IOP scheduling batch is running: it advances genuine guest
+R3000 code beyond the initial 256-instruction method-`0x500:1` slice.
+The replay now stops after **11,980 EE dispatches** and **16,032,692 EE
+instruction attempts** with 421 cached LLVM functions, 29 committed RPC
+commands, and the original six IRX module-start threads. All three GS
+images are fully black (display 512x448, upload 1024x64, WebGPU 512x448).
+Lower EE dispatches are due to an earlier explicit hardware stop, not a
+successful boot or regression to a prior stage.
+
+**Exact stop:** IOP thread 9, guest PC `0x0005A824`, R3000 opcode
+`0xA4A20000` (`sh v0, 0(a1)`), value `8`, effective address
+`0xBF9007CA`, width 2, fault reason `memory_fault=4`, pending guest
+RPC calls 1. The same once-per-ID `WaitSema(0)` diagnostic occurs at
+`0x000147A8` with RA `0x0007D648`; its producer remains unverified.
+The EE resumes no genuine `0x500:1` reply or new DMA5 signal after this
+fault.
+
+**Primary reference:** `ps2-web-recomp/SDBZ/runtime/src/iop/spu2.cpp`
+`write_global()` explicitly recognizes MODE `0x7C6` and MEDIA
+`0x7C8` and ignores other global writes, without implying playback,
+DMA or interrupt completion. The secondary PS2SDK
+`iop/sound/libsd/src/freesd.c`, `InitSpdif()`, explicitly programs
+MODE=`0x900`, MEDIA=`0x200` and `U16_REGISTER(0x7CA)=8` in that
+order. This matches the exact guest value and address in the replay.
+The primary reference `read_global()` reads the unlatched `0x7CA` as
+zero. Nearby undocumented `0x7C4` and `0x7CC` remain unsupported in
+the HLE-first model.
+
+**Batch implementation:** Add only the recognized `0x7CA` SPDIF control
+halfword: accept its write without side effects; return reference zero on
+read. Do not generalize this to all missing SPU2 MMIO offsets and do not
+fabricate readiness, IRQ9, DMA completion, or ARKD replies. The focused
+R3000 regression stages the exact opcode at the faulting PC, runs the
+original SPDIF initialization register sequence, checks unchanged
+MODE/MEDIA/OUT readback, rejects nearby unverified addresses and
+unsupported byte width, and verifies that no IOP interrupt occurs.
+
+**Next verification:** require the full CI suite on the final branch
+HEAD and a fresh matched Windows replay. Confirm the guest passes
+`0x0005A824`, then inspect genuine ARKD method `0x500:1` completion,
+SIF0/DMA5 delivery and any further verified IOP dependencies.
