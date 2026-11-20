@@ -392,10 +392,13 @@ if(EE_ENABLE_WEBGPU)
     endif()
 endif()
 
-if(MSVC)
-    # This diagnostic runner has a large monolithic dispatch frame. Keep its
-    # host stack reserve explicit instead of depending on the 1 MiB PE default.
-    target_link_options(ee_game_runner PRIVATE /STACK:8388608)
+if(WIN32)
+    # The native runner holds its large EE/IOP diagnostic state in a
+    # monolithic main() frame. Both MSVC and clang++/lld-link need an
+    # explicit 8 MiB stack reserve, not the default 1 MiB PE reserve.
+    # if(MSVC) misses clang++ with GNU-style driver flags on Windows.
+    # LINKER: forwards the identical /STACK value for both drivers.
+    target_link_options(ee_game_runner PRIVATE "LINKER:/STACK:8388608")
 endif()
 
 add_executable(ee_ram_interpreter_test tests/smoke/ee_ram_interpreter_test.cpp)
