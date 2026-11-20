@@ -273,6 +273,21 @@ bool c_cpu::write32(uint32_t address, uint32_t value)
     return write(address, 4u, value);
 }
 
+bool c_cpu::dma_read(
+    uint32_t address, uint8_t* data, uint32_t size
+) const
+{
+    const uint32_t physical = address & 0x1fffffffu;
+    if (data == nullptr || size == 0u || physical > k_ram_size ||
+        size > k_ram_size - physical)
+    {
+        return false;
+    }
+    std::copy(m_ram.begin() + physical,
+              m_ram.begin() + physical + size, data);
+    return true;
+}
+
 bool c_cpu::dma_write(
     uint32_t address, const uint8_t* data, uint32_t size
 )

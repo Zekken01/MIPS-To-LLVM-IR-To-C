@@ -87,7 +87,9 @@ public:
     bool write8(uint32_t address, uint8_t value);
     bool read32(uint32_t address, uint32_t* value) const;
     bool write32(uint32_t address, uint32_t value);
-    // Hardware DMA writes physical IOP RAM without going through MMIO.
+    // Hardware DMA reads and writes *actual* IOP RAM, never MMIO or
+    // unbacked ROM. Preflight the complete range before copying.
+    bool dma_read(uint32_t address, uint8_t* data, uint32_t size) const;
     bool dma_write(uint32_t address, const uint8_t* data, uint32_t size);
 
     // Exactly one guest instruction, with architectural branch-delay slots.

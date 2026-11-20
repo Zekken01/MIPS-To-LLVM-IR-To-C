@@ -43,6 +43,72 @@ bool c_spu2::irq_pending() const
     return m_cores[0].m_irq || m_cores[1].m_irq;
 }
 
+bool c_spu2::auto_dma_enabled(uint32_t core) const
+{
+    return core < 2u &&
+        (m_cores[core].m_registers[0x1b0u / 2u] &
+         (uint16_t{1} << core)) != 0u;
+}
+
+bool c_spu2::ram_word(uint32_t address, uint16_t* value) const
+{
+    if (value == nullptr || address >= k_ram_words)
+    {
+        return false;
+    }
+    *value = m_ram[address];
+    return true;
+}
+
+bool c_spu2::copy_dma(
+    uint32_t core, std::vector<uint8_t>& data, bool to_spu
+)
+{
+    if (core >= 2u || data.empty() || (data.size() & 1u) != 0u ||
+        data.size() > k_ram_words * 2u ||
+        (to_spu && auto_dma_enabled(core)))
+    {
+        return false;
+    }
+
+    const uint32_t halfwords = static_cast<uint32_t>(data.size() / 2u);
+    s_core& selected = m_cores[core];
+    const uint32_t start = selected.m_tsa & (k_ram_words - 1u);
+    if (to_spu)
+    {
+        // The primary reference checks both cores' IRQA against
+        // the sound-RAM range written by DMA, including wraparound.
+        for (s_core& candidate : m_cores)
+        {
+            const uint32_t distance =
+                (candidate.m_irqa - start) & (k_ram_words - 1u);
+            if ((candidate.m_attr & 0x40u) != 0u &&
+                !candidate.m_irq && distance < halfwords)
+            {
+                candidate.m_irq = true;
+            }
+        }
+    }
+    for (uint32_t i = 0u; i < halfwords; ++i)
+    {
+        const uint32_t address = (start + i) & (k_ram_words - 1u);
+        if (to_spu)
+        {
+            m_ram[address] = static_cast<uint16_t>(
+                static_cast<uint16_t>(data[2u * i]) |
+                (static_cast<uint16_t>(data[2u * i + 1u]) << 8u));
+        }
+        else
+        {
+            const uint16_t sample = m_ram[address];
+            data[2u * i] = static_cast<uint8_t>(sample);
+            data[2u * i + 1u] = static_cast<uint8_t>(sample >> 8u);
+        }
+    }
+    selected.m_tsa = (start + halfwords) & (k_ram_words - 1u);
+    return true;
+}
+
 bool c_spu2::read(uint32_t address, uint32_t width, uint32_t* value)
 {
     if (value == nullptr || (width != 2u && width != 4u) ||

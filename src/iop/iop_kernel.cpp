@@ -103,6 +103,7 @@ bool c_kernel::start_rom0_boot(const std::vector<uint8_t>& image)
         m_cpu.bind_hardware(nullptr);
         return false;
     }
+    m_hardware.bind_dma_cpu(&m_cpu);
     m_cycles = 0u;
     m_current_thread_id = 0u;
     m_rom0_boot_active = true;
@@ -117,6 +118,7 @@ bool c_kernel::attach_hle_hardware()
     }
     // Reset detaches MMIO; the HLE bootstrap reattaches explicitly.
     m_cpu.bind_hardware(&m_hardware);
+    m_hardware.bind_dma_cpu(&m_cpu);
     return true;
 }
 

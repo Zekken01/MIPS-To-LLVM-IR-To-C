@@ -9,6 +9,8 @@
 
 namespace iop
 {
+class c_cpu;
+
 // The first guest-visible IOP hardware registers needed for ROM0
 // exploration. This is NOT a complete IOP bus: unknown devices fail
 // instead of reading zero or silently accepting writes.
@@ -116,6 +118,10 @@ public:
     void bind_sif0_start(void* user, t_sif0_start_callback callback);
     void bind_sif1_start(void* user, t_sif1_start_callback callback);
     void bind_cdvd_start(void* user, t_cdvd_start_callback callback);
+    // Only a connected IOP CPU permits actual SPU2 DMA4/7 transfers.
+    // Unbound MMIO remains register-only for standalone hardware tests.
+    void bind_dma_cpu(c_cpu* cpu);
+    bool spu2_ram_word(uint32_t address, uint16_t* value) const;
 
     // For the ordinary MMIO/scratchpad range, address is physical.
     // The cache-control register retains its privileged full address.
@@ -168,6 +174,8 @@ private:
                            uint32_t* shift) const;
     uint32_t update_dma_icr(uint32_t previous, uint32_t value);
     void assert_dma_irq(uint32_t& control, bool sif_channel);
+    void start_spu2_dma(uint32_t core);
+    void advance_spu2_dma(uint32_t cycles);
 
     // Guest SPU2 register bank is separate from SSBUS configuration.
     c_spu2 m_spu2;
@@ -203,6 +211,10 @@ private:
     // DMA4/DMA7 owned by the two distinct SPU2 cores. The guest may
     // program these registers, but no fake DMA data or finish is made.
     uint32_t m_spu2_dma[2][4]{};
+    // Countdown starts only after an actual IOP <-> sound-RAM copy.
+    // A guest CHCR.STR clear cancels the pending completion.
+    uint32_t m_spu2_dma_remaining[2]{};
+    c_cpu* m_dma_cpu = nullptr;
     uint32_t m_dma_pcr = 0u;
     uint32_t m_dma_pcr2 = 0u;
     uint32_t m_dma_global_enable = 0u;

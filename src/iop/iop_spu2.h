@@ -23,6 +23,13 @@ public:
     bool read(uint32_t address, uint32_t width, uint32_t* value);
     bool write(uint32_t address, uint32_t width, uint32_t value);
     bool irq_pending() const;
+    // SPU2 uses shared 2 MiB sound RAM for both core DMA channels.
+    // An ordinary DMA copies real little-endian halfwords starting at
+    // the core's guest-programmed TSA, wrapping in the sound RAM.
+    // AutoDMA streaming is a different mode and is not implemented.
+    bool auto_dma_enabled(uint32_t core) const;
+    bool copy_dma(uint32_t core, std::vector<uint8_t>& data, bool to_spu);
+    bool ram_word(uint32_t address, uint16_t* value) const;
 
 private:
     struct s_core
