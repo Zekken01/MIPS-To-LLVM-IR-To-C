@@ -15,6 +15,7 @@ constexpr uint32_t k_alarm_return_pc = 0x00013ff0u;
 constexpr uint32_t k_hle_callback_return_pc = 0x00013fe0u;
 // Reserved guest HLE trampoline immediately below the other return stubs.
 constexpr uint32_t k_module_return_pc = 0x00013fd0u;
+constexpr uint32_t k_thread_return_pc = 0x00013fc0u;
 
 bool valid_range(size_t size, uint64_t offset, uint64_t length)
 {
@@ -892,11 +893,22 @@ bool c_kernel::start_thread(uint32_t id)
 {
     const auto found = m_threads.find(id);
     if (found == m_threads.end() ||
-        found->second.m_status != e_thread_status::dormant)
+        found->second.m_status != e_thread_status::dormant ||
+        !m_cpu.write32(k_thread_return_pc, 0x0000000du))
     {
         return false;
     }
-    found->second.m_status = e_thread_status::ready;
+
+    s_kernel_thread& thread = found->second;
+    // The original IOP kernel's StartThread installs a guest exit
+    // trampoline. Preserve the more specific callback and alarm
+    // return sentinels; all ordinary threads must also have an RA.
+    thread.m_cpu.m_gpr[31] =
+        thread.m_hle_guest_callback ? k_hle_callback_return_pc :
+        thread.m_alarm_id != 0u ? k_alarm_return_pc :
+        thread.m_module_entry ? k_module_return_pc :
+                                k_thread_return_pc;
+    thread.m_status = e_thread_status::ready;
     return true;
 }
 
@@ -924,13 +936,14 @@ bool c_kernel::start_thread_with_arguments(
         thread.m_stack_base + thread.m_stack_size - 16u;
     initial.m_gpr[4] = a0;
     initial.m_gpr[5] = a1;
-    if (thread.m_module_entry)
-    {
-        // The guest _start(argc, argv) returns through $ra. Preserve
-        // this real MIPS return path even when StartThreadArgs rebuilds
-        // its CPU context; do not let JR $ra fall into address zero.
-        initial.m_gpr[31] = k_module_return_pc;
-    }
+    // StartThreadArgs rebuilds the R3000 register context, including
+    // $ra. Preserve the genuine exit trampoline for module starters,
+    // generic threads and guest callback/alarm threads alike.
+    initial.m_gpr[31] =
+        thread.m_hle_guest_callback ? k_hle_callback_return_pc :
+        thread.m_alarm_id != 0u ? k_alarm_return_pc :
+        thread.m_module_entry ? k_module_return_pc :
+                                k_thread_return_pc;
     thread.m_cpu = initial;
     thread.m_priority = thread.m_initial_priority;
     thread.m_wakeup_count = 0u;
@@ -1400,6 +1413,19 @@ s_kernel_run_result c_kernel::run(
         m_cycles += step_result.m_instructions;
         result.m_executed += step_result.m_instructions;
         remaining -= step_result.m_instructions;
+
+        // An ordinary guest thread has returned through its genuine
+        // MIPS $ra trampoline. The completed guest thread is dormant;
+        // this is not a synthetic successful syscall or module result.
+        if (step_result.m_result == e_step_result::breakpoint &&
+            step_result.m_pc == k_thread_return_pc &&
+            !thread.m_module_entry)
+        {
+            thread.m_cpu = m_cpu.state();
+            thread.m_status = e_thread_status::dormant;
+            m_current_thread_id = 0u;
+            continue;
+        }
 
         // Module _start has returned its original V0 through the
         // installed $ra sentinel. Only the actual guest BREAK at that
