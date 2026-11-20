@@ -47,6 +47,8 @@ public:
     static constexpr uint32_t k_call_cid = 0x8000000au;
     static constexpr uint32_t k_reply_cid = 0x80000008u;
     static constexpr uint32_t k_server_xor = 0xacacacacu;
+    static constexpr uint32_t k_arkd_first_server = 0x500u;
+    static constexpr uint32_t k_arkd_last_server = 0x503u;
 
     struct s_request
     {
@@ -69,6 +71,7 @@ public:
         bool m_cdvd_to_iop = false;
         bool m_cdvd_lookup_found = false;
         bool m_guest_rpc = false;
+        bool m_deferred_bind = false;
         std::vector<uint8_t> m_guest_rpc_bytes;
         std::vector<uint8_t> m_cdvd_bytes;
         std::string m_guest_path;
@@ -134,6 +137,8 @@ public:
     // through the SIFCMD finish trampoline. Until then no SIF0 reply
     // or EE return-buffer write is manufactured.
     bool finish_guest_rpc(uint32_t token, uint32_t guest_result);
+    // Pending binds can reply only after a real guest RPC registration.
+    void on_guest_rpc_server_registered(uint32_t server_id);
 
     // Real IOP-originated BIND/CALL commands are copied into the EE's
     // armed SIF0 receiver. Optional payload is moved from IOP RAM to
@@ -168,6 +173,7 @@ public:
     // Pending replies remain queued if the EE cannot accept them yet.
     bool pump();
     size_t pending_replies() const;
+    size_t pending_binds() const;
     uint32_t load_requests() const;
 
 private:
@@ -177,6 +183,12 @@ private:
         uint32_t m_word_count = 12u;
         uint32_t m_extra_destination = 0u;
         std::vector<uint8_t> m_extra_data;
+    };
+
+    struct s_deferred_bind
+    {
+        uint32_t m_server_id = 0u;
+        s_reply m_reply{};
     };
 
     struct s_guest_pending
@@ -197,6 +209,7 @@ private:
     uint8_t m_loadfile_version[4]{};
     uint32_t m_cdvd_stream_position = 0u;
     std::deque<s_reply> m_replies;
+    std::deque<s_deferred_bind> m_deferred_binds;
     std::map<uint32_t, s_guest_pending> m_guest_pending;
     uint32_t m_next_guest_token = 1u;
     uint32_t m_load_requests = 0u;
