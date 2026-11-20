@@ -732,6 +732,11 @@ const s_kernel_thread* c_kernel::thread(uint32_t id) const
     return found == m_threads.end() ? nullptr : &found->second;
 }
 
+const std::map<uint32_t, s_kernel_thread>& c_kernel::threads() const
+{
+    return m_threads;
+}
+
 bool c_kernel::has_guest_work() const
 {
     if (m_rom0_boot_active)
