@@ -66,7 +66,7 @@ constexpr s_export k_exports[] = {
     {"sysclib", 11u, 8u}, {"sysclib", 12u, 8u},
     {"sysclib", 13u, 8u}, {"sysclib", 14u, 8u},
     {"sysclib", 15u, 8u}, {"sysclib", 16u, 8u},
-    {"sysclib", 17u, 8u},
+    {"sysclib", 17u, 8u}, {"sysclib", 19u, 8u},
     {"sysclib", 20u, 8u}, {"sysclib", 21u, 8u},
     {"sysclib", 22u, 8u}, {"sysclib", 23u, 8u},
     {"sysclib", 24u, 8u}, {"sysclib", 25u, 8u},
@@ -77,6 +77,7 @@ constexpr s_export k_exports[] = {
     {"sysclib", 34u, 8u}, {"sysclib", 35u, 8u},
     {"sysclib", 36u, 8u}, {"sysclib", 38u, 8u},
     {"sysclib", 40u, 8u}, {"sysclib", 41u, 8u},
+    {"sysclib", 42u, 8u},
     {"sysmem", 4u, 9u}, {"sysmem", 5u, 9u},
     {"sysmem", 6u, 9u}, {"sysmem", 7u, 9u},
     {"sysmem", 8u, 9u}, {"sysmem", 9u, 9u},
@@ -2066,6 +2067,10 @@ bool c_kernel_hle_bridge::handle_sysclib(uint32_t ordinal)
             }
             return true;
         }
+    }
+    if (ordinal == 19u || ordinal == 42u)
+    {
+        return execute_sysclib_format(m_kernel.cpu(), ordinal);
     }
     if (ordinal >= 20u && ordinal <= 34u)
     {
