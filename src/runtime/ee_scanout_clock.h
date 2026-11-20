@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <vector>
 
 namespace ee
 {
@@ -40,6 +41,10 @@ public:
     uint64_t last_ee_cycle() const;
     uint64_t csr() const;
     uint64_t fields_started() const;
+    uint64_t fields_ended() const;
+    // Ordered edges since the most recent guest-cycle advance.
+    // 1 = start, 0 = end; the caller emits only these real events.
+    const std::vector<uint8_t>& delivered_vblank_edges() const;
 
 private:
     void queue_next_field();
@@ -51,6 +56,10 @@ private:
     uint32_t m_fraction = 0u;
     uint64_t m_csr = 0u;
     uint64_t m_fields_started = 0u;
+    uint64_t m_fields_ended = 0u;
+    uint64_t m_next_end_cycle = 0u;
+    uint64_t m_vblank_duration = 0u;
+    std::vector<uint8_t> m_delivered_edges;
     bool m_enabled = false;
     bool m_interlaced = false;
 };

@@ -80,6 +80,18 @@ int main()
 
     memory.write32(0x100u, 0x22222222u);
     memory.write64(0x108u, 0x3333333333333333ull);
+    const uint64_t first_end =
+        first_field + (4920115ull * 44u / 525u);
+    check(clock.advance_to(first_end - 1u, &intc, &flags, &memory) &&
+          clock.fields_ended() == 0u &&
+          clock.delivered_vblank_edges().empty(),
+          "VBlank end never fires before its guest deadline");
+    check(clock.advance_to(first_end, &intc, &flags, &memory) &&
+          clock.fields_ended() == 1u &&
+          clock.delivered_vblank_edges().size() == 1u &&
+          clock.delivered_vblank_edges()[0] == 0u &&
+          clock.fields_started() == 1u,
+          "VBlank end fires from the actual field-start clock");
     const uint64_t second_field = clock.next_field_cycle();
     clock.acknowledge_csr(ee::c_ee_scanout_clock::k_csr_vsint);
     check((clock.csr() & ee::c_ee_scanout_clock::k_csr_vsint) == 0u &&
