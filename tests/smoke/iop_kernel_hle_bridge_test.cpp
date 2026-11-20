@@ -1277,6 +1277,31 @@ int main()
         }
     }
 
+    // A null destination or guest va_list cannot be treated as a
+    // mapped IOP RAM region, even though physical RAM starts at zero.
+    uint32_t first_iop_word = 0u;
+    uint32_t preserved_first_word = 0u;
+    if (!write_guest_string(k_sprintf_format, "%u") ||
+        !kernel.cpu().read32(0u, &first_iop_word))
+    {
+        return fail("cannot prepare null formatting pointer test");
+    }
+    kernel.cpu().state().m_gpr[4] = 0u;
+    kernel.cpu().state().m_gpr[5] = k_sprintf_format;
+    kernel.cpu().state().m_gpr[6] = 123u;
+    if (iop::execute_sysclib_format(kernel.cpu(), 19u) ||
+        !kernel.cpu().read32(0u, &preserved_first_word) ||
+        preserved_first_word != first_iop_word)
+    {
+        return fail("sprintf accepted null guest output pointer");
+    }
+    kernel.cpu().state().m_gpr[4] = k_sprintf_destination;
+    kernel.cpu().state().m_gpr[6] = 0u;
+    if (iop::execute_sysclib_format(kernel.cpu(), 42u))
+    {
+        return fail("vsprintf accepted null guest va_list pointer");
+    }
+
     // StartThreadArgs preserves both guest entry arguments; the new
     // thread executes actual R3000 instructions when scheduled.
     kernel.cpu().write32(0x3e00u, 0x0000000du);
