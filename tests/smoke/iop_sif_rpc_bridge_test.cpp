@@ -66,8 +66,9 @@ bool create_irx(const std::filesystem::path& location)
     {
         bytes[0x19au + i] = static_cast<uint8_t>(name[i]);
     }
-    write32(bytes, 0x100u, 0x00000000u); // initial guest nop
-    write32(bytes, 0x104u, 0x0000000du); // guest breakpoint
+    write32(bytes, 0x100u, 0x24020007u); // guest _start returns 7
+    write32(bytes, 0x104u, 0x03e00008u); // jr ra
+    write32(bytes, 0x108u, 0u);          // delay slot
     std::ofstream out(location, std::ios::binary);
     out.write(
         reinterpret_cast<const char*>(bytes.data()),
@@ -1808,6 +1809,8 @@ int main()
         memory, list + 16u, call_source,
         iop::c_sifcmd_bridge::k_command_buffer, 56u
     );
+    memory.write32(rpc_result, 0xcafebabeu);
+    memory.write32(rpc_result + 4u, 0xcafebabeu);
     if (!sif1.set_dma(list, 2u, &dma_id) ||
         rpc.last_observation().m_method != 0u ||
         rpc.last_observation().m_server_id !=
@@ -1821,10 +1824,10 @@ int main()
         rpc.last_observation().m_thread_id == 0u ||
         rpc.load_requests() != 1u ||
         rpc.pending_replies() != 0u ||
-        memory.read32(rpc_result) != 1u ||
-        memory.read32(rpc_result + 4u) != 0u ||
-        memory.read32(ee_receive + 32u) !=
-            iop::c_sif_rpc_bridge::k_call_cid ||
+        rpc.pending_module_starts() != 1u ||
+        memory.read32(rpc_result) != 0xcafebabeu ||
+        memory.read32(rpc_result + 4u) != 0xcafebabeu ||
+        (dmac.status() & (1u << 5u)) != 0u ||
         !kernel.module(1u))
     {
         return fail("LOADFILE RPC did not load and schedule requested IRX");
@@ -1835,14 +1838,27 @@ int main()
     if (first_slice.m_stop != iop::e_kernel_stop::budget_exhausted ||
         first_slice.m_executed != 1u ||
         !kernel.has_guest_work() ||
-        kernel.module(1u) == nullptr)
+        kernel.module(1u) == nullptr ||
+        rpc.pending_module_starts() != 1u ||
+        rpc.pump() ||
+        memory.read32(rpc_result) != 0xcafebabeu)
     {
         return fail("LOADFILE guest thread did not consume its first slice");
     }
     const iop::s_kernel_run_result executed = kernel.run(64u);
-    if (executed.m_stop != iop::e_kernel_stop::breakpoint ||
+    const iop::s_kernel_thread* completed_module =
+        kernel.thread(rpc.last_observation().m_thread_id);
+    if (executed.m_stop != iop::e_kernel_stop::idle ||
         kernel.has_guest_work() ||
-        executed.m_guest_pc != kernel.module(1u)->m_irx.m_entry + 4u)
+        completed_module == nullptr ||
+        completed_module->m_status != iop::e_thread_status::dormant ||
+        completed_module->m_cpu.m_gpr[2] != 7u ||
+        !rpc.pump() ||
+        rpc.pending_module_starts() != 0u ||
+        memory.read32(rpc_result) != 1u ||
+        memory.read32(rpc_result + 4u) != 7u ||
+        rpc.last_observation().m_return_word != 1u ||
+        (dmac.status() & (1u << 5u)) == 0u)
     {
         return fail("LOADFILE module entrypoint never ran");
     }
@@ -2319,7 +2335,8 @@ int main()
             iop::e_disc_load_result::success ||
         !rpc.last_observation().m_module_started ||
         rpc.last_observation().m_module_id != 2u ||
-        memory.read32(rpc_result) != 2u)
+        rpc.pending_module_starts() != 1u ||
+        memory.read32(rpc_result) != 0xffffffffu)
     {
         return fail("LOADFILE argument-bearing SIF1 packet was refused");
     }
@@ -2356,6 +2373,19 @@ int main()
                 return fail("LOADFILE did not preserve argument bytes");
             }
         }
+    }
+
+    // The argument-bearing module also answers only after its genuine
+    // guest _start returns. The result is the guest's V0, not zero.
+    const iop::s_kernel_run_result args_completed = kernel.run(64u);
+    if (args_completed.m_stop != iop::e_kernel_stop::idle ||
+        rpc.pending_module_starts() != 1u ||
+        !rpc.pump() ||
+        rpc.pending_module_starts() != 0u ||
+        memory.read32(rpc_result) != 2u ||
+        memory.read32(rpc_result + 4u) != 7u)
+    {
+        return fail("argument-bearing LOADFILE replied before guest return");
     }
 
     // Reset may not retain the previous IOPRP's LOADFILE version.
