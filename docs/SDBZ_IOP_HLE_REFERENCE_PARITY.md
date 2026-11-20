@@ -266,3 +266,56 @@ that MCSERV links and its guest thread starts or runs correctly.
 The native HLE ordinal total is **177**, including bridge exports
 defined outside `libs.cpp`. The explicit `libs.cpp` match count
 remains **131/172**.
+
+## 2026-11-20 — LOADFILE module startup argument ABI after LIBSD link
+
+Matched Windows archive `ps2-game-hle(4).zip` has all five expected
+diagnostics and three black GS PPMs, with the unchanged USA
+`SLUS_214.42` SHA-256 and extracted-disc root. The **final**
+committed SIFRPC evidence now shows four successful IRX load/start
+attempts: `SIO2MAN.IRX` (module 1/thread 1), `MCMAN.IRX`
+(2/3), `MCSERV.IRX` (3/4) and `LIBSD.IRX` (4/5). This
+proves the prior `sifcmd#14` linker dependency cleared and four
+entrypoint threads were started, **not** that their callbacks or
+device initialization completed.
+
+After the fourth module, the next genuine EE SIF1 transaction is
+a 512-byte method-0 LOADFILE RPC to server `0x80000006`, with a
+64-byte command, `recv_size=8` and record ID 5. It fails closed
+as `invalid_arguments`, rather than reporting another IRX load.
+The previous parser rejected every nonzero argument length, although
+PS2SDK's real `_lf_module_load_arg` defines a bounded
+`arg_len` (word 0), 252-byte path at byte 8, and 252-byte
+NUL-separated module arguments at byte 260. The raw payload bytes
+are not in this log, so the precise argument values must be
+confirmed by the next real boot, not inferred from the RPC header.
+
+The loader now validates `arg_len <= 252`, verifies the
+complete 512-byte DMA payload for nonempty arguments, ensures
+each supplied argument is NUL-terminated, and retains the exact
+bytes for guest startup. `c_disc_loader` passes these arguments
+to the linked module's genuine guest `_start(argc, argv)` ABI.
+`c_kernel` stores `argv[0]` (guest module path), all subsequent
+arguments, and a null pointer terminator inside the **thread-owned
+bounded IOP stack**, rather than passing host pointers or silently
+dropping arguments. This preserves guest-visible argument lifetime
+and keeps the guest stack pointer below its initial argv storage.
+
+Regression tests cover the guest argv pointers/strings, a
+PS2SDK-shaped 512-byte SIF1 LOADFILE packet with nonempty
+NUL-delimited argument list, and rejection of oversized or
+unterminated argument lists. Missing/invalid modules still fail
+closed; there is no synthetic memory-card initialization or
+successful startup result.
+
+The final replay ended at **11,043 EE dispatches**, with
+`KExit` EPC `0x00175064`; the expansion pass discovered two
+additional EE functions and the translation cache now has **3,526**
+IR entries. The lower dispatch count compared to the prior 14,523
+is a different stop point, not evidence that four IRX modules
+failed to link. GS display, upload and WebGPU images remain black.
+
+Next Windows batch should confirm whether the new argument-bearing
+request is accepted, the exact next requested IRX path, actual
+IOP guest execution, and whether any new unresolved import,
+runtime service or GS producer becomes the next blocker.
