@@ -3657,6 +3657,96 @@ int main(int argc, char** argv)
                             if (!other_ready || callback_active ||
                                 irq_callback_active)
                             {
+                                // A real EE SIFRPC BIND can block in
+                                // WaitSema before its guest IOP server
+                                // registers. Unlike ROM0 DMA, HLE-first
+                                // SIF1 is already committed; give only
+                                // already-scheduled guest R3000 work a
+                                // bounded turn so it can register that
+                                // server and produce a genuine SIF0 Rend.
+                                const bool guest_rpc_wait =
+                                    !other_ready && !callback_active &&
+                                    !irq_callback_active &&
+                                    iop_rom0_path == nullptr &&
+                                    iop_kernel != nullptr &&
+                                    iop_rpc != nullptr &&
+                                    iop_rpc->pending_binds() != 0u &&
+                                    iop_kernel->has_guest_work();
+                                if (guest_rpc_wait)
+                                {
+                                    if (iop_semaphore_wait_turns >=
+                                        sif_poll_limit)
+                                    {
+                                        std::fprintf(stderr,
+                                            "WaitSema HLE pending RPC "
+                                            "exhausted guest IOP turns: "
+                                            "id=%u turns=%u binds=%zu "
+                                            "replies=%zu iop_pc=0x%08x\\n",
+                                            semaphore_id,
+                                            iop_semaphore_wait_turns,
+                                            iop_rpc->pending_binds(),
+                                            iop_rpc->pending_replies(),
+                                            iop_kernel->cpu().state().m_pc);
+                                        break;
+                                    }
+                                    ++iop_semaphore_wait_turns;
+                                    const size_t binds_before =
+                                        iop_rpc->pending_binds();
+                                    const iop::s_kernel_run_result progressed =
+                                        iop_kernel->run(iop_quantum, 128u);
+                                    if (progressed.m_stop !=
+                                            iop::e_kernel_stop::budget_exhausted &&
+                                        progressed.m_stop !=
+                                            iop::e_kernel_stop::idle)
+                                    {
+                                        std::fprintf(stderr,
+                                            "WaitSema HLE guest IOP stopped: "
+                                            "id=%u reason=%u thread=%u "
+                                            "pc=0x%08x opcode=0x%08x "
+                                            "executed=%llu\\n",
+                                            semaphore_id,
+                                            static_cast<uint32_t>(
+                                                progressed.m_stop),
+                                            progressed.m_thread_id,
+                                            progressed.m_guest_pc,
+                                            progressed.m_opcode,
+                                            static_cast<unsigned long long>(
+                                                progressed.m_executed));
+                                        break;
+                                    }
+                                    // Delivery still requires guest
+                                    // registration, the armed EE SIF0
+                                    // receiver and actual DMAC IRQ. Pumping
+                                    // does not manufacture a response.
+                                    (void)iop_rpc->pump();
+                                    const size_t binds_after =
+                                        iop_rpc->pending_binds();
+                                    if (trace &&
+                                        (iop_semaphore_wait_turns == 1u ||
+                                         binds_before != binds_after ||
+                                         (hardware.dmac().pending() &
+                                             (1u << 5u)) != 0u))
+                                    {
+                                        std::printf(
+                                            "WaitSema HLE guest RPC turn: "
+                                            "id=%u turn=%u executed=%llu "
+                                            "binds=%zu replies=%zu "
+                                            "dma5_pending=%u\\n",
+                                            semaphore_id,
+                                            iop_semaphore_wait_turns,
+                                            static_cast<unsigned long long>(
+                                                progressed.m_executed),
+                                            binds_after,
+                                            iop_rpc->pending_replies(),
+                                            (hardware.dmac().pending() &
+                                                (1u << 5u)) != 0u ? 1u : 0u);
+                                    }
+                                    // The normal top-of-loop interrupt
+                                    // delivery executes the original guest
+                                    // callback. Only its iSignalSema may
+                                    // wake this trapped WaitSema.
+                                    continue;
+                                }
                                 if (!other_ready && !callback_active &&
                                     !irq_callback_active &&
                                     iop_rom0_path != nullptr &&
