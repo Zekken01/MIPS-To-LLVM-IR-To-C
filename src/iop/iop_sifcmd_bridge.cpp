@@ -107,9 +107,9 @@ bool c_sifcmd_bridge::install()
 {
     // Preserve original syscall entry points. Reserve separate stubs
     // for actual guest-side RPC server lifecycle operations.
-    constexpr std::array<uint16_t, 13u> ordinals = {
-        4u, 6u, 7u, 14u, 15u, 16u, 17u,
-        18u, 19u, 22u, 23u, 24u, 25u
+    constexpr std::array<uint16_t, 15u> ordinals = {
+        4u, 6u, 7u, 12u, 14u, 15u, 16u, 17u,
+        18u, 19u, 22u, 23u, 24u, 25u, 28u
     };
     for (uint16_t ordinal : ordinals)
     {
@@ -595,6 +595,62 @@ bool c_sifcmd_bridge::handle_syscall(
 
     switch (service)
     {
+    case k_service_base + 12u: // sceSifSendCmd
+    case k_service_base + 28u: // sceSifSendCmdIntr
+    {
+        // ABI: cid, packet, size, extra_source, extra_destination,
+        // extra_length. Fifth and sixth parameters are on the
+        // original R3000 caller's stack at sp+16 and sp+20.
+        s_cpu_state& state = kernel.cpu().state();
+        const uint32_t cid = state.m_gpr[4];
+        const uint32_t packet = state.m_gpr[5];
+        const uint32_t size = state.m_gpr[6];
+        const uint32_t extra_source = state.m_gpr[7];
+        const uint32_t sp = state.m_gpr[29];
+        uint32_t extra_destination = 0u;
+        uint32_t extra_size = 0u;
+        if (!m_initialized || m_rpc_bridge == nullptr ||
+            size < 16u || size > 64u || (size & 3u) != 0u ||
+            !guest_ram_span(packet, size) ||
+            !guest_ram_span(sp, 24u) ||
+            !kernel.cpu().read32(sp + 16u, &extra_destination) ||
+            !kernel.cpu().read32(sp + 20u, &extra_size) ||
+            extra_size > 4096u ||
+            (extra_size != 0u &&
+             !guest_ram_span(extra_source, extra_size)))
+        {
+            state.m_gpr[2] = 0u;
+            return true;
+        }
+        std::vector<uint32_t> words(size / 4u);
+        for (uint32_t i = 0u; i < words.size(); ++i)
+        {
+            if (!kernel.cpu().read32(packet + i * 4u, &words[i]))
+            {
+                state.m_gpr[2] = 0u;
+                return true;
+            }
+        }
+        std::vector<uint8_t> extra(extra_size);
+        for (uint32_t i = 0u; i < extra_size; ++i)
+        {
+            if (!kernel.cpu().read8(extra_source + i, &extra[i]))
+            {
+                state.m_gpr[2] = 0u;
+                return true;
+            }
+        }
+        // Never trust a guest-provided SIFCMD header or claim the
+        // EE acknowledged a command. Only the real queued packet
+        // may reach the armed SIF0 receiver.
+        words[0] = (size & 0xffu) | (extra_size << 8u);
+        words[1] = extra_size != 0u ? extra_destination : 0u;
+        words[2] = cid;
+        state.m_gpr[2] = m_rpc_bridge->queue_iop_guest_command(
+            words, extra_destination, extra) ? 1u : 0u;
+        return true;
+    }
+
     case k_init_cmd_syscall:
         // The IOP publishes SUBADDR only after its R3000 guest code
         // has invoked sceSifInitCmd; never publish the SMFLAG here.

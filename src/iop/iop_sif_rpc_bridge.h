@@ -143,6 +143,14 @@ public:
         uint32_t ee_payload_destination = 0u,
         const std::vector<uint8_t>& payload = {}
     );
+    // Actual IOP sceSifSendCmd packets, delivered through the same
+    // armed SIF0 receiver as IOP-originated RPCs. Enqueueing is not
+    // an acknowledgement from the EE and does not raise an IOP IRQ.
+    bool queue_iop_guest_command(
+        const std::vector<uint32_t>& words,
+        uint32_t ee_payload_destination,
+        const std::vector<uint8_t>& payload
+    );
 
     // Invalidate outstanding RPC replies and CDVD streaming state
     // whenever the IOP kernel is actually reset.

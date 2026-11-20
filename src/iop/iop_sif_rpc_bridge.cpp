@@ -1042,6 +1042,40 @@ bool c_sif_rpc_bridge::queue_iop_command(
     return true;
 }
 
+bool c_sif_rpc_bridge::queue_iop_guest_command(
+    const std::vector<uint32_t>& words,
+    uint32_t ee_payload_destination,
+    const std::vector<uint8_t>& payload
+)
+{
+    // The SIF command header's low byte is the packet length,
+    // while its upper 24 bits carry the optional extra DMA length.
+    // SIF0 uses the same bounded, queued delivery path as RPC
+    // replies, preserving receiver ownership and DMAC acknowledgments.
+    if (!m_sifcmd.initialized() || words.size() < 4u ||
+        words.size() > 16u ||
+        (words[0] & 0xffu) != words.size() * 4u ||
+        (words[0] >> 8u) != payload.size() ||
+        words[1] != (payload.empty() ? 0u : ee_payload_destination) ||
+        words[2] == 0u || words[3] != 0u ||
+        m_replies.size() + m_guest_pending.size() >= 64u ||
+        payload.size() > 4096u ||
+        (!payload.empty() &&
+         (ee_payload_destination == 0u ||
+          !m_ee_ram.contains(ee_payload_destination, payload.size()))))
+    {
+        return false;
+    }
+    s_reply command{};
+    command.m_word_count = static_cast<uint32_t>(words.size());
+    std::copy(words.begin(), words.end(), std::begin(command.m_words));
+    command.m_extra_destination = ee_payload_destination;
+    command.m_extra_data = payload;
+    m_replies.push_back(std::move(command));
+    (void)pump();
+    return true;
+}
+
 bool c_sif_rpc_bridge::finish_guest_rpc(
     uint32_t token, uint32_t guest_result
 )
