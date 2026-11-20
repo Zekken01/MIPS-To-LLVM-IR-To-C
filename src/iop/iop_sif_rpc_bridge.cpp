@@ -1006,6 +1006,42 @@ void c_sif_rpc_bridge::commit_command(const s_request& request)
     (void)pump();
 }
 
+bool c_sif_rpc_bridge::queue_iop_command(
+    const std::vector<uint32_t>& words,
+    uint32_t ee_payload_destination,
+    const std::vector<uint8_t>& payload
+)
+{
+    if (!m_sifcmd.initialized() ||
+        words.size() < 9u || words.size() > 16u ||
+        (words.size() != 9u && words.size() != 14u) ||
+        (words[0] & 0xffu) != words.size() * 4u ||
+        (words[2] != k_bind_cid && words[2] != k_call_cid) ||
+        m_replies.size() + m_guest_pending.size() >= 64u ||
+        payload.size() > 4096u)
+    {
+        return false;
+    }
+    if (!payload.empty() &&
+        (ee_payload_destination == 0u ||
+         !m_ee_ram.contains(ee_payload_destination, payload.size())))
+    {
+        return false;
+    }
+    if (payload.empty() && ee_payload_destination != 0u)
+    {
+        return false;
+    }
+    s_reply packet{};
+    packet.m_word_count = static_cast<uint32_t>(words.size());
+    std::copy(words.begin(), words.end(), std::begin(packet.m_words));
+    packet.m_extra_destination = ee_payload_destination;
+    packet.m_extra_data = payload;
+    m_replies.push_back(std::move(packet));
+    (void)pump();
+    return true;
+}
+
 bool c_sif_rpc_bridge::finish_guest_rpc(
     uint32_t token, uint32_t guest_result
 )
@@ -1116,6 +1152,20 @@ bool c_sif_rpc_bridge::pump()
         return false;
     }
 
+    if (!reply.m_extra_data.empty())
+    {
+        if (!m_ee_ram.contains(
+                reply.m_extra_destination, reply.m_extra_data.size()))
+        {
+            return false;
+        }
+        for (uint32_t index = 0u;
+             index < reply.m_extra_data.size(); ++index)
+        {
+            m_ee_ram.write8(reply.m_extra_destination + index,
+                            reply.m_extra_data[index]);
+        }
+    }
     for (uint32_t index = 0u; index < reply.m_word_count; ++index)
     {
         m_ee_ram.write32(destination + index * 4u,
