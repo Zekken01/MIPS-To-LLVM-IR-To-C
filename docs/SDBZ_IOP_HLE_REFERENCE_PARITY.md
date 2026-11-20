@@ -956,3 +956,62 @@ RPC, guest timing, or shader behavior was altered.
 matched final traced log bundle, including `first-boot.json`.
 Do not attribute ARKD registration or a genuine DMA5/EE semaphore
 wake to this host-only fix before observed runtime evidence.
+
+## 2026-11-20 04:56:35 — original LIBSD SPU2 register write
+
+Matched user Windows ZIP \`ps2-game-hle(20261120-045635).zip\` includes
+\`boot.log\`, \`expansion.log\`, \`first-boot.json\`, three GS PPM images,
+\`iop-disc-catalog.json\`, and \`translation-cache.json\` from the same run.
+Fresh Windows LLVM native WebGPU/raylib startup now succeeds. Four
+expansion passes added 128, 128, 128, and 35 IR functions, leaving
+420 recorded translated IR files. The final trace reached 11,434 EE
+dispatches / 16,026,712 reached guest instructions. The EE is still
+waiting on semaphore 8 at EPC \`0x00174CE4\`; the deferred ARKD bind
+remains server \`0x500\`, client \`0x005A9330\`, with no guest RPC
+server registration or real reply.
+
+**Positive lifecycle evidence:** all six actual IRX guest module
+\`_start\` threads now return through the new \`0x00013FD0\`
+trampoline: modules 1–6 return guest \`v0\` 0,2,2,0,2,0 respectively.
+The high-priority module-start starvation from the prior 03:57:15
+run is resolved. ARKD module 6 creates four actual worker threads
+9–12 at priority 50. A LIBSD-related guest thread 13, priority 39,
+runs far enough to issue a real R3000 halfword store at PC
+\`0x0005C8E8\` (\`SH\`, opcode \`0xA4450000\`) with virtual address
+\`0xBF900760\`. Its IOP physical address is \`0x1F900760\`.
+The kernel stops with \`e_kernel_stop::memory_fault\`, address
+\`0xBF900760\`, width 2, write 1. This is an unimplemented SPU2
+**master-volume register**, not an 8 MiB IOP RAM alias, opcode
+decoder failure, successful audio transfer, or EE translation gap.
+The IOP scheduler cannot deliver the pending ARKD bind while this
+guest memory fault remains.
+
+**Primary reference:** \`ps2-web-recomp/SDBZ/runtime/src/iop/hw.cpp\`
+routes IOP physical \`0x1F900000..0x1F9007FF\` to its
+\`spu2::read/write\`. \`runtime/src/iop/spu2.cpp\` maps each core
+through its 0x400-byte window, maps master volume/control through
+offsets \`0x760\` and \`0x788\`, uses 16-bit little-endian reads
+and writes, and exposes the \`0x7C0\` SPDIF register bank. Core
+\`0x19A\` ATTR, \`0x19C\` IRQA, \`0x1A8\` TSA, \`0x1AC\`
+data port and \`0x344\` STATX require their own state/semantics.
+
+**New PR #145 batch:** add an isolated \`iop::c_spu2\` register
+model routed through \`iop::c_hw\`; map and reset the original
+master/core/SPDIF banks; preserve guest-programmed 16-/32-bit
+register values, IRQA/TSA, statx settle and 2 MiB sound-RAM
+data-port state, and only assert IRQ9 for a genuine guest-selected
+SPU port/IRQA collision. Reject unsupported widths or dynamic
+voice envelope/NAX reads once playback is requested. This is an
+intermediate **register/port** milestone, not a sound engine.
+No voice mixer, sampled audio tick, DMA4/7 completion, generic
+arbitrary MMIO ready bit, or ARKD RPC response is synthesized.
+A R3000 \`SH\` test uses the exact original faulting opcode and
+address; additional regressions check master readback, core
+isolation, STATX settle, sound-RAM port/IRQ semantics, invalid
+accesses and reset.
+
+**Next evidence needed:** an authentic Windows replay after
+pulling the unchanged PR branch. Revisit the IOP scheduler,
+record whether the original SPU2 store now executes, and identify
+the next guest SPU2 status/DMA operation or real
+\`sceSifRegisterRpc(0x500)\` call. No game boot success is implied.
