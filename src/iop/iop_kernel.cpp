@@ -12,6 +12,7 @@ namespace iop
 namespace
 {
 constexpr uint32_t k_alarm_return_pc = 0x00013ff0u;
+constexpr uint32_t k_hle_callback_return_pc = 0x00013fe0u;
 
 bool valid_range(size_t size, uint64_t offset, uint64_t length)
 {
@@ -764,6 +765,35 @@ bool c_kernel::schedule_hle_event(
     return true;
 }
 
+bool c_kernel::start_guest_callback(
+    uint32_t callback, uint32_t gp, uint32_t argument
+)
+{
+    const uint32_t region = callback & 0xe0000000u;
+    const uint32_t physical = callback & 0x1fffffffu;
+    uint32_t opcode = 0u;
+    if (m_rom0_boot_active || callback == 0u ||
+        (callback & 3u) != 0u ||
+        (region != 0u && region != 0x80000000u &&
+         region != 0xa0000000u) ||
+        physical >= c_cpu::k_ram_size ||
+        !m_cpu.read32(callback, &opcode) ||
+        !m_cpu.write32(k_hle_callback_return_pc, 0x0000000du))
+    {
+        return false;
+    }
+    const uint32_t id = create_thread(callback, gp, 1u,
+                                      0x400u, argument);
+    if (id == 0u)
+    {
+        return false;
+    }
+    s_kernel_thread& thread = m_threads.at(id);
+    thread.m_hle_guest_callback = true;
+    thread.m_cpu.m_gpr[31] = k_hle_callback_return_pc;
+    return start_thread(id);
+}
+
 bool c_kernel::set_alarm(
     uint64_t ticks, uint32_t callback,
     uint32_t argument, uint32_t gp
@@ -1342,6 +1372,19 @@ s_kernel_run_result c_kernel::run(
         m_cycles += step_result.m_instructions;
         result.m_executed += step_result.m_instructions;
         remaining -= step_result.m_instructions;
+
+        // A hosted CDVD completion invokes a real guest callback.
+        // Once the original R3000 function returns through $ra, retire
+        // only that one-shot thread; never reschedule it as an alarm.
+        if (step_result.m_result == e_step_result::breakpoint &&
+            step_result.m_pc == k_hle_callback_return_pc &&
+            thread.m_hle_guest_callback)
+        {
+            m_allocations.erase(thread.m_stack_base);
+            m_threads.erase(id);
+            m_current_thread_id = 0u;
+            continue;
+        }
 
         if (step_result.m_result == e_step_result::breakpoint &&
             step_result.m_pc == k_alarm_return_pc &&

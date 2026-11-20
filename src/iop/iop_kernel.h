@@ -52,6 +52,7 @@ struct s_kernel_thread
     uint32_t m_gp = 0u;
     uint32_t m_wakeup_count = 0u;
     bool m_delete_on_exit = false;
+    bool m_hle_guest_callback = false;
     uint32_t m_wait_type = 0u;
     uint32_t m_stack_base = 0u;
     uint32_t m_stack_size = 0u;
@@ -198,6 +199,10 @@ public:
     // Deterministic HLE tasks in IOP guest-instruction time, not host time.
     // Scheduling a task does not imply a hardware IRQ or DMA completion.
     bool schedule_hle_event(uint64_t ticks, std::function<void()> callback);
+    // Execute the original R3000 guest function as a bounded one-shot
+    // callback with a real MIPS return trampoline, not a host fake.
+    bool start_guest_callback(uint32_t callback, uint32_t gp,
+                              uint32_t argument);
 
     void bind_syscall(t_kernel_syscall handler);
     // Explicit IOP cycle budget. The EE must eventually provide this from
