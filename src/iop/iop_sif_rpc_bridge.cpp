@@ -77,6 +77,7 @@ c_sif_rpc_bridge::c_sif_rpc_bridge(
     : m_loader(loader), m_kernel(kernel), m_sifcmd(sifcmd),
       m_ee_ram(ee_ram), m_dmac(dmac), m_sectors(sectors)
 {
+    m_sifcmd.bind_rpc_bridge(this);
 }
 
 bool c_sif_rpc_bridge::configure_reboot_image_version(
@@ -224,7 +225,8 @@ bool c_sif_rpc_bridge::prepare_command(
             packet[8] == k_cdvd_ready_alt_server;
         if (packet[8] != k_loadfile_server &&
             packet[8] != k_iop_heap_server &&
-            packet[8] != k_cdvd_init_server && !cdvd_server)
+            packet[8] != k_cdvd_init_server && !cdvd_server &&
+            !m_sifcmd.has_guest_rpc_server(packet[8]))
         {
             return refuse(e_rpc_rejection::unknown_server);
         }
@@ -618,6 +620,24 @@ bool c_sif_rpc_bridge::prepare_command(
             return refuse(e_rpc_rejection::invalid_arguments);
         }
     }
+    else if (m_sifcmd.has_guest_rpc_server(server_id))
+    {
+        if (!m_sifcmd.can_queue_guest_rpc(server_id, packet[9]) ||
+            !m_ee_ram.contains(result, packet[11]) ||
+            m_guest_pending.size() + m_replies.size() >= 64u ||
+            (packet[9] != 0u &&
+             !m_ee_ram.contains(payload_source, packet[9])))
+        {
+            return refuse(e_rpc_rejection::unavailable_backend);
+        }
+        candidate.m_guest_rpc = true;
+        candidate.m_guest_rpc_bytes.reserve(packet[9]);
+        for (uint32_t i = 0u; i < packet[9]; ++i)
+        {
+            candidate.m_guest_rpc_bytes.push_back(
+                m_ee_ram.read8(payload_source + i));
+        }
+    }
     else
     {
         return refuse(e_rpc_rejection::unknown_server);
@@ -665,6 +685,25 @@ void c_sif_rpc_bridge::commit_command(const s_request& request)
     response.m_words[6] = request.m_words[6];
     response.m_words[7] = request.m_words[7];
     response.m_words[8] = request.m_words[2];
+
+    if (request.m_guest_rpc &&
+        request.m_words[2] == k_call_cid)
+    {
+        const uint32_t token = m_next_guest_token++;
+        m_guest_pending.emplace(token, s_guest_pending{
+            response, request.m_result_destination, request.m_words[11]});
+        if (!m_sifcmd.enqueue_guest_rpc(
+                token, request.m_server_id, request.m_words[8],
+                request.m_guest_rpc_bytes))
+        {
+            m_guest_pending.erase(token);
+            return;
+        }
+        // Only the actual R3000 handler's finish trampoline may
+        // publish a reply or change the EE receive destination.
+        m_last_observation = std::move(observed);
+        return;
+    }
 
     if (request.m_words[2] == k_bind_cid)
     {
@@ -929,6 +968,51 @@ void c_sif_rpc_bridge::commit_command(const s_request& request)
     (void)pump();
 }
 
+bool c_sif_rpc_bridge::finish_guest_rpc(
+    uint32_t token, uint32_t guest_result
+)
+{
+    const auto waiting = m_guest_pending.find(token);
+    if (waiting == m_guest_pending.end() ||
+        m_replies.size() >= 64u)
+    {
+        return false;
+    }
+    const s_guest_pending& call = waiting->second;
+    if (call.m_recv_size != 0u && guest_result != 0u)
+    {
+        const uint32_t physical = guest_result & 0x1fffffffu;
+        const uint32_t region = guest_result & 0xe0000000u;
+        if ((region != 0u && region != 0x80000000u &&
+             region != 0xa0000000u) ||
+            physical == 0u || physical >= c_cpu::k_ram_size ||
+            call.m_recv_size > c_cpu::k_ram_size - physical ||
+            !m_ee_ram.contains(call.m_destination, call.m_recv_size))
+        {
+            return false;
+        }
+        // Validate and snapshot all guest bytes before touching EE RAM.
+        std::vector<uint8_t> data(call.m_recv_size);
+        for (uint32_t i = 0u; i < call.m_recv_size; ++i)
+        {
+            if (!m_kernel.cpu().read8(guest_result + i, &data[i]))
+            {
+                return false;
+            }
+        }
+        for (uint32_t i = 0u; i < data.size(); ++i)
+        {
+            m_ee_ram.write8(call.m_destination + i, data[i]);
+        }
+    }
+    // Zero return pointers still complete the guest RPC, with no
+    // unsolicited changes to the EE's receive buffer.
+    m_replies.push_back(call.m_reply);
+    m_guest_pending.erase(waiting);
+    (void)pump();
+    return true;
+}
+
 void c_sif_rpc_bridge::reset_for_reboot()
 {
     m_loadfile_version_known = false;
@@ -937,6 +1021,8 @@ void c_sif_rpc_bridge::reset_for_reboot()
     m_cdvd_streaming = false;
     m_cdvd_stream_position = 0u;
     m_replies.clear();
+    m_guest_pending.clear();
+    m_next_guest_token = 1u;
     m_load_requests = 0u;
     m_last_observation = {};
     m_reply_in_flight = false;
@@ -944,7 +1030,8 @@ void c_sif_rpc_bridge::reset_for_reboot()
 
 bool c_sif_rpc_bridge::can_queue_replies(size_t count) const
 {
-    return count <= 64u && m_replies.size() <= 64u - count;
+    return count <= 64u &&
+        m_replies.size() + m_guest_pending.size() <= 64u - count;
 }
 
 void c_sif_rpc_bridge::queue_init_sreg_reply()
