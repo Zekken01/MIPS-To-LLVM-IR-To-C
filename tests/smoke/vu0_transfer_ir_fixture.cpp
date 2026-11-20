@@ -51,6 +51,41 @@ uint32_t make_j(uint32_t target)
 
 bool build_words(const std::string& mode, std::vector<uint32_t>& words)
 {
+    // Synthetic EE load/store fixtures use the same LLVM backend and
+    // authentic exception entry helper as the VU0 alignment tests.
+    if (mode.rfind("ee_", 0u) == 0u)
+    {
+        std::string operation = mode.substr(3u);
+        const bool delay = operation.find("_delay") != std::string::npos;
+        if (delay)
+        {
+            operation = operation.substr(0u, operation.find("_delay"));
+        }
+        uint32_t op = 0u;
+        if (operation == "lq") op = 0x1eu;
+        else if (operation == "sq") op = 0x1fu;
+        else if (operation == "lh") op = 0x21u;
+        else if (operation == "lw") op = 0x23u;
+        else if (operation == "sh") op = 0x29u;
+        else if (operation == "sw") op = 0x2bu;
+        else if (operation == "lwc1") op = 0x31u;
+        else if (operation == "ld") op = 0x37u;
+        else if (operation == "swc1") op = 0x39u;
+        else if (operation == "sd") op = 0x3fu;
+        else return false;
+        const uint32_t transfer = (op << 26u) | (9u << 21u) |
+                                  (8u << 16u);
+        if (delay)
+        {
+            words = {make_beq(0u, 0u, 1), transfer, make_jr(31u), 0u};
+        }
+        else
+        {
+            words = {transfer};
+        }
+        return true;
+    }
+
     // The same real LLVM builder emits quadword VU0 memory transfers.
     // Use them to check alignment faults and immutable VF00 end-to-end.
     if (mode.rfind("lqc2_vf", 0u) == 0u ||
