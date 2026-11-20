@@ -142,6 +142,8 @@ public:
     uint64_t cycles() const;
     uint32_t current_thread_id() const;
     bool in_interrupt_context() const;
+    bool interrupts_suspended() const;
+    void set_interrupts_suspended(bool suspended);
 
     // Actual IOP library exports supply concrete executable targets.
     bool lookup_library(
@@ -263,6 +265,8 @@ private:
     t_kernel_irq_lookup m_irq_lookup;
     t_kernel_irq_complete m_irq_complete;
     uint32_t m_interrupt_thread_id = 0u;
+    uint32_t m_critical_thread_id = 0u;
+    bool m_interrupts_suspended = false;
     uint64_t m_cycles = 0u;
     bool m_rom0_boot_active = false;
     uint32_t m_next_module_id = 1u;

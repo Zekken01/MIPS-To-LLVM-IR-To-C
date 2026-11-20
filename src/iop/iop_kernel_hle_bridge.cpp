@@ -1110,6 +1110,7 @@ bool c_kernel_hle_bridge::handle_intrman(uint32_t ordinal)
             return false;
         }
         m_cpu_interrupts_suspended = disabled;
+        m_kernel.set_interrupts_suspended(disabled);
         cpu.m_gpr[2] = 0u;
         return true;
     }
@@ -1122,6 +1123,7 @@ bool c_kernel_hle_bridge::handle_intrman(uint32_t ordinal)
             return false;
         }
         m_cpu_interrupts_suspended = true;
+        m_kernel.set_interrupts_suspended(true);
         if (!m_kernel.hardware().write(c_hw::k_i_ctrl, 4u, 0u))
         {
             return false;
@@ -1133,6 +1135,7 @@ bool c_kernel_hle_bridge::handle_intrman(uint32_t ordinal)
     if (ordinal == 18u)
     {
         m_cpu_interrupts_suspended = line == 0u;
+        m_kernel.set_interrupts_suspended(m_cpu_interrupts_suspended);
         if (!m_kernel.hardware().write(
                 c_hw::k_i_ctrl, 4u,
                 m_cpu_interrupts_suspended ? 0u : 1u))

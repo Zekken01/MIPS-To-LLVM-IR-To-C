@@ -83,6 +83,8 @@ void c_kernel::reset()
     m_irq_lookup = {};
     m_irq_complete = {};
     m_interrupt_thread_id = 0u;
+    m_critical_thread_id = 0u;
+    m_interrupts_suspended = false;
     m_cycles = 0u;
     m_next_module_id = 1u;
     m_next_thread_id = 1u;
@@ -166,6 +168,18 @@ bool c_kernel::in_interrupt_context() const
 {
     return m_interrupt_thread_id != 0u &&
            m_current_thread_id == m_interrupt_thread_id;
+}
+
+bool c_kernel::interrupts_suspended() const
+{
+    return m_interrupts_suspended;
+}
+
+void c_kernel::set_interrupts_suspended(bool suspended)
+{
+    m_interrupts_suspended = suspended;
+    m_critical_thread_id =
+        suspended ? m_current_thread_id : 0u;
 }
 
 bool c_kernel::lookup_library(
@@ -1082,6 +1096,10 @@ bool c_kernel::stop_thread(uint32_t id)
         return false;
     }
     found->second.m_status = e_thread_status::dormant;
+    if (id == m_critical_thread_id)
+    {
+        m_critical_thread_id = 0u;
+    }
     found->second.m_wake_cycle = 0u;
     found->second.m_wait_type = 0u;
     found->second.m_wakeup_count = 0u;
@@ -1114,6 +1132,10 @@ bool c_kernel::exit_current_thread(bool delete_on_exit)
         return false;
     }
     found->second.m_status = e_thread_status::dormant;
+    if (m_current_thread_id == m_critical_thread_id)
+    {
+        m_critical_thread_id = 0u;
+    }
     found->second.m_wake_cycle = 0u;
     found->second.m_wait_type = 0u;
     found->second.m_delete_on_exit = delete_on_exit;
@@ -1280,6 +1302,24 @@ bool c_kernel::start_guest_interrupt(
 
 uint32_t c_kernel::next_ready() const
 {
+    if (m_interrupts_suspended && m_critical_thread_id != 0u)
+    {
+        const auto held = m_threads.find(m_critical_thread_id);
+        if (held != m_threads.end() &&
+            held->second.m_status == e_thread_status::ready)
+        {
+            return m_critical_thread_id;
+        }
+    }
+    if (m_interrupt_thread_id != 0u)
+    {
+        const auto handler = m_threads.find(m_interrupt_thread_id);
+        if (handler != m_threads.end() &&
+            handler->second.m_status == e_thread_status::ready)
+        {
+            return m_interrupt_thread_id;
+        }
+    }
     uint32_t priority = std::numeric_limits<uint32_t>::max();
     uint32_t candidate = 0u;
     uint32_t wrapped = 0u;
@@ -1315,6 +1355,19 @@ uint32_t c_kernel::next_ready() const
 
 void c_kernel::wake_due()
 {
+    // A runnable guest in CpuSuspendIntr retains the CPU. Defer
+    // software events and context switches, but NOT hardware clocks
+    // or DMA transfers, until the guest resumes interrupts.
+    if (m_interrupts_suspended && m_critical_thread_id != 0u)
+    {
+        const auto held = m_threads.find(m_critical_thread_id);
+        if (held != m_threads.end() &&
+            (held->second.m_status == e_thread_status::ready ||
+             held->second.m_status == e_thread_status::running))
+        {
+            return;
+        }
+    }
     // Events may schedule additional future events while executing.
     while (!m_hle_events.empty() &&
            m_hle_events.begin()->first <= m_cycles)
@@ -1411,7 +1464,8 @@ s_kernel_run_result c_kernel::run(
     while (remaining != 0u)
     {
         wake_due();
-        if (m_irq_lookup && m_interrupt_thread_id == 0u)
+        if (m_irq_lookup && !m_interrupts_suspended &&
+            m_interrupt_thread_id == 0u)
         {
             // Resolve the real device source and acknowledge before
             // executing a registered guest INTRMAN callback.
@@ -1496,6 +1550,16 @@ s_kernel_run_result c_kernel::run(
             if (next_wake ==
                 std::numeric_limits<uint64_t>::max())
             {
+                uint64_t to_advance = remaining;
+                while (to_advance != 0u)
+                {
+                    const uint32_t step = static_cast<uint32_t>(
+                        std::min<uint64_t>(
+                            to_advance,
+                            std::numeric_limits<uint32_t>::max()));
+                    m_hardware.advance_cycles(step);
+                    to_advance -= step;
+                }
                 m_cycles += remaining;
                 result.m_stop = e_kernel_stop::idle;
                 break;
