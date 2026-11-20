@@ -53,6 +53,10 @@ struct s_kernel_thread
     uint32_t m_wakeup_count = 0u;
     bool m_delete_on_exit = false;
     bool m_hle_guest_callback = false;
+    // Module _start has a guest return trampoline; returning must
+    // retire its init thread instead of executing zero-filled RAM.
+    bool m_module_entry = false;
+    uint32_t m_module_id = 0u;
     uint32_t m_wait_type = 0u;
     uint32_t m_stack_base = 0u;
     uint32_t m_stack_size = 0u;
@@ -102,6 +106,8 @@ class c_kernel
 {
 public:
     static constexpr uint32_t k_user_base = 0x00020000u;
+    // ps2-web-recomp/SDBZ runtime/src/iop/kernel.cpp: start_module().
+    static constexpr uint32_t k_default_module_priority = 8u;
 
     c_kernel();
     void reset();
