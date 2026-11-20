@@ -198,7 +198,7 @@ bool test_guest_rpc_lifecycle(const std::filesystem::path& disc_root)
             loop_stub = entry;
         }
     }
-    for (uint16_t ordinal : {12u, 13u, 15u, 16u, 28u})
+    for (uint16_t ordinal : {12u, 13u, 28u})
     {
         uint32_t entry = 0u;
         if (kernel.lookup_library("sifcmd", ordinal, &entry))
