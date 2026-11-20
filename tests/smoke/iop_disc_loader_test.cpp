@@ -195,6 +195,71 @@ int main()
         return fail("unstarted provider resolution failed");
     }
 
+
+    // A real LOADFILE method-0 request supplies NUL-delimited IRX
+    // startup arguments. The IOP _start ABI requires argc and argv
+    // pointers into the thread's own guest stack, including argv[0]
+    // as the module pathname. This must not point into host memory.
+    if (!write_binary(disc / "ARGS.IRX", make_irx(false)))
+    {
+        return fail("cannot author parameterized IOP module");
+    }
+    const std::string path = "cdrom0:\\ARGS.IRX;1";
+    const std::vector<std::string> args = {"-port", "mc0:"};
+    const iop::s_disc_load_result parameterized =
+        loader.load_requested(path, true, 1u, args);
+    const iop::s_kernel_thread* params_thread =
+        kernel.thread(parameterized.m_thread_id);
+    if (parameterized.m_result != iop::e_disc_load_result::success ||
+        parameterized.m_module_id != 3u ||
+        params_thread == nullptr ||
+        params_thread->m_cpu.m_gpr[4] != 3u ||
+        params_thread->m_cpu.m_gpr[5] == 0u ||
+        params_thread->m_cpu.m_gpr[29] <
+            params_thread->m_stack_base)
+    {
+        return fail("IOP _start did not receive guest argc/argv");
+    }
+    const uint32_t argv = params_thread->m_cpu.m_gpr[5];
+    uint32_t terminator = 0xffffffffu;
+    if (argv < params_thread->m_stack_base ||
+        argv >= params_thread->m_stack_base +
+                params_thread->m_stack_size ||
+        params_thread->m_cpu.m_gpr[29] >= argv ||
+        !kernel.cpu().read32(argv + 12u, &terminator) ||
+        terminator != 0u)
+    {
+        return fail("IOP argv pointers escaped the module stack");
+    }
+    const std::vector<std::string> expected = {
+        path, "-port", "mc0:"
+    };
+    for (uint32_t index = 0u; index < expected.size(); ++index)
+    {
+        uint32_t pointer = 0u;
+        if (!kernel.cpu().read32(argv + index * 4u, &pointer) ||
+            pointer < params_thread->m_stack_base ||
+            pointer + expected[index].size() >=
+                params_thread->m_stack_base +
+                    params_thread->m_stack_size)
+        {
+            return fail("IOP argv element pointer invalid");
+        }
+        for (uint32_t byte = 0u;
+             byte <= expected[index].size(); ++byte)
+        {
+            uint8_t guest = 0xffu;
+            const uint8_t match =
+                byte == expected[index].size() ? 0u :
+                    static_cast<uint8_t>(expected[index][byte]);
+            if (!kernel.cpu().read8(pointer + byte, &guest) ||
+                guest != match)
+            {
+                return fail("IOP argv bytes changed during startup");
+            }
+        }
+    }
+
     if (!write_binary(disc / "padman.irx;1", make_irx(false)) ||
         !invalid("cdrom0:/PADMAN.IRX;1",
                  iop::e_disc_load_result::ambiguous_file))
