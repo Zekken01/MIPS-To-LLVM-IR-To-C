@@ -264,16 +264,58 @@ bool c_sifman_bridge::handle_syscall(
                 ee::c_ee_dmac::mmio_read(
                     m_dmac, ee::c_ee_dmac::k_sif0_base,
                     4u, &channel);
+
+            // The receiver may be unarmed before we normally inspect
+            // the descriptor list. Read at most the first rejected
+            // descriptor for diagnostic purposes without changing
+            // acceptance, DMA clocks or guest memory.
+            const uint32_t list_region = list & 0xe0000000u;
+            const uint32_t list_physical = list & 0x1fffffffu;
+            bool descriptor_readable = false;
+            if (count != 0u && descriptor_index < count &&
+                (list & 3u) == 0u &&
+                (list_region == 0u ||
+                 list_region == 0x80000000u ||
+                 list_region == 0xa0000000u) &&
+                list_physical <= c_cpu::k_ram_size - 16u &&
+                descriptor_index <=
+                    (c_cpu::k_ram_size - 16u -
+                     list_physical) / 16u)
+            {
+                const uint32_t address =
+                    list_physical + descriptor_index * 16u;
+                uint32_t traced_source = 0u;
+                uint32_t traced_destination = 0u;
+                uint32_t traced_size = 0u;
+                uint32_t traced_attributes = 0u;
+                descriptor_readable =
+                    kernel.cpu().read32(address, &traced_source) &&
+                    kernel.cpu().read32(address + 4u,
+                                        &traced_destination) &&
+                    kernel.cpu().read32(address + 8u,
+                                        &traced_size) &&
+                    kernel.cpu().read32(address + 12u,
+                                        &traced_attributes);
+                if (descriptor_readable)
+                {
+                    source = traced_source;
+                    destination = traced_destination;
+                    size = traced_size;
+                    attributes = traced_attributes;
+                }
+            }
+
             std::fprintf(stderr,
                 "IOP HLE SifSetDma rejected: reason=%s "
                 "thread=%u pc=0x%08x ra=0x%08x "
-                "list=0x%08x count=%u index=%u "
+                "list=0x%08x count=%u index=%u desc_readable=%u "
                 "src=0x%08x dst=0x%08x size=%u attr=0x%08x "
                 "ee5_chcr=0x%08x ee5_readable=%u "
                 "iop_cycles=%llu\n",
                 reason, kernel.current_thread_id(),
                 state.m_pc, state.m_gpr[31],
                 list, count, descriptor_index,
+                descriptor_readable ? 1u : 0u,
                 source, destination, size, attributes,
                 static_cast<uint32_t>(channel.m_lo),
                 channel_readable ? 1u : 0u,
