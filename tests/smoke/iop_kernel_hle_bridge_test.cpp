@@ -2090,6 +2090,36 @@ int main()
         return fail("StartThreadArgs guest was not actually scheduled");
     }
 
+    // PADMAN's original worker can call StartThread(0) after a
+    // failed CreateThread. This is an invalid thread ID, not an
+    // unsupported import and not permission to start the current
+    // guest thread. A negative kernel error must be returned normally.
+    for (uint16_t ordinal : {6u, 7u})
+    {
+        for (uint32_t target : {0u, 0xffffffffu})
+        {
+            if (!call_guest(kernel, "thbase", ordinal,
+                            {target, 0u, 0u, 0u}, &result) ||
+                result != static_cast<uint32_t>(-407))
+            {
+                return fail("invalid StartThread guest error ABI");
+            }
+        }
+    }
+    // A valid descriptor with impossible stack size must fail with
+    // KE_NO_MEMORY rather than creating a fake thread or faulting
+    // the caller's syscall.
+    constexpr uint32_t k_oversized_thread = 0x00003f80u;
+    if (!kernel.cpu().write32(k_oversized_thread + 8u, 0x3e00u) ||
+        !kernel.cpu().write32(k_oversized_thread + 12u, 0xffffffffu) ||
+        !kernel.cpu().write32(k_oversized_thread + 16u, 32u) ||
+        !call_guest(kernel, "thbase", 4u,
+                    {k_oversized_thread, 0u, 0u, 0u}, &result) ||
+        result != static_cast<uint32_t>(-400))
+    {
+        return fail("oversized CreateThread did not report no memory");
+    }
+
     // ExitDeleteThread must retire the real guest thread/stack after
     // its syscall returns; an implementation that merely reports zero
     // would instead execute the following BREAK.

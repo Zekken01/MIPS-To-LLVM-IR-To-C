@@ -430,6 +430,50 @@ uint32_t c_kernel::allocate(uint32_t size)
     return base;
 }
 
+uint32_t c_kernel::allocate_thread_stack(uint32_t size)
+{
+    // ps2-web-recomp/SDBZ kernel::create_thread uses alloc(size, 1):
+    // highest suitable gap, rounded to a 256-byte stack boundary.
+    // Use 64-bit arithmetic so huge invalid guest stack requests cannot
+    // wrap around the 2 MiB IOP physical RAM limit.
+    const uint64_t required =
+        (static_cast<uint64_t>(size) + 0xffu) & ~uint64_t(0xffu);
+    if (required == 0u ||
+        required > c_cpu::k_ram_size - k_user_base)
+    {
+        return 0u;
+    }
+
+    uint64_t upper = c_cpu::k_ram_size;
+    uint64_t chosen = 0u;
+    for (auto it = m_allocations.rbegin();
+         it != m_allocations.rend(); ++it)
+    {
+        const uint64_t occupied_end =
+            static_cast<uint64_t>(it->first) + it->second;
+        if (upper >= required &&
+            upper - required >= occupied_end &&
+            upper - required >= k_user_base)
+        {
+            chosen = upper - required;
+            break;
+        }
+        upper = it->first;
+    }
+
+    if (chosen == 0u && upper >= required &&
+        upper - required >= k_user_base)
+    {
+        chosen = upper - required;
+    }
+    if (chosen != 0u)
+    {
+        m_allocations.emplace(static_cast<uint32_t>(chosen),
+                              static_cast<uint32_t>(required));
+    }
+    return static_cast<uint32_t>(chosen);
+}
+
 uint32_t c_kernel::allocate_heap(uint32_t size)
 {
     if (m_rom0_boot_active)
@@ -716,7 +760,7 @@ uint32_t c_kernel::create_thread(
         return 0u;
     }
 
-    const uint32_t stack_base = allocate(stack_size);
+    const uint32_t stack_base = allocate_thread_stack(stack_size);
     if (stack_base == 0u)
     {
         return 0u;

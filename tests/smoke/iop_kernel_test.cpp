@@ -100,6 +100,46 @@ bool put_program(
 
 int main()
 {
+    // A real IOP thread stack is allocated from upper RAM downward,
+    // in 256-byte multiples. Guest modules and IOPHEAP use lower RAM.
+    // Releasing a dormant thread permits high-gap reuse without
+    // overwriting the low heap or any still-owned stack.
+    iop::c_kernel stack_kernel;
+    const uint32_t first_stack =
+        stack_kernel.create_thread(0x1800u, 0u, 8u, 0x410u);
+    const uint32_t second_stack =
+        stack_kernel.create_thread(0x1810u, 0u, 8u, 0x400u);
+    const iop::s_kernel_thread* first_thread =
+        stack_kernel.thread(first_stack);
+    const iop::s_kernel_thread* second_thread =
+        stack_kernel.thread(second_stack);
+    if (first_stack == 0u || second_stack == 0u ||
+        first_thread == nullptr || second_thread == nullptr ||
+        first_thread->m_stack_size != 0x500u ||
+        first_thread->m_stack_base !=
+            iop::c_cpu::k_ram_size - 0x500u ||
+        second_thread->m_stack_base !=
+            iop::c_cpu::k_ram_size - 0x900u ||
+        stack_kernel.allocate_heap(0x300u) !=
+            iop::c_kernel::k_user_base ||
+        !stack_kernel.delete_thread(first_stack))
+    {
+        return fail("IOP upper-RAM thread stack/low heap parity");
+    }
+    const uint32_t reused_stack =
+        stack_kernel.create_thread(0x1820u, 0u, 8u, 0x400u);
+    const iop::s_kernel_thread* reused_thread =
+        stack_kernel.thread(reused_stack);
+    if (reused_stack == 0u || reused_thread == nullptr ||
+        reused_thread->m_stack_base !=
+            iop::c_cpu::k_ram_size - 0x400u ||
+        stack_kernel.thread(second_stack)->m_stack_base !=
+            iop::c_cpu::k_ram_size - 0x900u ||
+        stack_kernel.create_thread(0x1830u, 0u, 8u, 0xffffffffu) != 0u)
+    {
+        return fail("IOP high allocation gap reuse/overflow rejection");
+    }
+
     iop::c_kernel kernel;
     auto module = make_module(true);
 

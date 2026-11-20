@@ -252,6 +252,9 @@ public:
 
 private:
     uint32_t allocate(uint32_t size);
+    // The IOP reference uses upper-RAM, 256-byte-aligned stacks;
+    // module images and heap allocations retain low-RAM first-fit.
+    uint32_t allocate_thread_stack(uint32_t size);
     bool estimate_module_size(
         const std::vector<uint8_t>& bytes, uint32_t* size
     ) const;

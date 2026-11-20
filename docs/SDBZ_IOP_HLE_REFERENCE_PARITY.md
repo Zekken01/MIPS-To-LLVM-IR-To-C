@@ -1877,3 +1877,69 @@ assert ordinal 33 remains absent from the SIFMAN import table. The
 actual negative test remains meaningful: unresolved guest IRX imports
 must fail linkage rather than execute or alter EE readiness. No HLE,
 DMA, guest execution, or callback behavior is changed by the fix.
+
+
+
+## 2026-11-20 — PADMAN RPC initialization: StartThread(0) and stack allocation parity
+
+User-provided matched `quick-probe(3).log` and `quick-probe(3).json`
+show **five distinct auto-expansion replays, 0..4**. The JSON is the
+stopped final replay 4: 3,641,108 EE dispatches, 80,330,773 EE guest
+instruction attempts, 15 GS fields and a final EE exception vector
+`0x80000180` (EPC `0x00174ce4`, SYSCALL). It is **not** an
+unsupported EE opcode. The artifacts do not attest their local
+checkout SHA. Remote PR HEAD at analysis start was
+`15470dde571c9c769938078dbbc0ecfd70e4b844`.
+
+The earlier genuine 96 KiB SIFMAN DMA now logs
+`service=0x494f0007, thread=24, bytes=98304, dma_id=1`
+at cycle 6,458,047. `PADMAN.IRX` loads with `load_status=0`,
+`link_status=0`, `unresolved=(none)#0` as module 7/thread 52.
+Its original module entry returns `0` at cycle **9,930,180**.
+Original PADMAN RPC server `0x80000100` method 1 returns tokens
+11, 12 and 13, with `guest_result=0x001eed80` each. Token 14
+enters the original IOP guest handler but never returns in the
+last replay.
+
+The new first **guest** failure comes from the original PADMAN
+worker: `WaitSema HLE guest IOP stopped: id=8 reason=2
+thread=57 pc=0x000142e8 opcode=0x0000000c`.
+The recorded context has `v0=0x494f1506`,
+`a0=0`, `a1=0`, `ra=0x001e7978`: an imported
+**`thbase#6 StartThread(0,0)`**, not a missing library.
+Thread 57 is faulted while another newly created PADMAN thread
+63 is still ready. Several newly allocated guest stacks sit near
+the 2 MiB IOP RAM ceiling. This suggests a preceding failed
+CreateThread, but the uploaded logs do **not** capture its
+arguments or exact failure reason, so do not assert it as proven.
+
+The reference `ps2-web-recomp/SDBZ/runtime/src/iop/kernel.cpp`
+uses `alloc(stack_size,1)` for original R3000 thread stacks:
+the **highest** suitable physical RAM gap, with **256-byte** size
+rounding. Our native runtime had incorrectly allocated stacks with
+low-RAM `allocate()`, the same first-fit path used for IRX
+images and IOPHEAP; that is an independently verified allocator
+parity discrepancy. Correct only thread stack allocation to a
+high-gap, 256-byte-aligned bounded operation, keeping module/heap
+allocations low and all owner/free bookkeeping intact. Invalid
+overlarge guest stack sizes still fail closed, without wrapping.
+
+The reference `runtime/src/iop/libs.cpp` reports
+`KE_UNKNOWN_THID = -407` for an unrecognized `StartThread`
+target, rather than faulting the interpreter. The native bridge
+now returns that negative guest error for nonexistent/zero IDs,
+and does not start any thread. Already active targets cannot be
+restarted and produce a negative invalid-state result. A valid
+CreateThread descriptor that cannot allocate a real stack returns
+`KE_NO_MEMORY = -400`, preserving guest control flow while
+**not** fabricating an ID. Bounded diagnostics record the exact
+guest entry, requested stack, priority, available heap sizes and
+IOP cycles to validate the next retail failure if one remains.
+
+Regression tests cover upper-RAM stack allocation, 256-byte size
+rounding, low-heap independence, free-gap reuse, oversized input
+failure, correct negative StartThread(0)/unknown-ID results via
+original R3000 guest import calls, and finite no-memory
+CreateThread returns. No EE DMA, SIF RPC, semaphore, IRQ or
+callback success is fabricated. A new retail run is required to
+establish whether the PADMAN token-14 guest handler completes.

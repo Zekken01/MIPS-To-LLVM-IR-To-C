@@ -306,6 +306,7 @@ void c_kernel_hle_bridge::reset_for_reboot()
     m_ioman_files.clear();
     m_unknown_semaphore_wait_ids.clear();
     m_semaphore_trace_events = 0u;
+    m_thread_failure_trace_events = 0u;
     m_next_object = 1u;
     m_cpu_interrupts_suspended = false;
     m_installed = false;
@@ -1332,9 +1333,39 @@ bool c_kernel_hle_bridge::handle_thbase(uint32_t ordinal)
         {
             return false;
         }
-        cpu.m_gpr[2] = m_kernel.create_thread(
-            entry, cpu.m_gpr[28], priority, stack);
-        return cpu.m_gpr[2] != 0u;
+        // A valid CreateThread request can fail because its stack no
+        // longer fits physical IOP RAM. Return a genuine negative
+        // kernel error rather than faulting the caller's guest syscall.
+        // Never publish a synthetic thread ID or an unusable stack.
+        const uint32_t created =
+            m_kernel.create_thread(entry, cpu.m_gpr[28], priority, stack);
+        if (created == 0u)
+        {
+            const uint32_t physical = entry & 0x1fffffffu;
+            const bool parameters_valid =
+                entry != 0u && (entry & 3u) == 0u &&
+                physical < c_cpu::k_ram_size && stack >= 64u;
+            cpu.m_gpr[2] = static_cast<uint32_t>(
+                parameters_valid ? -400 : -201);
+            if (m_thread_failure_trace_events < 12u)
+            {
+                std::fprintf(stderr,
+                    "IOP HLE CreateThread rejected: thread=%u "
+                    "entry=0x%08x stack=%u priority=%u "
+                    "reason=%s max_free=%u total_free=%u "
+                    "cycles=%llu\n",
+                    m_kernel.current_thread_id(), entry, stack,
+                    priority, parameters_valid
+                        ? "stack_allocation_failed"
+                        : "invalid_thread_parameters",
+                    m_kernel.heap_max_free(), m_kernel.heap_total_free(),
+                    static_cast<unsigned long long>(m_kernel.cycles()));
+                ++m_thread_failure_trace_events;
+            }
+            return true;
+        }
+        cpu.m_gpr[2] = created;
+        return true;
     }
     case 5u:
         if (!m_kernel.delete_thread(cpu.m_gpr[4]))
@@ -1344,21 +1375,47 @@ bool c_kernel_hle_bridge::handle_thbase(uint32_t ordinal)
         cpu.m_gpr[2] = 0u;
         return true;
     case 6u:
-        if (!m_kernel.start_thread_with_argument(
-                cpu.m_gpr[4], cpu.m_gpr[5]))
-        {
-            return false;
-        }
-        cpu.m_gpr[2] = 0u;
-        return true;
     case 7u:
-        if (!m_kernel.start_thread_with_arguments(
-                cpu.m_gpr[4], cpu.m_gpr[5], cpu.m_gpr[6]))
+    {
+        const uint32_t id = cpu.m_gpr[4];
+        const s_kernel_thread* thread = m_kernel.thread(id);
+        if (id == 0u || thread == nullptr ||
+            thread->m_status != e_thread_status::dormant)
         {
+            // ps2-web-recomp/SDBZ thbase StartThread returns
+            // KE_UNKNOWN_THID (-407) for an unknown ID, rather than
+            // raising an unhandled IOP syscall. Existing but active
+            // threads are not eligible to be started a second time.
+            cpu.m_gpr[2] = static_cast<uint32_t>(
+                id == 0u || thread == nullptr ? -407 : -414);
+            if (m_thread_failure_trace_events < 12u)
+            {
+                std::fprintf(stderr,
+                    "IOP HLE StartThread rejected: ordinal=%u "
+                    "caller=%u target=%u reason=%s result=%d "
+                    "cycles=%llu\n",
+                    ordinal, m_kernel.current_thread_id(), id,
+                    id == 0u || thread == nullptr
+                        ? "unknown_thread" : "thread_not_dormant",
+                    static_cast<int32_t>(cpu.m_gpr[2]),
+                    static_cast<unsigned long long>(m_kernel.cycles()));
+                ++m_thread_failure_trace_events;
+            }
+            return true;
+        }
+        const bool started = ordinal == 6u
+            ? m_kernel.start_thread_with_argument(id, cpu.m_gpr[5])
+            : m_kernel.start_thread_with_arguments(
+                id, cpu.m_gpr[5], cpu.m_gpr[6]);
+        if (!started)
+        {
+            // Do not grant a successful start without a scheduled
+            // original R3000 thread.
             return false;
         }
         cpu.m_gpr[2] = 0u;
         return true;
+    }
     case 8u:
     case 9u:
         if (!m_kernel.exit_current_thread(ordinal == 9u))
