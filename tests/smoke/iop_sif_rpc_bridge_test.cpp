@@ -692,14 +692,31 @@ bool test_iop_to_ee_rpc(const std::filesystem::path& disc_root)
         return fail_stage(__LINE__);
     }
     packet(memory, packet_source, call_reply);
-    if (!sif1.set_dma(list, 2u, &dma_id) ||
-        !kernel.cpu().read32(iop_result, &status) ||
-        status != 42u ||
-        kernel.thread(call_thread)->m_status !=
-            iop::e_thread_status::ready ||
-        kernel.run(64u).m_stop != iop::e_kernel_stop::breakpoint ||
-        !kernel.cpu().read32(client, &status) || status != 0u)
+    const bool completed_dma = sif1.set_dma(list, 2u, &dma_id);
+    uint32_t copied_result = 0u;
+    uint32_t finished_status = 0xffffffffu;
+    const bool copied = kernel.cpu().read32(
+        iop_result, &copied_result);
+    const iop::e_thread_status prior_thread_status =
+        kernel.thread(call_thread)->m_status;
+    const iop::s_kernel_run_result resumed =
+        kernel.run(64u);
+    const bool read_status = kernel.cpu().read32(
+        client, &finished_status);
+    if (!completed_dma || !copied || copied_result != 42u ||
+        prior_thread_status != iop::e_thread_status::ready ||
+        resumed.m_stop != iop::e_kernel_stop::breakpoint ||
+        !read_status || finished_status != 0u)
     {
+        std::fprintf(stderr,
+            "reverse RPC completion: dma=%u copied=%u value=%u "
+            "before=%u stop=%u pc=%08x status_read=%u status=%08x\\n",
+            completed_dma ? 1u : 0u, copied ? 1u : 0u,
+            copied_result,
+            static_cast<uint32_t>(prior_thread_status),
+            static_cast<uint32_t>(resumed.m_stop),
+            resumed.m_guest_pc,
+            read_status ? 1u : 0u, finished_status);
         return fail_stage(__LINE__);
     }
     // A previously completed Rend may not be replayed as a second
