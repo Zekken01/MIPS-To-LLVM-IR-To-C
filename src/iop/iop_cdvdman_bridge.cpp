@@ -4,6 +4,7 @@
 #include <array>
 #include <cstring>
 #include <ctime>
+#include <utility>
 #include <vector>
 
 namespace iop
@@ -46,7 +47,7 @@ uint8_t decimal_to_bcd(uint32_t value)
 } // namespace
 
 c_cdvdman_bridge::c_cdvdman_bridge(
-    c_kernel& kernel, const c_folder_sector_source& source
+    c_kernel& kernel, c_folder_sector_source& source
 ) : m_kernel(kernel), m_source(source)
 {
 }
@@ -60,8 +61,8 @@ bool c_cdvdman_bridge::install()
 
     // Keep the original #10 address stable. Other CDVDMAN services have
     // distinct executable stubs in the reserved IOP kernel area.
-    constexpr std::array<uint16_t, 9u> ordinals = {
-        4u, 5u, 8u, 10u, 11u, 12u, 13u, 24u, 28u
+    constexpr std::array<uint16_t, 10u> ordinals = {
+        4u, 5u, 6u, 8u, 10u, 11u, 12u, 13u, 24u, 28u
     };
     for (uint16_t ordinal : ordinals)
     {
@@ -74,6 +75,10 @@ bool c_cdvdman_bridge::install()
             return false;
         }
     }
+    m_read_pending = false;
+    m_read_destination = 0u;
+    m_read_data.clear();
+    m_sync_waiters.clear();
     m_initialized = false;
     m_last_error = 0u;
     return true;
@@ -192,6 +197,37 @@ bool c_cdvdman_bridge::handle_read_clock(uint32_t destination)
     return true;
 }
 
+void c_cdvdman_bridge::complete_read()
+{
+    if (!m_read_pending)
+    {
+        return;
+    }
+    // Copy only sectors already retrieved from the mounted disc.
+    // The guest destination was validated before queueing the command.
+    if (!m_kernel.cpu().dma_write(
+            m_read_destination, m_read_data.data(),
+            static_cast<uint32_t>(m_read_data.size())))
+    {
+        m_last_error = 1u;
+    }
+    m_read_data.clear();
+    m_read_destination = 0u;
+    m_read_pending = false;
+
+    for (const uint32_t id : m_sync_waiters)
+    {
+        const s_kernel_thread* thread = m_kernel.thread(id);
+        if (thread != nullptr &&
+            thread->m_status == e_thread_status::blocked &&
+            thread->m_wait_type == 18u)
+        {
+            (void)m_kernel.wake_thread_with_result(id, 0u);
+        }
+    }
+    m_sync_waiters.clear();
+}
+
 bool c_cdvdman_bridge::handle_syscall(
     c_kernel& kernel, uint32_t service
 )
@@ -225,15 +261,72 @@ bool c_cdvdman_bridge::handle_syscall(
             m_source.sector_count() != 0u ? 1u : 0u;
         return true;
 
+    case k_service_base + 6u: // sceCdRead
+    {
+        const uint32_t lba = state.m_gpr[4];
+        const uint32_t sectors = state.m_gpr[5];
+        const uint32_t destination = state.m_gpr[6];
+        const uint32_t mode = state.m_gpr[7];
+        uint32_t physical = 0u;
+        // Only 2048-byte sectors written to regular IOP RAM. Reject
+        // unsupported sizes, alias regions and invalid disc extents
+        // without touching the guest destination.
+        if (m_read_pending || sectors == 0u ||
+            sectors > c_cpu::k_ram_size / 2048u ||
+            static_cast<uint64_t>(lba) + sectors >
+                m_source.sector_count() ||
+            !ram_pointer(destination, sectors * 2048u, &physical) ||
+            (mode != 0u && !ram_pointer(mode, 4u, &physical)))
+        {
+            state.m_gpr[2] = 0u;
+            return true;
+        }
+        std::vector<uint8_t> data;
+        if (!m_source.read_sectors(lba, sectors, data) ||
+            data.size() != static_cast<size_t>(sectors) * 2048u)
+        {
+            m_last_error = 1u;
+            state.m_gpr[2] = 0u;
+            return true;
+        }
+        // The primary reference models 400us + 250us per sector.
+        // Here IOP cycles count guest instructions, not calibrated
+        // hardware time; use a bounded deterministic compatibility
+        // delay instead of inventing a CDVD IRQ or host-time callback.
+        const uint64_t delay = 32u + static_cast<uint64_t>(sectors) * 8u;
+        if (!m_kernel.schedule_hle_event(delay,
+                [this]() { complete_read(); }))
+        {
+            state.m_gpr[2] = 0u;
+            return true;
+        }
+        m_read_data = std::move(data);
+        m_read_destination = destination;
+        m_read_pending = true;
+        m_last_error = 0u;
+        state.m_gpr[2] = 1u;
+        return true;
+    }
+
     case k_service_base + 8u: // sceCdGetError
         state.m_gpr[2] = m_last_error;
         return true;
 
     case k_service_base + 11u: // sceCdSync
-        // No asynchronous CDVDMAN command exists in this extracted-
-        // disc HLE. Sync therefore observes the idle command queue:
-        // polling (modes 1/17) and ordinary waiting both return zero.
-        // This does not complete any physical CDVD/N-command request.
+        if (state.m_gpr[4] == 1u || state.m_gpr[4] == 17u)
+        {
+            state.m_gpr[2] = m_read_pending ? 1u : 0u;
+            return true;
+        }
+        if (m_read_pending)
+        {
+            const uint32_t id = m_kernel.current_thread_id();
+            if (id == 0u || !m_kernel.block_current(18u))
+            {
+                return false;
+            }
+            m_sync_waiters.push_back(id);
+        }
         state.m_gpr[2] = 0u;
         return true;
 
@@ -261,8 +354,9 @@ bool c_cdvdman_bridge::handle_syscall(
         return true;
 
     case k_service_base + 28u: // sceCdStatus
-        state.m_gpr[2] = m_source.valid() &&
-            m_source.sector_count() != 0u ? 0x0au : 0u;
+        state.m_gpr[2] = m_read_pending ? 0x06u :
+            (m_source.valid() && m_source.sector_count() != 0u
+                ? 0x0au : 0u);
         return true;
 
     case k_search_file_syscall:
