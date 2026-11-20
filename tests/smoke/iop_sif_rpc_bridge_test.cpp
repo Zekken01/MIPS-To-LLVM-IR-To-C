@@ -2327,6 +2327,8 @@ int main()
     descriptor(memory, list + 16u, call_source,
                iop::c_sifcmd_bridge::k_command_buffer, 64u);
     memory.write32(list + 28u, 0x44u);
+    memory.write32(rpc_result, 0xffffffffu);
+    memory.write32(rpc_result + 4u, 0xffffffffu);
     dmac.acknowledge(5u);
     dmac.acknowledge(6u);
     if (!sif1.set_dma(list, 2u, &dma_id) ||
@@ -2336,7 +2338,10 @@ int main()
         !rpc.last_observation().m_module_started ||
         rpc.last_observation().m_module_id != 2u ||
         rpc.pending_module_starts() != 1u ||
-        memory.read32(rpc_result) != 0xffffffffu)
+        rpc.pending_replies() != 0u ||
+        memory.read32(rpc_result) != 0xffffffffu ||
+        memory.read32(rpc_result + 4u) != 0xffffffffu ||
+        (dmac.status() & (1u << 5u)) != 0u)
     {
         return fail("LOADFILE argument-bearing SIF1 packet was refused");
     }
@@ -2375,15 +2380,46 @@ int main()
         }
     }
 
-    // The argument-bearing module also answers only after its genuine
-    // guest _start returns. The result is the guest's V0, not zero.
+    // A terminated initializer is dormant but did not return from _start.
+    // Neither the EE receive words nor DMA5 can change in that state.
+    const uint32_t args_thread_id =
+        rpc.last_observation().m_thread_id;
+    if (!kernel.stop_thread(args_thread_id) ||
+        rpc.pump() ||
+        rpc.pending_module_starts() != 1u ||
+        rpc.pending_replies() != 0u ||
+        memory.read32(rpc_result) != 0xffffffffu ||
+        memory.read32(rpc_result + 4u) != 0xffffffffu ||
+        (dmac.status() & (1u << 5u)) != 0u)
+    {
+        return fail("terminated LOADFILE initializer fabricated completion");
+    }
+
+    // Restart the same original IRX and verify that only the real guest
+    // return trampoline unlocks the pending LOADFILE reply.
+    if (!kernel.start_module_thread_with_arguments(
+            args_thread_id, with_args_path,
+            {"mc0:", "-port=0"}) ||
+        kernel.thread(args_thread_id) == nullptr ||
+        kernel.thread(args_thread_id)->m_module_entry_returned ||
+        rpc.pump() ||
+        (dmac.status() & (1u << 5u)) != 0u)
+    {
+        return fail("LOADFILE restart fabricated module return");
+    }
     const iop::s_kernel_run_result args_completed = kernel.run(64u);
+    const iop::s_kernel_thread* args_returned =
+        kernel.thread(args_thread_id);
     if (args_completed.m_stop != iop::e_kernel_stop::idle ||
+        args_returned == nullptr ||
+        !args_returned->m_module_entry_returned ||
+        args_returned->m_module_entry_result != 7u ||
         rpc.pending_module_starts() != 1u ||
         !rpc.pump() ||
         rpc.pending_module_starts() != 0u ||
         memory.read32(rpc_result) != 2u ||
-        memory.read32(rpc_result + 4u) != 7u)
+        memory.read32(rpc_result + 4u) != 7u ||
+        (dmac.status() & (1u << 5u)) == 0u)
     {
         return fail("argument-bearing LOADFILE replied before guest return");
     }

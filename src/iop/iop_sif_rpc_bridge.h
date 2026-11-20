@@ -191,6 +191,9 @@ private:
         uint32_t m_word_count = 12u;
         uint32_t m_extra_destination = 0u;
         std::vector<uint8_t> m_extra_data;
+        // True only for a reply backed by an actual guest _start return.
+        bool m_module_start_reply = false;
+        uint32_t m_module_start_id = 0u;
     };
 
     struct s_deferred_bind

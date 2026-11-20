@@ -811,6 +811,11 @@ void c_sif_rpc_bridge::commit_command(const s_request& request)
             {
                 // The original guest _start must actually return.
                 // Scheduling it is not permission to answer LOADFILE.
+                std::fprintf(stderr,
+                    "IOP LOADFILE start queued: module=%u thread=%u "
+                    "sequence=%llu\n",
+                    loaded.m_module_id, loaded.m_thread_id,
+                    static_cast<unsigned long long>(observed.m_sequence));
                 m_pending_module_starts.push_back(s_pending_module_start{
                     response, loaded.m_thread_id, loaded.m_module_id,
                     request.m_result_destination, observed.m_sequence
@@ -1235,12 +1240,14 @@ bool c_sif_rpc_bridge::pump()
         if (thread == nullptr ||
             thread->m_status != e_thread_status::dormant ||
             !thread->m_module_entry ||
+            !thread->m_module_entry_returned ||
             thread->m_module_id != it->m_module_id)
         {
             ++it;
             continue;
         }
-        const uint32_t guest_start_result = thread->m_cpu.m_gpr[2];
+        const uint32_t guest_start_result =
+            thread->m_module_entry_result;
         m_ee_ram.write32(it->m_destination, it->m_module_id);
         m_ee_ram.write32(it->m_destination + 4u,
                           guest_start_result);
@@ -1248,6 +1255,12 @@ bool c_sif_rpc_bridge::pump()
         {
             m_last_observation.m_return_word = it->m_module_id;
         }
+        it->m_reply.m_module_start_reply = true;
+        it->m_reply.m_module_start_id = it->m_module_id;
+        std::fprintf(stderr,
+            "IOP LOADFILE result queued: module=%u thread=%u "
+            "result=0x%08x\n",
+            it->m_module_id, it->m_thread_id, guest_start_result);
         m_replies.push_back(std::move(it->m_reply));
         it = m_pending_module_starts.erase(it);
     }
@@ -1301,6 +1314,12 @@ bool c_sif_rpc_bridge::pump()
     if (!m_dmac.raise(5u))
     {
         return false;
+    }
+    if (reply.m_module_start_reply)
+    {
+        std::fprintf(stderr,
+            "IOP LOADFILE EE reply delivered: module=%u DMA5=1\n",
+            reply.m_module_start_id);
     }
     m_replies.pop_front();
     m_reply_in_flight = true;

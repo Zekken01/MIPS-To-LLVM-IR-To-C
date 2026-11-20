@@ -213,6 +213,7 @@ int main()
     if (restarted == nullptr ||
         !restarted->m_module_entry ||
         restarted->m_module_id != loaded.m_id ||
+        restarted->m_module_entry_returned ||
         restarted->m_cpu.m_gpr[31] == 0u ||
         restarted->m_cpu.m_gpr[4] != 2u ||
         restarted->m_cpu.m_gpr[5] != 0x00020020u)
@@ -232,6 +233,8 @@ int main()
         retired->m_status != iop::e_thread_status::dormant ||
         retired->m_cpu.m_pc != module_return_pc ||
         retired->m_cpu.m_gpr[2] != k_module_result ||
+        !retired->m_module_entry_returned ||
+        retired->m_module_entry_result != k_module_result ||
         retired->m_cpu.m_gpr[31] != module_return_pc)
     {
         return fail("module _start returned without genuine trampoline retirement");

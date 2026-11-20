@@ -59,6 +59,10 @@ struct s_kernel_thread
     // retire its init thread instead of executing zero-filled RAM.
     bool m_module_entry = false;
     uint32_t m_module_id = 0u;
+    // Only the reserved guest return BREAK records a completed _start.
+    // Stopping or faulting a startup thread cannot complete LOADFILE.
+    bool m_module_entry_returned = false;
+    uint32_t m_module_entry_result = 0u;
     uint32_t m_wait_type = 0u;
     uint32_t m_stack_base = 0u;
     uint32_t m_stack_size = 0u;

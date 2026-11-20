@@ -938,6 +938,8 @@ bool c_kernel::start_thread(uint32_t id)
         thread.m_alarm_id != 0u ? k_alarm_return_pc :
         thread.m_module_entry ? k_module_return_pc :
                                 k_thread_return_pc;
+    thread.m_module_entry_returned = false;
+    thread.m_module_entry_result = 0u;
     thread.m_status = e_thread_status::ready;
     return true;
 }
@@ -1649,11 +1651,13 @@ s_kernel_run_result c_kernel::run(
             thread.m_module_entry)
         {
             thread.m_cpu = m_cpu.state();
+            thread.m_module_entry_result = m_cpu.state().m_gpr[2];
+            thread.m_module_entry_returned = true;
             thread.m_status = e_thread_status::dormant;
             std::printf(
                 "IOP guest module entry returned: module=%u thread=%u "
                 "result=0x%08x cycles=%llu\n",
-                thread.m_module_id, id, m_cpu.state().m_gpr[2],
+                thread.m_module_id, id, thread.m_module_entry_result,
                 static_cast<unsigned long long>(m_cycles));
             m_current_thread_id = 0u;
             continue;

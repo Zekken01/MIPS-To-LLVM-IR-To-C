@@ -1476,3 +1476,11 @@ actual return, and native `timrman` / `sifman#32` coverage remains open.
 
 Do not merge PR #145 without explicit authorization; when authorized,
 squash-merge it once into `main`.
+
+## 2026-11-20 — LOADFILE guest-return completion and argument regression
+
+Baseline: PR #145 at `8daae358fdc7edc52723fe6cb1863286e026f030`. Build and test failed only at `CTest (fast-0)` / `iop_sif_rpc_bridge`; ROM0, SIF DMA and native WebGPU checks passed. The argument-bearing fixture expected an EE receive-word sentinel without initializing it. Both receive words are now initialized, and the test guards them and DMA5 until the original guest return.
+
+The IOP kernel records `m_module_entry_returned` and a snapshot of original guest `v0` only when the R3000 module initializer reaches the reserved return BREAK. LOADFILE consumes that event once rather than interpreting a dormant startup thread as a return. Starting or restarting clears the event. A regression stops the startup thread before executing its first guest instruction and verifies that neither EE receive memory nor DMA5 is changed; it then restarts the same real IRX and checks its actual return and delivered reply. Bounded logs differentiate queued starts, guest returns, queued results and delivered EE replies. No guest execution, DMA, IRQ, RPC result or semaphore signal is fabricated.
+
+Validation remains pending on the resulting exact PR head: focused IOP tests plus all required Actions workflows. Only a later matched retail replay can establish IRQ3 guest callback, ARKD semaphore wake, genuine `0x500:1` return, SIF0/DMA5 completion and GS output. The PR remains draft and unmerged.
