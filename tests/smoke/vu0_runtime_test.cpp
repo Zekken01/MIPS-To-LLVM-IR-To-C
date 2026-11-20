@@ -330,7 +330,11 @@ static_assert(offsetof(ee::s_ee_vu0_state, m_vi_backup_old_value) == 8532);
 static_assert(offsetof(ee::s_ee_vu0_state, m_vf_memory_ready_cycle) == 8536);
 static_assert(offsetof(ee::s_ee_vu0_state, m_vf_memory_issues) == 8544);
 static_assert(offsetof(ee::s_ee_vu0_state, m_vf_memory_issue_index) == 8608);
-static_assert(sizeof(ee::s_ee_vu0_state) == 8624);
+// Existing VU0 offsets remain ABI-stable; scalar-Q fields are append-only.
+static_assert(offsetof(ee::s_ee_vu0_state, m_q_ready_cycle) == 8616);
+static_assert(offsetof(ee::s_ee_vu0_state, m_q_pending_bits) == 8624);
+static_assert(offsetof(ee::s_ee_vu0_state, m_q_pending) == 8628);
+static_assert(sizeof(ee::s_ee_vu0_state) == 8640);
 
 int main()
 {
