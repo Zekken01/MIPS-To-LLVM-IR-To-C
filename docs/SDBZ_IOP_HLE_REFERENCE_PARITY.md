@@ -6,7 +6,11 @@ Main architectural reference: [twist84/ps2-web-recomp, `SDBZ` branch](https://gi
 
 Current native LLVM-IR implementation: [`src/iop/iop_kernel_hle_bridge.cpp`](../src/iop/iop_kernel_hle_bridge.cpp), audited blob `623875f9bacb21633a539ce2529570b81132c474`.
 
-The reference file defines **172 explicitly named `def("library", ordinal, ...)` handlers**. Our bridge registers **152 actual guest-callable HLE ordinals**; **131 match explicitly named reference definitions**. Counts include no claim about full behavioral equivalence. The reference also uses loops/dynamic registrations (e.g. `secrman#4/#5`) and separate IOP modules (`io.cpp`, `sif.cpp`, `cdvd.cpp`, `spu2.cpp`) and EE kernel syscalls. The full reference runtime is larger than these 172 direct definitions.
+The reference file defines **172 explicitly named `def("library", ordinal, ...)` handlers**. The HLE-first runtime now installs **169 guest-callable export ordinals** across
+the kernel bridge (146), CDVDMAN bridge (7), SIFCMD bridge (3) and
+SIFMAN bridge (13). **131** of the kernel bridge exports match explicitly
+named `libs.cpp` reference definitions. The earlier 152 count omitted
+seven pre-existing registrations in separate device/SIF bridges. Counts include no claim about full behavioral equivalence. The reference also uses loops/dynamic registrations (e.g. `secrman#4/#5`) and separate IOP modules (`io.cpp`, `sif.cpp`, `cdvd.cpp`, `spu2.cpp`) and EE kernel syscalls. The full reference runtime is larger than these 172 direct definitions.
 
 Never bulk-register an unimplemented opcode. Each `k_exports` entry installs a **real executable import stub**, so an unimplemented handler must remain unresolved instead of returning fabricated success.
 
@@ -165,3 +169,47 @@ HLE ordinal total increases from **146 to 152**. The 41 explicit
 `libs.cpp` parity gaps remain separate. The next matched real
 Windows boot must confirm if MCMAN links/starts and whether EE
 execution or framebuffer contents progress.
+
+## 2026-11-20 — MCSERV SIFMAN initialization / mailbox batch
+
+Matched archive `ps2-game-hle(2).zip` (five diagnostic files plus three
+black PPMs) uses the same USA `SLUS_214.42` SHA-256 and disc root as
+the previous Windows run. **Final replay 14,523 EE dispatches (+138)**
+and zero new EE IR functions, with 3,524 cached IR files.
+`SIO2MAN.IRX` linked/started (module 1/thread 1), then
+`MCMAN.IRX` linked/started (module 2/thread 3), and an authentic
+`MCSERV.IRX` LOADFILE request failed on **`sifman#5`**,
+`sceSifInit`. The failing MCSERV request had no module ID or
+entrypoint thread. The EE ended via `KExit` at EPC `0x001748C4`;
+all GS display, upload and native WebGPU snapshots are black.
+
+Using `ps2-web-recomp/runtime/src/iop/sif.cpp` as primary reference
+and cross-checking PS2SDK `iop/system/sifman/src/sifman.c`, the
+existing SIFMAN bridge now registers **13 ordinals**:
+`#4 sceSifDma2Init`, `#5 sceSifInit`, `#6 sceSifSetDChain`,
+`#7 sceSifSetDma`, `#8 sceSifDmaStat`,
+`#21/#22 Get/SetMSFlag`, `#23/#24 Get/SetSMFlag`,
+`#25/#26 GetMainAddr/GetSubAddr`, `#27 SetSubAddr`,
+`#29 sceSifCheckInit`.
+
+`#4/#5` configure actual guest-visible IOP DMA priority and channel
+control registers, with reinitialization state owned by the SIFMAN
+bridge. `#6` initializes the SIF1 DMA chain's block-count register
+but **does not start a phantom DMA transfer**. `#8` reports no
+in-flight DMA for the bridge's synchronous `#7` transfer model.
+`#29` reports whether guest `sceSifInit` actually executed.
+Flag and address operations use the shared EE/IOP SIF mailbox model,
+preserve producer/acknowledger ownership, and validate guest
+subaddresses. Installed import stubs do not set SMFLAG, fabricate
+BOOTEND or complete an RPC. SIFMAN interrupt handlers and asynchronous
+transfer callbacks remain unresolved.
+
+Tests exercise genuine R3000 guest `#5` execution, IOP DMA register
+effects, reinitialization/reset semantics, mailbox register ownership,
+SIF status and deliberate failures on unimplemented imports and
+invalid guest pointers.
+
+**Next real boot:** determine whether `MCSERV.IRX` now links, and
+diagnose any subsequent `sifcmd` RPC or guest `mcman` dependency
+rather than bulk registering stubs. The preceding +138 dispatches
+do not prove video output or fully initialized memory-card hardware.
