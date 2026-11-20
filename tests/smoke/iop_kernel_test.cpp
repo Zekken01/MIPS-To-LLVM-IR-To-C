@@ -150,6 +150,8 @@ int main()
         initial->m_cpu.m_gpr[28] != 0x20050u ||
         initial->m_cpu.m_gpr[29] == 0u ||
         initial->m_status != iop::e_thread_status::dormant ||
+        kernel.threads().size() != 1u ||
+        kernel.threads().at(boot_thread).m_cpu.m_pc != 0x20000u ||
         !kernel.start_thread(boot_thread) ||
         kernel.start_thread(boot_thread))
     {
@@ -179,6 +181,7 @@ int main()
     if (!executed ||
         completed.m_stop != iop::e_kernel_stop::idle ||
         completed.m_executed != 2u ||
+        completed.m_thread_id != boot_thread ||
         after == nullptr ||
         after->m_status != iop::e_thread_status::dormant ||
         after->m_cpu.m_pc != 0x20008u ||
@@ -216,6 +219,7 @@ int main()
     if (result.m_stop !=
             iop::e_kernel_stop::budget_exhausted ||
         result.m_executed != 6u ||
+        result.m_thread_id != second ||
         kernel.thread(first)->m_cpu.m_gpr[8] != 1u ||
         kernel.thread(second)->m_cpu.m_gpr[8] != 1u)
     {
@@ -250,6 +254,7 @@ int main()
     );
     result = kernel.run(2u, 2u);
     if (result.m_executed != 2u ||
+        result.m_thread_id != high ||
         kernel.thread(high)->m_status !=
             iop::e_thread_status::dormant ||
         kernel.thread(first)->m_cpu.m_gpr[8] != 1u ||
@@ -301,6 +306,7 @@ int main()
     kernel.reset();
     if (kernel.module(loaded.m_id) != nullptr ||
         kernel.thread(boot_thread) != nullptr ||
+        !kernel.threads().empty() ||
         kernel.cycles() != 0u ||
         !kernel.cpu().read32(0x20000u, &word) || word != 0u)
     {
