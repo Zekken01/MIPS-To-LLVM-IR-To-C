@@ -258,18 +258,54 @@ void dump_pending_iop_guest_rpc(
             thread.m_cpu.m_gpr[2], thread.m_cpu.m_gpr[4],
             thread.m_cpu.m_gpr[5]);
 
-        // Preserve the actual guest instruction words surrounding up to
-        // two runnable PCs at the final stop. An IRX is not distributed
-        // with the diagnostic archive, so this read-only sample permits
-        // analysis of a tight guest loop without inventing its behavior.
+        // At most two runnable guest PCs: preserve surrounding opcodes,
+        // their real GPRs and caller stack locals. A pending guest RPC
+        // may be processing data rather than polling or blocked.
+        // Do not synthesize any instruction, byte, return or wakeup.
         if (phase[0] == 'f' &&
             thread.m_status == iop::e_thread_status::ready &&
             sampled_opcode_windows < 2u &&
-            pc >= 0x80u && pc < iop::c_cpu::k_ram_size - 0x40u)
+            pc >= 0x100u &&
+            pc < iop::c_cpu::k_ram_size - 0x180u)
         {
             ++sampled_opcode_windows;
-            const uint32_t start = (pc - 0x80u) & ~3u;
-            for (uint32_t index = 0u; index < 49u; ++index)
+            for (uint32_t group = 0u; group < 8u; ++group)
+            {
+                const uint32_t first = group * 4u;
+                std::fprintf(stderr,
+                    "IOP guest RPC pending registers: thread=%u "
+                    "r%02u=0x%08x r%02u=0x%08x "
+                    "r%02u=0x%08x r%02u=0x%08x\n",
+                    entry.first,
+                    first, thread.m_cpu.m_gpr[first],
+                    first + 1u, thread.m_cpu.m_gpr[first + 1u],
+                    first + 2u, thread.m_cpu.m_gpr[first + 2u],
+                    first + 3u, thread.m_cpu.m_gpr[first + 3u]);
+            }
+            const uint32_t fp = thread.m_cpu.m_gpr[30];
+            if ((fp & 3u) == 0u &&
+                fp != 0u &&
+                fp < iop::c_cpu::k_ram_size - 0x20u)
+            {
+                for (uint32_t offset = 0x10u;
+                     offset <= 0x1cu; offset += 4u)
+                {
+                    uint32_t value = 0u;
+                    if (!kernel.cpu().read32(fp + offset, &value))
+                    {
+                        break;
+                    }
+                    std::fprintf(stderr,
+                        "IOP guest RPC pending stack: thread=%u "
+                        "fp=0x%08x offset=0x%02x word=0x%08x\n",
+                        entry.first, fp, offset, value);
+                }
+            }
+            // The 09:11 retail opcode window ended before the ARKD
+            // inner-loop exit branch. Preserve +/-256 bytes around
+            // each sampled PC to include both the body and its bounds.
+            const uint32_t start = (pc - 0x100u) & ~3u;
+            for (uint32_t index = 0u; index < 129u; ++index)
             {
                 const uint32_t address = start + index * 4u;
                 uint32_t word = 0u;
@@ -2681,7 +2717,7 @@ int main(int argc, char** argv)
         // Observing the guest in the middle and near the end of a
         // bounded retail replay reveals a persistent R3000 spin without
         // recording per-instruction traces or changing guest scheduling.
-        if (trace && report_path != nullptr &&
+        if (report_path != nullptr &&
             dispatched >= next_iop_guest_rpc_snapshot)
         {
             if (hle_startup && iop_kernel != nullptr &&
@@ -5584,7 +5620,8 @@ int main(int argc, char** argv)
 
     // The last authentic IOP thread state is the most useful artifact
     // when EE reaches its dispatch budget with a guest RPC still active.
-    if (trace && hle_startup && iop_kernel != nullptr &&
+    if (report_path != nullptr &&
+        hle_startup && iop_kernel != nullptr &&
         iop_rpc != nullptr && iop_rpc->pending_guest_calls() != 0u)
     {
         dump_pending_iop_guest_rpc(

@@ -244,7 +244,20 @@ def test_windows_launcher_preserves_guest_cache():
     assert '--max-dispatches=100000 ^' not in launcher
 
 
+def test_guest_rpc_snapshots_in_cached_probe():
+    # A long cached probe must retain read-only guest worker diagnostics
+    # without writing one line for every EE dispatch.
+    runner = (ROOT / "src" / "tools" /
+              "ee_game_runner_main.cpp").read_text(encoding="utf-8")
+    assert "if (report_path != nullptr &&\n            dispatched >= next_iop_guest_rpc_snapshot)" in runner
+    assert "if (trace && report_path != nullptr &&\n            dispatched >= next_iop_guest_rpc_snapshot)" not in runner
+    assert "IOP guest RPC pending registers:" in runner
+    assert "IOP guest RPC pending stack:" in runner
+    assert "index < 129u" in runner
+
+
 def main():
+    test_guest_rpc_snapshots_in_cached_probe()
     test_windows_launcher_preserves_guest_cache()
     test_ll_counter()
     code, calls, expansion, boot = run_case([

@@ -1593,3 +1593,46 @@ R3000 instruction words surrounding at most two runnable IOP
 thread PCs at final stop. This allows analysis of actual IRX loop
 behavior without shipping game binaries, inventing a return,
 or making irreversible changes to guest state.
+
+## 2026-11-20 — 09:11:02 long retail full replay: original ARKD byte loop still running
+
+Archive `ps2-game-hle(20261120-091102).zip`: full `boot.log`,
+`first-boot.json`, IOP catalog and three GS PPMs timestamped 09:09:42;
+its `quick-probe.json` is an older 08:00:10 artifact, **not** this run.
+Exact checkout SHA is not embedded.
+
+At **1,000,000 EE dispatches**, 25,912,896 EE guest instruction
+attempts and **3,127,424 IOP cycles**, seven genuine ARKD guest RPC
+tokens were accepted, first six returned through original R3000
+handler trampolines, and token **7 / server 0x500 / method 1**
+remains outstanding. IOP thread **11** is ready, not blocked or faulted,
+at all checkpoints, in code around `0x7e0ec..0x7e15c`.
+Its saved `v0` advances from `0x000dd39c` at 50k dispatches to
+`0x000e3a50` at 1M (+26,292 bytes). The final original R3000
+instruction window shows a **16-byte inner loop** (a signed comparison
+against 16 at `0x7e0bc`) performing real byte loads, shifts,
+bitwise operations and stores. There is **no evidence** of a frozen
+PC or a missing semaphore wake, but the **outer termination condition**
+lies outside the captured window. No guest RPC return was observed.
+At final stop 5 threads are ready and 12 blocked, none faulted;
+all three PPMs remain uniformly black.
+
+The full `--trace` log is approximately **72.6 MB** and took
+approximately 62.4 s for the 1M-dispatch run, so avoid scaling
+per-dispatch trace output for an extended byte-processing loop.
+Instead, keep the real EE/IOP timing and original guest execution
+unchanged but allow the previously bounded RPC checkpoints even in
+the existing cached **non-traced** quick probe. Enlarge the final
+original-IOP opcode window to 129 aligned 32-bit words and add the
+sampled thread's 32 GPR values and real frame-pointer locals.
+No synthetic semaphore signal, guest return, MMIO completion or
+RPC reply. This supports a faster long-probe workflow
+(`set MAX_DISPATCHES=4000000`, then `run_ps2_game.bat`) with
+current `quick-probe.log`/`quick-probe.json` as the authoritative
+outputs, while old full logs remain preserved.
+
+When a new probe is available, disassemble the expanded ARKD loop and
+inspect its actual counter/bound and supporting data before deciding
+whether the repeated work is legitimate or caused by erroneous
+guest state. Keep PR #145 draft; require all four CI workflows on
+the final head.
