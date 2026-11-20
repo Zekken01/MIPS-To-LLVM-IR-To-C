@@ -863,6 +863,15 @@ bool test_guest_sifcmd_send(const std::filesystem::path& disc_root)
                 (0x80000200u + ordinal) ||
             memory.read32(k_extra_destination) == 0xdeadbeefu)
         {
+            std::fprintf(stderr,
+                "SIFCMD send #%u: stop=%u pc=%08x expected=%08x v0=%08x "
+                "queued=%zu cid=%08x extra=%08x\\n",
+                ordinal, static_cast<uint32_t>(ran.m_stop),
+                ran.m_guest_pc, guest_program + 20u,
+                thread != nullptr ? thread->m_cpu.m_gpr[2] : 0xffffffffu,
+                rpc.pending_replies(),
+                memory.read32(k_receive + 8u),
+                memory.read32(k_extra_destination));
             return fail_at(__LINE__);
         }
         // The DMA commits only after the EE explicitly arms SIF0.
