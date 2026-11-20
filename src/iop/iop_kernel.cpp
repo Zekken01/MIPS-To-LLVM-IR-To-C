@@ -1107,9 +1107,11 @@ bool c_kernel::stop_thread(uint32_t id)
         return false;
     }
     found->second.m_status = e_thread_status::dormant;
+    found->second.m_interrupts_suspended = false;
     if (id == m_critical_thread_id)
     {
         m_critical_thread_id = 0u;
+        m_interrupts_suspended = false;
     }
     found->second.m_wake_cycle = 0u;
     found->second.m_wait_type = 0u;
@@ -1143,9 +1145,11 @@ bool c_kernel::exit_current_thread(bool delete_on_exit)
         return false;
     }
     found->second.m_status = e_thread_status::dormant;
+    found->second.m_interrupts_suspended = false;
     if (m_current_thread_id == m_critical_thread_id)
     {
         m_critical_thread_id = 0u;
+        m_interrupts_suspended = false;
     }
     found->second.m_wake_cycle = 0u;
     found->second.m_wait_type = 0u;

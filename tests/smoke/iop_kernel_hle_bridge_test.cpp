@@ -543,6 +543,58 @@ bool test_suspended_waiter_dma4_irq_wakeup()
            !kernel.interrupts_suspended();
 }
 
+
+bool test_stopped_suspended_guest_releases_cpu()
+{
+    iop::c_kernel kernel;
+    iop::c_kernel_hle_bridge hle(kernel);
+    if (!hle.install())
+    {
+        return false;
+    }
+    kernel.bind_syscall([&](iop::c_kernel& active, uint32_t service)
+    {
+        return hle.handle_syscall(active, service);
+    });
+    uint32_t suspend_pc = 0u;
+    if (!kernel.lookup_library("intrman", 17u, &suspend_pc))
+    {
+        return false;
+    }
+    constexpr uint32_t k_entry = 0x00044000u;
+    const uint32_t loop[] =
+    {
+        0x24040000u, // addiu a0,zero,0
+        0x0c000000u | ((suspend_pc >> 2u) & 0x03ffffffu),
+        0u,
+        0x08000000u | (((k_entry + 12u) >> 2u) & 0x03ffffffu),
+        0u
+    };
+    for (uint32_t i = 0u; i < sizeof(loop) / sizeof(loop[0]); ++i)
+    {
+        if (!kernel.cpu().write32(k_entry + i * 4u, loop[i]))
+        {
+            return false;
+        }
+    }
+    const uint32_t id = kernel.create_thread(k_entry, 0u, 8u, 0x400u);
+    if (id == 0u || !kernel.start_thread(id))
+    {
+        return false;
+    }
+    const iop::s_kernel_run_result before = kernel.run(32u, 8u);
+    if (before.m_stop != iop::e_kernel_stop::budget_exhausted ||
+        !kernel.interrupts_suspended() ||
+        !kernel.stop_thread(id))
+    {
+        return false;
+    }
+    const iop::s_kernel_thread* stopped = kernel.thread(id);
+    return !kernel.interrupts_suspended() && stopped != nullptr &&
+           stopped->m_status == iop::e_thread_status::dormant &&
+           !stopped->m_interrupts_suspended;
+}
+
 bool test_cpu_suspend_pins_original_guest_thread()
 {
     iop::c_kernel kernel;
@@ -712,6 +764,10 @@ int main()
     if (!test_cpu_suspend_pins_original_guest_thread())
     {
         return fail("CpuSuspendIntr allowed peer scheduling before resume");
+    }
+    if (!test_stopped_suspended_guest_releases_cpu())
+    {
+        return fail("stopping suspended guest retained global IRQ mask");
     }
     if (!test_registered_dma_guest_interrupt())
     {
