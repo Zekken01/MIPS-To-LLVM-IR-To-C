@@ -1388,3 +1388,21 @@ required to identify the next actual guest state and verify
 whether this real DMA backend advances ARKD method `0x500:1`.
 No sound synthesis/playback or kernel IRQ callback execution
 is claimed here.
+
+### DMA completion under an idle IOP kernel
+
+The ordinary direct DMA completion is a **device deadline**, not
+a guest thread instruction. If the real transfer has already copied
+all bytes but the IOP driver blocks waiting for its completion,
+the previously implemented kernel `has_guest_work()` incorrectly
+returned false and stopped advancing the IOP clock. The kernel
+now includes pending real SPU2 DMA events in `has_guest_work()`,
+bounds idle progress by its provided IOP cycle budget, and updates
+the physical hardware timer when advancing to the next actual
+DMA deadline. The DMA4 regression asserts that a kernel with
+no runnable guest thread still clears STR and sets the real
+DICR/IRQ3 completion *only* when 64 + words/4 elapsed, and
+does not keep the DMA event runnable after completion.
+AutoDMA, invalid memory and cancellation remain fail-closed.
+This scheduling change still does not invoke guest INTRMAN
+callbacks or send a synthetic ARKD SIF reply.

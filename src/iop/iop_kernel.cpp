@@ -768,7 +768,8 @@ bool c_kernel::has_guest_work() const
             return true;
         }
     }
-    return !m_alarms.empty() || !m_hle_events.empty();
+    return !m_alarms.empty() || !m_hle_events.empty() ||
+           m_hardware.spu2_dma_cycles_remaining() != 0u;
 }
 
 bool c_kernel::schedule_hle_event(
@@ -1382,6 +1383,21 @@ s_kernel_run_result c_kernel::run(
                     next_wake, m_hle_events.begin()->first
                 );
             }
+            // The original SPU2 DMA4/DMA7 backend schedules an
+            // actual transfer-completion event after the copied
+            // guest data has entered sound/IOP RAM. A blocked guest
+            // thread must not freeze that device deadline.
+            const uint32_t dma_left =
+                m_hardware.spu2_dma_cycles_remaining();
+            if (dma_left != 0u)
+            {
+                const uint64_t deadline =
+                    dma_left <=
+                        std::numeric_limits<uint64_t>::max() - m_cycles
+                        ? m_cycles + dma_left
+                        : std::numeric_limits<uint64_t>::max();
+                next_wake = std::min(next_wake, deadline);
+            }
             if (next_wake ==
                 std::numeric_limits<uint64_t>::max())
             {
@@ -1393,6 +1409,20 @@ s_kernel_run_result c_kernel::run(
             const uint64_t skipped = std::min(
                 remaining, next_wake - m_cycles
             );
+            // A real device continues counting IOP cycles while
+            // the kernel has no runnable R3000 thread. Advance only
+            // the supplied cycle budget, never wall-clock time or
+            // unrelated EE dispatch counts.
+            uint64_t to_advance = skipped;
+            while (to_advance != 0u)
+            {
+                const uint32_t quantum_cycles =
+                    static_cast<uint32_t>(std::min<uint64_t>(
+                        to_advance,
+                        std::numeric_limits<uint32_t>::max()));
+                m_hardware.advance_cycles(quantum_cycles);
+                to_advance -= quantum_cycles;
+            }
             m_cycles += skipped;
             remaining -= skipped;
             continue;

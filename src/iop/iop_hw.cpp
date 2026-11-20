@@ -132,6 +132,21 @@ bool c_hw::spu2_ram_word(uint32_t address, uint16_t* value) const
     return m_spu2.ram_word(address, value);
 }
 
+uint32_t c_hw::spu2_dma_cycles_remaining() const
+{
+    const uint32_t first = m_spu2_dma_remaining[0u];
+    const uint32_t second = m_spu2_dma_remaining[1u];
+    if (first == 0u)
+    {
+        return second;
+    }
+    if (second == 0u)
+    {
+        return first;
+    }
+    return std::min(first, second);
+}
+
 void c_hw::start_spu2_dma(uint32_t core)
 {
     if (core >= 2u || m_dma_cpu == nullptr ||

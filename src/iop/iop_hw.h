@@ -122,6 +122,9 @@ public:
     // Unbound MMIO remains register-only for standalone hardware tests.
     void bind_dma_cpu(c_cpu* cpu);
     bool spu2_ram_word(uint32_t address, uint16_t* value) const;
+    // A copied sound DMA is a real device event even when no IOP
+    // guest threads are runnable. Needed for bounded idle scheduling.
+    uint32_t spu2_dma_cycles_remaining() const;
 
     // For the ordinary MMIO/scratchpad range, address is physical.
     // The cache-control register retains its privileged full address.

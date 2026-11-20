@@ -74,7 +74,13 @@ bool test_authentic_spu2_dma()
     {
         return false;
     }
-    hw.advance_cycles(64u);
+    // An IOP kernel with no runnable threads must still advance
+    // the real DMA event through its bounded idle scheduler.
+    if (!kernel.has_guest_work())
+    {
+        return false;
+    }
+    (void)kernel.run(64u);
     if (!hw.read(dma4 + 8u, 4u, &actual) ||
         (actual & iop::c_hw::k_spu2_dma_str_bit) == 0u ||
         !hw.read(iop::c_hw::k_i_stat, 4u, &actual) ||
@@ -82,8 +88,9 @@ bool test_authentic_spu2_dma()
     {
         return false;
     }
-    hw.advance_cycles(1u);
-    if (!hw.read(dma4 + 8u, 4u, &actual) ||
+    (void)kernel.run(1u);
+    if (kernel.has_guest_work() ||
+        !hw.read(dma4 + 8u, 4u, &actual) ||
         (actual & iop::c_hw::k_spu2_dma_str_bit) != 0u ||
         !hw.read(iop::c_hw::k_dma_icr, 4u, &actual) ||
         (actual & 0x10000000u) == 0u ||
