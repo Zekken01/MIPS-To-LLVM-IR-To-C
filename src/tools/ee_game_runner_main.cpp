@@ -696,7 +696,7 @@ const char* ee_cycle_source_name(ee::e_ee_cycle_source source)
     }
 }
 
-// This is a read-only summary of committed GIF PATH2/PATH3 work. It never
+// This is a read-only summary of committed GIF PATH1/PATH2/PATH3 work. It never
 // treats the current primitive's vertex count as an entire-boot total.
 void write_gs_sprite_sample_json(
     FILE* output, const ee::s_ee_gs_sprite_sample& sample)
@@ -727,7 +727,7 @@ void write_gs_diagnostics_json(FILE* output, const ee::s_ee_gs_state& gs)
 {
     std::fprintf(output,
         "{\n    \"schema\": \"ee-m2-gif-gs-v1\","
-        "\n    \"scope\": \"committed_gif_paths_2_and_3\","
+        "\n    \"scope\": \"committed_gif_paths_1_2_and_3\","
         "\n    \"accepted_batches\": %llu,"
         "\n    \"accepted_tags\": %llu,"
         "\n    \"prim_writes_total\": %llu,"
@@ -811,7 +811,7 @@ void write_gs_diagnostics_json(FILE* output, const ee::s_ee_gs_state& gs)
     std::fputs(
         "\"does_not_include_unexecuted_vu1_path1_xgkick\", "
         "\"does_not_imply_rasterization_or_present\", "
-        "\"samples_are_bounded_committed_path2_and_path3_sprite_pairs\", "
+        "\"samples_are_bounded_committed_path1_path2_path3_sprite_pairs\", "
         "\"coordinates_and_registers_are_uninterpreted_raw_gs_values\", "
         "\"current_primitive_and_transfer_counters_reset\"]\n  }", output);
 }
