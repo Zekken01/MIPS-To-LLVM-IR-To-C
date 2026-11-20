@@ -231,6 +231,7 @@ void dump_pending_iop_guest_rpc(
         pending_calls, kernel.has_guest_work() ? 1u : 0u,
         ready, blocked, faulted, kernel.threads().size());
 
+    uint32_t sampled_opcode_windows = 0u;
     for (const auto& entry : kernel.threads())
     {
         const iop::s_kernel_thread& thread = entry.second;
@@ -256,6 +257,32 @@ void dump_pending_iop_guest_rpc(
             thread.m_cpu.m_gpr[28], thread.m_cpu.m_gpr[29],
             thread.m_cpu.m_gpr[2], thread.m_cpu.m_gpr[4],
             thread.m_cpu.m_gpr[5]);
+
+        // Preserve the actual guest instruction words surrounding up to
+        // two runnable PCs at the final stop. An IRX is not distributed
+        // with the diagnostic archive, so this read-only sample permits
+        // analysis of a tight guest loop without inventing its behavior.
+        if (phase[0] == 'f' &&
+            thread.m_status == iop::e_thread_status::ready &&
+            sampled_opcode_windows < 2u &&
+            pc >= 0x80u && pc < iop::c_cpu::k_ram_size - 0x40u)
+        {
+            ++sampled_opcode_windows;
+            const uint32_t start = (pc - 0x80u) & ~3u;
+            for (uint32_t index = 0u; index < 49u; ++index)
+            {
+                const uint32_t address = start + index * 4u;
+                uint32_t word = 0u;
+                if (!kernel.cpu().read32(address, &word))
+                {
+                    break;
+                }
+                std::fprintf(stderr,
+                    "IOP guest RPC pending opcode: thread=%u "
+                    "address=0x%08x word=0x%08x\n",
+                    entry.first, address, word);
+            }
+        }
     }
 }
 
@@ -2665,7 +2692,26 @@ int main(int argc, char** argv)
                     *iop_kernel, dispatched,
                     iop_rpc->pending_guest_calls(), "checkpoint");
             }
-            next_iop_guest_rpc_snapshot += 25000u;
+            // Dense early checkpoints, then logarithmic spacing so
+            // longer genuine guest work cannot flood the trace.
+            if (next_iop_guest_rpc_snapshot < 100000u)
+            {
+                next_iop_guest_rpc_snapshot += 25000u;
+            }
+            else if (next_iop_guest_rpc_snapshot < 250000u)
+            {
+                next_iop_guest_rpc_snapshot = 250000u;
+            }
+            else if (next_iop_guest_rpc_snapshot <=
+                     std::numeric_limits<uint64_t>::max() / 2u)
+            {
+                next_iop_guest_rpc_snapshot *= 2u;
+            }
+            else
+            {
+                next_iop_guest_rpc_snapshot =
+                    std::numeric_limits<uint64_t>::max();
+            }
         }
         remaining -= count;
         // Model ps2-web-recomp's execution-budget/event architecture using

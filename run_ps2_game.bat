@@ -134,6 +134,7 @@ if exist "%WORK_DIR%\translation-cache.json" (
 echo === Starting extracted-disc HLE boot session ===
 set "SESSION_ARGS=--quick-probe --no-iop-catalog"
 set "REPORT_NAME=quick-probe.json"
+set "DEFAULT_MAX_DISPATCHES=100000"
 if not defined CACHE_FLAG set "SESSION_ARGS="
 if /I "%~1"=="--full" set "SESSION_ARGS="
 if "%EE_WEBGPU_MODE%"=="ON" set "SESSION_ARGS="
@@ -142,6 +143,7 @@ if defined SESSION_ARGS (
     echo Boot log: "%WORK_DIR%\quick-probe.log"
 ) else (
     set "REPORT_NAME=first-boot.json"
+    set "DEFAULT_MAX_DISPATCHES=500000"
     set "SESSION_ARGS=--ll-progress --gs-snapshot=%WORK_DIR%\gs-display.ppm --gs-upload-snapshot=%WORK_DIR%\gs-upload.ppm"
     echo Using the full traced HLE boot session.
     echo Boot log: "%WORK_DIR%\boot.log"
@@ -149,7 +151,12 @@ if defined SESSION_ARGS (
     echo Guest display VRAM if configured: "%WORK_DIR%\gs-display.ppm"
     echo GS texture upload if complete: "%WORK_DIR%\gs-upload.ppm"
 )
+rem Keep quick probes short; full retail traces need sufficient real EE/IOP
+rem cycles to observe long-running IRX work. Preserve explicit overrides.
+if not defined MAX_DISPATCHES set "MAX_DISPATCHES=%DEFAULT_MAX_DISPATCHES%"
+if not defined BOOT_TIMEOUT_SECONDS set "BOOT_TIMEOUT_SECONDS=120"
 echo Expansion budget: %EXPANSION_PASSES% passes, %EXPANSION_PER_PASS% new functions per pass
+echo Dispatch budget: %MAX_DISPATCHES% per pass; timeout: %BOOT_TIMEOUT_SECONDS% seconds
 echo Report: "%WORK_DIR%\%REPORT_NAME%"
 if /I "%EE_WEBGPU_SNAPSHOT%"=="1" echo Native WebGPU raster: "%WORK_DIR%\gs-webgpu.ppm"
 if /I "%EE_WEBGPU_WINDOW%"=="1" echo Native WebGPU presentation: raylib Win32 window in final replay
@@ -166,10 +173,10 @@ python tools\run_boot_session.py "%GAME_ELF%" ^
     --kseg-ram ^
     --emit-jobs=%EMIT_JOBS% ^
     --emit-opt=0 ^
-    --max-dispatches=100000 ^
+    --max-dispatches=%MAX_DISPATCHES% ^
     --loop-budget=1000000 ^
     --sif-poll-limit=%SIF_POLL_LIMIT% ^
-    --timeout-seconds=120 %CACHE_FLAG% %SESSION_ARGS% %EE_WEBGPU_RUN_ARG% %EE_WEBGPU_WINDOW_ARG%
+    --timeout-seconds=%BOOT_TIMEOUT_SECONDS% %CACHE_FLAG% %SESSION_ARGS% %EE_WEBGPU_RUN_ARG% %EE_WEBGPU_WINDOW_ARG%
 set "EXIT_CODE=%ERRORLEVEL%"
 echo.
 echo Native HLE boot session exit code: %EXIT_CODE%

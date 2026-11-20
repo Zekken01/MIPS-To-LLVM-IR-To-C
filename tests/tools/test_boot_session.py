@@ -234,6 +234,15 @@ def test_windows_launcher_preserves_guest_cache():
     assert "if not errorlevel 1 (" in probe, "failed relink must not reuse"
     assert "full IR rebuild required" in probe
 
+    # The full retail replay must be able to continue genuine guest IOP
+    # execution past the old fixed 100k ceiling; quick probes stay short.
+    assert 'set "DEFAULT_MAX_DISPATCHES=100000"' in launcher
+    assert 'set "DEFAULT_MAX_DISPATCHES=500000"' in launcher
+    assert 'if not defined MAX_DISPATCHES set "MAX_DISPATCHES=%DEFAULT_MAX_DISPATCHES%"' in launcher
+    assert '--max-dispatches=%MAX_DISPATCHES%' in launcher
+    assert '--timeout-seconds=%BOOT_TIMEOUT_SECONDS%' in launcher
+    assert '--max-dispatches=100000 ^' not in launcher
+
 
 def main():
     test_windows_launcher_preserves_guest_cache()

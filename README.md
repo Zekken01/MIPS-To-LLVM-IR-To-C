@@ -84,6 +84,16 @@ With a verified translation cache, `run_ps2_game.bat` stops after the
 bounded coverage probe and writes `quick-probe.json` and `quick-probe.log`.
 Run `run_ps2_game.bat --full` for the full dispatch trace, IOP catalog, and
 GS snapshots. Cold builds and explicit WebGPU requests also use the full path.
+The cached quick probe defaults to 100,000 EE dispatches, whereas the full
+retail diagnostic run defaults to 500,000. Both remain bounded and stop
+at real guest failures; a longer run does not imply that a pending RPC
+has completed. Override the per-pass ceiling or subprocess timeout with:
+
+```bat
+set MAX_DISPATCHES=1000000
+set BOOT_TIMEOUT_SECONDS=180
+run_ps2_game.bat --full
+```
 
 You may run `set PS2_GAME_RESOLVE_ONLY=1` first to verify the BOOT2
 resolution without building or running the game. Optional

@@ -1554,3 +1554,42 @@ stack, interrupt-suspension state and IOP cycle count. This is read-only and
 does not advance the clock or fabricate any result. Compare snapshots to
 distinguish guest busy-polling, scheduler starvation, waiting for a different
 producer, or fault. Retain PR #145 and require all four CI gates on one head.
+
+
+## 2026-11-20 — 09:00:16 full retail replay: active ARKD method 1 loop
+
+Full archive `ps2-game-hle(20261120-090016).zip`: `first-boot.json`,
+`boot.log` and the three GS PPMs at 09:00:02, older `quick-probe.json`
+from 08:00:10 ignored. No checkout SHA is embedded.
+
+This replay confirms **IOP R3000 execution is progressing** after the
+previously established genuine semaphore-14 wakeup. Guest RPC token 7
+(server 0x500, method 1, handler 0x0007df44) remains outstanding, but
+thread 11 stays **ready** (not blocked/faulted) at all three checkpoints:
+
+| EE dispatches | IOP cycles | Thread 11 PC | v0 |
+| ---: | ---: | --- | --- |
+| 50,000 | 1,939,921 | 0x0007e0ec | 0x000dd39c |
+| 75,000 | 1,971,172 | 0x0007e114 | 0x000dd64f |
+| 100,000 | 2,002,422 | 0x0007e13c | 0x000dd903 |
+
+Thread 11 continues through a small guest-code region (PCs differ by
+0x28 bytes) and its v0 changes by approximately 692 bytes per 31,250
+IOP guest cycles. A genuinely long-running scan/copy/parse loop is
+plausible; the instructions available in the ZIP are **insufficient
+to confirm its meaning or whether it terminates**. No evidence yet
+supports fabricating a semaphore wake or changing R3000 semantics.
+At final stop, 4 IOP threads are ready, 13 blocked, and none faulted;
+one guest RPC remains pending. EE stopped at its explicit 100,000
+dispatch ceiling, 16,912,888 guest instruction attempts. The three
+PPMs remain black.
+
+**Follow-up:** configurable per-pass EE ceiling in the Windows launcher,
+default 100k for quick probes and 500k for full traces; allow
+`MAX_DISPATCHES`/`BOOT_TIMEOUT_SECONDS` overrides. Retain host-only
+bounded checkpoint logs, with dense early checkpoints and sparse
+long-run checkpoints (250k, 500k, 1M, ...), plus original guest
+R3000 instruction words surrounding at most two runnable IOP
+thread PCs at final stop. This allows analysis of actual IRX loop
+behavior without shipping game binaries, inventing a return,
+or making irreversible changes to guest state.
