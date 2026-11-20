@@ -780,12 +780,17 @@ if(EE_HAVE_LLVM_JIT_TEST)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/smoke/test_ee_timing_observer_ir_runtime.py
                 $<TARGET_FILE:ee_control_flow_ir_fixture>)
-    add_test(NAME game_runner_end_to_end
-        COMMAND ${Python3_EXECUTABLE}
-                ${CMAKE_SOURCE_DIR}/tests/tools/test_game_runner.py
-                ${CMAKE_SOURCE_DIR}
-                ${CMAKE_BINARY_DIR}
-                $<TARGET_FILE:ee_game_runner>)
+    # Independent synthetic ELF scenarios run in four parallel CI jobs;
+    # omitting the optional argument still executes the complete suite.
+    foreach(game_shard RANGE 0 3)
+        add_test(NAME game_runner_end_to_end_${game_shard}
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tests/tools/test_game_runner.py
+                    ${CMAKE_SOURCE_DIR}
+                    ${CMAKE_BINARY_DIR}
+                    $<TARGET_FILE:ee_game_runner>
+                    ${game_shard})
+    endforeach()
     add_test(NAME ee_native_thread_scheduler
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_ee_thread_scheduler.py

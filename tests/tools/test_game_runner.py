@@ -1260,10 +1260,13 @@ def make_call_elf(path):
 
 
 def main():
-    if len(sys.argv) != 4:
+    if len(sys.argv) not in (4, 5):
         raise SystemExit(
-            "usage: test_game_runner.py source_root build_dir runner_executable"
+            "usage: test_game_runner.py source_root build_dir runner_executable [shard_0_to_3]"
         )
+    shard = int(sys.argv[4]) if len(sys.argv) == 5 else None
+    if shard is not None and shard not in range(4):
+        raise SystemExit("game runner shard must be between 0 and 3")
     source = Path(sys.argv[1]).resolve()
     build = Path(sys.argv[2]).resolve()
     runner = Path(sys.argv[3]).resolve()
@@ -1324,1552 +1327,609 @@ def main():
 
     assert "NOT guest instructions" in help_result.stdout
 
-    with tempfile.TemporaryDirectory(prefix="ee-native-game-runner-") as tmp:
-        root = Path(tmp)
-        elf = root / "minimal-mips.elf"
-        make_elf(elf)
+    if shard is None or shard == 0:
+        with tempfile.TemporaryDirectory(prefix="ee-native-game-runner-") as tmp:
+            root = Path(tmp)
+            elf = root / "minimal-mips.elf"
+            make_elf(elf)
 
-        result = subprocess.run(
-            [
+            result = subprocess.run(
+                [
+                    sys.executable, str(source / "tools" / "run_game.py"),
+                    str(elf),
+                    "--build-dir", str(build),
+                    "--work-dir", str(root / "out"),
+                    "--max-dispatches=8",
+                    "--trace",
+                    "--kseg-ram",
+                    "--report", str(root / "first_boot.json"),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            # The guest JR $ra returns outside compiled code. The runner must
+            # report an incomplete execution, not falsely declare a PS2 boot.
+            assert result.returncode != 0, result.stdout + result.stderr
+            assert "EE ELF entry 0x00100008" in result.stdout, (
+                result.stdout + result.stderr
+            )
+            assert "PT_LOAD 0x00100000" in result.stdout
+            assert "EE stopped: dispatched=" in result.stdout
+            assert "dispatch=1 pc=0x00100008" in result.stdout
+            assert "guest left compiled code" in result.stderr or (
+                "guest blocked" in result.stderr
+            ), result.stdout + result.stderr
+            report = json.loads((root / "first_boot.json").read_text(encoding="utf-8"))
+            assert report["schema"] == "ee-game-run-report-v1", report
+            assert report["snapshot_kind"] == "stopped", report
+            assert report["entry_pc"] == 0x00100008, report
+            assert report["dispatches"] >= 1, report
+            assert report["guest_instruction_attempts"] >= report["dispatches"], report
+            assert report["history"][0]["from_pc"] == 0x00100008, report
+            assert report["history"][-1]["dispatch"] == report["dispatches"], report
+            assert len(report["gpr_lo"]) == 32, report
+            assert (root / "out" / "ir" / "ee_functions.json").is_file()
+            # Cycle-model prerequisite: an ordered trace of native-executed
+            # instruction PCs, without pretending attempt numbers are EE cycles.
+            # BEQL is NOT taken: its delay slot at 0x00100010 is annulled.
+            trace_elf = root / "branch-likely-trace.elf"
+            make_elf(trace_elf)
+            trace_image = bytearray(trace_elf.read_bytes())
+            for index, word in enumerate((
+                0x24080001,  # ADDIU t0, zero, 1
+                0x51000001,  # BEQL t0, zero, +1 (not taken)
+                0x24090005,  # annulled ADDIU t1, zero, 5
+                0x24020009,  # ADDIU v0, zero, 9
+                0x03e00008,  # JR ra
+                0x00000000,  # architectural delay slot
+            )):
+                struct.pack_into("<I", trace_image, 0x108 + index * 4, word)
+            trace_elf.write_bytes(trace_image)
+            trace_work = root / "instruction-trace-work"
+            trace_path = root / "instruction-trace.csv"
+            trace_report_path = root / "instruction-trace-report.json"
+            trace_cmd = [
                 sys.executable, str(source / "tools" / "run_game.py"),
-                str(elf),
-                "--build-dir", str(build),
-                "--work-dir", str(root / "out"),
-                "--max-dispatches=8",
-                "--trace",
-                "--kseg-ram",
-                "--report", str(root / "first_boot.json"),
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        # The guest JR $ra returns outside compiled code. The runner must
-        # report an incomplete execution, not falsely declare a PS2 boot.
-        assert result.returncode != 0, result.stdout + result.stderr
-        assert "EE ELF entry 0x00100008" in result.stdout, (
-            result.stdout + result.stderr
-        )
-        assert "PT_LOAD 0x00100000" in result.stdout
-        assert "EE stopped: dispatched=" in result.stdout
-        assert "dispatch=1 pc=0x00100008" in result.stdout
-        assert "guest left compiled code" in result.stderr or (
-            "guest blocked" in result.stderr
-        ), result.stdout + result.stderr
-        report = json.loads((root / "first_boot.json").read_text(encoding="utf-8"))
-        assert report["schema"] == "ee-game-run-report-v1", report
-        assert report["snapshot_kind"] == "stopped", report
-        assert report["entry_pc"] == 0x00100008, report
-        assert report["dispatches"] >= 1, report
-        assert report["guest_instruction_attempts"] >= report["dispatches"], report
-        assert report["history"][0]["from_pc"] == 0x00100008, report
-        assert report["history"][-1]["dispatch"] == report["dispatches"], report
-        assert len(report["gpr_lo"]) == 32, report
-        assert (root / "out" / "ir" / "ee_functions.json").is_file()
-        # Cycle-model prerequisite: an ordered trace of native-executed
-        # instruction PCs, without pretending attempt numbers are EE cycles.
-        # BEQL is NOT taken: its delay slot at 0x00100010 is annulled.
-        trace_elf = root / "branch-likely-trace.elf"
-        make_elf(trace_elf)
-        trace_image = bytearray(trace_elf.read_bytes())
-        for index, word in enumerate((
-            0x24080001,  # ADDIU t0, zero, 1
-            0x51000001,  # BEQL t0, zero, +1 (not taken)
-            0x24090005,  # annulled ADDIU t1, zero, 5
-            0x24020009,  # ADDIU v0, zero, 9
-            0x03e00008,  # JR ra
-            0x00000000,  # architectural delay slot
-        )):
-            struct.pack_into("<I", trace_image, 0x108 + index * 4, word)
-        trace_elf.write_bytes(trace_image)
-        trace_work = root / "instruction-trace-work"
-        trace_path = root / "instruction-trace.csv"
-        trace_report_path = root / "instruction-trace-report.json"
-        trace_cmd = [
-            sys.executable, str(source / "tools" / "run_game.py"),
-            str(trace_elf), "--build-dir", str(build),
-            "--work-dir", str(trace_work), "--max-dispatches=8",
-            "--kseg-ram", "--report", str(trace_report_path),
-        ]
-        trace_result = subprocess.run(
-            trace_cmd + [
-                "--trace-instructions", str(trace_path),
-                "--trace-instructions-window", "0x00100008:0x0010001c",
-            ], capture_output=True, text=True, check=False,
-        )
-        assert trace_result.returncode == 3, (
-            trace_result.stdout + trace_result.stderr
-        )
-        assert "NO cycle timestamps" in trace_result.stdout, trace_result.stdout
-        trace_lines = trace_path.read_text(encoding="utf-8").splitlines()
-        assert trace_lines == [
-            "attempt,pc,opcode_word,kind,reference_slot,hle_service",
-            "1,0x00100008,0x24080001,0,1,0",
-            "2,0x0010000c,0x51000001,0,2,0",
-            "2,0x00100010,0x24090005,1,3,0",
-            "3,0x00100014,0x24020009,0,4,0",
-            "4,0x00100018,0x03e00008,0,5,0",
-            "5,0x0010001c,0x00000000,0,6,0",
-            "# truncated=false range=0x00100008:0x0010001c",
-        ], trace_lines
-        traced_state = json.loads(trace_report_path.read_text(encoding="utf-8"))
-        baseline_report = root / "instruction-baseline-report.json"
-        baseline_result = subprocess.run(
-            trace_cmd[:-1] + [str(baseline_report), "--no-recompile"],
-            capture_output=True, text=True, check=False,
-        )
-        assert baseline_result.returncode == trace_result.returncode, (
-            baseline_result.stdout + baseline_result.stderr
-        )
-        baseline_state = json.loads(baseline_report.read_text(encoding="utf-8"))
-        for field in (
-            "entry_pc", "final_pc", "dispatches", "exit_reason", "exit_name",
-            "dispatch_status", "guest_instruction_attempts", "gpr_lo",
-        ):
-            assert traced_state[field] == baseline_state[field], field
-        assert traced_state["guest_instruction_attempts"] == 5, traced_state
-        assert traced_state["gpr_lo"][9] == 0, traced_state
+                str(trace_elf), "--build-dir", str(build),
+                "--work-dir", str(trace_work), "--max-dispatches=8",
+                "--kseg-ram", "--report", str(trace_report_path),
+            ]
+            trace_result = subprocess.run(
+                trace_cmd + [
+                    "--trace-instructions", str(trace_path),
+                    "--trace-instructions-window", "0x00100008:0x0010001c",
+                ], capture_output=True, text=True, check=False,
+            )
+            assert trace_result.returncode == 3, (
+                trace_result.stdout + trace_result.stderr
+            )
+            assert "NO cycle timestamps" in trace_result.stdout, trace_result.stdout
+            trace_lines = trace_path.read_text(encoding="utf-8").splitlines()
+            assert trace_lines == [
+                "attempt,pc,opcode_word,kind,reference_slot,hle_service",
+                "1,0x00100008,0x24080001,0,1,0",
+                "2,0x0010000c,0x51000001,0,2,0",
+                "2,0x00100010,0x24090005,1,3,0",
+                "3,0x00100014,0x24020009,0,4,0",
+                "4,0x00100018,0x03e00008,0,5,0",
+                "5,0x0010001c,0x00000000,0,6,0",
+                "# truncated=false range=0x00100008:0x0010001c",
+            ], trace_lines
+            traced_state = json.loads(trace_report_path.read_text(encoding="utf-8"))
+            baseline_report = root / "instruction-baseline-report.json"
+            baseline_result = subprocess.run(
+                trace_cmd[:-1] + [str(baseline_report), "--no-recompile"],
+                capture_output=True, text=True, check=False,
+            )
+            assert baseline_result.returncode == trace_result.returncode, (
+                baseline_result.stdout + baseline_result.stderr
+            )
+            baseline_state = json.loads(baseline_report.read_text(encoding="utf-8"))
+            for field in (
+                "entry_pc", "final_pc", "dispatches", "exit_reason", "exit_name",
+                "dispatch_status", "guest_instruction_attempts", "gpr_lo",
+            ):
+                assert traced_state[field] == baseline_state[field], field
+            assert traced_state["guest_instruction_attempts"] == 5, traced_state
+            assert traced_state["gpr_lo"][9] == 0, traced_state
 
-        # A genuine infinite backward branch fills exactly 65,536 samples.
-        # The overflow marker must be explicit; it must not fabricate
-        # interrupt events or silently truncate a purported complete trace.
-        loop_elf = root / "instruction-loop.elf"
-        make_elf(loop_elf)
-        loop_image = bytearray(loop_elf.read_bytes())
-        struct.pack_into("<II", loop_image, 0x108,
-                         0x1000ffff, 0x25080001)  # BEQ self; ADDIU t0,t0,1
-        loop_elf.write_bytes(loop_image)
-        loop_trace_path = root / "loop-instructions.csv"
-        loop_result = subprocess.run(
-            [
-                sys.executable, str(source / "tools" / "run_game.py"),
-                str(loop_elf), "--build-dir", str(build),
-                "--work-dir", str(root / "instruction-loop-work"),
-                "--max-dispatches=8", "--loop-budget=40000",
-                "--kseg-ram", "--trace-instructions", str(loop_trace_path),
-                "--trace-instructions-window", "0x00100008:0x0010000c",
-            ], capture_output=True, text=True, check=False,
-        )
-        assert loop_result.returncode == 3, (
-            loop_result.stdout + loop_result.stderr
-        )
-        assert "LOOP_BUDGET(5)" in loop_result.stdout, loop_result.stdout
-        assert "guest-instruction attempts: 80000" in loop_result.stdout, (
-            loop_result.stdout + loop_result.stderr
-        )
-        loop_lines = loop_trace_path.read_text(encoding="utf-8").splitlines()
-        assert len(loop_lines) == 65538, len(loop_lines)
-        assert loop_lines[1] == "1,0x00100008,0x1000ffff,0,1,0", loop_lines[1]
-        assert loop_lines[-2] == "65536,0x0010000c,0x25080001,0,65536,0", loop_lines[-2]
-        assert loop_lines[-1] == (
-            "# truncated=true range=0x00100008:0x0010000c"
-        ), loop_lines[-1]
+            # A genuine infinite backward branch fills exactly 65,536 samples.
+            # The overflow marker must be explicit; it must not fabricate
+            # interrupt events or silently truncate a purported complete trace.
+            loop_elf = root / "instruction-loop.elf"
+            make_elf(loop_elf)
+            loop_image = bytearray(loop_elf.read_bytes())
+            struct.pack_into("<II", loop_image, 0x108,
+                             0x1000ffff, 0x25080001)  # BEQ self; ADDIU t0,t0,1
+            loop_elf.write_bytes(loop_image)
+            loop_trace_path = root / "loop-instructions.csv"
+            loop_result = subprocess.run(
+                [
+                    sys.executable, str(source / "tools" / "run_game.py"),
+                    str(loop_elf), "--build-dir", str(build),
+                    "--work-dir", str(root / "instruction-loop-work"),
+                    "--max-dispatches=8", "--loop-budget=40000",
+                    "--kseg-ram", "--trace-instructions", str(loop_trace_path),
+                    "--trace-instructions-window", "0x00100008:0x0010000c",
+                ], capture_output=True, text=True, check=False,
+            )
+            assert loop_result.returncode == 3, (
+                loop_result.stdout + loop_result.stderr
+            )
+            assert "LOOP_BUDGET(5)" in loop_result.stdout, loop_result.stdout
+            assert "guest-instruction attempts: 80000" in loop_result.stdout, (
+                loop_result.stdout + loop_result.stderr
+            )
+            loop_lines = loop_trace_path.read_text(encoding="utf-8").splitlines()
+            assert len(loop_lines) == 65538, len(loop_lines)
+            assert loop_lines[1] == "1,0x00100008,0x1000ffff,0,1,0", loop_lines[1]
+            assert loop_lines[-2] == "65536,0x0010000c,0x25080001,0,65536,0", loop_lines[-2]
+            assert loop_lines[-1] == (
+                "# truncated=true range=0x00100008:0x0010000c"
+            ), loop_lines[-1]
 
 
 
-        # Probe-only time-paced JSON snapshots must preserve the exact
-        # one-dispatch host slicing, guest state and terminal report.
-        paced_report_path = root / "first_boot_paced.json"
-        paced_environment = dict(os.environ)
-        paced_environment["SDBZ_REPORT_SNAPSHOT_MS"] = "1000"
-        paced_result = subprocess.run(
-            [
-                sys.executable, str(source / "tools" / "run_game.py"),
-                str(elf), "--build-dir", str(build),
-                "--work-dir", str(root / "out"),
-                "--max-dispatches=8", "--trace", "--kseg-ram",
-                "--no-recompile", "--report", str(paced_report_path),
-            ],
-            capture_output=True, text=True, check=False,
-            env=paced_environment,
-        )
-        assert paced_result.returncode == result.returncode, (
-            paced_result.stdout + paced_result.stderr
-        )
-        assert "EE report snapshots: every 1000 ms" in paced_result.stderr, (
-            paced_result.stdout + paced_result.stderr
-        )
-        paced_report = json.loads(
-            paced_report_path.read_text(encoding="utf-8")
-        )
-        for key in (
-            "entry_pc", "final_pc", "dispatches", "exit_reason", "exit_name",
-            "dispatch_status", "guest_instruction_attempts", "gpr_lo",
-            "history", "syscall_history",
-        ):
-            assert paced_report[key] == report[key], (key, report, paced_report)
+            # Probe-only time-paced JSON snapshots must preserve the exact
+            # one-dispatch host slicing, guest state and terminal report.
+            paced_report_path = root / "first_boot_paced.json"
+            paced_environment = dict(os.environ)
+            paced_environment["SDBZ_REPORT_SNAPSHOT_MS"] = "1000"
+            paced_result = subprocess.run(
+                [
+                    sys.executable, str(source / "tools" / "run_game.py"),
+                    str(elf), "--build-dir", str(build),
+                    "--work-dir", str(root / "out"),
+                    "--max-dispatches=8", "--trace", "--kseg-ram",
+                    "--no-recompile", "--report", str(paced_report_path),
+                ],
+                capture_output=True, text=True, check=False,
+                env=paced_environment,
+            )
+            assert paced_result.returncode == result.returncode, (
+                paced_result.stdout + paced_result.stderr
+            )
+            assert "EE report snapshots: every 1000 ms" in paced_result.stderr, (
+                paced_result.stdout + paced_result.stderr
+            )
+            paced_report = json.loads(
+                paced_report_path.read_text(encoding="utf-8")
+            )
+            for key in (
+                "entry_pc", "final_pc", "dispatches", "exit_reason", "exit_name",
+                "dispatch_status", "guest_instruction_attempts", "gpr_lo",
+                "history", "syscall_history",
+            ):
+                assert paced_report[key] == report[key], (key, report, paced_report)
 
-        invalid_environment = dict(os.environ)
-        invalid_environment["SDBZ_REPORT_SNAPSHOT_MS"] = "not-a-number"
-        invalid_result = subprocess.run(
-            [
-                sys.executable, str(source / "tools" / "run_game.py"),
-                str(elf), "--build-dir", str(build),
-                "--work-dir", str(root / "out"),
-                "--max-dispatches=8", "--no-recompile",
-                "--report", str(root / "invalid-snapshot.json"),
-            ],
-            capture_output=True, text=True, check=False,
-            env=invalid_environment,
-        )
-        assert invalid_result.returncode != 0, (
-            invalid_result.stdout + invalid_result.stderr
-        )
-        assert "invalid SDBZ_REPORT_SNAPSHOT_MS" in invalid_result.stderr, (
-            invalid_result.stdout + invalid_result.stderr
-        )
-        assert (root / "out" / "objects" / "objects.json").is_file()
-        link_only = subprocess.run(
-            [
-                sys.executable, str(source / "tools" / "run_game.py"),
-                str(elf),
-                "--build-dir", str(build),
-                "--work-dir", str(root / "out"),
-                "--no-recompile", "--link-only",
-            ],
-            capture_output=True, text=True, check=False,
-        )
-        assert link_only.returncode == 0, link_only.stdout + link_only.stderr
-        assert "native library ready:" in link_only.stdout, link_only.stdout
-        assert "EE stopped:" not in link_only.stdout, link_only.stdout
+            invalid_environment = dict(os.environ)
+            invalid_environment["SDBZ_REPORT_SNAPSHOT_MS"] = "not-a-number"
+            invalid_result = subprocess.run(
+                [
+                    sys.executable, str(source / "tools" / "run_game.py"),
+                    str(elf), "--build-dir", str(build),
+                    "--work-dir", str(root / "out"),
+                    "--max-dispatches=8", "--no-recompile",
+                    "--report", str(root / "invalid-snapshot.json"),
+                ],
+                capture_output=True, text=True, check=False,
+                env=invalid_environment,
+            )
+            assert invalid_result.returncode != 0, (
+                invalid_result.stdout + invalid_result.stderr
+            )
+            assert "invalid SDBZ_REPORT_SNAPSHOT_MS" in invalid_result.stderr, (
+                invalid_result.stdout + invalid_result.stderr
+            )
+            assert (root / "out" / "objects" / "objects.json").is_file()
+            link_only = subprocess.run(
+                [
+                    sys.executable, str(source / "tools" / "run_game.py"),
+                    str(elf),
+                    "--build-dir", str(build),
+                    "--work-dir", str(root / "out"),
+                    "--no-recompile", "--link-only",
+                ],
+                capture_output=True, text=True, check=False,
+            )
+            assert link_only.returncode == 0, link_only.stdout + link_only.stderr
+            assert "native library ready:" in link_only.stdout, link_only.stdout
+            assert "EE stopped:" not in link_only.stdout, link_only.stdout
 
-        # A host-only code/tool update must preserve the previously emitted
-        # guest IR and objects. Simulate an older v1 provenance snapshot
-        # that predates separate IR-generator source hashes, and change only
-        # the saved linker-script fingerprint.
-        cache_path = root / "out" / "translation-cache.json"
-        original_snapshot = json.loads(cache_path.read_text(encoding="utf-8"))
-        preserved_metadata = (root / "out" / "ir" / "ee_functions.json").read_bytes()
-        preserved_ir = {
-            item.name: item.read_bytes()
-            for item in (root / "out" / "ir").glob("*.ll")
-        }
-        legacy_snapshot = dict(original_snapshot)
-        legacy_snapshot.pop("ir_sources", None)
-        legacy_snapshot.pop("ir_hashes", None)
-        legacy_snapshot["inputs"] = dict(original_snapshot["inputs"])
-        legacy_snapshot["inputs"]["tools/link_native_objects.py"] = "0" * 64
-        cache_path.write_text(
-            json.dumps(legacy_snapshot) + "\n", encoding="utf-8"
-        )
-        stale_link = subprocess.run(
-            [
-                sys.executable, str(source / "tools" / "run_game.py"),
-                str(elf), "--build-dir", str(build),
-                "--work-dir", str(root / "out"),
-                "--no-recompile", "--link-only",
-            ],
-            capture_output=True, text=True, check=False,
-        )
-        assert stale_link.returncode != 0, stale_link
-        assert "tools/link_native_objects.py changed" in stale_link.stderr
+            # A host-only code/tool update must preserve the previously emitted
+            # guest IR and objects. Simulate an older v1 provenance snapshot
+            # that predates separate IR-generator source hashes, and change only
+            # the saved linker-script fingerprint.
+            cache_path = root / "out" / "translation-cache.json"
+            original_snapshot = json.loads(cache_path.read_text(encoding="utf-8"))
+            preserved_metadata = (root / "out" / "ir" / "ee_functions.json").read_bytes()
+            preserved_ir = {
+                item.name: item.read_bytes()
+                for item in (root / "out" / "ir").glob("*.ll")
+            }
+            legacy_snapshot = dict(original_snapshot)
+            legacy_snapshot.pop("ir_sources", None)
+            legacy_snapshot.pop("ir_hashes", None)
+            legacy_snapshot["inputs"] = dict(original_snapshot["inputs"])
+            legacy_snapshot["inputs"]["tools/link_native_objects.py"] = "0" * 64
+            cache_path.write_text(
+                json.dumps(legacy_snapshot) + "\n", encoding="utf-8"
+            )
+            stale_link = subprocess.run(
+                [
+                    sys.executable, str(source / "tools" / "run_game.py"),
+                    str(elf), "--build-dir", str(build),
+                    "--work-dir", str(root / "out"),
+                    "--no-recompile", "--link-only",
+                ],
+                capture_output=True, text=True, check=False,
+            )
+            assert stale_link.returncode != 0, stale_link
+            assert "tools/link_native_objects.py changed" in stale_link.stderr
 
-        repaired = subprocess.run(
-            [
+            repaired = subprocess.run(
+                [
+                    sys.executable, str(source / "tools" / "run_game.py"),
+                    str(elf), "--build-dir", str(build),
+                    "--work-dir", str(root / "out"),
+                    "--relink-existing", "--link-only",
+                ],
+                capture_output=True, text=True, check=False,
+            )
+            assert repaired.returncode == 0, repaired.stdout + repaired.stderr
+            assert "preserving guest IR and objects" in repaired.stdout, repaired.stdout
+            assert "ee_recomp: loading" not in repaired.stdout, repaired.stdout
+            assert "reused 1/1 cached object(s)" in repaired.stdout, repaired.stdout
+            assert (root / "out" / "ir" / "ee_functions.json").read_bytes() == preserved_metadata
+            assert {
+                item.name: item.read_bytes()
+                for item in (root / "out" / "ir").glob("*.ll")
+            } == preserved_ir
+
+            # A mismatched generator-source fingerprint must not reuse old IR.
+            repair_command = [
                 sys.executable, str(source / "tools" / "run_game.py"),
                 str(elf), "--build-dir", str(build),
                 "--work-dir", str(root / "out"),
                 "--relink-existing", "--link-only",
-            ],
-            capture_output=True, text=True, check=False,
-        )
-        assert repaired.returncode == 0, repaired.stdout + repaired.stderr
-        assert "preserving guest IR and objects" in repaired.stdout, repaired.stdout
-        assert "ee_recomp: loading" not in repaired.stdout, repaired.stdout
-        assert "reused 1/1 cached object(s)" in repaired.stdout, repaired.stdout
-        assert (root / "out" / "ir" / "ee_functions.json").read_bytes() == preserved_metadata
-        assert {
-            item.name: item.read_bytes()
-            for item in (root / "out" / "ir").glob("*.ll")
-        } == preserved_ir
-
-        # A mismatched generator-source fingerprint must not reuse old IR.
-        repair_command = [
-            sys.executable, str(source / "tools" / "run_game.py"),
-            str(elf), "--build-dir", str(build),
-            "--work-dir", str(root / "out"),
-            "--relink-existing", "--link-only",
-        ]
-        repaired_snapshot = json.loads(cache_path.read_text(encoding="utf-8"))
-        altered_sources = dict(repaired_snapshot)
-        altered_sources["ir_sources"] = dict(repaired_snapshot["ir_sources"])
-        altered_sources["ir_sources"]["ELF"] = "f" * 64
-        cache_path.write_text(
-            json.dumps(altered_sources) + "\n", encoding="utf-8"
-        )
-        stale_ir_source = subprocess.run(
-            repair_command, capture_output=True, text=True, check=False,
-        )
-        assert stale_ir_source.returncode != 0, stale_ir_source
-        assert "guest IR generation input changed: ELF" in stale_ir_source.stderr
-        cache_path.write_text(
-            json.dumps(repaired_snapshot) + "\n", encoding="utf-8"
-        )
-
-        # Even with a matching ELF and generator, the preserved code's
-        # content must still match its recorded hashes.
-        module_path = next((root / "out" / "ir").glob("*.ll"))
-        original_module = module_path.read_bytes()
-        module_path.write_bytes(original_module + b"\n; tampered\n")
-        modified_module = subprocess.run(
-            repair_command, capture_output=True, text=True, check=False,
-        )
-        assert modified_module.returncode != 0, modified_module
-        assert "preserved LLVM IR module was modified" in modified_module.stderr
-        module_path.write_bytes(original_module)
-
-        # A replay must reject old native code when the same ELF path
-        # changes, even if its entry and translated function map do not.
-        cache_path = root / "out" / "translation-cache.json"
-        provenance = json.loads(cache_path.read_text(encoding="utf-8"))
-        assert provenance["schema"] == "ee-translation-cache-v1", provenance
-        cached_command = [
-            sys.executable, str(source / "tools" / "run_game.py"),
-            str(elf), "--build-dir", str(build),
-            "--work-dir", str(root / "out"),
-            "--no-recompile", "--link-only",
-        ]
-        original_elf = elf.read_bytes()
-        altered_elf = bytearray(original_elf)
-        altered_elf[-1] ^= 1
-        elf.write_bytes(altered_elf)
-        changed_elf = subprocess.run(
-            cached_command, capture_output=True, text=True, check=False,
-        )
-        assert changed_elf.returncode != 0, changed_elf
-        assert "ELF changed" in changed_elf.stderr, changed_elf.stderr
-        elf.write_bytes(original_elf)
-
-        # An unchanged ELF still cannot reuse code from a different
-        # recompiler build or a different LLVM object optimization mode.
-        changed_compiler = dict(provenance)
-        changed_compiler["inputs"] = dict(provenance["inputs"])
-        changed_compiler["inputs"]["ee_recomp"] = "0" * 64
-        cache_path.write_text(
-            json.dumps(changed_compiler) + "\n", encoding="utf-8",
-        )
-        mismatched_compiler = subprocess.run(
-            cached_command, capture_output=True, text=True, check=False,
-        )
-        assert mismatched_compiler.returncode != 0, mismatched_compiler
-        assert "ee_recomp changed" in mismatched_compiler.stderr, (
-            mismatched_compiler.stderr
-        )
-        cache_path.write_text(
-            json.dumps(provenance) + "\n", encoding="utf-8",
-        )
-        wrong_optimization = subprocess.run(
-            cached_command + ["--emit-opt=2"],
-            capture_output=True, text=True, check=False,
-        )
-        assert wrong_optimization.returncode != 0, wrong_optimization
-        assert "different --emit-opt" in wrong_optimization.stderr, (
-            wrong_optimization.stderr
-        )
-
-        library_name = (
-            "game-translated.dll" if sys.platform == "win32" else
-            "libgame-translated.dylib" if sys.platform == "darwin" else
-            "libgame-translated.so"
-        )
-        library = root / "out" / library_name
-
-        # A folder-backed HLE IOP backend must not require an ISO or ROM0,
-        # even when the legacy ROM0 environment variable is present.
-        disc_folder = root / "extracted-disc"
-        disc_folder.mkdir()
-        (disc_folder / "SYSTEM.CNF").write_text(
-            "BOOT2 = cdrom0:\\MINIMAL-MIPS.ELF;1\n", encoding="ascii"
-        )
-        hle_environment = dict(os.environ)
-        hle_environment["SDBZ_IOP_ROM0"] = str(root / "absent-rom0.bin")
-        folder_command = [
-            str(runner), str(elf), str(library),
-            "--max-dispatches=8", f"--disc-folder={disc_folder}",
-        ]
-        folder_result = subprocess.run(
-            folder_command, capture_output=True, text=True, check=False,
-            env=hle_environment,
-        )
-        assert "[disc] HLE folder mounted:" in folder_result.stdout, (
-            folder_result.stdout + folder_result.stderr
-        )
-        assert "virtual ISO9660 sectors=" in folder_result.stdout, (
-            folder_result.stdout + folder_result.stderr
-        )
-        assert "IOP cdvdman search service install failed" not in (
-            folder_result.stdout + folder_result.stderr
-        )
-        assert "IOP ROM0 reset:" not in folder_result.stdout, folder_result.stdout
-        assert "EE stopped:" in folder_result.stdout, folder_result.stdout
-
-        wrapper_folder = subprocess.run(
-            [
-                sys.executable, str(source / "tools" / "run_game.py"),
-                str(elf), "--build-dir", str(build),
-                "--work-dir", str(root / "out"), "--no-recompile",
-                "--max-dispatches=8", "--disc-folder", str(disc_folder),
-            ],
-            capture_output=True, text=True, check=False,
-            env=hle_environment,
-        )
-        assert "[disc] HLE folder mounted:" in wrapper_folder.stdout, (
-            wrapper_folder.stdout + wrapper_folder.stderr
-        )
-        assert "EE stopped:" in wrapper_folder.stdout, wrapper_folder.stdout
-
-        invalid_folder = subprocess.run(
-            folder_command[:-1] +
-            [f"--disc-folder={root / 'missing-disc-folder'}"],
-            capture_output=True, text=True, check=False,
-            env=hle_environment,
-        )
-        assert invalid_folder.returncode == 2, invalid_folder
-        assert "disc folder must be an existing" in invalid_folder.stderr
-
-        conflicting_sources = subprocess.run(
-            folder_command + ["--disc-image=dummy.iso"],
-            capture_output=True, text=True, check=False,
-            env=hle_environment,
-        )
-        assert conflicting_sources.returncode == 2, conflicting_sources
-        assert "usage:" in conflicting_sources.stdout, conflicting_sources.stdout
-
-        original_library = library.read_bytes()
-        altered_library = bytearray(original_library)
-        altered_library[-1] ^= 1
-        library.write_bytes(altered_library)
-        changed_library = subprocess.run(
-            cached_command, capture_output=True, text=True, check=False,
-        )
-        assert changed_library.returncode != 0, changed_library
-        assert f"{library_name} changed" in changed_library.stderr, (
-            changed_library.stderr
-        )
-        library.write_bytes(original_library)
-
-        # Confirm a completely unchanged translation is still reusable.
-        valid_cached = subprocess.run(
-            cached_command, capture_output=True, text=True, check=False,
-        )
-        assert valid_cached.returncode == 0, (
-            valid_cached.stdout + valid_cached.stderr
-        )
-
-        # Compare unoptimized and optimized native EE output for the same
-        # guest instructions. Optimizing host code must not change EE state.
-        optimized_report = root / "optimized.json"
-        optimized = subprocess.run(
-            [
-                sys.executable, str(source / "tools" / "run_game.py"),
-                str(elf),
-                "--build-dir", str(build),
-                "--work-dir", str(root / "optimized"),
-                "--max-dispatches=8",
-                "--emit-opt=2",
-                "--kseg-ram",
-                "--report", str(optimized_report),
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        optimized_state = json.loads(optimized_report.read_text(encoding="utf-8"))
-        optimized_objects = json.loads(
-            (root / "optimized" / "objects" / "objects.json").read_text(encoding="utf-8")
-        )
-        assert optimized_objects["optimization_level"] == 2, optimized_objects
-        for field in ("entry_pc", "final_pc", "dispatches", "exit_reason",
-                      "dispatch_status", "gpr_lo"):
-            assert optimized_state[field] == report[field], (field, optimized_state, report)
-        assert optimized.returncode == result.returncode, (
-            optimized.stdout + optimized.stderr
-        )
-
-
-    with tempfile.TemporaryDirectory(prefix="ee-native-setupthread-") as tmp:
-        root = Path(tmp)
-        elf = root / "startup-mips.elf"
-        make_elf(elf, startup=True)
-        result = subprocess.run(
-            [
-                sys.executable, str(source / "tools" / "run_game.py"),
-                str(elf),
-                "--build-dir", str(build),
-                "--work-dir", str(root / "out"),
-                "--max-dispatches=8",
-                "--hle-startup",
-                "--trace",
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert "HLE SetupThread:" in result.stdout, (
-            result.stdout + result.stderr
-        )
-        assert "EE stopped: dispatched=2" in result.stdout, (
-            result.stdout + result.stderr
-        )
-        assert "guest left compiled code" in result.stderr, (
-            result.stdout + result.stderr
-        )
-
-    with tempfile.TemporaryDirectory(prefix="ee-native-auto-expand-") as tmp:
-        root = Path(tmp)
-        elf = root / "caller-callee.elf"
-        make_call_elf(elf)
-        base = [
-            sys.executable, str(source / "tools" / "run_game.py"),
-            str(elf),
-            "--build-dir", str(build),
-            "--work-dir", str(root / "out"),
-            "--max-dispatches=8",
-            "--trace",
-        ]
-        initial = subprocess.run(
-            base,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert "EE stopped: dispatched=" in initial.stdout, (
-            initial.stdout + initial.stderr
-        )
-        assert "auto-expand: compiling" not in initial.stdout, initial.stdout
-        assert "link_native_objects: compiling 6 runtime sources (cache miss)" in initial.stdout, (
-            initial.stdout + initial.stderr
-        )
-        metadata_path = root / "out" / "ir" / "ee_functions.json"
-        assert json.loads(metadata_path.read_text(encoding="utf-8"))["function_count"] == 1
-
-        resumed = subprocess.run(
-            base + ["--no-recompile", "--auto-expand=1"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert "auto-expand: compiling reachable PC 0x00100030" in resumed.stdout, (
-            resumed.stdout + resumed.stderr
-        )
-        assert "EE stopped: dispatched=" in resumed.stdout, (
-            resumed.stdout + resumed.stderr
-        )
-        assert resumed.stdout.count("ee_recomp: loading") == 1, resumed.stdout
-        assert "verify_ir: append-only preserved 1 cached object(s) without rehash" in resumed.stdout, (
-            resumed.stdout + resumed.stderr
-        )
-        assert "link_native_objects: reused 6 cached runtime objects" in resumed.stdout, (
-            resumed.stdout + resumed.stderr
-        )
-        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-        assert metadata["function_count"] == 2, metadata
-
-    # Batch two related explicit function entries from one cache reload,
-    # then publish one merged metadata file. Existing IR stays untouched.
-    with tempfile.TemporaryDirectory(prefix="ee-native-batch-append-") as tmp:
-        root = Path(tmp)
-        elf = root / "overlap-batch.elf"
-        make_overlapping_entry_elf(elf)
-        result = subprocess.run(
-            [
-                sys.executable, str(source / "tools" / "run_game.py"),
-                str(elf), "--build-dir", str(build),
-                "--work-dir", str(root / "out"),
-                "--max-dispatches=64", "--hle-startup", "--trace",
-                "--extra-functions=0x00100050,0x00100054",
-            ],
-            capture_output=True, text=True, check=False,
-        )
-        assert "ee_recomp: loading" in result.stdout, result.stdout + result.stderr
-        assert result.stdout.count("ee_recomp: loading") == 2, (
-            result.stdout + result.stderr
-        )  # ELF entry translation + ONE --functions batch
-        assert "auto-expand: appended 2 function(s) in one discovery" in result.stdout, (
-            result.stdout + result.stderr
-        )
-        assert "functions=2" in result.stdout, result.stdout
-        metadata = json.loads(
-            (root / "out" / "ir" / "ee_functions.json").read_text(encoding="utf-8")
-        )
-        owners = [
-            int(pc, 0) for fn in metadata["functions"]
-            for pc in fn["block_pcs"]
-        ]
-        assert metadata["function_count"] == 3, metadata
-        assert len(set(owners)) == len(owners), metadata
-        assert 0x00100050 in owners and 0x00100054 in owners
-        assert "HLE FlushCache:" in result.stdout, result.stdout + result.stderr
-
-        # Reject malformed target lists instead of silently truncating,
-        # misparsing or compiling the wrong guest address.
-        recomp = driver.native_executable(build, "ee_recomp")
-        for invalid_list in (
-            "0x00100050,0x00100050",  # duplicate
-            "0x00100050,0x00100051",  # unaligned
-            "0x00100050,,0x00100054",  # malformed
-            "0x00100050,not_hex",  # invalid
-        ):
-            invalid = subprocess.run([
-                str(recomp), str(elf), str(root / "invalid"),
-                "--functions=" + invalid_list,
-            ], capture_output=True, text=True, check=False)
-            assert invalid.returncode != 0, (
-                invalid_list, invalid.stdout, invalid.stderr
+            ]
+            repaired_snapshot = json.loads(cache_path.read_text(encoding="utf-8"))
+            altered_sources = dict(repaired_snapshot)
+            altered_sources["ir_sources"] = dict(repaired_snapshot["ir_sources"])
+            altered_sources["ir_sources"]["ELF"] = "f" * 64
+            cache_path.write_text(
+                json.dumps(altered_sources) + "\n", encoding="utf-8"
+            )
+            stale_ir_source = subprocess.run(
+                repair_command, capture_output=True, text=True, check=False,
+            )
+            assert stale_ir_source.returncode != 0, stale_ir_source
+            assert "guest IR generation input changed: ELF" in stale_ir_source.stderr
+            cache_path.write_text(
+                json.dumps(repaired_snapshot) + "\n", encoding="utf-8"
             )
 
-    for invalid_set in (False, True):
-        with tempfile.TemporaryDirectory(prefix="ee-native-osd-config-") as tmp:
-            root = Path(tmp)
-            elf = root / "kernel-osd-config.elf"
-            make_osd_config_elf(elf, invalid_set=invalid_set)
-            report_path = root / "osd-config.json"
-            command = [
+            # Even with a matching ELF and generator, the preserved code's
+            # content must still match its recorded hashes.
+            module_path = next((root / "out" / "ir").glob("*.ll"))
+            original_module = module_path.read_bytes()
+            module_path.write_bytes(original_module + b"\n; tampered\n")
+            modified_module = subprocess.run(
+                repair_command, capture_output=True, text=True, check=False,
+            )
+            assert modified_module.returncode != 0, modified_module
+            assert "preserved LLVM IR module was modified" in modified_module.stderr
+            module_path.write_bytes(original_module)
+
+            # A replay must reject old native code when the same ELF path
+            # changes, even if its entry and translated function map do not.
+            cache_path = root / "out" / "translation-cache.json"
+            provenance = json.loads(cache_path.read_text(encoding="utf-8"))
+            assert provenance["schema"] == "ee-translation-cache-v1", provenance
+            cached_command = [
                 sys.executable, str(source / "tools" / "run_game.py"),
-                str(elf),
-                "--build-dir", str(build),
+                str(elf), "--build-dir", str(build),
                 "--work-dir", str(root / "out"),
-                "--max-dispatches=16",
-                "--trace",
-                "--report", str(report_path),
+                "--no-recompile", "--link-only",
             ]
+            original_elf = elf.read_bytes()
+            altered_elf = bytearray(original_elf)
+            altered_elf[-1] ^= 1
+            elf.write_bytes(altered_elf)
+            changed_elf = subprocess.run(
+                cached_command, capture_output=True, text=True, check=False,
+            )
+            assert changed_elf.returncode != 0, changed_elf
+            assert "ELF changed" in changed_elf.stderr, changed_elf.stderr
+            elf.write_bytes(original_elf)
 
-            # The kernel must never be silently enabled without HLE.
-            if not invalid_set:
-                without_hle = subprocess.run(
-                    command, capture_output=True, text=True, check=False,
-                )
-                assert without_hle.returncode != 0, (
-                    without_hle.stdout + without_hle.stderr
-                )
-                refused = json.loads(report_path.read_text(encoding="utf-8"))
-                assert refused["cop0_epc"] == 0x00100014, refused
-                assert "HLE GetOsdConfigParam:" not in without_hle.stdout
-                command.append("--no-recompile")
-
-            with_hle = subprocess.run(
-                command + ["--hle-startup"],
+            # An unchanged ELF still cannot reuse code from a different
+            # recompiler build or a different LLVM object optimization mode.
+            changed_compiler = dict(provenance)
+            changed_compiler["inputs"] = dict(provenance["inputs"])
+            changed_compiler["inputs"]["ee_recomp"] = "0" * 64
+            cache_path.write_text(
+                json.dumps(changed_compiler) + "\n", encoding="utf-8",
+            )
+            mismatched_compiler = subprocess.run(
+                cached_command, capture_output=True, text=True, check=False,
+            )
+            assert mismatched_compiler.returncode != 0, mismatched_compiler
+            assert "ee_recomp changed" in mismatched_compiler.stderr, (
+                mismatched_compiler.stderr
+            )
+            cache_path.write_text(
+                json.dumps(provenance) + "\n", encoding="utf-8",
+            )
+            wrong_optimization = subprocess.run(
+                cached_command + ["--emit-opt=2"],
                 capture_output=True, text=True, check=False,
             )
-            assert with_hle.returncode != 0, with_hle.stdout + with_hle.stderr
-            assert "HLE GetOsdConfigParam: pointer=0x00100200 value=0x00000000 result=0" in with_hle.stdout, (
-                with_hle.stdout + with_hle.stderr
+            assert wrong_optimization.returncode != 0, wrong_optimization
+            assert "different --emit-opt" in wrong_optimization.stderr, (
+                wrong_optimization.stderr
             )
-            assert "HLE SetOsdConfigParam: pointer=0x00100210 value=0x12345678 result=0" in with_hle.stdout, (
-                with_hle.stdout + with_hle.stderr
+
+            library_name = (
+                "game-translated.dll" if sys.platform == "win32" else
+                "libgame-translated.dylib" if sys.platform == "darwin" else
+                "libgame-translated.so"
             )
-            assert "HLE GetOsdConfigParam: pointer=0x00100220 value=0x12345678 result=0" in with_hle.stdout, (
-                with_hle.stdout + with_hle.stderr
+            library = root / "out" / library_name
+
+            # A folder-backed HLE IOP backend must not require an ISO or ROM0,
+            # even when the legacy ROM0 environment variable is present.
+            disc_folder = root / "extracted-disc"
+            disc_folder.mkdir()
+            (disc_folder / "SYSTEM.CNF").write_text(
+                "BOOT2 = cdrom0:\\MINIMAL-MIPS.ELF;1\n", encoding="ascii"
             )
-            denied_service = "Set" if invalid_set else "Get"
-            denied_address = 0x00100221 if invalid_set else 0x7ffffffc
-            assert (
-                f"{denied_service}OsdConfigParam HLE refused unbacked or "
-                f"unaligned pointer 0x{denied_address:08x}"
-            ) in with_hle.stderr, with_hle.stdout + with_hle.stderr
-
-            state = json.loads(report_path.read_text(encoding="utf-8"))
-            assert state["cop0_epc"] == 0x00100058, state
-            registers = state["gpr_lo"]
-            assert registers[8] == 0, state           # initially zero
-            assert registers[9] == 0, state           # Get returns zero
-            assert registers[10] == 0, state          # Set returns zero
-            assert registers[11] == 0x12345678, state # Set persisted
-            assert registers[12] == 0, state          # second Get result
-            assert registers[13] == 0, state          # no fallthrough
-            assert state["exit_name"] == "EXCEPTION", state
-
-    with tempfile.TemporaryDirectory(prefix="ee-native-sif-dchain-") as tmp:
-        root = Path(tmp)
-        elf = root / "sif-dchain.elf"
-        make_sif_set_dchain_elf(elf)
-        report_path = root / "sif-dchain.json"
-        command = [
-            sys.executable, str(source / "tools" / "run_game.py"),
-            str(elf), "--build-dir", str(build),
-            "--work-dir", str(root / "out"),
-            "--max-dispatches=16", "--trace",
-            "--report", str(report_path),
-        ]
-
-        # No HLE means the first syscall remains an exception.
-        disabled = subprocess.run(
-            command, capture_output=True, text=True, check=False,
-        )
-        assert disabled.returncode == 3, disabled.stdout + disabled.stderr
-        disabled_state = json.loads(report_path.read_text(encoding="utf-8"))
-        assert disabled_state["cop0_epc"] == 0x00100028, disabled_state
-        assert "HLE SifSetDChain" not in disabled.stdout
-        assert disabled_state["gpr_lo"][2] == 0x1000c000, disabled_state
-
-        enabled = subprocess.run(
-            command + ["--no-recompile", "--hle-startup"],
-            capture_output=True, text=True, check=False,
-        )
-        assert enabled.returncode == 3, enabled.stdout + enabled.stderr
-        assert (
-            "HLE SifSetDChain: channel=5 qwc=0 "
-            "chcr=0x00000184 result=void (no IOP producer)"
-        ) in enabled.stdout, enabled.stdout + enabled.stderr
-        state = json.loads(report_path.read_text(encoding="utf-8"))
-        assert state["exit_name"] == "EXCEPTION", state
-        assert state["cop0_epc"] == 0x00100040, state
-        assert state["gpr_lo"][2] == 0x1000c000, state
-        assert state["gpr_lo"][16] == 0x1000c000, state  # V0 preserved
-        assert state["gpr_lo"][17] == 0, state           # SIF0 QWC
-        assert state["gpr_lo"][18] == 0x184, state       # SIF0 CHCR
-        assert state["gpr_lo"][19] == 0, state           # SIF0 MADR
-        assert "guest blocked by an unsupported operation" in enabled.stderr
-
-
-    with tempfile.TemporaryDirectory(prefix="ee-native-sif-register-") as tmp:
-        root = Path(tmp)
-        elf = root / "sif-register.elf"
-        make_sif_register_elf(elf)
-        report_path = root / "sif-register.json"
-        command = [
-            sys.executable, str(source / "tools" / "run_game.py"),
-            str(elf), "--build-dir", str(build),
-            "--work-dir", str(root / "out"),
-            "--max-dispatches=16", "--trace",
-            "--report", str(report_path),
-        ]
-
-        disabled = subprocess.run(
-            command, capture_output=True, text=True, check=False,
-        )
-        assert disabled.returncode == 3, disabled.stdout + disabled.stderr
-        disabled_state = json.loads(report_path.read_text(encoding="utf-8"))
-        assert disabled_state["cop0_epc"] == 0x00100010, disabled_state
-        assert "HLE SifGetReg:" not in disabled.stdout, disabled.stdout
-
-        enabled = subprocess.run(
-            command + ["--no-recompile", "--hle-startup"],
-            capture_output=True, text=True, check=False,
-        )
-        assert enabled.returncode == 3, enabled.stdout + enabled.stderr
-        state = json.loads(report_path.read_text(encoding="utf-8"))
-        assert state["exit_name"] == "EXCEPTION", state
-        assert state["cop0_epc"] == 0x001000a0, state
-        regs = state["gpr_lo"]
-        assert regs[16] == 0, state              # initial SUBADDR
-        assert regs[17] == 0, state              # SifSetReg returns 0
-        assert regs[18] == 0x00102200, state     # software sysreg persists
-        assert regs[19] == 0, state              # main address set returns 0
-        assert regs[20] == 0x00102300, state     # MSCOM direct MMIO
-        assert regs[21] == 0x00102300, state     # MSCOM syscall read
-        assert regs[22] == 0x00020000, state     # MSFLAG OR'd via SifSetReg
-        assert regs[23] == 0, state              # no fabricated IOP SUBADDR
-        assert regs[9] == 0, state               # no fallthrough after refusal
-        assert (
-            "HLE SifGetReg: register=0x80000000 result=0x00000000"
-        ) in enabled.stdout, enabled.stdout + enabled.stderr
-        assert (
-            "HLE SifGetReg: register=0x80000000 result=0x00102200"
-        ) in enabled.stdout, enabled.stdout + enabled.stderr
-        assert (
-            "HLE SifSetReg: register=0x00000003 "
-            "value=0x00020000 result=0"
-        ) in enabled.stdout, enabled.stdout + enabled.stderr
-        assert (
-            "SifGetReg HLE refused unsupported register=0x7fff0000"
-        ) in enabled.stderr, enabled.stdout + enabled.stderr
-
-
-    # When no IOP is running, repeated reads of IOP-owned SMFLAG must
-    # report a bounded diagnostic rather than consuming the whole replay.
-    # Default (0) intentionally leaves ordinary execution untouched.
-    with tempfile.TemporaryDirectory(prefix="ee-native-sif-poll-") as tmp:
-        root = Path(tmp)
-        elf = root / "sif-poll.elf"
-        make_sif_poll_elf(elf)
-        report_path = root / "sif-poll.json"
-        command = [
-            sys.executable, str(source / "tools" / "run_game.py"),
-            str(elf), "--build-dir", str(build),
-            "--work-dir", str(root / "out"),
-            "--max-dispatches=48", "--hle-startup", "--trace",
-            "--report", str(report_path),
-        ]
-        baseline = subprocess.run(
-            command + ["--sif-poll-limit=0"],
-            capture_output=True, text=True, check=False,
-        )
-        # The last handled syscall can retain EXCEPTION/status=0 when
-        # the native dispatch budget ends at that very boundary.
-        assert baseline.returncode == 3, baseline.stdout + baseline.stderr
-        baseline_state = json.loads(report_path.read_text(encoding="utf-8"))
-        assert baseline_state["dispatches"] == 48, baseline_state
-        assert "SIF SMFLAG polling stalled" not in baseline.stderr
-
-        bounded = subprocess.run(
-            command + ["--no-recompile", "--sif-poll-limit=6"],
-            capture_output=True, text=True, check=False,
-        )
-        assert bounded.returncode == 3, bounded.stdout + bounded.stderr
-        bounded_state = json.loads(report_path.read_text(encoding="utf-8"))
-        assert bounded_state["dispatches"] < 48, bounded_state
-        assert bounded_state["final_pc"] == 0x00100010, bounded_state
-        assert bounded_state["exit_name"] == "UNSUPPORTED", bounded_state
-        assert "SIF SMFLAG polling stalled:" in bounded.stderr, bounded.stderr
-        assert "guest_epc=0x00100010 register=4 value=0 reads=6" in bounded.stderr, bounded.stderr
-
-    # HLE-only extracted-disc mode models the already-bootstrapped IOP
-    # service baseline, matching ps2-web-recomp's SDBZ HLE model. It must
-    # not require ROM0 or pretend a guest IRX published that SMFLAG.
-    with tempfile.TemporaryDirectory(prefix="ee-native-hle-disc-sif-") as tmp:
-        root = Path(tmp)
-        elf = root / "ee-sif-wait.elf"
-        disc = root / "PS2_GAME"
-        disc.mkdir()
-        (disc / "SYSTEM.CNF").write_text(
-            "BOOT2 = cdrom0:\\\\SLUS_214.42;1\\n", encoding="ascii"
-        )
-        make_sif_handshake_elf(elf)
-        report_path = root / "hle-sif.json"
-        command = [
-            sys.executable, str(source / "tools" / "run_game.py"),
-            str(elf), "--build-dir", str(build),
-            "--work-dir", str(root / "out"),
-            "--max-dispatches=48", "--hle-startup", "--trace",
-            "--sif-poll-limit=6", "--report", str(report_path),
-            "--disc-folder", str(disc),
-        ]
-        run = subprocess.run(command, capture_output=True,
-                             text=True, check=False)
-        state = json.loads(report_path.read_text(encoding="utf-8"))
-        assert "[iop] HLE bootstrap: sifcmd=ready" in run.stdout, (
-            run.stdout + run.stderr
-        )
-        assert "HLE SifGetReg: register=0x00000004 result=0x00060000" in (
-            run.stdout
-        ), run.stdout
-        assert state["gpr_lo"][16] == 0x60000, state
-        assert state["dispatches"] < 48, state
-        assert "SIF SMFLAG polling stalled" not in run.stderr, run.stderr
-        assert "IOP guest loaded:" not in run.stdout, run.stdout
-        assert "IOP guest published SMFLAG:" not in run.stdout, run.stdout
-
-    # End-to-end integration: EE polls SMFLAG, *actual* IOP R3000 guest
-    # instructions invoke sifman via IRX imports, and the EE then exits
-    # its polling loop. Without an IOP module, the identical ELF stalls.
-    with tempfile.TemporaryDirectory(prefix="ee-native-iop-rendezvous-") as tmp:
-        root = Path(tmp)
-        elf = root / "ee-sif-wait.elf"
-        irx = root / "iop-sifman.irx"
-        make_sif_handshake_elf(elf)
-        make_sif_guest_irx(irx)
-        report_path = root / "ee-iop.json"
-        command = [
-            sys.executable, str(source / "tools" / "run_game.py"),
-            str(elf), "--build-dir", str(build),
-            "--work-dir", str(root / "out"),
-            "--max-dispatches=48", "--hle-startup", "--trace",
-            "--sif-poll-limit=6", "--report", str(report_path),
-        ]
-
-        without_iop = subprocess.run(
-            command, capture_output=True, text=True, check=False,
-        )
-        without_state = json.loads(
-            report_path.read_text(encoding="utf-8")
-        )
-        assert without_iop.returncode == 3, (
-            without_iop.stdout + without_iop.stderr
-        )
-        assert without_state["final_pc"] == 0x00100010, without_state
-        assert "SIF SMFLAG polling stalled" in without_iop.stderr
-        assert "IOP guest loaded:" not in without_iop.stdout
-
-        with_iop = subprocess.run(
-            command + [
-                "--no-recompile", f"--iop-irx={irx}",
-                "--iop-quantum=64",
-            ],
-            capture_output=True, text=True, check=False,
-        )
-        with_state = json.loads(
-            report_path.read_text(encoding="utf-8")
-        )
-        assert with_state["gpr_lo"][16] == 0x60000, (
-            with_state, with_iop.stdout, with_iop.stderr
-        )
-        assert "IOP guest loaded:" in with_iop.stdout
-        assert (
-            "IOP guest published SMFLAG: value=0x00060000"
-        ) in with_iop.stdout
-        assert "HLE SifGetReg: register=0x00000004 result=0x00060000" in (
-            with_iop.stdout
-        ), with_iop.stdout
-        assert "SIF SMFLAG polling stalled" not in with_iop.stderr
-        assert with_state["dispatches"] < 48, with_state
-
-        # The kernel's real IRX resolver refuses an unsupported import.
-        invalid_irx = root / "bad-import.irx"
-        make_sif_guest_irx(invalid_irx, unknown_import=True)
-        missing_import = subprocess.run(
-            command + ["--no-recompile", f"--iop-irx={invalid_irx}"],
-            capture_output=True, text=True, check=False,
-        )
-        assert missing_import.returncode == 1, (
-            missing_import.stdout + missing_import.stderr
-        )
-        assert "IOP IRX load failed:" in missing_import.stderr
-        assert "IOP guest published SMFLAG:" not in missing_import.stdout
-
-        # An IOP thread that traps on an unknown syscall never
-        # synthesizes readiness or resumes the EE unconditionally.
-        unknown_service_irx = root / "bad-syscall.irx"
-        make_sif_guest_irx(unknown_service_irx, unhandled_syscall=True)
-        unknown_service = subprocess.run(
-            command + [
-                "--no-recompile", f"--iop-irx={unknown_service_irx}",
-                "--iop-quantum=64",
-            ],
-            capture_output=True, text=True, check=False,
-        )
-        assert unknown_service.returncode != 0, (
-            unknown_service.stdout + unknown_service.stderr
-        )
-        assert "IOP guest stopped: reason=2" in unknown_service.stderr
-        assert "IOP guest published SMFLAG:" not in unknown_service.stdout
-
-        # PR #71 exposes real guest IRX exports, and the EE host must
-        # preserve their order. The provider publishes ordinal 0 as a
-        # relocated guest function returning 0x60000; only the consumer
-        # imports it and uses the returned value for sifman SetSMFlag.
-        assets = root / "iop assets"
-        assets.mkdir()
-        provider = assets / "provider.irx"
-        consumer = assets / "consumer.irx"
-        make_iop_provider_irx(provider)
-        make_iop_consumer_irx(consumer)
-        manifest = root / "iop-modules.txt"
-        manifest.write_text(
-            "# Provider first, IOP entry module last\n"
-            "iop assets/provider.irx\n"
-            "\n"
-            "iop assets/consumer.irx\n",
-            encoding="utf-8",
-        )
-
-        for invocation in (
-            [f"--iop-irx={provider}", f"--iop-irx={consumer}"],
-            [f"--iop-irx-list={manifest}"],
-            [f"--iop-irx-list={manifest}", "--iop-start-all"],
-        ):
-            linked_run = subprocess.run(
-                command + ["--no-recompile", "--iop-quantum=64",
-                           *invocation],
-                capture_output=True, text=True, check=False,
-            )
-            linked_state = json.loads(
-                report_path.read_text(encoding="utf-8")
-            )
-            assert linked_state["gpr_lo"][16] == 0x60000, (
-                invocation, linked_state,
-                linked_run.stdout, linked_run.stderr
-            )
-            assert linked_run.stdout.count("IOP IRX linked:") == 2, (
-                invocation, linked_run.stdout
-            )
-            assert "IOP guest published SMFLAG: value=0x00060000" in (
-                linked_run.stdout
-            ), (invocation, linked_run.stdout, linked_run.stderr)
-            assert "SIF SMFLAG polling stalled" not in linked_run.stderr
-
-        reversed_modules = subprocess.run(
-            command + [
-                "--no-recompile",
-                f"--iop-irx={consumer}", f"--iop-irx={provider}",
-            ],
-            capture_output=True, text=True, check=False,
-        )
-        assert reversed_modules.returncode == 1, (
-            reversed_modules.stdout + reversed_modules.stderr
-        )
-        assert "IOP IRX load failed: index=1" in reversed_modules.stderr
-        assert "IOP guest loaded:" not in reversed_modules.stdout
-
-        # A second copy of a provider must be refused before any guest
-        # thread starts, because its export ordinals already exist.
-        duplicate_module = subprocess.run(
-            command + [
-                "--no-recompile",
-                f"--iop-irx={provider}", f"--iop-irx={provider}",
-            ],
-            capture_output=True, text=True, check=False,
-        )
-        assert duplicate_module.returncode == 1
-        assert "IOP IRX load failed: index=2" in duplicate_module.stderr
-        assert "IOP guest loaded:" not in duplicate_module.stdout
-
-        no_manifest = subprocess.run(
-            command + [
-                "--no-recompile", f"--iop-irx-list={root / 'missing.txt'}",
-            ],
-            capture_output=True, text=True, check=False,
-        )
-        assert no_manifest.returncode == 2, no_manifest
-        assert "cannot read IOP IRX list" in no_manifest.stderr
-
-        ambiguous = subprocess.run(
-            command + [
-                "--no-recompile", f"--iop-irx={provider}",
-                f"--iop-irx-list={manifest}",
-            ],
-            capture_output=True, text=True, check=False,
-        )
-        assert ambiguous.returncode == 2, ambiguous
-        assert "--iop-irx-list and --iop-irx are mutually exclusive" in (
-            ambiguous.stderr
-        )
-
-    for invalid_open in (False, True):
-        with tempfile.TemporaryDirectory(prefix="ee-native-deci2-") as tmp:
-            root = Path(tmp)
-            elf = root / "deci2.elf"
-            make_deci2_open_close_elf(elf, invalid_open=invalid_open)
-            report_path = root / "deci2.json"
-            command = [
-                sys.executable, str(source / "tools" / "run_game.py"),
-                str(elf), "--build-dir", str(build),
-                "--work-dir", str(root / "out"),
-                "--max-dispatches=32", "--trace",
-                "--report", str(report_path),
+            hle_environment = dict(os.environ)
+            hle_environment["SDBZ_IOP_ROM0"] = str(root / "absent-rom0.bin")
+            folder_command = [
+                str(runner), str(elf), str(library),
+                "--max-dispatches=8", f"--disc-folder={disc_folder}",
             ]
+            folder_result = subprocess.run(
+                folder_command, capture_output=True, text=True, check=False,
+                env=hle_environment,
+            )
+            assert "[disc] HLE folder mounted:" in folder_result.stdout, (
+                folder_result.stdout + folder_result.stderr
+            )
+            assert "virtual ISO9660 sectors=" in folder_result.stdout, (
+                folder_result.stdout + folder_result.stderr
+            )
+            assert "IOP cdvdman search service install failed" not in (
+                folder_result.stdout + folder_result.stderr
+            )
+            assert "IOP ROM0 reset:" not in folder_result.stdout, folder_result.stdout
+            assert "EE stopped:" in folder_result.stdout, folder_result.stdout
 
-            if not invalid_open:
-                # The opt-in kernel emulation must not be active by default.
-                disabled = subprocess.run(
-                    command, capture_output=True, text=True, check=False,
-                )
-                assert disabled.returncode == 3, disabled.stdout + disabled.stderr
-                disabled_state = json.loads(report_path.read_text(encoding="utf-8"))
-                assert disabled_state["cop0_epc"] == 0x00100018, disabled_state
-                assert "HLE Deci2Call" not in disabled.stdout, disabled.stdout
-                command.append("--no-recompile")
+            wrapper_folder = subprocess.run(
+                [
+                    sys.executable, str(source / "tools" / "run_game.py"),
+                    str(elf), "--build-dir", str(build),
+                    "--work-dir", str(root / "out"), "--no-recompile",
+                    "--max-dispatches=8", "--disc-folder", str(disc_folder),
+                ],
+                capture_output=True, text=True, check=False,
+                env=hle_environment,
+            )
+            assert "[disc] HLE folder mounted:" in wrapper_folder.stdout, (
+                wrapper_folder.stdout + wrapper_folder.stderr
+            )
+            assert "EE stopped:" in wrapper_folder.stdout, wrapper_folder.stdout
 
+            invalid_folder = subprocess.run(
+                folder_command[:-1] +
+                [f"--disc-folder={root / 'missing-disc-folder'}"],
+                capture_output=True, text=True, check=False,
+                env=hle_environment,
+            )
+            assert invalid_folder.returncode == 2, invalid_folder
+            assert "disc folder must be an existing" in invalid_folder.stderr
+
+            conflicting_sources = subprocess.run(
+                folder_command + ["--disc-image=dummy.iso"],
+                capture_output=True, text=True, check=False,
+                env=hle_environment,
+            )
+            assert conflicting_sources.returncode == 2, conflicting_sources
+            assert "usage:" in conflicting_sources.stdout, conflicting_sources.stdout
+
+            original_library = library.read_bytes()
+            altered_library = bytearray(original_library)
+            altered_library[-1] ^= 1
+            library.write_bytes(altered_library)
+            changed_library = subprocess.run(
+                cached_command, capture_output=True, text=True, check=False,
+            )
+            assert changed_library.returncode != 0, changed_library
+            assert f"{library_name} changed" in changed_library.stderr, (
+                changed_library.stderr
+            )
+            library.write_bytes(original_library)
+
+            # Confirm a completely unchanged translation is still reusable.
+            valid_cached = subprocess.run(
+                cached_command, capture_output=True, text=True, check=False,
+            )
+            assert valid_cached.returncode == 0, (
+                valid_cached.stdout + valid_cached.stderr
+            )
+
+            # Compare unoptimized and optimized native EE output for the same
+            # guest instructions. Optimizing host code must not change EE state.
+            optimized_report = root / "optimized.json"
+            optimized = subprocess.run(
+                [
+                    sys.executable, str(source / "tools" / "run_game.py"),
+                    str(elf),
+                    "--build-dir", str(build),
+                    "--work-dir", str(root / "optimized"),
+                    "--max-dispatches=8",
+                    "--emit-opt=2",
+                    "--kseg-ram",
+                    "--report", str(optimized_report),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            optimized_state = json.loads(optimized_report.read_text(encoding="utf-8"))
+            optimized_objects = json.loads(
+                (root / "optimized" / "objects" / "objects.json").read_text(encoding="utf-8")
+            )
+            assert optimized_objects["optimization_level"] == 2, optimized_objects
+            for field in ("entry_pc", "final_pc", "dispatches", "exit_reason",
+                          "dispatch_status", "gpr_lo"):
+                assert optimized_state[field] == report[field], (field, optimized_state, report)
+            assert optimized.returncode == result.returncode, (
+                optimized.stdout + optimized.stderr
+            )
+
+
+    if shard is None or shard == 1:
+        with tempfile.TemporaryDirectory(prefix="ee-native-setupthread-") as tmp:
+            root = Path(tmp)
+            elf = root / "startup-mips.elf"
+            make_elf(elf, startup=True)
             result = subprocess.run(
-                command + ["--hle-startup"],
-                capture_output=True, text=True, check=False,
+                [
+                    sys.executable, str(source / "tools" / "run_game.py"),
+                    str(elf),
+                    "--build-dir", str(build),
+                    "--work-dir", str(root / "out"),
+                    "--max-dispatches=8",
+                    "--hle-startup",
+                    "--trace",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
             )
-            assert result.returncode == 3, result.stdout + result.stderr
-            state = json.loads(report_path.read_text(encoding="utf-8"))
-            assert state["exit_name"] == "EXCEPTION", state
-            if invalid_open:
-                assert state["cop0_epc"] == 0x00100018, state
-                assert (
-                    "Deci2Call OPEN HLE refused unbacked or unaligned "
-                    "descriptor 0x7ffffffc"
-                ) in result.stderr, result.stdout + result.stderr
-                assert "HLE Deci2Call OPEN:" not in result.stdout, result.stdout
-                assert state["gpr_lo"][8] == 0, state  # no fallback write
-            else:
-                assert state["cop0_epc"] == 0x00100048, state
-                assert (
-                    "HLE Deci2Call OPEN: descriptor=0x00100200 "
-                    "channel=0x00100220 handler=0x00100060 result=1"
-                ) in result.stdout, result.stdout
-                assert "HLE Deci2Call CLOSE: result=1" in result.stdout, result.stdout
-                assert (
-                    "Deci2Call HLE refused unsupported operation=7 "
-                    "descriptor=0x00000000 handler=0x00000000"
-                ) in result.stderr, result.stdout + result.stderr
-                regs = state["gpr_lo"]
-                assert regs[8] == 1, state  # OPEN result
-                assert regs[9] == 1, state  # CLOSE result
-                assert regs[10] == 0, state # no fake REQSEND return
-                assert regs[16:20] == [
-                    0x11223344, 0x00100220, 0x00100060, 0x55667788,
-                ], state
+            assert "HLE SetupThread:" in result.stdout, (
+                result.stdout + result.stderr
+            )
+            assert "EE stopped: dispatched=2" in result.stdout, (
+                result.stdout + result.stderr
+            )
+            assert "guest left compiled code" in result.stderr, (
+                result.stdout + result.stderr
+            )
 
-
-
-    for invalid_channel in (False, True):
-        with tempfile.TemporaryDirectory(prefix="ee-native-deci2-reqsend-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="ee-native-auto-expand-") as tmp:
             root = Path(tmp)
-            elf = root / "deci2-reqsend.elf"
-            make_deci2_reqsend_elf(elf, invalid_channel=invalid_channel)
-            report_path = root / "deci2-reqsend.json"
+            elf = root / "caller-callee.elf"
+            make_call_elf(elf)
+            base = [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf),
+                "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--max-dispatches=8",
+                "--trace",
+            ]
+            initial = subprocess.run(
+                base,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert "EE stopped: dispatched=" in initial.stdout, (
+                initial.stdout + initial.stderr
+            )
+            assert "auto-expand: compiling" not in initial.stdout, initial.stdout
+            assert "link_native_objects: compiling 6 runtime sources (cache miss)" in initial.stdout, (
+                initial.stdout + initial.stderr
+            )
+            metadata_path = root / "out" / "ir" / "ee_functions.json"
+            assert json.loads(metadata_path.read_text(encoding="utf-8"))["function_count"] == 1
+
+            resumed = subprocess.run(
+                base + ["--no-recompile", "--auto-expand=1"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert "auto-expand: compiling reachable PC 0x00100030" in resumed.stdout, (
+                resumed.stdout + resumed.stderr
+            )
+            assert "EE stopped: dispatched=" in resumed.stdout, (
+                resumed.stdout + resumed.stderr
+            )
+            assert resumed.stdout.count("ee_recomp: loading") == 1, resumed.stdout
+            assert "verify_ir: append-only preserved 1 cached object(s) without rehash" in resumed.stdout, (
+                resumed.stdout + resumed.stderr
+            )
+            assert "link_native_objects: reused 6 cached runtime objects" in resumed.stdout, (
+                resumed.stdout + resumed.stderr
+            )
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            assert metadata["function_count"] == 2, metadata
+
+        # Batch two related explicit function entries from one cache reload,
+        # then publish one merged metadata file. Existing IR stays untouched.
+        with tempfile.TemporaryDirectory(prefix="ee-native-batch-append-") as tmp:
+            root = Path(tmp)
+            elf = root / "overlap-batch.elf"
+            make_overlapping_entry_elf(elf)
             result = subprocess.run(
                 [
                     sys.executable, str(source / "tools" / "run_game.py"),
                     str(elf), "--build-dir", str(build),
                     "--work-dir", str(root / "out"),
-                    "--max-dispatches=48",
-                    "--hle-startup", "--trace",
-                    "--watch-word=0x0010022c",
-                    "--report", str(report_path),
+                    "--max-dispatches=64", "--hle-startup", "--trace",
+                    "--extra-functions=0x00100050,0x00100054",
                 ],
                 capture_output=True, text=True, check=False,
             )
-            assert result.returncode == 3, result.stdout + result.stderr
-            state = json.loads(report_path.read_text(encoding="utf-8"))
-            assert state["exit_name"] == "EXCEPTION", state
-            registers = state["gpr_lo"]
-            assert registers[8] == 1, state  # OPEN returned 1
-            if invalid_channel:
-                assert state["cop0_epc"] == 0x00100024, state
-                assert (
-                    "Deci2Call REQSEND HLE refused unbacked or "
-                    "unaligned channel 0x7ffffffc"
-                ) in result.stderr, result.stdout + result.stderr
-                assert registers[9] == 0, state
-                assert "EE watch changed:" not in result.stdout, result.stdout
-            else:
-                assert state["cop0_epc"] == 0x00100080, state
-                assert (
-                    "HLE Deci2Call REQSEND: channel=0x00100220 "
-                    "packet_ptr=0x00100260 packet_size=16 "
-                    "pending_before=0xcafebabe pending_after=0 result=1"
-                ) in result.stdout, result.stdout
-                assert (
-                    "HLE Deci2Call REQSEND: no active channel result=1"
-                ) in result.stdout, result.stdout
-                for operation in ("POLL", "EXRECV", "EXSEND"):
-                    assert (
-                        f"HLE Deci2Call {operation}: result=1 "
-                        "(debug-only transport)"
-                    ) in result.stdout, result.stdout
-                assert "HLE Deci2Call CLOSE: result=1" in result.stdout
-                assert (
-                    "Deci2Call HLE refused unsupported operation=7 "
-                    "descriptor=0x00000000 handler=0x00000000"
-                ) in result.stderr, result.stdout + result.stderr
-                assert registers[9] == 1, state     # REQSEND
-                assert registers[10] == 1, state    # CLOSE
-                assert registers[12] == 1, state    # unregistered REQSEND
-                assert registers[14] == 1, state    # POLL
-                assert registers[15] == 1, state    # EXRECV
-                assert registers[24] == 1, state    # EXSEND
-                assert registers[16] == 0, state    # channel[3] cleared
-                assert registers[17] == 16, state   # size unchanged
-                assert registers[18] == 0x00100260, state  # pointer unchanged
-                assert registers[13] == 0, state    # no unsupported fallthrough
-                # The existing --watch-word probe compares the RAM
-                # before/after *translated* native callbacks only; this
-                # HLE mutation occurs between callbacks. Verify it via
-                # both the HLE trace and real guest LW result above.
-                assert (
-                    "EE watch initial: addr=0x0010022c "
-                    "value=0xcafebabe"
-                ) in result.stdout, result.stdout
-                assert "EE watch changed:" not in result.stdout, result.stdout
-
-    with tempfile.TemporaryDirectory(prefix="ee-native-word-watch-") as tmp:
-        root = Path(tmp)
-        elf = root / "word-watch.elf"
-        make_guest_word_watch_elf(elf)
-        args = [
-            sys.executable, str(source / "tools" / "run_game.py"),
-            str(elf), "--build-dir", str(build),
-            "--work-dir", str(root / "out"),
-            "--max-dispatches=8",
-            "--trace-entry=0x00100008",
-            "--watch-word=0x00100200",
-            "--trace-v0=0x00100008:0x0010001c",
-            "--trace-store=0x00100200",
-        ]
-        result = subprocess.run(args, capture_output=True, text=True,
-                                check=False)
-        assert result.returncode == 3, result.stdout + result.stderr
-        assert "EE guest-store watch: addr=0x00100200 max_events=64" in result.stdout, result.stdout
-        assert ("EE guest-store: pc=0x00100014 opcode=0xad090000 ins=SW "
-                "effective=0x00100200 affected=0x00100200 width=4 "
-                "src=gpr9 lane=0 source_value=0x0000000000000007 "
-                "base=gpr8 base_value=0x0000000000100200 "
-                "sp=0x01fff000 fp=0x00000000 ra=0x00000000") in result.stdout, result.stdout
-        assert result.stdout.count("EE guest-store:") == 1, result.stdout
-        assert "EE guest-v0 watch: first_pc=0x00100008 last_pc=0x0010001c max_events=64" in result.stdout, result.stdout
-        assert ("EE guest-v0-write: pc=0x0010001c opcode=0x24020007 "
-                "old=0x0000000000000000 new=0x0000000000000007 "
-                "rs=0 rt=2 rd=0") in result.stdout, result.stdout
-        assert result.stdout.count("EE guest-v0-write:") == 1, result.stdout
-        assert "EE watch initial: addr=0x00100200 value=0x00000000" in result.stdout, result.stdout
-        assert "EE trace-entry: dispatch=1 pc=0x00100008" in result.stdout, result.stdout
-        assert "sp=0x01fff000" in result.stdout, result.stdout
-        assert "EE trace-entry saved: s0=00000000" in result.stdout, result.stdout
-        assert "s3=00000000" in result.stdout, result.stdout
-        assert "fp=00000000" in result.stdout, result.stdout
-        assert result.stdout.count("EE trace-entry stack-pair:") == 8, result.stdout
-        assert ("EE trace-entry stack-pair: index=0 addr=0x01fff010 "
-                "word0=0x00000000 word1=0x00000000") in result.stdout, result.stdout
-        assert "EE watch changed: dispatch=1 from_pc=0x00100008 " in result.stdout, result.stdout
-        assert "addr=0x00100200 old=0x00000000 new=0x00000007" in result.stdout, result.stdout
-        assert ("EE watch registers: s3_before=00000000 "
-                "s3_after=00000000") in result.stdout, result.stdout
-        assert "fp_before=00000000 fp_after=00000000" in result.stdout, result.stdout
-        assert ("EE watch pair: addr=0x001001fc "
-                "word0=0x00000000 word1=0x00000007") in result.stdout, result.stdout
-
-        rejected = subprocess.run(
-            args[:-2] + ["--watch-word=0x02000000", "--no-recompile"],
-            capture_output=True, text=True, check=False,
-        )
-        assert rejected.returncode == 2, rejected.stdout + rejected.stderr
-        assert "watch-word address is not backed: 0x02000000" in rejected.stderr, (
-            rejected.stdout + rejected.stderr
-        )
-
-        # A guest-store watch does not generate a false event for a
-        # different word, and its own guest address must be backed.
-        nearby = subprocess.run(
-            args[:-1] + ["--trace-store=0x00100204", "--no-recompile"],
-            capture_output=True, text=True, check=False,
-        )
-        assert nearby.returncode == 3, nearby.stdout + nearby.stderr
-        assert "EE guest-store:" not in nearby.stdout, nearby.stdout
-        invalid_store = subprocess.run(
-            args[:-1] + ["--trace-store=0x02000000", "--no-recompile"],
-            capture_output=True, text=True, check=False,
-        )
-        assert invalid_store.returncode == 2, invalid_store.stdout + invalid_store.stderr
-        assert "trace-store address is not backed: 0x02000000" in invalid_store.stderr, (
-            invalid_store.stdout + invalid_store.stderr
-        )
-
-        excluded_v0 = subprocess.run(
-            args[:-2] + ["--trace-v0=0x00100008:0x00100018", "--no-recompile"],
-            capture_output=True, text=True, check=False,
-        )
-        assert excluded_v0.returncode == 3, excluded_v0.stdout + excluded_v0.stderr
-        assert "EE guest-v0-write:" not in excluded_v0.stdout, excluded_v0.stdout
-
-        bad_v0_window = subprocess.run(
-            args[:-2] + ["--trace-v0=0x0010001c:0x00100008", "--no-recompile"],
-            capture_output=True, text=True, check=False,
-        )
-        assert bad_v0_window.returncode == 2, bad_v0_window.stdout + bad_v0_window.stderr
-        assert "ordered range" in bad_v0_window.stderr, (
-            bad_v0_window.stdout + bad_v0_window.stderr
-        )
-
-
-
-    with tempfile.TemporaryDirectory(prefix="ee-native-heap-boundary-") as tmp:
-        root = Path(tmp)
-        elf = root / "kernel-heap.elf"
-        make_heap_boundary_elf(elf)
-        report_path = root / "heap.json"
-        command = [
-            sys.executable, str(source / "tools" / "run_game.py"),
-            str(elf),
-            "--build-dir", str(build),
-            "--work-dir", str(root / "out"),
-            "--max-dispatches=32",
-            "--trace",
-            "--report", str(report_path),
-        ]
-
-        without_hle = subprocess.run(
-            command, capture_output=True, text=True, check=False,
-        )
-        assert without_hle.returncode != 0, (
-            without_hle.stdout + without_hle.stderr
-        )
-        refused = json.loads(report_path.read_text(encoding="utf-8"))
-        assert refused["cop0_epc"] == 0x0010000c, refused
-        assert "HLE EndOfHeap:" not in without_hle.stdout
-
-        with_hle = subprocess.run(
-            command + ["--no-recompile", "--hle-startup"],
-            capture_output=True, text=True, check=False,
-        )
-        assert with_hle.returncode == 3, with_hle.stdout + with_hle.stderr
-        for trace_line in (
-            "HLE EndOfHeap: id=1 end=0x00000000",
-            "HLE SetupHeap: base=0x00640380 end=0x01ffb000 size=0xffffffff",
-            "HLE EndOfHeap: id=1 end=0x01ffb000",
-            "HLE SetupHeap: base=0x00640000 end=0x00642000 size=0x00002000",
-            "HLE EndOfHeap: id=1 end=0x00642000",
-        ):
-            assert trace_line in with_hle.stdout, (
-                trace_line, with_hle.stdout, with_hle.stderr
+            assert "ee_recomp: loading" in result.stdout, result.stdout + result.stderr
+            assert result.stdout.count("ee_recomp: loading") == 2, (
+                result.stdout + result.stderr
+            )  # ELF entry translation + ONE --functions batch
+            assert "auto-expand: appended 2 function(s) in one discovery" in result.stdout, (
+                result.stdout + result.stderr
             )
-        state = json.loads(report_path.read_text(encoding="utf-8"))
-        assert state["snapshot_kind"] == "stopped", state
-        assert state["final_pc"] == 0, state
-        assert state["exit_name"] == "DISPATCH", state
-        regs = state["gpr_lo"]
-        assert regs[8] == 0, state            # initially unconfigured
-        assert regs[9] == 0x01fff000, state   # SetupThread result
-        assert regs[10] == 0x01ffb000, state # SetupHeap(-1) result
-        assert regs[11] == 0x01ffb000, state # EndOfHeap
-        assert regs[12] == 0x00642000, state # SetupHeap(size) result
-        assert regs[13] == 0x00642000, state # EndOfHeap updated
-        assert regs[14] == 0x00642000, state # EndOfHeap ignores A0
+            assert "functions=2" in result.stdout, result.stdout
+            metadata = json.loads(
+                (root / "out" / "ir" / "ee_functions.json").read_text(encoding="utf-8")
+            )
+            owners = [
+                int(pc, 0) for fn in metadata["functions"]
+                for pc in fn["block_pcs"]
+            ]
+            assert metadata["function_count"] == 3, metadata
+            assert len(set(owners)) == len(owners), metadata
+            assert 0x00100050 in owners and 0x00100054 in owners
+            assert "HLE FlushCache:" in result.stdout, result.stdout + result.stderr
 
-    with tempfile.TemporaryDirectory(prefix="ee-native-thread-priority-") as tmp:
-        root = Path(tmp)
-        elf = root / "kernel-thread-priority.elf"
-        make_thread_priority_elf(elf)
-        report_path = root / "thread-priority.json"
-        command = [
-            sys.executable, str(source / "tools" / "run_game.py"),
-            str(elf),
-            "--build-dir", str(build),
-            "--work-dir", str(root / "out"),
-            "--max-dispatches=32",
-            "--trace",
-            "--report", str(report_path),
-        ]
-
-        without_hle = subprocess.run(
-            command, capture_output=True, text=True, check=False,
-        )
-        assert without_hle.returncode != 0, (
-            without_hle.stdout + without_hle.stderr
-        )
-        refused = json.loads(report_path.read_text(encoding="utf-8"))
-        assert refused["cop0_epc"] == 0x0010000c, refused
-        assert "HLE ChangeThreadPriority:" not in without_hle.stdout
-
-        with_hle = subprocess.run(
-            command + ["--no-recompile", "--hle-startup"],
-            capture_output=True, text=True, check=False,
-        )
-        assert "HLE ChangeThreadPriority: id=1 old=0 new=1" in with_hle.stdout, (
-            with_hle.stdout + with_hle.stderr
-        )
-        assert "HLE ChangeThreadPriority: id=1 old=1 new=5" in with_hle.stdout, (
-            with_hle.stdout + with_hle.stderr
-        )
-        assert "HLE iChangeThreadPriority: id=2 old=64 new=2" in with_hle.stdout, (
-            with_hle.stdout + with_hle.stderr
-        )
-        assert "HLE ChangeThreadPriority: id=2 old=2 new=7" in with_hle.stdout, (
-            with_hle.stdout + with_hle.stderr
-        )
-        assert "HLE ChangeThreadPriority: id=99 not found, result=-1" in with_hle.stdout, (
-            with_hle.stdout + with_hle.stderr
-        )
-        state = json.loads(report_path.read_text(encoding="utf-8"))
-        registers = state["gpr_lo"]
-        assert registers[8] == 1, state   # GetThreadId before changes
-        assert registers[9] == 0, state   # old main priority
-        assert registers[10] == 1, state  # old priority using ID alias 0
-        assert registers[11] == 2, state  # dormant CreateThread result
-        assert registers[12] == 64, state # old dormant priority
-        assert registers[13] == 2, state  # masked priority persisted
-        assert registers[14] == 0xFFFFFFFFFFFFFFFF, state  # invalid thread
-        assert registers[15] == 1, state  # GetThreadId remains main
-        assert state["final_pc"] != 0x001000f0, state # no child ran
-
-    with tempfile.TemporaryDirectory(prefix="ee-native-get-thread-id-") as tmp:
-        root = Path(tmp)
-        elf = root / "kernel-get-thread-id.elf"
-        make_get_thread_id_elf(elf)
-        report_path = root / "get-thread-id.json"
-        command = [
-            sys.executable, str(source / "tools" / "run_game.py"),
-            str(elf),
-            "--build-dir", str(build),
-            "--work-dir", str(root / "out"),
-            "--max-dispatches=16",
-            "--trace",
-            "--report", str(report_path),
-        ]
-
-        without_hle = subprocess.run(
-            command, capture_output=True, text=True, check=False,
-        )
-        assert without_hle.returncode != 0, (
-            without_hle.stdout + without_hle.stderr
-        )
-        refused = json.loads(report_path.read_text(encoding="utf-8"))
-        assert refused["cop0_epc"] == 0x0010000c, refused
-        assert "HLE GetThreadId:" not in without_hle.stdout, (
-            without_hle.stdout + without_hle.stderr
-        )
-
-        with_hle = subprocess.run(
-            command + ["--no-recompile", "--hle-startup"],
-            capture_output=True, text=True, check=False,
-        )
-        assert with_hle.stdout.count("HLE GetThreadId: id=1") == 2, (
-            with_hle.stdout + with_hle.stderr
-        )
-        assert "HLE CreateThread: id=2" in with_hle.stdout, (
-            with_hle.stdout + with_hle.stderr
-        )
-        state = json.loads(report_path.read_text(encoding="utf-8"))
-        assert state["gpr_lo"][8] == 1, state  # running main thread
-        assert state["gpr_lo"][9] == 2, state  # new dormant thread
-        assert state["gpr_lo"][10] == 1, state # main remains current
-        assert state["gpr_lo"][2] == 1, state  # GetThreadId return value
-        assert state["gpr_lo"][4] == 0x00100200, state # ignores a0
-        assert state["final_pc"] != 0x001000f0, state
-
-    with tempfile.TemporaryDirectory(prefix="ee-native-create-thread-") as tmp:
-        root = Path(tmp)
-        elf = root / "kernel-create-thread.elf"
-        make_create_thread_elf(elf)
-        report_path = root / "create-thread.json"
-        command = [
-            sys.executable, str(source / "tools" / "run_game.py"),
-            str(elf),
-            "--build-dir", str(build),
-            "--work-dir", str(root / "out"),
-            "--max-dispatches=16",
-            "--trace",
-            "--report", str(report_path),
-        ]
-
-        without_hle = subprocess.run(
-            command, capture_output=True, text=True, check=False,
-        )
-        assert without_hle.returncode != 0, (
-            without_hle.stdout + without_hle.stderr
-        )
-        refused = json.loads(report_path.read_text(encoding="utf-8"))
-        assert refused["cop0_epc"] == 0x00100014, refused
-        assert "HLE CreateThread:" not in without_hle.stdout, (
-            without_hle.stdout + without_hle.stderr
-        )
-
-        with_hle = subprocess.run(
-            command + ["--no-recompile", "--hle-startup"],
-            capture_output=True, text=True, check=False,
-        )
-        assert with_hle.returncode != 0, (
-            with_hle.stdout + with_hle.stderr
-        )
-        assert ("HLE CreateThread: id=2 entry=0x001000f0 "
-                "stack=0x00102000 size=0x00000800 gp=0x0010f000 "
-                "priority=64 attr=0x0000abcd option=0xaabbccdd "
-                "parameters=0x00100200 dormant") in with_hle.stdout, (
-                    with_hle.stdout + with_hle.stderr
+            # Reject malformed target lists instead of silently truncating,
+            # misparsing or compiling the wrong guest address.
+            recomp = driver.native_executable(build, "ee_recomp")
+            for invalid_list in (
+                "0x00100050,0x00100050",  # duplicate
+                "0x00100050,0x00100051",  # unaligned
+                "0x00100050,,0x00100054",  # malformed
+                "0x00100050,not_hex",  # invalid
+            ):
+                invalid = subprocess.run([
+                    str(recomp), str(elf), str(root / "invalid"),
+                    "--functions=" + invalid_list,
+                ], capture_output=True, text=True, check=False)
+                assert invalid.returncode != 0, (
+                    invalid_list, invalid.stdout, invalid.stderr
                 )
-        assert ("HLE CreateThread: id=3 entry=0x001000f0 "
-                "stack=0x00102000 size=0x00000800 gp=0x0010f000 "
-                "priority=64 attr=0x0000abcd option=0xaabbccdd "
-                "parameters=0x00100200 dormant") in with_hle.stdout, (
-                    with_hle.stdout + with_hle.stderr
-                )
-        assert ("CreateThread HLE refused unbacked or unaligned "
-                "parameter block 0x00100201") in with_hle.stderr, (
-                    with_hle.stdout + with_hle.stderr
-                )
-        state = json.loads(report_path.read_text(encoding="utf-8"))
-        assert state["cop0_epc"] == 0x0010003c, state
-        assert state["gpr_lo"][8] == 2, state
-        assert state["gpr_lo"][9] == 3, state
-        assert state["gpr_lo"][10] == 0, state
-        assert state["gpr_lo"][2] == 3, state
-        assert state["final_pc"] != 0x001000f0, state
 
-    with tempfile.TemporaryDirectory(prefix="ee-native-semaphore-") as tmp:
-        root = Path(tmp)
-        elf = root / "semaphore-mips.elf"
-        make_semaphore_elf(elf)
-        result = subprocess.run(
-            [
-                sys.executable, str(source / "tools" / "run_game.py"),
-                str(elf),
-                "--build-dir", str(build),
-                "--work-dir", str(root / "out"),
-                "--max-dispatches=8",
-                "--hle-startup",
-                "--trace",
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert "HLE CreateSema: id=1 init=1 max=2" in result.stdout, (
-            result.stdout + result.stderr
-        )
-        assert "EE stopped: dispatched=2" in result.stdout, (
-            result.stdout + result.stderr
-        )
-
-    with tempfile.TemporaryDirectory(prefix="ee-native-flushcache-") as tmp:
-        root = Path(tmp)
-        elf = root / "flush-cache-mips.elf"
-        make_flush_cache_elf(elf)
-        report = root / "flush-cache.json"
-        command = [
-            sys.executable, str(source / "tools" / "run_game.py"),
-            str(elf),
-            "--build-dir", str(build),
-            "--work-dir", str(root / "out"),
-            "--max-dispatches=8",
-            "--report", str(report),
-            "--trace",
-        ]
-        without_hle = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert without_hle.returncode != 0, without_hle.stdout + without_hle.stderr
-        initial = json.loads(report.read_text(encoding="utf-8"))
-        assert initial["cop0_epc"] == 0x00100010, initial
-        assert initial["gpr_lo"][2] == 123, initial
-        assert "HLE FlushCache" not in without_hle.stdout, without_hle.stdout
-
-        with_hle = subprocess.run(
-            command + ["--no-recompile", "--hle-startup"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert with_hle.returncode != 0, with_hle.stdout + with_hle.stderr
-        assert "HLE FlushCache: mode=0x00000000 result=0" in with_hle.stdout, (
-            with_hle.stdout + with_hle.stderr
-        )
-        assert "HLE iFlushCache: mode=0x00000000 result=0" in with_hle.stdout, (
-            with_hle.stdout + with_hle.stderr
-        )
-        stopped = json.loads(report.read_text(encoding="utf-8"))
-        assert stopped["cop0_epc"] == 0x0010002c, stopped
-        assert stopped["gpr_lo"][8] == 0, stopped  # first service return
-        assert stopped["gpr_lo"][9] == 0, stopped  # second service return
-        assert stopped["gpr_lo"][10] == 0, stopped  # unknown call never returns
-        assert stopped["gpr_lo"][2] == 0, stopped
-        assert stopped["gpr_lo"][3] == 0x65, stopped
-        assert "guest blocked by an unsupported operation" in with_hle.stderr, (
-            with_hle.stdout + with_hle.stderr
-        )
-
-    with tempfile.TemporaryDirectory(prefix="ee-native-syscall-hook-") as tmp:
-        root = Path(tmp)
-        elf = root / "set-syscall-mips.elf"
-        make_set_syscall_elf(elf)
-        result = subprocess.run(
-            [
-                sys.executable, str(source / "tools" / "run_game.py"),
-                str(elf),
-                "--build-dir", str(build),
-                "--work-dir", str(root / "out"),
-                "--max-dispatches=8",
-                "--hle-startup",
-                "--trace",
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert "HLE SetSyscall: number=0x83 handler=0x00100030" in result.stdout, (
-            result.stdout + result.stderr
-        )
-        assert "EE stopped: dispatched=2" in result.stdout, (
-            result.stdout + result.stderr
-        )
-
-    for status, expected_target in (
-        (2, 0x001000c0),  # EXL: ordinary EPC
-        (4, 0x00100080),  # ERL: ErrorEPC takes precedence
-    ):
-        with tempfile.TemporaryDirectory(prefix="ee-native-eret-") as tmp:
-            root = Path(tmp)
-            elf = root / "eret.elf"
-            make_eret_target_elf(elf, status)
-            report_path = root / "eret.json"
-            result = subprocess.run(
-                [
+        for invalid_set in (False, True):
+            with tempfile.TemporaryDirectory(prefix="ee-native-osd-config-") as tmp:
+                root = Path(tmp)
+                elf = root / "kernel-osd-config.elf"
+                make_osd_config_elf(elf, invalid_set=invalid_set)
+                report_path = root / "osd-config.json"
+                command = [
                     sys.executable, str(source / "tools" / "run_game.py"),
                     str(elf),
                     "--build-dir", str(build),
@@ -2877,241 +1937,1099 @@ def main():
                     "--max-dispatches=16",
                     "--trace",
                     "--report", str(report_path),
+                ]
+
+                # The kernel must never be silently enabled without HLE.
+                if not invalid_set:
+                    without_hle = subprocess.run(
+                        command, capture_output=True, text=True, check=False,
+                    )
+                    assert without_hle.returncode != 0, (
+                        without_hle.stdout + without_hle.stderr
+                    )
+                    refused = json.loads(report_path.read_text(encoding="utf-8"))
+                    assert refused["cop0_epc"] == 0x00100014, refused
+                    assert "HLE GetOsdConfigParam:" not in without_hle.stdout
+                    command.append("--no-recompile")
+
+                with_hle = subprocess.run(
+                    command + ["--hle-startup"],
+                    capture_output=True, text=True, check=False,
+                )
+                assert with_hle.returncode != 0, with_hle.stdout + with_hle.stderr
+                assert "HLE GetOsdConfigParam: pointer=0x00100200 value=0x00000000 result=0" in with_hle.stdout, (
+                    with_hle.stdout + with_hle.stderr
+                )
+                assert "HLE SetOsdConfigParam: pointer=0x00100210 value=0x12345678 result=0" in with_hle.stdout, (
+                    with_hle.stdout + with_hle.stderr
+                )
+                assert "HLE GetOsdConfigParam: pointer=0x00100220 value=0x12345678 result=0" in with_hle.stdout, (
+                    with_hle.stdout + with_hle.stderr
+                )
+                denied_service = "Set" if invalid_set else "Get"
+                denied_address = 0x00100221 if invalid_set else 0x7ffffffc
+                assert (
+                    f"{denied_service}OsdConfigParam HLE refused unbacked or "
+                    f"unaligned pointer 0x{denied_address:08x}"
+                ) in with_hle.stderr, with_hle.stdout + with_hle.stderr
+
+                state = json.loads(report_path.read_text(encoding="utf-8"))
+                assert state["cop0_epc"] == 0x00100058, state
+                registers = state["gpr_lo"]
+                assert registers[8] == 0, state           # initially zero
+                assert registers[9] == 0, state           # Get returns zero
+                assert registers[10] == 0, state          # Set returns zero
+                assert registers[11] == 0x12345678, state # Set persisted
+                assert registers[12] == 0, state          # second Get result
+                assert registers[13] == 0, state          # no fallthrough
+                assert state["exit_name"] == "EXCEPTION", state
+
+        with tempfile.TemporaryDirectory(prefix="ee-native-sif-dchain-") as tmp:
+            root = Path(tmp)
+            elf = root / "sif-dchain.elf"
+            make_sif_set_dchain_elf(elf)
+            report_path = root / "sif-dchain.json"
+            command = [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf), "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--max-dispatches=16", "--trace",
+                "--report", str(report_path),
+            ]
+
+            # No HLE means the first syscall remains an exception.
+            disabled = subprocess.run(
+                command, capture_output=True, text=True, check=False,
+            )
+            assert disabled.returncode == 3, disabled.stdout + disabled.stderr
+            disabled_state = json.loads(report_path.read_text(encoding="utf-8"))
+            assert disabled_state["cop0_epc"] == 0x00100028, disabled_state
+            assert "HLE SifSetDChain" not in disabled.stdout
+            assert disabled_state["gpr_lo"][2] == 0x1000c000, disabled_state
+
+            enabled = subprocess.run(
+                command + ["--no-recompile", "--hle-startup"],
+                capture_output=True, text=True, check=False,
+            )
+            assert enabled.returncode == 3, enabled.stdout + enabled.stderr
+            assert (
+                "HLE SifSetDChain: channel=5 qwc=0 "
+                "chcr=0x00000184 result=void (no IOP producer)"
+            ) in enabled.stdout, enabled.stdout + enabled.stderr
+            state = json.loads(report_path.read_text(encoding="utf-8"))
+            assert state["exit_name"] == "EXCEPTION", state
+            assert state["cop0_epc"] == 0x00100040, state
+            assert state["gpr_lo"][2] == 0x1000c000, state
+            assert state["gpr_lo"][16] == 0x1000c000, state  # V0 preserved
+            assert state["gpr_lo"][17] == 0, state           # SIF0 QWC
+            assert state["gpr_lo"][18] == 0x184, state       # SIF0 CHCR
+            assert state["gpr_lo"][19] == 0, state           # SIF0 MADR
+            assert "guest blocked by an unsupported operation" in enabled.stderr
+
+
+        with tempfile.TemporaryDirectory(prefix="ee-native-sif-register-") as tmp:
+            root = Path(tmp)
+            elf = root / "sif-register.elf"
+            make_sif_register_elf(elf)
+            report_path = root / "sif-register.json"
+            command = [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf), "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--max-dispatches=16", "--trace",
+                "--report", str(report_path),
+            ]
+
+            disabled = subprocess.run(
+                command, capture_output=True, text=True, check=False,
+            )
+            assert disabled.returncode == 3, disabled.stdout + disabled.stderr
+            disabled_state = json.loads(report_path.read_text(encoding="utf-8"))
+            assert disabled_state["cop0_epc"] == 0x00100010, disabled_state
+            assert "HLE SifGetReg:" not in disabled.stdout, disabled.stdout
+
+            enabled = subprocess.run(
+                command + ["--no-recompile", "--hle-startup"],
+                capture_output=True, text=True, check=False,
+            )
+            assert enabled.returncode == 3, enabled.stdout + enabled.stderr
+            state = json.loads(report_path.read_text(encoding="utf-8"))
+            assert state["exit_name"] == "EXCEPTION", state
+            assert state["cop0_epc"] == 0x001000a0, state
+            regs = state["gpr_lo"]
+            assert regs[16] == 0, state              # initial SUBADDR
+            assert regs[17] == 0, state              # SifSetReg returns 0
+            assert regs[18] == 0x00102200, state     # software sysreg persists
+            assert regs[19] == 0, state              # main address set returns 0
+            assert regs[20] == 0x00102300, state     # MSCOM direct MMIO
+            assert regs[21] == 0x00102300, state     # MSCOM syscall read
+            assert regs[22] == 0x00020000, state     # MSFLAG OR'd via SifSetReg
+            assert regs[23] == 0, state              # no fabricated IOP SUBADDR
+            assert regs[9] == 0, state               # no fallthrough after refusal
+            assert (
+                "HLE SifGetReg: register=0x80000000 result=0x00000000"
+            ) in enabled.stdout, enabled.stdout + enabled.stderr
+            assert (
+                "HLE SifGetReg: register=0x80000000 result=0x00102200"
+            ) in enabled.stdout, enabled.stdout + enabled.stderr
+            assert (
+                "HLE SifSetReg: register=0x00000003 "
+                "value=0x00020000 result=0"
+            ) in enabled.stdout, enabled.stdout + enabled.stderr
+            assert (
+                "SifGetReg HLE refused unsupported register=0x7fff0000"
+            ) in enabled.stderr, enabled.stdout + enabled.stderr
+
+
+        # When no IOP is running, repeated reads of IOP-owned SMFLAG must
+        # report a bounded diagnostic rather than consuming the whole replay.
+        # Default (0) intentionally leaves ordinary execution untouched.
+        with tempfile.TemporaryDirectory(prefix="ee-native-sif-poll-") as tmp:
+            root = Path(tmp)
+            elf = root / "sif-poll.elf"
+            make_sif_poll_elf(elf)
+            report_path = root / "sif-poll.json"
+            command = [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf), "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--max-dispatches=48", "--hle-startup", "--trace",
+                "--report", str(report_path),
+            ]
+            baseline = subprocess.run(
+                command + ["--sif-poll-limit=0"],
+                capture_output=True, text=True, check=False,
+            )
+            # The last handled syscall can retain EXCEPTION/status=0 when
+            # the native dispatch budget ends at that very boundary.
+            assert baseline.returncode == 3, baseline.stdout + baseline.stderr
+            baseline_state = json.loads(report_path.read_text(encoding="utf-8"))
+            assert baseline_state["dispatches"] == 48, baseline_state
+            assert "SIF SMFLAG polling stalled" not in baseline.stderr
+
+            bounded = subprocess.run(
+                command + ["--no-recompile", "--sif-poll-limit=6"],
+                capture_output=True, text=True, check=False,
+            )
+            assert bounded.returncode == 3, bounded.stdout + bounded.stderr
+            bounded_state = json.loads(report_path.read_text(encoding="utf-8"))
+            assert bounded_state["dispatches"] < 48, bounded_state
+            assert bounded_state["final_pc"] == 0x00100010, bounded_state
+            assert bounded_state["exit_name"] == "UNSUPPORTED", bounded_state
+            assert "SIF SMFLAG polling stalled:" in bounded.stderr, bounded.stderr
+            assert "guest_epc=0x00100010 register=4 value=0 reads=6" in bounded.stderr, bounded.stderr
+
+        # HLE-only extracted-disc mode models the already-bootstrapped IOP
+        # service baseline, matching ps2-web-recomp's SDBZ HLE model. It must
+        # not require ROM0 or pretend a guest IRX published that SMFLAG.
+        with tempfile.TemporaryDirectory(prefix="ee-native-hle-disc-sif-") as tmp:
+            root = Path(tmp)
+            elf = root / "ee-sif-wait.elf"
+            disc = root / "PS2_GAME"
+            disc.mkdir()
+            (disc / "SYSTEM.CNF").write_text(
+                "BOOT2 = cdrom0:\\\\SLUS_214.42;1\\n", encoding="ascii"
+            )
+            make_sif_handshake_elf(elf)
+            report_path = root / "hle-sif.json"
+            command = [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf), "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--max-dispatches=48", "--hle-startup", "--trace",
+                "--sif-poll-limit=6", "--report", str(report_path),
+                "--disc-folder", str(disc),
+            ]
+            run = subprocess.run(command, capture_output=True,
+                                 text=True, check=False)
+            state = json.loads(report_path.read_text(encoding="utf-8"))
+            assert "[iop] HLE bootstrap: sifcmd=ready" in run.stdout, (
+                run.stdout + run.stderr
+            )
+            assert "HLE SifGetReg: register=0x00000004 result=0x00060000" in (
+                run.stdout
+            ), run.stdout
+            assert state["gpr_lo"][16] == 0x60000, state
+            assert state["dispatches"] < 48, state
+            assert "SIF SMFLAG polling stalled" not in run.stderr, run.stderr
+            assert "IOP guest loaded:" not in run.stdout, run.stdout
+            assert "IOP guest published SMFLAG:" not in run.stdout, run.stdout
+
+        # End-to-end integration: EE polls SMFLAG, *actual* IOP R3000 guest
+        # instructions invoke sifman via IRX imports, and the EE then exits
+        # its polling loop. Without an IOP module, the identical ELF stalls.
+        with tempfile.TemporaryDirectory(prefix="ee-native-iop-rendezvous-") as tmp:
+            root = Path(tmp)
+            elf = root / "ee-sif-wait.elf"
+            irx = root / "iop-sifman.irx"
+            make_sif_handshake_elf(elf)
+            make_sif_guest_irx(irx)
+            report_path = root / "ee-iop.json"
+            command = [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf), "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--max-dispatches=48", "--hle-startup", "--trace",
+                "--sif-poll-limit=6", "--report", str(report_path),
+            ]
+
+            without_iop = subprocess.run(
+                command, capture_output=True, text=True, check=False,
+            )
+            without_state = json.loads(
+                report_path.read_text(encoding="utf-8")
+            )
+            assert without_iop.returncode == 3, (
+                without_iop.stdout + without_iop.stderr
+            )
+            assert without_state["final_pc"] == 0x00100010, without_state
+            assert "SIF SMFLAG polling stalled" in without_iop.stderr
+            assert "IOP guest loaded:" not in without_iop.stdout
+
+            with_iop = subprocess.run(
+                command + [
+                    "--no-recompile", f"--iop-irx={irx}",
+                    "--iop-quantum=64",
                 ],
                 capture_output=True, text=True, check=False,
             )
-            assert result.returncode != 0, result.stdout + result.stderr
+            with_state = json.loads(
+                report_path.read_text(encoding="utf-8")
+            )
+            assert with_state["gpr_lo"][16] == 0x60000, (
+                with_state, with_iop.stdout, with_iop.stderr
+            )
+            assert "IOP guest loaded:" in with_iop.stdout
             assert (
-                f"dispatch=1 pc=0x00100008 -> 0x{expected_target:08x} "
-                "reason=DISPATCH(3) status=1"
-            ) in result.stdout, result.stdout + result.stderr
-            report = json.loads(report_path.read_text(encoding="utf-8"))
-            assert report["dispatches"] == 2, report
-            assert report["final_pc"] == 0, report
-            assert report["gpr_lo"][11] == 0, report
-            assert report["gpr_lo"][12] == 0x00100080, report
-            assert report["gpr_lo"][13] == 0x001000c0, report
-            assert report["gpr_lo"][15] == 0, report
+                "IOP guest published SMFLAG: value=0x00060000"
+            ) in with_iop.stdout
+            assert "HLE SifGetReg: register=0x00000004 result=0x00060000" in (
+                with_iop.stdout
+            ), with_iop.stdout
+            assert "SIF SMFLAG polling stalled" not in with_iop.stderr
+            assert with_state["dispatches"] < 48, with_state
 
-    with tempfile.TemporaryDirectory(prefix="ee-native-overlapping-entry-") as tmp:
-        root = Path(tmp)
-        elf = root / "shared-successor.elf"
-        make_overlapping_entry_elf(elf)
-        report_path = root / "shared-successor.json"
-        result = subprocess.run(
-            [
+            # The kernel's real IRX resolver refuses an unsupported import.
+            invalid_irx = root / "bad-import.irx"
+            make_sif_guest_irx(invalid_irx, unknown_import=True)
+            missing_import = subprocess.run(
+                command + ["--no-recompile", f"--iop-irx={invalid_irx}"],
+                capture_output=True, text=True, check=False,
+            )
+            assert missing_import.returncode == 1, (
+                missing_import.stdout + missing_import.stderr
+            )
+            assert "IOP IRX load failed:" in missing_import.stderr
+            assert "IOP guest published SMFLAG:" not in missing_import.stdout
+
+            # An IOP thread that traps on an unknown syscall never
+            # synthesizes readiness or resumes the EE unconditionally.
+            unknown_service_irx = root / "bad-syscall.irx"
+            make_sif_guest_irx(unknown_service_irx, unhandled_syscall=True)
+            unknown_service = subprocess.run(
+                command + [
+                    "--no-recompile", f"--iop-irx={unknown_service_irx}",
+                    "--iop-quantum=64",
+                ],
+                capture_output=True, text=True, check=False,
+            )
+            assert unknown_service.returncode != 0, (
+                unknown_service.stdout + unknown_service.stderr
+            )
+            assert "IOP guest stopped: reason=2" in unknown_service.stderr
+            assert "IOP guest published SMFLAG:" not in unknown_service.stdout
+
+            # PR #71 exposes real guest IRX exports, and the EE host must
+            # preserve their order. The provider publishes ordinal 0 as a
+            # relocated guest function returning 0x60000; only the consumer
+            # imports it and uses the returned value for sifman SetSMFlag.
+            assets = root / "iop assets"
+            assets.mkdir()
+            provider = assets / "provider.irx"
+            consumer = assets / "consumer.irx"
+            make_iop_provider_irx(provider)
+            make_iop_consumer_irx(consumer)
+            manifest = root / "iop-modules.txt"
+            manifest.write_text(
+                "# Provider first, IOP entry module last\n"
+                "iop assets/provider.irx\n"
+                "\n"
+                "iop assets/consumer.irx\n",
+                encoding="utf-8",
+            )
+
+            for invocation in (
+                [f"--iop-irx={provider}", f"--iop-irx={consumer}"],
+                [f"--iop-irx-list={manifest}"],
+                [f"--iop-irx-list={manifest}", "--iop-start-all"],
+            ):
+                linked_run = subprocess.run(
+                    command + ["--no-recompile", "--iop-quantum=64",
+                               *invocation],
+                    capture_output=True, text=True, check=False,
+                )
+                linked_state = json.loads(
+                    report_path.read_text(encoding="utf-8")
+                )
+                assert linked_state["gpr_lo"][16] == 0x60000, (
+                    invocation, linked_state,
+                    linked_run.stdout, linked_run.stderr
+                )
+                assert linked_run.stdout.count("IOP IRX linked:") == 2, (
+                    invocation, linked_run.stdout
+                )
+                assert "IOP guest published SMFLAG: value=0x00060000" in (
+                    linked_run.stdout
+                ), (invocation, linked_run.stdout, linked_run.stderr)
+                assert "SIF SMFLAG polling stalled" not in linked_run.stderr
+
+            reversed_modules = subprocess.run(
+                command + [
+                    "--no-recompile",
+                    f"--iop-irx={consumer}", f"--iop-irx={provider}",
+                ],
+                capture_output=True, text=True, check=False,
+            )
+            assert reversed_modules.returncode == 1, (
+                reversed_modules.stdout + reversed_modules.stderr
+            )
+            assert "IOP IRX load failed: index=1" in reversed_modules.stderr
+            assert "IOP guest loaded:" not in reversed_modules.stdout
+
+            # A second copy of a provider must be refused before any guest
+            # thread starts, because its export ordinals already exist.
+            duplicate_module = subprocess.run(
+                command + [
+                    "--no-recompile",
+                    f"--iop-irx={provider}", f"--iop-irx={provider}",
+                ],
+                capture_output=True, text=True, check=False,
+            )
+            assert duplicate_module.returncode == 1
+            assert "IOP IRX load failed: index=2" in duplicate_module.stderr
+            assert "IOP guest loaded:" not in duplicate_module.stdout
+
+            no_manifest = subprocess.run(
+                command + [
+                    "--no-recompile", f"--iop-irx-list={root / 'missing.txt'}",
+                ],
+                capture_output=True, text=True, check=False,
+            )
+            assert no_manifest.returncode == 2, no_manifest
+            assert "cannot read IOP IRX list" in no_manifest.stderr
+
+            ambiguous = subprocess.run(
+                command + [
+                    "--no-recompile", f"--iop-irx={provider}",
+                    f"--iop-irx-list={manifest}",
+                ],
+                capture_output=True, text=True, check=False,
+            )
+            assert ambiguous.returncode == 2, ambiguous
+            assert "--iop-irx-list and --iop-irx are mutually exclusive" in (
+                ambiguous.stderr
+            )
+
+        for invalid_open in (False, True):
+            with tempfile.TemporaryDirectory(prefix="ee-native-deci2-") as tmp:
+                root = Path(tmp)
+                elf = root / "deci2.elf"
+                make_deci2_open_close_elf(elf, invalid_open=invalid_open)
+                report_path = root / "deci2.json"
+                command = [
+                    sys.executable, str(source / "tools" / "run_game.py"),
+                    str(elf), "--build-dir", str(build),
+                    "--work-dir", str(root / "out"),
+                    "--max-dispatches=32", "--trace",
+                    "--report", str(report_path),
+                ]
+
+                if not invalid_open:
+                    # The opt-in kernel emulation must not be active by default.
+                    disabled = subprocess.run(
+                        command, capture_output=True, text=True, check=False,
+                    )
+                    assert disabled.returncode == 3, disabled.stdout + disabled.stderr
+                    disabled_state = json.loads(report_path.read_text(encoding="utf-8"))
+                    assert disabled_state["cop0_epc"] == 0x00100018, disabled_state
+                    assert "HLE Deci2Call" not in disabled.stdout, disabled.stdout
+                    command.append("--no-recompile")
+
+                result = subprocess.run(
+                    command + ["--hle-startup"],
+                    capture_output=True, text=True, check=False,
+                )
+                assert result.returncode == 3, result.stdout + result.stderr
+                state = json.loads(report_path.read_text(encoding="utf-8"))
+                assert state["exit_name"] == "EXCEPTION", state
+                if invalid_open:
+                    assert state["cop0_epc"] == 0x00100018, state
+                    assert (
+                        "Deci2Call OPEN HLE refused unbacked or unaligned "
+                        "descriptor 0x7ffffffc"
+                    ) in result.stderr, result.stdout + result.stderr
+                    assert "HLE Deci2Call OPEN:" not in result.stdout, result.stdout
+                    assert state["gpr_lo"][8] == 0, state  # no fallback write
+                else:
+                    assert state["cop0_epc"] == 0x00100048, state
+                    assert (
+                        "HLE Deci2Call OPEN: descriptor=0x00100200 "
+                        "channel=0x00100220 handler=0x00100060 result=1"
+                    ) in result.stdout, result.stdout
+                    assert "HLE Deci2Call CLOSE: result=1" in result.stdout, result.stdout
+                    assert (
+                        "Deci2Call HLE refused unsupported operation=7 "
+                        "descriptor=0x00000000 handler=0x00000000"
+                    ) in result.stderr, result.stdout + result.stderr
+                    regs = state["gpr_lo"]
+                    assert regs[8] == 1, state  # OPEN result
+                    assert regs[9] == 1, state  # CLOSE result
+                    assert regs[10] == 0, state # no fake REQSEND return
+                    assert regs[16:20] == [
+                        0x11223344, 0x00100220, 0x00100060, 0x55667788,
+                    ], state
+
+
+
+        for invalid_channel in (False, True):
+            with tempfile.TemporaryDirectory(prefix="ee-native-deci2-reqsend-") as tmp:
+                root = Path(tmp)
+                elf = root / "deci2-reqsend.elf"
+                make_deci2_reqsend_elf(elf, invalid_channel=invalid_channel)
+                report_path = root / "deci2-reqsend.json"
+                result = subprocess.run(
+                    [
+                        sys.executable, str(source / "tools" / "run_game.py"),
+                        str(elf), "--build-dir", str(build),
+                        "--work-dir", str(root / "out"),
+                        "--max-dispatches=48",
+                        "--hle-startup", "--trace",
+                        "--watch-word=0x0010022c",
+                        "--report", str(report_path),
+                    ],
+                    capture_output=True, text=True, check=False,
+                )
+                assert result.returncode == 3, result.stdout + result.stderr
+                state = json.loads(report_path.read_text(encoding="utf-8"))
+                assert state["exit_name"] == "EXCEPTION", state
+                registers = state["gpr_lo"]
+                assert registers[8] == 1, state  # OPEN returned 1
+                if invalid_channel:
+                    assert state["cop0_epc"] == 0x00100024, state
+                    assert (
+                        "Deci2Call REQSEND HLE refused unbacked or "
+                        "unaligned channel 0x7ffffffc"
+                    ) in result.stderr, result.stdout + result.stderr
+                    assert registers[9] == 0, state
+                    assert "EE watch changed:" not in result.stdout, result.stdout
+                else:
+                    assert state["cop0_epc"] == 0x00100080, state
+                    assert (
+                        "HLE Deci2Call REQSEND: channel=0x00100220 "
+                        "packet_ptr=0x00100260 packet_size=16 "
+                        "pending_before=0xcafebabe pending_after=0 result=1"
+                    ) in result.stdout, result.stdout
+                    assert (
+                        "HLE Deci2Call REQSEND: no active channel result=1"
+                    ) in result.stdout, result.stdout
+                    for operation in ("POLL", "EXRECV", "EXSEND"):
+                        assert (
+                            f"HLE Deci2Call {operation}: result=1 "
+                            "(debug-only transport)"
+                        ) in result.stdout, result.stdout
+                    assert "HLE Deci2Call CLOSE: result=1" in result.stdout
+                    assert (
+                        "Deci2Call HLE refused unsupported operation=7 "
+                        "descriptor=0x00000000 handler=0x00000000"
+                    ) in result.stderr, result.stdout + result.stderr
+                    assert registers[9] == 1, state     # REQSEND
+                    assert registers[10] == 1, state    # CLOSE
+                    assert registers[12] == 1, state    # unregistered REQSEND
+                    assert registers[14] == 1, state    # POLL
+                    assert registers[15] == 1, state    # EXRECV
+                    assert registers[24] == 1, state    # EXSEND
+                    assert registers[16] == 0, state    # channel[3] cleared
+                    assert registers[17] == 16, state   # size unchanged
+                    assert registers[18] == 0x00100260, state  # pointer unchanged
+                    assert registers[13] == 0, state    # no unsupported fallthrough
+                    # The existing --watch-word probe compares the RAM
+                    # before/after *translated* native callbacks only; this
+                    # HLE mutation occurs between callbacks. Verify it via
+                    # both the HLE trace and real guest LW result above.
+                    assert (
+                        "EE watch initial: addr=0x0010022c "
+                        "value=0xcafebabe"
+                    ) in result.stdout, result.stdout
+                    assert "EE watch changed:" not in result.stdout, result.stdout
+
+    if shard is None or shard == 2:
+        with tempfile.TemporaryDirectory(prefix="ee-native-word-watch-") as tmp:
+            root = Path(tmp)
+            elf = root / "word-watch.elf"
+            make_guest_word_watch_elf(elf)
+            args = [
                 sys.executable, str(source / "tools" / "run_game.py"),
-                str(elf),
-                "--build-dir", str(build),
+                str(elf), "--build-dir", str(build),
                 "--work-dir", str(root / "out"),
-                "--max-dispatches=64",
-                "--auto-expand=2",
-                "--hle-startup",
-                "--trace",
-                "--report", str(report_path),
-            ],
-            capture_output=True, text=True, check=False,
-        )
-        assert result.returncode != 0, result.stdout + result.stderr
-        assert "auto-expand: compiling reachable PC 0x00100050" in result.stdout, (
-            result.stdout + result.stderr
-        )
-        assert "auto-expand: compiling reachable PC 0x00100054" in result.stdout, (
-            result.stdout + result.stderr
-        )
-        assert ("auto-expand: preserving existing ownership of 1 "
-                "overlapping guest block PC(s)") in result.stdout, (
-            result.stdout + result.stderr
-        )
-        assert result.stdout.count("HLE FlushCache: mode=0x00000000 result=0") >= 2, (
-            result.stdout + result.stderr
-        )
+                "--max-dispatches=8",
+                "--trace-entry=0x00100008",
+                "--watch-word=0x00100200",
+                "--trace-v0=0x00100008:0x0010001c",
+                "--trace-store=0x00100200",
+            ]
+            result = subprocess.run(args, capture_output=True, text=True,
+                                    check=False)
+            assert result.returncode == 3, result.stdout + result.stderr
+            assert "EE guest-store watch: addr=0x00100200 max_events=64" in result.stdout, result.stdout
+            assert ("EE guest-store: pc=0x00100014 opcode=0xad090000 ins=SW "
+                    "effective=0x00100200 affected=0x00100200 width=4 "
+                    "src=gpr9 lane=0 source_value=0x0000000000000007 "
+                    "base=gpr8 base_value=0x0000000000100200 "
+                    "sp=0x01fff000 fp=0x00000000 ra=0x00000000") in result.stdout, result.stdout
+            assert result.stdout.count("EE guest-store:") == 1, result.stdout
+            assert "EE guest-v0 watch: first_pc=0x00100008 last_pc=0x0010001c max_events=64" in result.stdout, result.stdout
+            assert ("EE guest-v0-write: pc=0x0010001c opcode=0x24020007 "
+                    "old=0x0000000000000000 new=0x0000000000000007 "
+                    "rs=0 rt=2 rd=0") in result.stdout, result.stdout
+            assert result.stdout.count("EE guest-v0-write:") == 1, result.stdout
+            assert "EE watch initial: addr=0x00100200 value=0x00000000" in result.stdout, result.stdout
+            assert "EE trace-entry: dispatch=1 pc=0x00100008" in result.stdout, result.stdout
+            assert "sp=0x01fff000" in result.stdout, result.stdout
+            assert "EE trace-entry saved: s0=00000000" in result.stdout, result.stdout
+            assert "s3=00000000" in result.stdout, result.stdout
+            assert "fp=00000000" in result.stdout, result.stdout
+            assert result.stdout.count("EE trace-entry stack-pair:") == 8, result.stdout
+            assert ("EE trace-entry stack-pair: index=0 addr=0x01fff010 "
+                    "word0=0x00000000 word1=0x00000000") in result.stdout, result.stdout
+            assert "EE watch changed: dispatch=1 from_pc=0x00100008 " in result.stdout, result.stdout
+            assert "addr=0x00100200 old=0x00000000 new=0x00000007" in result.stdout, result.stdout
+            assert ("EE watch registers: s3_before=00000000 "
+                    "s3_after=00000000") in result.stdout, result.stdout
+            assert "fp_before=00000000 fp_after=00000000" in result.stdout, result.stdout
+            assert ("EE watch pair: addr=0x001001fc "
+                    "word0=0x00000000 word1=0x00000007") in result.stdout, result.stdout
 
-        metadata = json.loads(
-            (root / "out" / "ir" / "ee_functions.json").read_text(encoding="utf-8")
-        )
-        owners = [
-            int(pc, 0) for function in metadata["functions"]
-            for pc in function["block_pcs"]
-        ]
-        assert len(owners) == len(set(owners)), metadata
-        assert owners.count(0x00100050) == 1, metadata
-        assert owners.count(0x00100054) == 1, metadata
-        assert owners.count(0x00100058) == 1, metadata
-        state = json.loads(report_path.read_text(encoding="utf-8"))
-        assert state["dispatches"] >= 7, state
-        assert state["final_pc"] == 0, state
-        assert state["gpr_lo"][9] == 0, state  # second real syscall return
-        assert state["gpr_lo"][16] == 0, state  # first real syscall return
+            rejected = subprocess.run(
+                args[:-2] + ["--watch-word=0x02000000", "--no-recompile"],
+                capture_output=True, text=True, check=False,
+            )
+            assert rejected.returncode == 2, rejected.stdout + rejected.stderr
+            assert "watch-word address is not backed: 0x02000000" in rejected.stderr, (
+                rejected.stdout + rejected.stderr
+            )
 
-    with tempfile.TemporaryDirectory(prefix="ee-native-interrupt-masks-") as tmp:
-        root = Path(tmp)
-        elf = root / "kernel-interrupt-masks.elf"
-        make_interrupt_mask_elf(elf)
-        report_path = root / "masks.json"
-        result = subprocess.run(
-            [
-                sys.executable, str(source / "tools" / "run_game.py"),
-                str(elf),
-                "--build-dir", str(build),
-                "--work-dir", str(root / "out"),
-                "--max-dispatches=64",
-                "--hle-startup",
-                "--trace",
-                "--report", str(report_path),
-            ],
-            capture_output=True, text=True, check=False,
-        )
-        assert result.returncode != 0, result.stdout + result.stderr
-        for name in (
-            "EnableIntc", "DisableIntc", "EnableDmac", "DisableDmac",
-        ):
-            assert f"HLE {name}" in result.stdout, result.stdout + result.stderr
-        registers = json.loads(report_path.read_text(encoding="utf-8"))["gpr_lo"]
-        assert registers[8:16] == [1, 0, 1, 0, 1, 1, 1, 0], registers
-        assert registers[16:22] == [1, 0, 1, 1, 1, 1], registers
-        assert registers[22] == (1 << 11), registers  # INTC_MASK
-        assert registers[23] == (1 << 18), registers  # DMAC D_STAT
-        assert "interrupt mask HLE refused" not in result.stderr, result.stderr
+            # A guest-store watch does not generate a false event for a
+            # different word, and its own guest address must be backed.
+            nearby = subprocess.run(
+                args[:-1] + ["--trace-store=0x00100204", "--no-recompile"],
+                capture_output=True, text=True, check=False,
+            )
+            assert nearby.returncode == 3, nearby.stdout + nearby.stderr
+            assert "EE guest-store:" not in nearby.stdout, nearby.stdout
+            invalid_store = subprocess.run(
+                args[:-1] + ["--trace-store=0x02000000", "--no-recompile"],
+                capture_output=True, text=True, check=False,
+            )
+            assert invalid_store.returncode == 2, invalid_store.stdout + invalid_store.stderr
+            assert "trace-store address is not backed: 0x02000000" in invalid_store.stderr, (
+                invalid_store.stdout + invalid_store.stderr
+            )
 
-    with tempfile.TemporaryDirectory(prefix="ee-native-interrupt-handlers-") as tmp:
-        root = Path(tmp)
-        elf = root / "kernel-interrupt-handlers.elf"
-        make_interrupt_handlers_elf(elf)
-        report_path = root / "handlers.json"
-        result = subprocess.run(
-            [
+            excluded_v0 = subprocess.run(
+                args[:-2] + ["--trace-v0=0x00100008:0x00100018", "--no-recompile"],
+                capture_output=True, text=True, check=False,
+            )
+            assert excluded_v0.returncode == 3, excluded_v0.stdout + excluded_v0.stderr
+            assert "EE guest-v0-write:" not in excluded_v0.stdout, excluded_v0.stdout
+
+            bad_v0_window = subprocess.run(
+                args[:-2] + ["--trace-v0=0x0010001c:0x00100008", "--no-recompile"],
+                capture_output=True, text=True, check=False,
+            )
+            assert bad_v0_window.returncode == 2, bad_v0_window.stdout + bad_v0_window.stderr
+            assert "ordered range" in bad_v0_window.stderr, (
+                bad_v0_window.stdout + bad_v0_window.stderr
+            )
+
+
+
+        with tempfile.TemporaryDirectory(prefix="ee-native-heap-boundary-") as tmp:
+            root = Path(tmp)
+            elf = root / "kernel-heap.elf"
+            make_heap_boundary_elf(elf)
+            report_path = root / "heap.json"
+            command = [
                 sys.executable, str(source / "tools" / "run_game.py"),
                 str(elf),
                 "--build-dir", str(build),
                 "--work-dir", str(root / "out"),
                 "--max-dispatches=32",
-                "--hle-startup",
                 "--trace",
                 "--report", str(report_path),
-            ],
-            capture_output=True, text=True, check=False,
-        )
-        assert result.returncode != 0, result.stdout + result.stderr
-        assert "EE stopped: dispatched=" in result.stdout, (
-            result.stdout + result.stderr
-        )
-        for item in (
-            "HLE AddIntcHandler: id=1 cause=11 handler=0x00100090 "
-            "next=0xffffffff arg=0x00000066 gp=0x12340000",
-            "HLE AddIntcHandler: id=2 cause=11 handler=0x001000a0 "
-            "next=0x00000000 arg=0x00000077 gp=0x12340000",
-            "HLE AddDmacHandler: id=3 cause=2 handler=0x001000b0 "
-            "next=0xffffffff arg=0x00000088 gp=0x12340000",
-            "HLE RemoveIntcHandler: cause=11 id=2 remaining=1",
-            "HLE RemoveIntcHandler: cause=11 id=99 remaining=1",
-            "HLE RemoveIntcHandler: cause=11 id=1 remaining=0",
-            "HLE RemoveDmacHandler: cause=2 id=3 remaining=0",
-        ):
-            assert item in result.stdout, (item, result.stdout + result.stderr)
-        registers = json.loads(report_path.read_text(encoding="utf-8"))["gpr_lo"]
-        assert registers[8:14] == [1, 2, 3, 1, 0, 0], registers
-        assert registers[16] == 1, registers
+            ]
 
-    with tempfile.TemporaryDirectory(prefix="ee-native-syscall-out-of-range-") as tmp:
-        root = Path(tmp)
-        elf = root / "out-of-range-syscalls.elf"
-        make_out_of_range_set_syscall_elf(elf)
-        report_path = root / "out-of-range.json"
-        result = subprocess.run(
-            [
+            without_hle = subprocess.run(
+                command, capture_output=True, text=True, check=False,
+            )
+            assert without_hle.returncode != 0, (
+                without_hle.stdout + without_hle.stderr
+            )
+            refused = json.loads(report_path.read_text(encoding="utf-8"))
+            assert refused["cop0_epc"] == 0x0010000c, refused
+            assert "HLE EndOfHeap:" not in without_hle.stdout
+
+            with_hle = subprocess.run(
+                command + ["--no-recompile", "--hle-startup"],
+                capture_output=True, text=True, check=False,
+            )
+            assert with_hle.returncode == 3, with_hle.stdout + with_hle.stderr
+            for trace_line in (
+                "HLE EndOfHeap: id=1 end=0x00000000",
+                "HLE SetupHeap: base=0x00640380 end=0x01ffb000 size=0xffffffff",
+                "HLE EndOfHeap: id=1 end=0x01ffb000",
+                "HLE SetupHeap: base=0x00640000 end=0x00642000 size=0x00002000",
+                "HLE EndOfHeap: id=1 end=0x00642000",
+            ):
+                assert trace_line in with_hle.stdout, (
+                    trace_line, with_hle.stdout, with_hle.stderr
+                )
+            state = json.loads(report_path.read_text(encoding="utf-8"))
+            assert state["snapshot_kind"] == "stopped", state
+            assert state["final_pc"] == 0, state
+            assert state["exit_name"] == "DISPATCH", state
+            regs = state["gpr_lo"]
+            assert regs[8] == 0, state            # initially unconfigured
+            assert regs[9] == 0x01fff000, state   # SetupThread result
+            assert regs[10] == 0x01ffb000, state # SetupHeap(-1) result
+            assert regs[11] == 0x01ffb000, state # EndOfHeap
+            assert regs[12] == 0x00642000, state # SetupHeap(size) result
+            assert regs[13] == 0x00642000, state # EndOfHeap updated
+            assert regs[14] == 0x00642000, state # EndOfHeap ignores A0
+
+        with tempfile.TemporaryDirectory(prefix="ee-native-thread-priority-") as tmp:
+            root = Path(tmp)
+            elf = root / "kernel-thread-priority.elf"
+            make_thread_priority_elf(elf)
+            report_path = root / "thread-priority.json"
+            command = [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf),
+                "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--max-dispatches=32",
+                "--trace",
+                "--report", str(report_path),
+            ]
+
+            without_hle = subprocess.run(
+                command, capture_output=True, text=True, check=False,
+            )
+            assert without_hle.returncode != 0, (
+                without_hle.stdout + without_hle.stderr
+            )
+            refused = json.loads(report_path.read_text(encoding="utf-8"))
+            assert refused["cop0_epc"] == 0x0010000c, refused
+            assert "HLE ChangeThreadPriority:" not in without_hle.stdout
+
+            with_hle = subprocess.run(
+                command + ["--no-recompile", "--hle-startup"],
+                capture_output=True, text=True, check=False,
+            )
+            assert "HLE ChangeThreadPriority: id=1 old=0 new=1" in with_hle.stdout, (
+                with_hle.stdout + with_hle.stderr
+            )
+            assert "HLE ChangeThreadPriority: id=1 old=1 new=5" in with_hle.stdout, (
+                with_hle.stdout + with_hle.stderr
+            )
+            assert "HLE iChangeThreadPriority: id=2 old=64 new=2" in with_hle.stdout, (
+                with_hle.stdout + with_hle.stderr
+            )
+            assert "HLE ChangeThreadPriority: id=2 old=2 new=7" in with_hle.stdout, (
+                with_hle.stdout + with_hle.stderr
+            )
+            assert "HLE ChangeThreadPriority: id=99 not found, result=-1" in with_hle.stdout, (
+                with_hle.stdout + with_hle.stderr
+            )
+            state = json.loads(report_path.read_text(encoding="utf-8"))
+            registers = state["gpr_lo"]
+            assert registers[8] == 1, state   # GetThreadId before changes
+            assert registers[9] == 0, state   # old main priority
+            assert registers[10] == 1, state  # old priority using ID alias 0
+            assert registers[11] == 2, state  # dormant CreateThread result
+            assert registers[12] == 64, state # old dormant priority
+            assert registers[13] == 2, state  # masked priority persisted
+            assert registers[14] == 0xFFFFFFFFFFFFFFFF, state  # invalid thread
+            assert registers[15] == 1, state  # GetThreadId remains main
+            assert state["final_pc"] != 0x001000f0, state # no child ran
+
+        with tempfile.TemporaryDirectory(prefix="ee-native-get-thread-id-") as tmp:
+            root = Path(tmp)
+            elf = root / "kernel-get-thread-id.elf"
+            make_get_thread_id_elf(elf)
+            report_path = root / "get-thread-id.json"
+            command = [
                 sys.executable, str(source / "tools" / "run_game.py"),
                 str(elf),
                 "--build-dir", str(build),
                 "--work-dir", str(root / "out"),
                 "--max-dispatches=16",
-                "--hle-startup",
-                "--kseg-ram",
                 "--trace",
                 "--report", str(report_path),
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert "HLE SetSyscall: number=0x83 handler=0x00100050" in result.stdout, (
-            result.stdout + result.stderr
-        )
-        assert "HLE SetSyscall: unsupported number=0x0000012c handler=0x80076488 (ignored)" in result.stderr, (
-            result.stdout + result.stderr
-        )
-        assert "HLE SetSyscall: unsupported number=0xffffffff handler=0x80076488 (ignored)" in result.stderr, (
-            result.stdout + result.stderr
-        )
-        assert "EE stopped: dispatched=" in result.stdout, (
-            result.stdout + result.stderr
-        )
-        report = json.loads(report_path.read_text(encoding="utf-8"))
-        registers = report["gpr_lo"]
-        assert registers[8] == 0x00100050, report
-        assert registers[9] == 0, report  # 0x12C returns zero
-        assert registers[11] == 0x00100050, report
-        assert registers[12] == 0, report  # past table untouched
-        assert registers[13] == 0, report  # huge number returns zero
-        assert registers[14] == 0x00100050, report
-        assert registers[15] == 0, report  # still untouched
-        assert registers[2] == 0, report
+            ]
 
-    with tempfile.TemporaryDirectory(prefix="ee-native-syscall-table-") as tmp:
-        root = Path(tmp)
-        elf = root / "guest-syscall-table.elf"
-        make_guest_syscall_table_elf(elf)
-        report_path = root / "kernel-table.json"
-        result = subprocess.run(
-            [
+            without_hle = subprocess.run(
+                command, capture_output=True, text=True, check=False,
+            )
+            assert without_hle.returncode != 0, (
+                without_hle.stdout + without_hle.stderr
+            )
+            refused = json.loads(report_path.read_text(encoding="utf-8"))
+            assert refused["cop0_epc"] == 0x0010000c, refused
+            assert "HLE GetThreadId:" not in without_hle.stdout, (
+                without_hle.stdout + without_hle.stderr
+            )
+
+            with_hle = subprocess.run(
+                command + ["--no-recompile", "--hle-startup"],
+                capture_output=True, text=True, check=False,
+            )
+            assert with_hle.stdout.count("HLE GetThreadId: id=1") == 2, (
+                with_hle.stdout + with_hle.stderr
+            )
+            assert "HLE CreateThread: id=2" in with_hle.stdout, (
+                with_hle.stdout + with_hle.stderr
+            )
+            state = json.loads(report_path.read_text(encoding="utf-8"))
+            assert state["gpr_lo"][8] == 1, state  # running main thread
+            assert state["gpr_lo"][9] == 2, state  # new dormant thread
+            assert state["gpr_lo"][10] == 1, state # main remains current
+            assert state["gpr_lo"][2] == 1, state  # GetThreadId return value
+            assert state["gpr_lo"][4] == 0x00100200, state # ignores a0
+            assert state["final_pc"] != 0x001000f0, state
+
+        with tempfile.TemporaryDirectory(prefix="ee-native-create-thread-") as tmp:
+            root = Path(tmp)
+            elf = root / "kernel-create-thread.elf"
+            make_create_thread_elf(elf)
+            report_path = root / "create-thread.json"
+            command = [
                 sys.executable, str(source / "tools" / "run_game.py"),
                 str(elf),
                 "--build-dir", str(build),
                 "--work-dir", str(root / "out"),
-                "--max-dispatches=24",
-                "--hle-startup",
-                "--kseg-ram",
+                "--max-dispatches=16",
                 "--trace",
                 "--report", str(report_path),
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert "HLE SetSyscall: number=0x83 handler=0x00100050" in result.stdout, (
-            result.stdout + result.stderr
-        )
-        assert "HLE SetSyscall: number=0x5a handler=0x00100030" in result.stdout, (
-            result.stdout + result.stderr
-        )
-        assert "HLE SetSyscall: number=0x83 handler=0x00100030" in result.stdout, (
-            result.stdout + result.stderr
-        )
-        assert "EE stopped: dispatched=" in result.stdout, (
-            result.stdout + result.stderr
-        )
-        report = json.loads(report_path.read_text(encoding="utf-8"))
-        registers = report["gpr_lo"]
-        assert registers[8] == 0, report  # uninitialized table starts empty
-        assert registers[9] == 0x00100050, report  # 0x83 first installation
-        assert registers[11] == 0x00100050, report  # physical alias
-        assert registers[12] == 0x00100030, report  # 0x5A at 0x1968
-        assert registers[13] == 0x00100050, report  # 0x83 unchanged by 0x5A
-        assert registers[14] == 0x00100030, report  # 0x83 replacement
-        assert registers[15] == 0, report  # untouched 0x84 at 0x1A10
+            ]
 
-    with tempfile.TemporaryDirectory(prefix="ee-native-kernel-ram-handler-") as tmp:
-        root = Path(tmp)
-        for invoke in (False, True):
-            elf = root / ("invoke-ram-handler.elf" if invoke else "clear-ram-handler.elf")
-            make_kernel_ram_handler_elf(elf, invoke=invoke)
-            report_path = root / "ram-handler.json"
+            without_hle = subprocess.run(
+                command, capture_output=True, text=True, check=False,
+            )
+            assert without_hle.returncode != 0, (
+                without_hle.stdout + without_hle.stderr
+            )
+            refused = json.loads(report_path.read_text(encoding="utf-8"))
+            assert refused["cop0_epc"] == 0x00100014, refused
+            assert "HLE CreateThread:" not in without_hle.stdout, (
+                without_hle.stdout + without_hle.stderr
+            )
+
+            with_hle = subprocess.run(
+                command + ["--no-recompile", "--hle-startup"],
+                capture_output=True, text=True, check=False,
+            )
+            assert with_hle.returncode != 0, (
+                with_hle.stdout + with_hle.stderr
+            )
+            assert ("HLE CreateThread: id=2 entry=0x001000f0 "
+                    "stack=0x00102000 size=0x00000800 gp=0x0010f000 "
+                    "priority=64 attr=0x0000abcd option=0xaabbccdd "
+                    "parameters=0x00100200 dormant") in with_hle.stdout, (
+                        with_hle.stdout + with_hle.stderr
+                    )
+            assert ("HLE CreateThread: id=3 entry=0x001000f0 "
+                    "stack=0x00102000 size=0x00000800 gp=0x0010f000 "
+                    "priority=64 attr=0x0000abcd option=0xaabbccdd "
+                    "parameters=0x00100200 dormant") in with_hle.stdout, (
+                        with_hle.stdout + with_hle.stderr
+                    )
+            assert ("CreateThread HLE refused unbacked or unaligned "
+                    "parameter block 0x00100201") in with_hle.stderr, (
+                        with_hle.stdout + with_hle.stderr
+                    )
+            state = json.loads(report_path.read_text(encoding="utf-8"))
+            assert state["cop0_epc"] == 0x0010003c, state
+            assert state["gpr_lo"][8] == 2, state
+            assert state["gpr_lo"][9] == 3, state
+            assert state["gpr_lo"][10] == 0, state
+            assert state["gpr_lo"][2] == 3, state
+            assert state["final_pc"] != 0x001000f0, state
+
+        with tempfile.TemporaryDirectory(prefix="ee-native-semaphore-") as tmp:
+            root = Path(tmp)
+            elf = root / "semaphore-mips.elf"
+            make_semaphore_elf(elf)
             result = subprocess.run(
                 [
                     sys.executable, str(source / "tools" / "run_game.py"),
                     str(elf),
                     "--build-dir", str(build),
-                    "--work-dir", str(root / ("invoke" if invoke else "clear")),
+                    "--work-dir", str(root / "out"),
+                    "--max-dispatches=8",
+                    "--hle-startup",
+                    "--trace",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert "HLE CreateSema: id=1 init=1 max=2" in result.stdout, (
+                result.stdout + result.stderr
+            )
+            assert "EE stopped: dispatched=2" in result.stdout, (
+                result.stdout + result.stderr
+            )
+
+        with tempfile.TemporaryDirectory(prefix="ee-native-flushcache-") as tmp:
+            root = Path(tmp)
+            elf = root / "flush-cache-mips.elf"
+            make_flush_cache_elf(elf)
+            report = root / "flush-cache.json"
+            command = [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf),
+                "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--max-dispatches=8",
+                "--report", str(report),
+                "--trace",
+            ]
+            without_hle = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert without_hle.returncode != 0, without_hle.stdout + without_hle.stderr
+            initial = json.loads(report.read_text(encoding="utf-8"))
+            assert initial["cop0_epc"] == 0x00100010, initial
+            assert initial["gpr_lo"][2] == 123, initial
+            assert "HLE FlushCache" not in without_hle.stdout, without_hle.stdout
+
+            with_hle = subprocess.run(
+                command + ["--no-recompile", "--hle-startup"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert with_hle.returncode != 0, with_hle.stdout + with_hle.stderr
+            assert "HLE FlushCache: mode=0x00000000 result=0" in with_hle.stdout, (
+                with_hle.stdout + with_hle.stderr
+            )
+            assert "HLE iFlushCache: mode=0x00000000 result=0" in with_hle.stdout, (
+                with_hle.stdout + with_hle.stderr
+            )
+            stopped = json.loads(report.read_text(encoding="utf-8"))
+            assert stopped["cop0_epc"] == 0x0010002c, stopped
+            assert stopped["gpr_lo"][8] == 0, stopped  # first service return
+            assert stopped["gpr_lo"][9] == 0, stopped  # second service return
+            assert stopped["gpr_lo"][10] == 0, stopped  # unknown call never returns
+            assert stopped["gpr_lo"][2] == 0, stopped
+            assert stopped["gpr_lo"][3] == 0x65, stopped
+            assert "guest blocked by an unsupported operation" in with_hle.stderr, (
+                with_hle.stdout + with_hle.stderr
+            )
+
+        with tempfile.TemporaryDirectory(prefix="ee-native-syscall-hook-") as tmp:
+            root = Path(tmp)
+            elf = root / "set-syscall-mips.elf"
+            make_set_syscall_elf(elf)
+            result = subprocess.run(
+                [
+                    sys.executable, str(source / "tools" / "run_game.py"),
+                    str(elf),
+                    "--build-dir", str(build),
+                    "--work-dir", str(root / "out"),
+                    "--max-dispatches=8",
+                    "--hle-startup",
+                    "--trace",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert "HLE SetSyscall: number=0x83 handler=0x00100030" in result.stdout, (
+                result.stdout + result.stderr
+            )
+            assert "EE stopped: dispatched=2" in result.stdout, (
+                result.stdout + result.stderr
+            )
+
+        for status, expected_target in (
+            (2, 0x001000c0),  # EXL: ordinary EPC
+            (4, 0x00100080),  # ERL: ErrorEPC takes precedence
+        ):
+            with tempfile.TemporaryDirectory(prefix="ee-native-eret-") as tmp:
+                root = Path(tmp)
+                elf = root / "eret.elf"
+                make_eret_target_elf(elf, status)
+                report_path = root / "eret.json"
+                result = subprocess.run(
+                    [
+                        sys.executable, str(source / "tools" / "run_game.py"),
+                        str(elf),
+                        "--build-dir", str(build),
+                        "--work-dir", str(root / "out"),
+                        "--max-dispatches=16",
+                        "--trace",
+                        "--report", str(report_path),
+                    ],
+                    capture_output=True, text=True, check=False,
+                )
+                assert result.returncode != 0, result.stdout + result.stderr
+                assert (
+                    f"dispatch=1 pc=0x00100008 -> 0x{expected_target:08x} "
+                    "reason=DISPATCH(3) status=1"
+                ) in result.stdout, result.stdout + result.stderr
+                report = json.loads(report_path.read_text(encoding="utf-8"))
+                assert report["dispatches"] == 2, report
+                assert report["final_pc"] == 0, report
+                assert report["gpr_lo"][11] == 0, report
+                assert report["gpr_lo"][12] == 0x00100080, report
+                assert report["gpr_lo"][13] == 0x001000c0, report
+                assert report["gpr_lo"][15] == 0, report
+
+        with tempfile.TemporaryDirectory(prefix="ee-native-overlapping-entry-") as tmp:
+            root = Path(tmp)
+            elf = root / "shared-successor.elf"
+            make_overlapping_entry_elf(elf)
+            report_path = root / "shared-successor.json"
+            result = subprocess.run(
+                [
+                    sys.executable, str(source / "tools" / "run_game.py"),
+                    str(elf),
+                    "--build-dir", str(build),
+                    "--work-dir", str(root / "out"),
+                    "--max-dispatches=64",
+                    "--auto-expand=2",
+                    "--hle-startup",
+                    "--trace",
+                    "--report", str(report_path),
+                ],
+                capture_output=True, text=True, check=False,
+            )
+            assert result.returncode != 0, result.stdout + result.stderr
+            assert "auto-expand: compiling reachable PC 0x00100050" in result.stdout, (
+                result.stdout + result.stderr
+            )
+            assert "auto-expand: compiling reachable PC 0x00100054" in result.stdout, (
+                result.stdout + result.stderr
+            )
+            assert ("auto-expand: preserving existing ownership of 1 "
+                    "overlapping guest block PC(s)") in result.stdout, (
+                result.stdout + result.stderr
+            )
+            assert result.stdout.count("HLE FlushCache: mode=0x00000000 result=0") >= 2, (
+                result.stdout + result.stderr
+            )
+
+            metadata = json.loads(
+                (root / "out" / "ir" / "ee_functions.json").read_text(encoding="utf-8")
+            )
+            owners = [
+                int(pc, 0) for function in metadata["functions"]
+                for pc in function["block_pcs"]
+            ]
+            assert len(owners) == len(set(owners)), metadata
+            assert owners.count(0x00100050) == 1, metadata
+            assert owners.count(0x00100054) == 1, metadata
+            assert owners.count(0x00100058) == 1, metadata
+            state = json.loads(report_path.read_text(encoding="utf-8"))
+            assert state["dispatches"] >= 7, state
+            assert state["final_pc"] == 0, state
+            assert state["gpr_lo"][9] == 0, state  # second real syscall return
+            assert state["gpr_lo"][16] == 0, state  # first real syscall return
+
+        with tempfile.TemporaryDirectory(prefix="ee-native-interrupt-masks-") as tmp:
+            root = Path(tmp)
+            elf = root / "kernel-interrupt-masks.elf"
+            make_interrupt_mask_elf(elf)
+            report_path = root / "masks.json"
+            result = subprocess.run(
+                [
+                    sys.executable, str(source / "tools" / "run_game.py"),
+                    str(elf),
+                    "--build-dir", str(build),
+                    "--work-dir", str(root / "out"),
+                    "--max-dispatches=64",
+                    "--hle-startup",
+                    "--trace",
+                    "--report", str(report_path),
+                ],
+                capture_output=True, text=True, check=False,
+            )
+            assert result.returncode != 0, result.stdout + result.stderr
+            for name in (
+                "EnableIntc", "DisableIntc", "EnableDmac", "DisableDmac",
+            ):
+                assert f"HLE {name}" in result.stdout, result.stdout + result.stderr
+            registers = json.loads(report_path.read_text(encoding="utf-8"))["gpr_lo"]
+            assert registers[8:16] == [1, 0, 1, 0, 1, 1, 1, 0], registers
+            assert registers[16:22] == [1, 0, 1, 1, 1, 1], registers
+            assert registers[22] == (1 << 11), registers  # INTC_MASK
+            assert registers[23] == (1 << 18), registers  # DMAC D_STAT
+            assert "interrupt mask HLE refused" not in result.stderr, result.stderr
+
+        with tempfile.TemporaryDirectory(prefix="ee-native-interrupt-handlers-") as tmp:
+            root = Path(tmp)
+            elf = root / "kernel-interrupt-handlers.elf"
+            make_interrupt_handlers_elf(elf)
+            report_path = root / "handlers.json"
+            result = subprocess.run(
+                [
+                    sys.executable, str(source / "tools" / "run_game.py"),
+                    str(elf),
+                    "--build-dir", str(build),
+                    "--work-dir", str(root / "out"),
+                    "--max-dispatches=32",
+                    "--hle-startup",
+                    "--trace",
+                    "--report", str(report_path),
+                ],
+                capture_output=True, text=True, check=False,
+            )
+            assert result.returncode != 0, result.stdout + result.stderr
+            assert "EE stopped: dispatched=" in result.stdout, (
+                result.stdout + result.stderr
+            )
+            for item in (
+                "HLE AddIntcHandler: id=1 cause=11 handler=0x00100090 "
+                "next=0xffffffff arg=0x00000066 gp=0x12340000",
+                "HLE AddIntcHandler: id=2 cause=11 handler=0x001000a0 "
+                "next=0x00000000 arg=0x00000077 gp=0x12340000",
+                "HLE AddDmacHandler: id=3 cause=2 handler=0x001000b0 "
+                "next=0xffffffff arg=0x00000088 gp=0x12340000",
+                "HLE RemoveIntcHandler: cause=11 id=2 remaining=1",
+                "HLE RemoveIntcHandler: cause=11 id=99 remaining=1",
+                "HLE RemoveIntcHandler: cause=11 id=1 remaining=0",
+                "HLE RemoveDmacHandler: cause=2 id=3 remaining=0",
+            ):
+                assert item in result.stdout, (item, result.stdout + result.stderr)
+            registers = json.loads(report_path.read_text(encoding="utf-8"))["gpr_lo"]
+            assert registers[8:14] == [1, 2, 3, 1, 0, 0], registers
+            assert registers[16] == 1, registers
+
+        with tempfile.TemporaryDirectory(prefix="ee-native-syscall-out-of-range-") as tmp:
+            root = Path(tmp)
+            elf = root / "out-of-range-syscalls.elf"
+            make_out_of_range_set_syscall_elf(elf)
+            report_path = root / "out-of-range.json"
+            result = subprocess.run(
+                [
+                    sys.executable, str(source / "tools" / "run_game.py"),
+                    str(elf),
+                    "--build-dir", str(build),
+                    "--work-dir", str(root / "out"),
                     "--max-dispatches=16",
                     "--hle-startup",
                     "--kseg-ram",
@@ -3122,460 +3040,549 @@ def main():
                 text=True,
                 check=False,
             )
-            assert "HLE SetSyscall: number=0x5b handler=0x80076000" in result.stdout, (
+            assert "HLE SetSyscall: number=0x83 handler=0x00100050" in result.stdout, (
+                result.stdout + result.stderr
+            )
+            assert "HLE SetSyscall: unsupported number=0x0000012c handler=0x80076488 (ignored)" in result.stderr, (
+                result.stdout + result.stderr
+            )
+            assert "HLE SetSyscall: unsupported number=0xffffffff handler=0x80076488 (ignored)" in result.stderr, (
+                result.stdout + result.stderr
+            )
+            assert "EE stopped: dispatched=" in result.stdout, (
                 result.stdout + result.stderr
             )
             report = json.loads(report_path.read_text(encoding="utf-8"))
-            # MIPS LW sign-extends KSEG0 pointers into 64-bit GPRs.
-            assert report["gpr_lo"][8] & 0xffffffff == 0x80076000, report
-            assert report["gpr_lo"][9] == 0x03e00008, report
-            if invoke:
-                assert "HLE guest RAM syscall returned: entry=0x80076000" in result.stdout, (
-                    result.stdout + result.stderr
-                )
-                assert report["gpr_lo"][13] == 42, report
-                events = report["syscall_history"]
-                assert len(events) == 1 and events[0]["service"] == 0x5b, report
-                assert events[0]["handler"] == 0x80076000, report
-                assert events[0]["v0"] == 42 and events[0]["returned"], report
-            else:
-                assert "HLE SetSyscall: number=0x5b handler=0x00000000" in result.stdout, (
-                    result.stdout + result.stderr
-                )
-                assert report["gpr_lo"][13] == 0, report
+            registers = report["gpr_lo"]
+            assert registers[8] == 0x00100050, report
+            assert registers[9] == 0, report  # 0x12C returns zero
+            assert registers[11] == 0x00100050, report
+            assert registers[12] == 0, report  # past table untouched
+            assert registers[13] == 0, report  # huge number returns zero
+            assert registers[14] == 0x00100050, report
+            assert registers[15] == 0, report  # still untouched
+            assert registers[2] == 0, report
 
-    with tempfile.TemporaryDirectory(prefix="ee-native-registered-callback-") as tmp:
-        root = Path(tmp)
-        elf = root / "guest-callback-mips.elf"
-        make_registered_callback_elf(elf)
-        result = subprocess.run(
-            [
-                sys.executable, str(source / "tools" / "run_game.py"),
-                str(elf),
-                "--build-dir", str(build),
-                "--work-dir", str(root / "out"),
-                "--max-dispatches=16",
-                "--auto-expand=1",
-                "--hle-startup",
-                "--trace",
-                "--report", str(root / "callback.json"),
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert "auto-expand: compiling reachable PC 0x00100050" in result.stdout, (
-            result.stdout + result.stderr
-        )
-        assert "HLE guest syscall: number=0x83 handler=0x00100050" in result.stdout, (
-            result.stdout + result.stderr
-        )
-        assert "HLE guest syscall returned: resume=0x00100028 v0=0x0000000c" in result.stdout, (
-            result.stdout + result.stderr
-        )
-        report = json.loads((root / "callback.json").read_text(encoding="utf-8"))
-        assert report["gpr_lo"][8] == 12, report
-        assert report["gpr_lo"][31] == 0, report
-        assert report["dispatches"] >= 4, report
-        events = report["syscall_history"]
-        assert len(events) == 1, report
-        assert events[0]["service"] == 0x83, events
-        assert events[0]["handler"] == 0x00100050, events
-        assert events[0]["resume_pc"] == 0x00100028, events
-        assert events[0]["a0"] == 7, events
-        assert events[0]["v0"] == 12, events
-        assert events[0]["returned"] is True, events
-
-    # Progress diagnostics should measure native dispatch versus JSON
-    # checkpoint costs without relying on the real game ELF. A recursive
-    # JAL creates 300 bounded dispatcher calls and must emit progress at
-    # 256 and an end-of-run timing summary.
-    with tempfile.TemporaryDirectory(prefix="ee-native-progress-profile-") as tmp:
-        root = Path(tmp)
-        elf = root / "dispatch-loop.elf"
-        make_repeated_dispatch_elf(elf)
-        report_path = root / "progress.json"
-        result = subprocess.run(
-            [
-                sys.executable, str(source / "tools" / "run_game.py"),
-                str(elf),
-                "--build-dir", str(build),
-                "--work-dir", str(root / "out"),
-                "--max-dispatches=300",
-                "--timeout-seconds=30",
-                "--report", str(report_path),
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=60,
-        )
-        assert result.returncode == 4, result.stdout + result.stderr
-        snapshot = json.loads(report_path.read_text(encoding="utf-8"))
-        assert snapshot["snapshot_kind"] == "stopped", snapshot
-        assert snapshot["dispatches"] == 300, snapshot
-        assert "EE progress: dispatched=256" in result.stderr, result.stderr
-        assert "EE timing: dispatched=300" in result.stderr, result.stderr
-        assert "native_ms=" in result.stderr, result.stderr
-        assert "report_ms=" in result.stderr, result.stderr
-        assert "slowest_native_pc=" in result.stderr, result.stderr
-
-    with tempfile.TemporaryDirectory(prefix="ee-native-loop-budget-") as tmp:
-        root = Path(tmp)
-        elf = root / "counting-loop.elf"
-        make_counting_loop_elf(elf)
-        report_path = root / "loop-budget.json"
-        result = subprocess.run(
-            [
-                sys.executable, str(source / "tools" / "run_game.py"),
-                str(elf),
-                "--build-dir", str(build),
-                "--work-dir", str(root / "out"),
-                "--max-dispatches=8",
-                "--timeout-seconds=10",
-                "--loop-budget=32",
-                "--report", str(report_path),
-            ],
-            capture_output=True, text=True, check=False, timeout=40,
-        )
-        assert result.returncode == 3, result.stdout + result.stderr
-        assert "guest loop budget exhausted:" in result.stderr, result.stderr
-        state = json.loads(report_path.read_text(encoding="utf-8"))
-        assert state["snapshot_kind"] == "stopped", state
-        assert state["exit_reason"] == 5, state
-        assert state["exit_name"] == "LOOP_BUDGET", state
-        assert state["dispatches"] == 1, state
-        assert state["final_pc"] == 0x00100008, state
-        assert state["gpr_lo"][8] == 32, state
-        assert state["guest_instruction_attempts"] > 32, state
-        assert state["guest_instruction_attempts"] > state["dispatches"], state
-
-    # The opt-in runner resumes the *same* exact compiled loop header
-    # across host yields while preserving guest GPRs and the nonarchitectural
-    # instruction attempt counter. No guest time or VBlank event is created.
-    with tempfile.TemporaryDirectory(prefix="ee-native-resumable-yield-") as tmp:
-        root = Path(tmp)
-        elf = root / "counting-yield-loop.elf"
-        make_counting_loop_elf(elf)
-        report_path = root / "loop-yield.json"
-        result = subprocess.run(
-            [
-                sys.executable, str(source / "tools" / "run_game.py"),
-                str(elf),
-                "--build-dir", str(build),
-                "--work-dir", str(root / "out"),
-                "--max-dispatches=8",
-                "--loop-budget=4",
-                "--loop-yield-resumes=2",
-                "--report", str(report_path),
-                "--timeout-seconds=10",
-                "--trace",
-            ],
-            capture_output=True, text=True, check=False, timeout=40,
-        )
-        assert result.returncode == 3, result.stdout + result.stderr
-        assert result.stdout.count("EE host loop resume:") == 2, (
-            result.stdout, result.stderr
-        )
-        assert "guest host loop yield cap reached:" in result.stderr, (
-            result.stdout, result.stderr
-        )
-        assert "EE host loop state: pc=0x00100008" in result.stderr, (
-            result.stdout, result.stderr
-        )
-        assert "EE host loop ELF: > 0x00100008 opcode=0x25080001" in result.stderr, (
-            result.stdout, result.stderr
-        )
-        assert "r08=0x000000000000000c" in result.stderr, (
-            result.stdout, result.stderr
-        )
-        state = json.loads(report_path.read_text(encoding="utf-8"))
-        assert state["snapshot_kind"] == "stopped", state
-        assert state["exit_reason"] == 6, state
-        assert state["exit_name"] == "HOST_YIELD", state
-        assert state["dispatches"] == 3, state
-        assert state["final_pc"] == 0x00100008, state
-        assert state["gpr_lo"][8] == 12, state
-        assert state["guest_instruction_attempts"] >= 24, state
-        assert (state["cop0_cause"] & 0x7c) == 0, state
-
-    # Unknown native guest opcodes stop without silently doing nothing.
-    # The final diagnostics must report the actual PC, the ELF word,
-    # the live RAM word and the nearby original instruction stream.
-    with tempfile.TemporaryDirectory(prefix="ee-native-unsupported-pc-") as tmp:
-        root = Path(tmp)
-        elf = root / "unsupported.elf"
-        make_unsupported_instruction_elf(elf)
-        report_path = root / "unsupported.json"
-        result = subprocess.run(
-            [
-                sys.executable, str(source / "tools" / "run_game.py"),
-                str(elf), "--build-dir", str(build),
-                "--work-dir", str(root / "out"),
-                "--functions=entry",
-                "--max-dispatches=8",
-                "--report", str(report_path),
-                "--timeout-seconds=10",
-            ],
-            capture_output=True, text=True, check=False, timeout=40,
-        )
-        assert result.returncode == 3, result.stdout + result.stderr
-        snapshot = json.loads(report_path.read_text(encoding="utf-8"))
-        assert snapshot["exit_name"] == "UNSUPPORTED", snapshot
-        assert snapshot["final_pc"] == 0x00100008, snapshot
-        # Static expansion identifies the actual unsupported/invalid guest
-        # instruction, even when execution later exits on the same word.
-        assert ("not-lowered pc=0x00100008 opcode=0x4c000000 "
-                "mnemonic=unknown classification=invalid" in
-                (result.stdout + result.stderr)), (result.stdout, result.stderr)
-        assert ("EE unsupported guest PC: pc=0x00100008 "
-                "elf=0x4c000000 ram=0x4c000000") in result.stderr, (
-            result.stdout, result.stderr
-        )
-        assert ("EE unsupported code: > pc=0x00100008 "
-                "ELF=0x4c000000 RAM=0x4c000000") in result.stderr, (
-            result.stdout, result.stderr
-        )
-
-    # Both real VU0 data memory macros and COP2 register transfers must
-    # execute in a single emitted native block, not through a host fallback.
-    with tempfile.TemporaryDirectory(prefix="ee-native-vu0-indexed-") as tmp:
-        root = Path(tmp)
-        elf = root / "vu0-indexed.elf"
-        make_vu0_indexed_native_elf(elf)
-        report_path = root / "vu0-indexed.json"
-        result = subprocess.run(
-            [
-                sys.executable, str(source / "tools" / "run_game.py"),
-                str(elf), "--build-dir", str(build),
-                "--work-dir", str(root / "out"),
-                "--functions=entry",
-                "--max-dispatches=16",
-                "--hle-startup", "--kseg-ram",
-                "--report", str(report_path),
-                "--timeout-seconds=10",
-            ],
-            capture_output=True, text=True, check=False, timeout=40,
-        )
-        assert result.returncode == 3, (result.stdout, result.stderr)
-        snapshot = json.loads(report_path.read_text(encoding="utf-8"))
-        assert snapshot["exit_name"] == "EXCEPTION", (
-            snapshot, result.stdout, result.stderr
-        )
-        assert (snapshot["cop0_cause"] >> 2) & 31 == 9, snapshot
-        assert snapshot["gpr_lo"][10] & 0xffffffff == 0x12345678, snapshot
-        assert snapshot["gpr_lo"][11] == 1, snapshot
-        assert snapshot["gpr_lo"][12] == 1, snapshot
-        assert "EE unsupported guest PC:" not in result.stderr, (
-            result.stdout, result.stderr
-        )
-
-    # A real guest Timer0 COUNT poll must finish *inside* its native CFG.
-    # Both the clock source and the device must advance; simply resuming
-    # a HOST_YIELD would conceal a missing MMIO timer.
-    with tempfile.TemporaryDirectory(prefix="ee-native-timer0-poll-") as tmp:
-        root = Path(tmp)
-        elf = root / "timer0-poll.elf"
-        make_ee_timer_poll_elf(elf)
-        report_path = root / "timer0-poll.json"
-        result = subprocess.run(
-            [
-                sys.executable, str(source / "tools" / "run_game.py"),
-                str(elf), "--build-dir", str(build),
-                "--work-dir", str(root / "out"),
-                "--functions=entry",
-                "--max-dispatches=16",
-                "--loop-budget=5000",
-                "--loop-yield-resumes=1",
-                "--hle-startup", "--kseg-ram",
-                "--ee-clock=reference-compat",
-                "--report", str(report_path),
-                "--timeout-seconds=10",
-            ],
-            capture_output=True, text=True, check=False, timeout=40,
-        )
-        assert result.returncode == 0 or result.returncode == 3, (
-            result.stdout, result.stderr
-        )
-        snapshot = json.loads(report_path.read_text(encoding="utf-8"))
-        assert snapshot["exit_name"] == "EXCEPTION", (
-            snapshot, result.stdout, result.stderr
-        )
-        assert snapshot["cop0_cause"] & 0x7c == 0x24, snapshot
-        assert 32 <= snapshot["gpr_lo"][10] <= 0xffff, snapshot
-        assert snapshot["gpr_lo"][16] == snapshot["gpr_lo"][17], snapshot
-        assert 1 <= snapshot["gpr_lo"][11] < 1000, snapshot
-        assert "guest host loop yield cap reached" not in result.stderr, (
-            result.stdout, result.stderr
-        )
-
-    # Resuming without a bounded guest-loop watchdog would spin forever;
-    # reject an invalid command before loading or mutating guest state.
-    with tempfile.TemporaryDirectory(prefix="ee-invalid-loop-resume-") as tmp:
-        root = Path(tmp)
-        elf = root / "invalid-yield.elf"
-        make_counting_loop_elf(elf)
-        result = subprocess.run(
-            [
-                str(runner), str(elf), str(root / "unused-library.so"),
-                "--loop-yield-resumes=2",
-            ],
-            capture_output=True, text=True, check=False, timeout=10,
-        )
-        assert result.returncode == 2, (result.stdout, result.stderr)
-        assert "--loop-yield-resumes requires --loop-budget" in result.stderr, (
-            result.stdout, result.stderr
-        )
-
-    for blocking_wait, invalid_status in (
-        (False, False), (True, False), (False, True),
-    ):
-        with tempfile.TemporaryDirectory(prefix="ee-native-sema-ops-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="ee-native-syscall-table-") as tmp:
             root = Path(tmp)
-            elf = root / "semaphore-ops.elf"
-            make_semaphore_operations_elf(
-                elf, blocking_wait=blocking_wait,
-                invalid_status=invalid_status,
+            elf = root / "guest-syscall-table.elf"
+            make_guest_syscall_table_elf(elf)
+            report_path = root / "kernel-table.json"
+            result = subprocess.run(
+                [
+                    sys.executable, str(source / "tools" / "run_game.py"),
+                    str(elf),
+                    "--build-dir", str(build),
+                    "--work-dir", str(root / "out"),
+                    "--max-dispatches=24",
+                    "--hle-startup",
+                    "--kseg-ram",
+                    "--trace",
+                    "--report", str(report_path),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
             )
-            report_path = root / "semaphore-ops.json"
-            command = [
+            assert "HLE SetSyscall: number=0x83 handler=0x00100050" in result.stdout, (
+                result.stdout + result.stderr
+            )
+            assert "HLE SetSyscall: number=0x5a handler=0x00100030" in result.stdout, (
+                result.stdout + result.stderr
+            )
+            assert "HLE SetSyscall: number=0x83 handler=0x00100030" in result.stdout, (
+                result.stdout + result.stderr
+            )
+            assert "EE stopped: dispatched=" in result.stdout, (
+                result.stdout + result.stderr
+            )
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            registers = report["gpr_lo"]
+            assert registers[8] == 0, report  # uninitialized table starts empty
+            assert registers[9] == 0x00100050, report  # 0x83 first installation
+            assert registers[11] == 0x00100050, report  # physical alias
+            assert registers[12] == 0x00100030, report  # 0x5A at 0x1968
+            assert registers[13] == 0x00100050, report  # 0x83 unchanged by 0x5A
+            assert registers[14] == 0x00100030, report  # 0x83 replacement
+            assert registers[15] == 0, report  # untouched 0x84 at 0x1A10
+
+    if shard is None or shard == 3:
+        with tempfile.TemporaryDirectory(prefix="ee-native-kernel-ram-handler-") as tmp:
+            root = Path(tmp)
+            for invoke in (False, True):
+                elf = root / ("invoke-ram-handler.elf" if invoke else "clear-ram-handler.elf")
+                make_kernel_ram_handler_elf(elf, invoke=invoke)
+                report_path = root / "ram-handler.json"
+                result = subprocess.run(
+                    [
+                        sys.executable, str(source / "tools" / "run_game.py"),
+                        str(elf),
+                        "--build-dir", str(build),
+                        "--work-dir", str(root / ("invoke" if invoke else "clear")),
+                        "--max-dispatches=16",
+                        "--hle-startup",
+                        "--kseg-ram",
+                        "--trace",
+                        "--report", str(report_path),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                assert "HLE SetSyscall: number=0x5b handler=0x80076000" in result.stdout, (
+                    result.stdout + result.stderr
+                )
+                report = json.loads(report_path.read_text(encoding="utf-8"))
+                # MIPS LW sign-extends KSEG0 pointers into 64-bit GPRs.
+                assert report["gpr_lo"][8] & 0xffffffff == 0x80076000, report
+                assert report["gpr_lo"][9] == 0x03e00008, report
+                if invoke:
+                    assert "HLE guest RAM syscall returned: entry=0x80076000" in result.stdout, (
+                        result.stdout + result.stderr
+                    )
+                    assert report["gpr_lo"][13] == 42, report
+                    events = report["syscall_history"]
+                    assert len(events) == 1 and events[0]["service"] == 0x5b, report
+                    assert events[0]["handler"] == 0x80076000, report
+                    assert events[0]["v0"] == 42 and events[0]["returned"], report
+                else:
+                    assert "HLE SetSyscall: number=0x5b handler=0x00000000" in result.stdout, (
+                        result.stdout + result.stderr
+                    )
+                    assert report["gpr_lo"][13] == 0, report
+
+        with tempfile.TemporaryDirectory(prefix="ee-native-registered-callback-") as tmp:
+            root = Path(tmp)
+            elf = root / "guest-callback-mips.elf"
+            make_registered_callback_elf(elf)
+            result = subprocess.run(
+                [
+                    sys.executable, str(source / "tools" / "run_game.py"),
+                    str(elf),
+                    "--build-dir", str(build),
+                    "--work-dir", str(root / "out"),
+                    "--max-dispatches=16",
+                    "--auto-expand=1",
+                    "--hle-startup",
+                    "--trace",
+                    "--report", str(root / "callback.json"),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert "auto-expand: compiling reachable PC 0x00100050" in result.stdout, (
+                result.stdout + result.stderr
+            )
+            assert "HLE guest syscall: number=0x83 handler=0x00100050" in result.stdout, (
+                result.stdout + result.stderr
+            )
+            assert "HLE guest syscall returned: resume=0x00100028 v0=0x0000000c" in result.stdout, (
+                result.stdout + result.stderr
+            )
+            report = json.loads((root / "callback.json").read_text(encoding="utf-8"))
+            assert report["gpr_lo"][8] == 12, report
+            assert report["gpr_lo"][31] == 0, report
+            assert report["dispatches"] >= 4, report
+            events = report["syscall_history"]
+            assert len(events) == 1, report
+            assert events[0]["service"] == 0x83, events
+            assert events[0]["handler"] == 0x00100050, events
+            assert events[0]["resume_pc"] == 0x00100028, events
+            assert events[0]["a0"] == 7, events
+            assert events[0]["v0"] == 12, events
+            assert events[0]["returned"] is True, events
+
+        # Progress diagnostics should measure native dispatch versus JSON
+        # checkpoint costs without relying on the real game ELF. A recursive
+        # JAL creates 300 bounded dispatcher calls and must emit progress at
+        # 256 and an end-of-run timing summary.
+        with tempfile.TemporaryDirectory(prefix="ee-native-progress-profile-") as tmp:
+            root = Path(tmp)
+            elf = root / "dispatch-loop.elf"
+            make_repeated_dispatch_elf(elf)
+            report_path = root / "progress.json"
+            result = subprocess.run(
+                [
+                    sys.executable, str(source / "tools" / "run_game.py"),
+                    str(elf),
+                    "--build-dir", str(build),
+                    "--work-dir", str(root / "out"),
+                    "--max-dispatches=300",
+                    "--timeout-seconds=30",
+                    "--report", str(report_path),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=60,
+            )
+            assert result.returncode == 4, result.stdout + result.stderr
+            snapshot = json.loads(report_path.read_text(encoding="utf-8"))
+            assert snapshot["snapshot_kind"] == "stopped", snapshot
+            assert snapshot["dispatches"] == 300, snapshot
+            assert "EE progress: dispatched=256" in result.stderr, result.stderr
+            assert "EE timing: dispatched=300" in result.stderr, result.stderr
+            assert "native_ms=" in result.stderr, result.stderr
+            assert "report_ms=" in result.stderr, result.stderr
+            assert "slowest_native_pc=" in result.stderr, result.stderr
+
+        with tempfile.TemporaryDirectory(prefix="ee-native-loop-budget-") as tmp:
+            root = Path(tmp)
+            elf = root / "counting-loop.elf"
+            make_counting_loop_elf(elf)
+            report_path = root / "loop-budget.json"
+            result = subprocess.run(
+                [
+                    sys.executable, str(source / "tools" / "run_game.py"),
+                    str(elf),
+                    "--build-dir", str(build),
+                    "--work-dir", str(root / "out"),
+                    "--max-dispatches=8",
+                    "--timeout-seconds=10",
+                    "--loop-budget=32",
+                    "--report", str(report_path),
+                ],
+                capture_output=True, text=True, check=False, timeout=40,
+            )
+            assert result.returncode == 3, result.stdout + result.stderr
+            assert "guest loop budget exhausted:" in result.stderr, result.stderr
+            state = json.loads(report_path.read_text(encoding="utf-8"))
+            assert state["snapshot_kind"] == "stopped", state
+            assert state["exit_reason"] == 5, state
+            assert state["exit_name"] == "LOOP_BUDGET", state
+            assert state["dispatches"] == 1, state
+            assert state["final_pc"] == 0x00100008, state
+            assert state["gpr_lo"][8] == 32, state
+            assert state["guest_instruction_attempts"] > 32, state
+            assert state["guest_instruction_attempts"] > state["dispatches"], state
+
+        # The opt-in runner resumes the *same* exact compiled loop header
+        # across host yields while preserving guest GPRs and the nonarchitectural
+        # instruction attempt counter. No guest time or VBlank event is created.
+        with tempfile.TemporaryDirectory(prefix="ee-native-resumable-yield-") as tmp:
+            root = Path(tmp)
+            elf = root / "counting-yield-loop.elf"
+            make_counting_loop_elf(elf)
+            report_path = root / "loop-yield.json"
+            result = subprocess.run(
+                [
+                    sys.executable, str(source / "tools" / "run_game.py"),
+                    str(elf),
+                    "--build-dir", str(build),
+                    "--work-dir", str(root / "out"),
+                    "--max-dispatches=8",
+                    "--loop-budget=4",
+                    "--loop-yield-resumes=2",
+                    "--report", str(report_path),
+                    "--timeout-seconds=10",
+                    "--trace",
+                ],
+                capture_output=True, text=True, check=False, timeout=40,
+            )
+            assert result.returncode == 3, result.stdout + result.stderr
+            assert result.stdout.count("EE host loop resume:") == 2, (
+                result.stdout, result.stderr
+            )
+            assert "guest host loop yield cap reached:" in result.stderr, (
+                result.stdout, result.stderr
+            )
+            assert "EE host loop state: pc=0x00100008" in result.stderr, (
+                result.stdout, result.stderr
+            )
+            assert "EE host loop ELF: > 0x00100008 opcode=0x25080001" in result.stderr, (
+                result.stdout, result.stderr
+            )
+            assert "r08=0x000000000000000c" in result.stderr, (
+                result.stdout, result.stderr
+            )
+            state = json.loads(report_path.read_text(encoding="utf-8"))
+            assert state["snapshot_kind"] == "stopped", state
+            assert state["exit_reason"] == 6, state
+            assert state["exit_name"] == "HOST_YIELD", state
+            assert state["dispatches"] == 3, state
+            assert state["final_pc"] == 0x00100008, state
+            assert state["gpr_lo"][8] == 12, state
+            assert state["guest_instruction_attempts"] >= 24, state
+            assert (state["cop0_cause"] & 0x7c) == 0, state
+
+        # Unknown native guest opcodes stop without silently doing nothing.
+        # The final diagnostics must report the actual PC, the ELF word,
+        # the live RAM word and the nearby original instruction stream.
+        with tempfile.TemporaryDirectory(prefix="ee-native-unsupported-pc-") as tmp:
+            root = Path(tmp)
+            elf = root / "unsupported.elf"
+            make_unsupported_instruction_elf(elf)
+            report_path = root / "unsupported.json"
+            result = subprocess.run(
+                [
+                    sys.executable, str(source / "tools" / "run_game.py"),
+                    str(elf), "--build-dir", str(build),
+                    "--work-dir", str(root / "out"),
+                    "--functions=entry",
+                    "--max-dispatches=8",
+                    "--report", str(report_path),
+                    "--timeout-seconds=10",
+                ],
+                capture_output=True, text=True, check=False, timeout=40,
+            )
+            assert result.returncode == 3, result.stdout + result.stderr
+            snapshot = json.loads(report_path.read_text(encoding="utf-8"))
+            assert snapshot["exit_name"] == "UNSUPPORTED", snapshot
+            assert snapshot["final_pc"] == 0x00100008, snapshot
+            # Static expansion identifies the actual unsupported/invalid guest
+            # instruction, even when execution later exits on the same word.
+            assert ("not-lowered pc=0x00100008 opcode=0x4c000000 "
+                    "mnemonic=unknown classification=invalid" in
+                    (result.stdout + result.stderr)), (result.stdout, result.stderr)
+            assert ("EE unsupported guest PC: pc=0x00100008 "
+                    "elf=0x4c000000 ram=0x4c000000") in result.stderr, (
+                result.stdout, result.stderr
+            )
+            assert ("EE unsupported code: > pc=0x00100008 "
+                    "ELF=0x4c000000 RAM=0x4c000000") in result.stderr, (
+                result.stdout, result.stderr
+            )
+
+        # Both real VU0 data memory macros and COP2 register transfers must
+        # execute in a single emitted native block, not through a host fallback.
+        with tempfile.TemporaryDirectory(prefix="ee-native-vu0-indexed-") as tmp:
+            root = Path(tmp)
+            elf = root / "vu0-indexed.elf"
+            make_vu0_indexed_native_elf(elf)
+            report_path = root / "vu0-indexed.json"
+            result = subprocess.run(
+                [
+                    sys.executable, str(source / "tools" / "run_game.py"),
+                    str(elf), "--build-dir", str(build),
+                    "--work-dir", str(root / "out"),
+                    "--functions=entry",
+                    "--max-dispatches=16",
+                    "--hle-startup", "--kseg-ram",
+                    "--report", str(report_path),
+                    "--timeout-seconds=10",
+                ],
+                capture_output=True, text=True, check=False, timeout=40,
+            )
+            assert result.returncode == 3, (result.stdout, result.stderr)
+            snapshot = json.loads(report_path.read_text(encoding="utf-8"))
+            assert snapshot["exit_name"] == "EXCEPTION", (
+                snapshot, result.stdout, result.stderr
+            )
+            assert (snapshot["cop0_cause"] >> 2) & 31 == 9, snapshot
+            assert snapshot["gpr_lo"][10] & 0xffffffff == 0x12345678, snapshot
+            assert snapshot["gpr_lo"][11] == 1, snapshot
+            assert snapshot["gpr_lo"][12] == 1, snapshot
+            assert "EE unsupported guest PC:" not in result.stderr, (
+                result.stdout, result.stderr
+            )
+
+        # A real guest Timer0 COUNT poll must finish *inside* its native CFG.
+        # Both the clock source and the device must advance; simply resuming
+        # a HOST_YIELD would conceal a missing MMIO timer.
+        with tempfile.TemporaryDirectory(prefix="ee-native-timer0-poll-") as tmp:
+            root = Path(tmp)
+            elf = root / "timer0-poll.elf"
+            make_ee_timer_poll_elf(elf)
+            report_path = root / "timer0-poll.json"
+            result = subprocess.run(
+                [
+                    sys.executable, str(source / "tools" / "run_game.py"),
+                    str(elf), "--build-dir", str(build),
+                    "--work-dir", str(root / "out"),
+                    "--functions=entry",
+                    "--max-dispatches=16",
+                    "--loop-budget=5000",
+                    "--loop-yield-resumes=1",
+                    "--hle-startup", "--kseg-ram",
+                    "--ee-clock=reference-compat",
+                    "--report", str(report_path),
+                    "--timeout-seconds=10",
+                ],
+                capture_output=True, text=True, check=False, timeout=40,
+            )
+            assert result.returncode == 0 or result.returncode == 3, (
+                result.stdout, result.stderr
+            )
+            snapshot = json.loads(report_path.read_text(encoding="utf-8"))
+            assert snapshot["exit_name"] == "EXCEPTION", (
+                snapshot, result.stdout, result.stderr
+            )
+            assert snapshot["cop0_cause"] & 0x7c == 0x24, snapshot
+            assert 32 <= snapshot["gpr_lo"][10] <= 0xffff, snapshot
+            assert snapshot["gpr_lo"][16] == snapshot["gpr_lo"][17], snapshot
+            assert 1 <= snapshot["gpr_lo"][11] < 1000, snapshot
+            assert "guest host loop yield cap reached" not in result.stderr, (
+                result.stdout, result.stderr
+            )
+
+        # Resuming without a bounded guest-loop watchdog would spin forever;
+        # reject an invalid command before loading or mutating guest state.
+        with tempfile.TemporaryDirectory(prefix="ee-invalid-loop-resume-") as tmp:
+            root = Path(tmp)
+            elf = root / "invalid-yield.elf"
+            make_counting_loop_elf(elf)
+            result = subprocess.run(
+                [
+                    str(runner), str(elf), str(root / "unused-library.so"),
+                    "--loop-yield-resumes=2",
+                ],
+                capture_output=True, text=True, check=False, timeout=10,
+            )
+            assert result.returncode == 2, (result.stdout, result.stderr)
+            assert "--loop-yield-resumes requires --loop-budget" in result.stderr, (
+                result.stdout, result.stderr
+            )
+
+        for blocking_wait, invalid_status in (
+            (False, False), (True, False), (False, True),
+        ):
+            with tempfile.TemporaryDirectory(prefix="ee-native-sema-ops-") as tmp:
+                root = Path(tmp)
+                elf = root / "semaphore-ops.elf"
+                make_semaphore_operations_elf(
+                    elf, blocking_wait=blocking_wait,
+                    invalid_status=invalid_status,
+                )
+                report_path = root / "semaphore-ops.json"
+                command = [
+                    sys.executable, str(source / "tools" / "run_game.py"),
+                    str(elf),
+                    "--build-dir", str(build),
+                    "--work-dir", str(root / "out"),
+                    "--max-dispatches=64",
+                    "--report", str(report_path),
+                    "--trace",
+                ]
+                if not blocking_wait and not invalid_status:
+                    no_hle = subprocess.run(
+                        command, capture_output=True, text=True, check=False,
+                    )
+                    assert no_hle.returncode != 0, no_hle.stdout + no_hle.stderr
+                    denied = json.loads(report_path.read_text(encoding="utf-8"))
+                    assert denied["cop0_epc"] == 0x00100014, denied
+                    command.append("--no-recompile")
+
+                result = subprocess.run(
+                    command + ["--hle-startup"],
+                    capture_output=True, text=True, check=False,
+                )
+                assert result.returncode != 0, result.stdout + result.stderr
+                state = json.loads(report_path.read_text(encoding="utf-8"))
+                regs = state["gpr_lo"]
+                assert state["snapshot_kind"] == "stopped", state
+                assert state["exit_name"] == (
+                    "EXCEPTION" if blocking_wait or invalid_status else "DISPATCH"
+                ), state
+                assert regs[8] == 1, state
+                assert "HLE CreateSema: id=1" in result.stdout, result.stdout
+                if blocking_wait:
+                    assert "WaitSema HLE refused blocking wait:" in result.stderr, (
+                        result.stdout + result.stderr
+                    )
+                    assert regs[9] == 0, state  # never returned from WaitSema
+                    assert state["cop0_epc"] == 0x00100024, state
+                    assert "HLE WaitSema:" not in result.stdout
+                else:
+                    assert "HLE WaitSema: id=1 old_count=1 new_count=0 result=1" in result.stdout, (
+                        result.stdout + result.stderr
+                    )
+                    assert regs[9] == 1, state
+                    assert regs[10] == 0xffffffffffffffff, state
+                    assert regs[11] == 0xffffffffffffffff, state
+                    assert regs[12] == 1 and regs[13] == 1, state
+                    assert regs[14] == 0xffffffffffffffff, state
+                    assert regs[15] == 1 and regs[16] == 1, state
+                    if invalid_status:
+                        assert "ReferSemaStatus HLE refused unbacked or unaligned pointer" in result.stderr, (
+                            result.stdout + result.stderr
+                        )
+                        assert regs[17] == 0, state
+                    else:
+                        assert regs[17] == 1 and regs[18] == 1, state
+                        assert regs[19] == 0, state   # count
+                        assert regs[20] == 2, state   # max
+                        assert regs[21] == 1, state   # initial count
+                        assert regs[22] == 0, state   # waiters
+                        assert regs[23] == 0x1234, state
+                        assert regs[24] == 0x5678, state
+                        assert regs[25] == 1, state   # delete
+                        assert regs[2] == 0xffffffffffffffff, state
+                        assert "not found, result=-1" in result.stdout, (
+                            result.stdout + result.stderr
+                        )
+
+        with tempfile.TemporaryDirectory(prefix="ee-native-timeout-snapshot-") as tmp:
+            root = Path(tmp)
+            elf = root / "loop-mips.elf"
+            make_spin_elf(elf)
+            report_path = root / "timeout.json"
+            result = subprocess.run(
+                [
+                    sys.executable, str(source / "tools" / "run_game.py"),
+                    str(elf),
+                    "--build-dir", str(build),
+                    "--work-dir", str(root / "out"),
+                    "--max-dispatches=8",
+                    "--timeout-seconds=1",
+                    "--report", str(report_path),
+                    "--trace",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=40,
+            )
+            assert result.returncode == 124, result.stdout + result.stderr
+            snapshot = json.loads(report_path.read_text(encoding="utf-8"))
+            assert snapshot["snapshot_kind"] == "in_progress", snapshot
+            assert snapshot["dispatches"] == 0, snapshot
+            assert snapshot["syscall_history"] == [], snapshot
+            assert snapshot["final_pc"] == 0x00100008, snapshot
+            assert "last saved snapshot" in result.stderr, result.stderr
+
+        with tempfile.TemporaryDirectory(prefix="ee-kernel-snapshot-") as tmp:
+            root = Path(tmp)
+            elf = root / "kernel-probe.elf"
+            make_kernel_ram_probe_elf(elf)
+            kernel = root / "kernel-ram.bin"
+            kernel.write_bytes(struct.pack("<I", 0x12345678) + bytes(0x80000 - 4))
+            archive_impostor = root / "wrong-snapshot.bin"
+            archive_impostor.write_bytes(b"PK\x03\x04" + bytes(0x80000 - 4))
+            report = root / "kernel-probe.json"
+            cmd = [
                 sys.executable, str(source / "tools" / "run_game.py"),
                 str(elf),
                 "--build-dir", str(build),
                 "--work-dir", str(root / "out"),
-                "--max-dispatches=64",
-                "--report", str(report_path),
-                "--trace",
+                "--max-dispatches=8",
+                "--kseg-ram",
+                "--report", str(report),
             ]
-            if not blocking_wait and not invalid_status:
-                no_hle = subprocess.run(
-                    command, capture_output=True, text=True, check=False,
-                )
-                assert no_hle.returncode != 0, no_hle.stdout + no_hle.stderr
-                denied = json.loads(report_path.read_text(encoding="utf-8"))
-                assert denied["cop0_epc"] == 0x00100014, denied
-                command.append("--no-recompile")
+            first = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            assert first.returncode != 0, first.stdout + first.stderr
+            before = json.loads(report.read_text(encoding="utf-8"))
+            assert before["gpr_lo"][8] == 0, before
 
-            result = subprocess.run(
-                command + ["--hle-startup"],
+            invalid = subprocess.run(
+                cmd + ["--no-recompile", "--kernel-ram", str(archive_impostor)],
                 capture_output=True, text=True, check=False,
             )
-            assert result.returncode != 0, result.stdout + result.stderr
-            state = json.loads(report_path.read_text(encoding="utf-8"))
-            regs = state["gpr_lo"]
-            assert state["snapshot_kind"] == "stopped", state
-            assert state["exit_name"] == (
-                "EXCEPTION" if blocking_wait or invalid_status else "DISPATCH"
-            ), state
-            assert regs[8] == 1, state
-            assert "HLE CreateSema: id=1" in result.stdout, result.stdout
-            if blocking_wait:
-                assert "WaitSema HLE refused blocking wait:" in result.stderr, (
-                    result.stdout + result.stderr
-                )
-                assert regs[9] == 0, state  # never returned from WaitSema
-                assert state["cop0_epc"] == 0x00100024, state
-                assert "HLE WaitSema:" not in result.stdout
-            else:
-                assert "HLE WaitSema: id=1 old_count=1 new_count=0 result=1" in result.stdout, (
-                    result.stdout + result.stderr
-                )
-                assert regs[9] == 1, state
-                assert regs[10] == 0xffffffffffffffff, state
-                assert regs[11] == 0xffffffffffffffff, state
-                assert regs[12] == 1 and regs[13] == 1, state
-                assert regs[14] == 0xffffffffffffffff, state
-                assert regs[15] == 1 and regs[16] == 1, state
-                if invalid_status:
-                    assert "ReferSemaStatus HLE refused unbacked or unaligned pointer" in result.stderr, (
-                        result.stdout + result.stderr
-                    )
-                    assert regs[17] == 0, state
-                else:
-                    assert regs[17] == 1 and regs[18] == 1, state
-                    assert regs[19] == 0, state   # count
-                    assert regs[20] == 2, state   # max
-                    assert regs[21] == 1, state   # initial count
-                    assert regs[22] == 0, state   # waiters
-                    assert regs[23] == 0x1234, state
-                    assert regs[24] == 0x5678, state
-                    assert regs[25] == 1, state   # delete
-                    assert regs[2] == 0xffffffffffffffff, state
-                    assert "not found, result=-1" in result.stdout, (
-                        result.stdout + result.stderr
-                    )
+            assert invalid.returncode != 0, invalid.stdout + invalid.stderr
+            assert "ZIP/savestate bytes" in invalid.stderr, invalid.stderr
 
-    with tempfile.TemporaryDirectory(prefix="ee-native-timeout-snapshot-") as tmp:
-        root = Path(tmp)
-        elf = root / "loop-mips.elf"
-        make_spin_elf(elf)
-        report_path = root / "timeout.json"
-        result = subprocess.run(
-            [
-                sys.executable, str(source / "tools" / "run_game.py"),
-                str(elf),
-                "--build-dir", str(build),
-                "--work-dir", str(root / "out"),
-                "--max-dispatches=8",
-                "--timeout-seconds=1",
-                "--report", str(report_path),
-                "--trace",
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=40,
-        )
-        assert result.returncode == 124, result.stdout + result.stderr
-        snapshot = json.loads(report_path.read_text(encoding="utf-8"))
-        assert snapshot["snapshot_kind"] == "in_progress", snapshot
-        assert snapshot["dispatches"] == 0, snapshot
-        assert snapshot["syscall_history"] == [], snapshot
-        assert snapshot["final_pc"] == 0x00100008, snapshot
-        assert "last saved snapshot" in result.stderr, result.stderr
+            second = subprocess.run(
+                cmd + ["--no-recompile", "--kernel-ram", str(kernel)],
+                capture_output=True, text=True, check=False,
+            )
+            assert second.returncode != 0, second.stdout + second.stderr
+            assert "EE kernel RAM snapshot: 524288 bytes" in second.stdout, (
+                second.stdout + second.stderr
+            )
+            after = json.loads(report.read_text(encoding="utf-8"))
+            assert after["gpr_lo"][8] == 0x12345678, after
 
-    with tempfile.TemporaryDirectory(prefix="ee-kernel-snapshot-") as tmp:
-        root = Path(tmp)
-        elf = root / "kernel-probe.elf"
-        make_kernel_ram_probe_elf(elf)
-        kernel = root / "kernel-ram.bin"
-        kernel.write_bytes(struct.pack("<I", 0x12345678) + bytes(0x80000 - 4))
-        archive_impostor = root / "wrong-snapshot.bin"
-        archive_impostor.write_bytes(b"PK\x03\x04" + bytes(0x80000 - 4))
-        report = root / "kernel-probe.json"
-        cmd = [
-            sys.executable, str(source / "tools" / "run_game.py"),
-            str(elf),
-            "--build-dir", str(build),
-            "--work-dir", str(root / "out"),
-            "--max-dispatches=8",
-            "--kseg-ram",
-            "--report", str(report),
-        ]
-        first = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        assert first.returncode != 0, first.stdout + first.stderr
-        before = json.loads(report.read_text(encoding="utf-8"))
-        assert before["gpr_lo"][8] == 0, before
-
-        invalid = subprocess.run(
-            cmd + ["--no-recompile", "--kernel-ram", str(archive_impostor)],
-            capture_output=True, text=True, check=False,
-        )
-        assert invalid.returncode != 0, invalid.stdout + invalid.stderr
-        assert "ZIP/savestate bytes" in invalid.stderr, invalid.stderr
-
-        second = subprocess.run(
-            cmd + ["--no-recompile", "--kernel-ram", str(kernel)],
-            capture_output=True, text=True, check=False,
-        )
-        assert second.returncode != 0, second.stdout + second.stderr
-        assert "EE kernel RAM snapshot: 524288 bytes" in second.stdout, (
-            second.stdout + second.stderr
-        )
-        after = json.loads(report.read_text(encoding="utf-8"))
-        assert after["gpr_lo"][8] == 0x12345678, after
-
-    print("game_runner end-to-end ELF/native smoke: PASS")
+    print(f"game_runner shard {shard if shard is not None else 'all'}: PASS")
     return 0
 
 

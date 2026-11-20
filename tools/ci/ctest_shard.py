@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Run a deterministic CTest shard from an already-configured build.
 
-The four shards are mutually exclusive and exhaustive: the expensive native
-game-runner integration test occupies its own job, and every other test is
-distributed across three short-test jobs. CTest's JSON listing is the source
+The seven shards are mutually exclusive and exhaustive: four independent
+native game-runner integration groups run in parallel jobs, and every other
+test is distributed across three short-test jobs. CTest's JSON listing is the source
 of truth, so newly registered tests cannot silently fall between number ranges.
 """
 from __future__ import annotations
@@ -15,9 +15,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-END_TO_END = "game_runner_end_to_end"
+GAME_TESTS = tuple(f"game_runner_end_to_end_{i}" for i in range(4))
 SHORT_SHARDS = 3
-SHARDS = ("game", "fast-0", "fast-1", "fast-2")
+SHARDS = tuple(f"game-{i}" for i in range(4)) + (
+    "fast-0", "fast-1", "fast-2",
+)
 
 
 def select_tests(tests: list[str], shard: str) -> list[str]:
@@ -25,10 +27,11 @@ def select_tests(tests: list[str], shard: str) -> list[str]:
     if len(set(tests)) != len(tests):
         raise ValueError("CTest returned duplicate test names")
 
-    if shard == "game":
-        return [name for name in tests if name == END_TO_END]
+    if shard.startswith("game-"):
+        name = GAME_TESTS[int(shard.rsplit("-", 1)[1])]
+        return [item for item in tests if item == name]
 
-    fast_tests = sorted(name for name in tests if name != END_TO_END)
+    fast_tests = sorted(name for name in tests if name not in GAME_TESTS)
     index = int(shard.rsplit("-", 1)[1])
     return [
         name
@@ -52,8 +55,10 @@ def main() -> int:
 
     # The build job configures llvmlite and must register the real-game test.
     # Otherwise, losing the long-running shard would go unnoticed.
-    if END_TO_END not in tests:
-        print(f"Missing mandatory CTest test: {END_TO_END}", file=sys.stderr)
+    missing_game = set(GAME_TESTS) - set(tests)
+    if missing_game:
+        print(f"Missing mandatory CTest tests: {sorted(missing_game)}",
+              file=sys.stderr)
         return 2
 
     selected = select_tests(tests, args.shard)
