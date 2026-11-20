@@ -461,6 +461,11 @@ add_executable(ee_gs_gif_diagnostics_test tests/smoke/ee_gs_gif_diagnostics_test
 target_link_libraries(ee_gs_gif_diagnostics_test PRIVATE ee_core)
 add_test(NAME ee_gs_gif_diagnostics COMMAND ee_gs_gif_diagnostics_test)
 
+add_executable(ee_gs_presentation_probe_test
+    tests/smoke/ee_gs_presentation_probe_test.cpp)
+target_link_libraries(ee_gs_presentation_probe_test PRIVATE ee_core)
+add_test(NAME ee_gs_presentation_probe COMMAND ee_gs_presentation_probe_test)
+
 add_executable(ee_gs_state_test tests/smoke/ee_gs_state_test.cpp)
 target_link_libraries(ee_gs_state_test PRIVATE ee_core)
 
