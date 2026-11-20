@@ -744,6 +744,12 @@ bool test_iop_to_ee_rpc(const std::filesystem::path& disc_root)
 
 bool test_guest_sifcmd_send(const std::filesystem::path& disc_root)
 {
+    const auto fail_at = [](int line) -> bool
+    {
+        std::fprintf(stderr,
+                     "IOP guest SIFCMD send failed at line %d\n", line);
+        return false;
+    };
     // The original R3000 ABI puts extra destination/size in the
     // caller's stack. No command may appear on the EE until its
     // SIF0 receiver is actually armed.
@@ -767,7 +773,7 @@ bool test_guest_sifcmd_send(const std::filesystem::path& disc_root)
     if (!sectors.valid() || !cmd.install() ||
         !cmd.initialize_hle_bootstrap())
     {
-        return false;
+        return fail_at(__LINE__);
     }
     kernel.bind_syscall([&](iop::c_kernel& active, uint32_t service)
     {
@@ -788,7 +794,7 @@ bool test_guest_sifcmd_send(const std::filesystem::path& disc_root)
     if (!sif1.set_dma(k_list, 1u, &dma_id) ||
         cmd.ee_receive_address() != k_receive)
     {
-        return false;
+        return fail_at(__LINE__);
     }
     dmac.acknowledge(6u);
 
@@ -800,12 +806,12 @@ bool test_guest_sifcmd_send(const std::filesystem::path& disc_root)
     {
         if (!kernel.cpu().write32(k_packet + i * 4u, original[i]))
         {
-            return false;
+            return fail_at(__LINE__);
         }
     }
     if (!kernel.cpu().write32(k_extra, 0xdeadbeefu))
     {
-        return false;
+        return fail_at(__LINE__);
     }
     for (uint32_t ordinal : {12u, 28u})
     {
@@ -814,7 +820,7 @@ bool test_guest_sifcmd_send(const std::filesystem::path& disc_root)
         if (!kernel.lookup_library(
                 "sifcmd", static_cast<uint16_t>(ordinal), &stub))
         {
-            return false;
+            return fail_at(__LINE__);
         }
         const uint32_t instructions[] = {
             0x34060018u, // ori a2, zero, 24-byte packet
@@ -829,7 +835,7 @@ bool test_guest_sifcmd_send(const std::filesystem::path& disc_root)
             if (!kernel.cpu().write32(
                     guest_program + 4u * i, instructions[i]))
             {
-                return false;
+                return fail_at(__LINE__);
             }
         }
         const uint32_t id = kernel.create_thread(
@@ -837,7 +843,7 @@ bool test_guest_sifcmd_send(const std::filesystem::path& disc_root)
             0x80000200u + ordinal, k_packet);
         if (id == 0u)
         {
-            return false;
+            return fail_at(__LINE__);
         }
         const iop::s_kernel_thread* thread = kernel.thread(id);
         const uint32_t sp = thread->m_cpu.m_gpr[29];
@@ -845,7 +851,7 @@ bool test_guest_sifcmd_send(const std::filesystem::path& disc_root)
             !kernel.cpu().write32(sp + 20u, 4u) ||
             !kernel.start_thread(id))
         {
-            return false;
+            return fail_at(__LINE__);
         }
         const iop::s_kernel_run_result ran = kernel.run(64u);
         thread = kernel.thread(id);
@@ -857,7 +863,7 @@ bool test_guest_sifcmd_send(const std::filesystem::path& disc_root)
                 (0x80000200u + ordinal) ||
             memory.read32(k_extra_destination) == 0xdeadbeefu)
         {
-            return false;
+            return fail_at(__LINE__);
         }
         // The DMA commits only after the EE explicitly arms SIF0.
         const ee::s_ee_u128 armed{0x184u, 0u};
@@ -873,7 +879,7 @@ bool test_guest_sifcmd_send(const std::filesystem::path& disc_root)
             memory.read32(k_extra_destination) != 0xdeadbeefu ||
             (dmac.status() & (1u << 5u)) == 0u)
         {
-            return false;
+            return fail_at(__LINE__);
         }
         dmac.acknowledge(5u);
         memory.write32(k_receive + 8u, 0u);
@@ -889,7 +895,7 @@ bool test_guest_sifcmd_send(const std::filesystem::path& disc_root)
         kernel.cpu().state().m_gpr[2] != 0u ||
         rpc.pending_replies() != 0u)
     {
-        return false;
+        return fail_at(__LINE__);
     }
     return true;
 }
