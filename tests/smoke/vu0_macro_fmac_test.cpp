@@ -168,6 +168,104 @@ int main()
           same_vector(cpu.m_vu0[0], vf0_before),
           "VMADDw discards VF0 destination without corrupting backing");
 
+    // Retail SDBZ vector-length function starting at EE 0x001069ec.
+    // The exact original macro words are VMUL.xyz, VADDy.x, VADDz.x,
+    // VSQRT Q, VF4.x, VWAITQ and VADDq.x VF4, VF0, Q.
+    constexpr uint32_t k_vmul_xyz = 0x4bc4212au;
+    constexpr uint32_t k_vaddy_x = 0x4b042101u;
+    constexpr uint32_t k_vaddz_x = 0x4b042102u;
+    constexpr uint32_t k_vsqrt = 0x4a0403bdu;
+    constexpr uint32_t k_vwaitq = 0x4a0003bfu;
+    constexpr uint32_t k_vaddq_x = 0x4b000120u;
+    cpu.m_vu0[4] = make_vector(3.f, 4.f, 0.f, 7.f);
+    vu0.m_mac_flags = 0u;
+    vu0.m_status_flags = 0u;
+    vu0.m_acc = make_vector(17.f, 18.f, 19.f, 20.f);
+    vu0.m_q = {};
+    vu0.m_cycle = 12u;
+    check(ee::ee_vu0_macro_fmac(
+              &cpu, &runtime, k_vmul_xyz, 0x001069ecu) == 0 &&
+          lane(cpu.m_vu0[4], 0) == bits(9.f) &&
+          lane(cpu.m_vu0[4], 1) == bits(16.f) &&
+          lane(cpu.m_vu0[4], 2) == bits(0.f) &&
+          lane(cpu.m_vu0[4], 3) == bits(7.f) &&
+          lane(vu0.m_acc, 0) == bits(17.f),
+          "retail VMUL.xyz updates only masked VF lanes, never ACC");
+    check(ee::ee_vu0_macro_fmac(
+              &cpu, &runtime, k_vaddy_x, 0x001069f0u) == 0 &&
+          lane(cpu.m_vu0[4], 0) == bits(25.f),
+          "retail VADDy.x broadcasts the original VF4.y");
+    check(ee::ee_vu0_macro_fmac(
+              &cpu, &runtime, k_vaddz_x, 0x001069f4u) == 0 &&
+          lane(cpu.m_vu0[4], 0) == bits(25.f),
+          "retail VADDz.x adds the zero Z component");
+    check(ee::ee_vu0_macro_scalar(
+              &cpu, &runtime, k_vsqrt, 0x001069f8u) == 0 &&
+          vu0.m_q_pending == 1u &&
+          vu0.m_q_ready_cycle == 19u &&
+          vu0.m_q_pending_bits == bits(5.f) &&
+          static_cast<uint32_t>(vu0.m_q.m_lo) == 0u,
+          "VSQRT starts seven-cycle pending Q without early result");
+    const ee::s_ee_u128 vf_before_wait = cpu.m_vu0[4];
+    check(ee::ee_vu0_macro_fmac(
+              &cpu, &runtime, k_vaddq_x, 0x00106a00u) ==
+                  static_cast<uint32_t>(
+                      ee::e_ee_vu0_sync_result::UNAVAILABLE) &&
+          same_vector(cpu.m_vu0[4], vf_before_wait),
+          "VADDq must not consume a still-pending Q");
+    check(ee::ee_vu0_macro_scalar(
+              &cpu, &runtime, k_vwaitq, 0x001069fcu) == 0 &&
+          vu0.m_q_pending == 0u &&
+          vu0.m_cycle == 19u &&
+          static_cast<uint32_t>(vu0.m_q.m_lo) == bits(5.f) &&
+          vu0.m_vi[22] == bits(5.f),
+          "VWAITQ retires original SQRT at seven VU0 virtual cycles");
+    check(ee::ee_vu0_macro_fmac(
+              &cpu, &runtime, k_vaddq_x, 0x00106a00u) == 0 &&
+          lane(cpu.m_vu0[4], 0) == bits(5.f) &&
+          lane(cpu.m_vu0[4], 1) == bits(16.f) &&
+          lane(cpu.m_vu0[4], 3) == bits(7.f) &&
+          lane(vu0.m_acc, 0) == bits(17.f),
+          "retail VADDq.x returns vector length without touching ACC");
+
+    // VSQRT uses the absolute value, sets current/sticky invalid for a
+    // negative scalar, and Q remains pending until a real WAITQ.
+    cpu.m_vu0[4] = make_vector(-9.f, 0.f, 0.f, 0.f);
+    vu0.m_status_flags = 0u;
+    check(ee::ee_vu0_macro_scalar(
+              &cpu, &runtime, k_vsqrt, 0x001069f8u) == 0 &&
+          vu0.m_q_pending == 1u &&
+          (vu0.m_status_flags & 0x410u) == 0x410u &&
+          static_cast<uint32_t>(vu0.m_q.m_lo) == bits(5.f),
+          "negative VSQRT sets invalid but does not expose pending Q");
+    check(ee::ee_vu0_macro_scalar(
+              &cpu, &runtime, k_vwaitq, 0x001069fcu) == 0 &&
+          static_cast<uint32_t>(vu0.m_q.m_lo) == bits(3.f),
+          "negative VSQRT retires sqrt of absolute scalar");
+
+    // Unimplemented scalar SPECIAL2 (VDIV), unavailable micro-sync and
+    // overlapping SQRT may not corrupt the VU architectural state.
+    const ee::s_ee_vu0_state before_scalar_invalid = vu0;
+    check(ee::ee_vu0_macro_scalar(
+              &cpu, &runtime, k_vsqrt ^ 1u, 0x001069f8u) ==
+                  static_cast<uint32_t>(
+                      ee::e_ee_vu0_sync_result::INVALID_ARGUMENT) &&
+          std::memcmp(&vu0, &before_scalar_invalid, sizeof(vu0)) == 0,
+          "unimplemented scalar SPECIAL2 fails without writing state");
+    check(ee::ee_vu0_macro_scalar(
+              &cpu, &runtime, k_vsqrt, 0x001069f8u) == 0,
+          "first VSQRT accepted");
+    const ee::s_ee_vu0_state before_overlap = vu0;
+    check(ee::ee_vu0_macro_scalar(
+              &cpu, &runtime, k_vsqrt, 0x001069f8u) ==
+                  static_cast<uint32_t>(
+                      ee::e_ee_vu0_sync_result::UNAVAILABLE) &&
+          std::memcmp(&vu0, &before_overlap, sizeof(vu0)) == 0,
+          "overlapping Q producer fails closed");
+    check(ee::ee_vu0_macro_scalar(
+              &cpu, &runtime, k_vwaitq, 0x001069fcu) == 0,
+          "Q drain after failed overlapping producer");
+
     // Unsupported instructions or a busy VU0 must fail closed. Confirm no
     // architectural writes, not merely a non-zero return value.
     const ee::s_ee_cpu_state cpu_before = cpu;

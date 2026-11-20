@@ -2303,3 +2303,70 @@ and new argument, to identify the exact
 guest callsite on the next retail run.
 Never overwrite original guest data,
 change priorities, or invent DMA/RPC completion.
+
+
+## 2026-11-20 — 14:04 matched replay: original ARKD RPC token15 and token16 returned
+
+The uploaded `ps2-game-hle(20261120-140407).zip` has
+`quick-probe.log` (106,271,472 uncompressed bytes),
+`quick-probe.json` (39,511 bytes), and the translation
+cache manifest. **48 separate EE replay entries** appear.
+The final JSON applies only to the last replay:
+`dispatches=3651691`, `guest_instruction_attempts=80525519`,
+`gs_fields_started=15`, `exit_name=UNSUPPORTED`,
+`final_pc=0x001069ec`, opcode `0x4bc4212a`.
+The expansion footer confirms **78 new functions** in
+the final replay (`replay=47`). The previous fixed
+budget-stop/idle loop has been escaped.
+
+Crucially, original guest ARKD RPC **token15**, server
+`0x501`, method **18**, **queued AND entered** on
+IOP worker 12 at handler `0x0006dc78`, and
+**returned guest result 0** at cycle 9,952,841.
+Original guest RPC **token16**, server `0x502`
+method **5**, **queued, entered** handler `0x000712a8`
+on IOP thread 13 and **returned 0** at cycle
+9,957,343. This is actual guest progress, not an HLE
+fabrication. The original PADMAN loop no longer starves
+the ARKD worker. The most recent change corrected
+`ReferThreadStatus`'s original `attr`/`option`
+fields; the coincidence suggests a relation but
+does not establish causality by itself.
+
+The next genuine unsupported opcode **0x4bc4212a**
+is **VMUL.xyz VF4,VF4,VF4**, COP2 SPECIAL1 funct
+`0x2a`. The following original SDBZ US words
+are `0x4b042101` VADDy.x,
+`0x4b042102` VADDz.x,
+`0x4a0403bd` VSQRT,
+`0x4a0003bf` VWAITQ,
+`0x4b000120` VADDq.x.
+These form a scalar vector-length calculation;
+they are part of the original EE guest code, not
+an HLE service. Implemented all six encodings in
+the existing VU0 runtime and LLVM IR builder:
+lane mask and source-overlap-safe VMUL; VADDy/z
+broadcast; VADDq from the *retired* Q register;
+VSQRT using VU float normalization and source
+absolute value with invalid status on negative
+input; VWAITQ retires the pending result after
+the documented **seven VU0 virtual cycles**.
+Do not claim these are authoritative EE clock
+cycles or synthesize scanout/IRQ events. An
+unavailable VU0 microengine and unexpected
+SPECIAL2 opcodes remain unsupported.
+
+The real retail opcode regression now executes
+this exact sequence starting from vector
+(3,4,0,7) with an expected scalar length of
+5 and a preserved W lane, checks pending-Q
+visibility, original VF0/ACC behavior, flags,
+negative VSQRT, invalid SPECIAL2 and concurrent
+SQRT fail-closed behavior.
+
+The decoder classification changed; the user's
+preserved IR cache needs verification/rebuild
+from the updated guest-lowering sources by
+`run_ps2_game.bat --quick`. Avoid forcibly
+reusing stale IR against changed COP2 semantics.
+No successful game frame has been established.
