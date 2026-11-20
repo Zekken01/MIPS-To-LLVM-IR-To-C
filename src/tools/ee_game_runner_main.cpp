@@ -3680,7 +3680,7 @@ int main(int argc, char** argv)
                                             "WaitSema HLE pending RPC "
                                             "exhausted guest IOP turns: "
                                             "id=%u turns=%u binds=%zu "
-                                            "replies=%zu iop_pc=0x%08x\\n",
+                                            "replies=%zu iop_pc=0x%08x\n",
                                             semaphore_id,
                                             iop_semaphore_wait_turns,
                                             iop_rpc->pending_binds(),
@@ -3702,7 +3702,7 @@ int main(int argc, char** argv)
                                             "WaitSema HLE guest IOP stopped: "
                                             "id=%u reason=%u thread=%u "
                                             "pc=0x%08x opcode=0x%08x "
-                                            "executed=%llu\\n",
+                                            "executed=%llu\n",
                                             semaphore_id,
                                             static_cast<uint32_t>(
                                                 progressed.m_stop),
@@ -3730,7 +3730,7 @@ int main(int argc, char** argv)
                                             "WaitSema HLE guest RPC turn: "
                                             "id=%u turn=%u executed=%llu "
                                             "binds=%zu replies=%zu "
-                                            "dma5_pending=%u\\n",
+                                            "dma5_pending=%u\n",
                                             semaphore_id,
                                             iop_semaphore_wait_turns,
                                             static_cast<unsigned long long>(
