@@ -178,6 +178,14 @@ bool c_kernel::interrupts_suspended() const
 void c_kernel::set_interrupts_suspended(bool suspended)
 {
     m_interrupts_suspended = suspended;
+    if (m_current_thread_id != 0u)
+    {
+        const auto found = m_threads.find(m_current_thread_id);
+        if (found != m_threads.end())
+        {
+            found->second.m_interrupts_suspended = suspended;
+        }
+    }
     m_critical_thread_id =
         suspended ? m_current_thread_id : 0u;
 }
@@ -940,6 +948,7 @@ bool c_kernel::start_thread(uint32_t id)
                                 k_thread_return_pc;
     thread.m_module_entry_returned = false;
     thread.m_module_entry_result = 0u;
+    thread.m_interrupts_suspended = false;
     thread.m_status = e_thread_status::ready;
     return true;
 }
@@ -1466,6 +1475,24 @@ s_kernel_run_result c_kernel::run(
     while (remaining != 0u)
     {
         wake_due();
+        // ps2-web-recomp/SDBZ saves interrupt state with each thread.
+        // A suspended thread owns the CPU only while runnable. Once it
+        // blocks or exits, a real DMA interrupt may wake it.
+        if (m_interrupts_suspended && m_critical_thread_id != 0u)
+        {
+            const auto held = m_threads.find(m_critical_thread_id);
+            if (held == m_threads.end() ||
+                (held->second.m_status != e_thread_status::ready &&
+                 held->second.m_status != e_thread_status::running))
+            {
+                std::fprintf(stderr,
+                    "IOP critical owner yielded: thread=%u cycles=%llu\n",
+                    m_critical_thread_id,
+                    static_cast<unsigned long long>(m_cycles));
+                m_interrupts_suspended = false;
+                m_critical_thread_id = 0u;
+            }
+        }
         if (m_irq_lookup && !m_interrupts_suspended &&
             m_interrupt_thread_id == 0u)
         {
@@ -1495,6 +1522,12 @@ s_kernel_run_result c_kernel::run(
                         e_kernel_stop::unsupported_instruction;
                     return result;
                 }
+                std::printf(
+                    "IOP INTRMAN IRQ acknowledged: line=%u registered=%u "
+                    "handler=0x%08x cycles=%llu\n",
+                    line, registered ? 1u : 0u,
+                    registered ? target.m_handler : 0u,
+                    static_cast<unsigned long long>(m_cycles));
                 if (registered)
                 {
                     break;
@@ -1590,6 +1623,9 @@ s_kernel_run_result c_kernel::run(
         }
 
         s_kernel_thread& thread = m_threads.at(id);
+        // Resume this thread's saved INTRMAN suspension state.
+        m_interrupts_suspended = thread.m_interrupts_suspended;
+        m_critical_thread_id = m_interrupts_suspended ? id : 0u;
         thread.m_status = e_thread_status::running;
         m_current_thread_id = id;
         m_last_scheduled_id = id;
@@ -1626,6 +1662,11 @@ s_kernel_run_result c_kernel::run(
             {
                 m_irq_complete(line, guest_result);
             }
+            std::printf(
+                "IOP INTRMAN guest handler returned: line=%u "
+                "result=0x%08x cycles=%llu\n",
+                line, guest_result,
+                static_cast<unsigned long long>(m_cycles));
             continue;
         }
 

@@ -417,6 +417,132 @@ bool test_registered_dma_guest_interrupt()
            (mask & (1u << 9u)) == 0u;
 }
 
+
+// Original DMA4 completion must wake a guest waiter even when that
+// waiter used CpuSuspendIntr before entering WaitSema. Its saved
+// interrupt state must not mask the interrupt for the whole IOP.
+bool test_suspended_waiter_dma4_irq_wakeup()
+{
+    iop::c_kernel kernel;
+    iop::c_kernel_hle_bridge hle(kernel);
+    if (!kernel.attach_hle_hardware() || !hle.install())
+    {
+        return false;
+    }
+    kernel.bind_syscall([&](iop::c_kernel& active, uint32_t service)
+    {
+        return hle.handle_syscall(active, service);
+    });
+
+    constexpr uint32_t k_sema_param = 0x00036000u;
+    constexpr uint32_t k_dma_source = 0x00037000u;
+    constexpr uint32_t k_irq_handler = 0x00039000u;
+    constexpr uint32_t k_worker = 0x00044000u;
+    constexpr uint32_t k_marker = 0x00047000u;
+    uint32_t suspend_pc = 0u;
+    uint32_t resume_pc = 0u;
+    uint32_t wait_pc = 0u;
+    uint32_t signal_pc = 0u;
+    uint32_t sema_id = 0u;
+    if (!kernel.lookup_library("intrman", 17u, &suspend_pc) ||
+        !kernel.lookup_library("intrman", 18u, &resume_pc) ||
+        !kernel.lookup_library("thsemap", 8u, &wait_pc) ||
+        !kernel.lookup_library("thsemap", 7u, &signal_pc) ||
+        !kernel.cpu().write32(k_sema_param, 0u) ||
+        !kernel.cpu().write32(k_sema_param + 4u, 0u) ||
+        !kernel.cpu().write32(k_sema_param + 8u, 0u) ||
+        !kernel.cpu().write32(k_sema_param + 12u, 1u) ||
+        !call_guest(kernel, "thsemap", 4u,
+                    {k_sema_param, 0u, 0u, 0u}, &sema_id) ||
+        sema_id == 0u || sema_id > 0x7fffu)
+    {
+        return false;
+    }
+
+    const uint32_t worker[] =
+    {
+        0x03e08021u, // addu s0,ra,zero
+        0x24040000u, // addiu a0,zero,0
+        0x0c000000u | ((suspend_pc >> 2u) & 0x03ffffffu),
+        0u,
+        0x24040000u | sema_id, // WaitSema(guest semaphore)
+        0x0c000000u | ((wait_pc >> 2u) & 0x03ffffffu),
+        0u,
+        0x24040001u, // CpuResumeIntr(previously enabled)
+        0x0c000000u | ((resume_pc >> 2u) & 0x03ffffffu),
+        0u,
+        0x3c080004u, // lui t0,4
+        0x35087000u, // ori t0,t0,0x7000
+        0x24090001u, // addiu t1,zero,1
+        0xad090000u, // sw t1,0(t0)
+        0x0200f821u, // addu ra,s0,zero
+        0x03e00008u, // jr ra
+        0u
+    };
+    const uint32_t irq[] =
+    {
+        0x03e08021u, // addu s0,ra,zero
+        0x0c000000u | ((signal_pc >> 2u) & 0x03ffffffu),
+        0u,           // iSignalSema(a0), from original INTRMAN arg
+        0x0200f821u, // addu ra,s0,zero
+        0x24020001u, // keep DMA4 interrupt enabled
+        0x03e00008u, // jr ra
+        0u
+    };
+    for (uint32_t i = 0u; i < sizeof(worker) / sizeof(worker[0]); ++i)
+    {
+        if (!kernel.cpu().write32(k_worker + i * 4u, worker[i]))
+        {
+            return false;
+        }
+    }
+    for (uint32_t i = 0u; i < sizeof(irq) / sizeof(irq[0]); ++i)
+    {
+        if (!kernel.cpu().write32(k_irq_handler + i * 4u, irq[i]))
+        {
+            return false;
+        }
+    }
+    uint32_t result = 0u;
+    if (!kernel.cpu().write32(k_marker, 0u) ||
+        !kernel.cpu().write32(k_dma_source, 0x11223344u) ||
+        !call_guest(kernel, "intrman", 4u,
+                    {36u, 0u, k_irq_handler, sema_id}, &result) ||
+        result != 0u ||
+        !call_guest(kernel, "intrman", 6u,
+                    {36u, 0u, 0u, 0u}, &result) ||
+        result != 0u)
+    {
+        return false;
+    }
+
+    const uint32_t worker_id = kernel.create_thread(
+        k_worker, 0u, 8u, 0x400u);
+    if (worker_id == 0u || !kernel.start_thread(worker_id) ||
+        !kernel.hardware().write(iop::c_hw::k_spu2_dma4_base,
+                                 4u, k_dma_source) ||
+        !kernel.hardware().write(iop::c_hw::k_spu2_dma4_base + 4u,
+                                 4u, 0x00010001u) ||
+        !kernel.hardware().write(iop::c_hw::k_spu2_dma4_base + 8u,
+                                 4u, 0x01000001u))
+    {
+        return false;
+    }
+
+    const iop::s_kernel_run_result ran = kernel.run(256u, 16u);
+    uint32_t marker = 0u;
+    uint32_t icr = 0u;
+    const iop::s_kernel_thread* completed = kernel.thread(worker_id);
+    return (ran.m_stop == iop::e_kernel_stop::idle ||
+            ran.m_stop == iop::e_kernel_stop::budget_exhausted) &&
+           completed != nullptr &&
+           completed->m_status == iop::e_thread_status::dormant &&
+           kernel.cpu().read32(k_marker, &marker) && marker == 1u &&
+           kernel.hardware().read(iop::c_hw::k_dma_icr, 4u, &icr) &&
+           (icr & (1u << 28u)) == 0u &&
+           !kernel.interrupts_suspended();
+}
+
 bool test_cpu_suspend_pins_original_guest_thread()
 {
     iop::c_kernel kernel;
@@ -590,6 +716,10 @@ int main()
     if (!test_registered_dma_guest_interrupt())
     {
         return fail("real DMA interrupt guest handler / IRQ context");
+    }
+    if (!test_suspended_waiter_dma4_irq_wakeup())
+    {
+        return fail("blocked CpuSuspendIntr waiter masked actual DMA4 IRQ");
     }
     if (!test_vblank_guest_callbacks())
     {

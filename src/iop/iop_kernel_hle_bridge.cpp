@@ -1104,11 +1104,8 @@ bool c_kernel_hle_bridge::handle_intrman(uint32_t ordinal)
     if (ordinal == 8u || ordinal == 9u)
     {
         const bool disabled = ordinal == 8u;
-        if (!m_kernel.hardware().write(
-                c_hw::k_i_ctrl, 4u, disabled ? 0u : 1u))
-        {
-            return false;
-        }
+        // The reference INTRMAN saves CPU suspension in the thread
+        // context; it does not overwrite the hardware I_CTRL latch.
         m_cpu_interrupts_suspended = disabled;
         m_kernel.set_interrupts_suspended(disabled);
         cpu.m_gpr[2] = 0u;
@@ -1116,7 +1113,7 @@ bool c_kernel_hle_bridge::handle_intrman(uint32_t ordinal)
     }
     if (ordinal == 17u)
     {
-        const bool suspended = m_cpu_interrupts_suspended;
+        const bool suspended = m_kernel.interrupts_suspended();
         if (line != 0u &&
             !m_kernel.cpu().write32(line, suspended ? 0u : 1u))
         {
@@ -1124,10 +1121,6 @@ bool c_kernel_hle_bridge::handle_intrman(uint32_t ordinal)
         }
         m_cpu_interrupts_suspended = true;
         m_kernel.set_interrupts_suspended(true);
-        if (!m_kernel.hardware().write(c_hw::k_i_ctrl, 4u, 0u))
-        {
-            return false;
-        }
         cpu.m_gpr[2] = suspended ?
             static_cast<uint32_t>(-102) : 0u;
         return true;
@@ -1136,12 +1129,6 @@ bool c_kernel_hle_bridge::handle_intrman(uint32_t ordinal)
     {
         m_cpu_interrupts_suspended = line == 0u;
         m_kernel.set_interrupts_suspended(m_cpu_interrupts_suspended);
-        if (!m_kernel.hardware().write(
-                c_hw::k_i_ctrl, 4u,
-                m_cpu_interrupts_suspended ? 0u : 1u))
-        {
-            return false;
-        }
         cpu.m_gpr[2] = 0u;
         return true;
     }

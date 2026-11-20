@@ -248,8 +248,10 @@ void c_hw::advance_spu2_dma(uint32_t cycles)
         (void)raise_interrupt(k_dma_irq);
         std::printf(
             "IOP SPU2 DMA completed: channel=%u chcr=0x%08x "
-            "dicr=0x%08x i_stat=0x%08x\n",
-            channel, m_spu2_dma[core][2u], control, m_i_stat);
+            "dicr=0x%08x i_stat=0x%08x i_mask=0x%08x "
+            "i_ctrl=%u next_irq=%d\n",
+            channel, m_spu2_dma[core][2u], control, m_i_stat,
+            m_i_mask, m_i_ctrl, next_pending_interrupt());
     }
 }
 

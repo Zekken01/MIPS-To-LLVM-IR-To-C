@@ -55,6 +55,9 @@ struct s_kernel_thread
     bool m_hle_guest_callback = false;
     bool m_interrupt_callback = false;
     uint32_t m_interrupt_line = 0u;
+    // INTRMAN suspension is part of this guest thread's context.
+    // A blocked thread must not globally mask another thread's IRQs.
+    bool m_interrupts_suspended = false;
     // Module _start has a guest return trampoline; returning must
     // retire its init thread instead of executing zero-filled RAM.
     bool m_module_entry = false;
