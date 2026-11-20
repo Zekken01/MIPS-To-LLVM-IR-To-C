@@ -1704,3 +1704,58 @@ run_ps2_game.bat --quick
 ```
 Upload current `quick-probe.log`, `quick-probe.json` and any matching
 expansion logs; don't confuse preserved full logs with the quick probe.
+
+
+## 2026-11-20 — 09:45:16 cached probe: original ARKD method-1 completes, next blocker SIFMAN #7
+
+Inspected `ps2-game-hle(20261120-094516).zip`, which contains only
+`quick-probe.log` (6,532,005 bytes) and `quick-probe.json` at
+09:44:30. The quick log contains **three separate native
+auto-expansion replays (0, 1, 2)** and the JSON corresponds to the
+final replay, not a single 3x continuous run. Exact local source SHA
+is not recorded in the archive.
+
+The STDIO #4 fix enabled real guest progression through the long
+original ARKD byte-processing loop: guest RPC **token 7**, server
+**0x500**, method **1** returns guest result 0 at **IOP cycle
+6,427,070**. Guest RPC **token 8**, server **0x503**, method
+**258** enters thread 14, signals semaphore 15 and genuinely
+wakes **thread 24** at cycle **6,427,376**, then returns at
+6,427,402. Guest RPC **token 9**, server **0x503**, method **2**
+returns at 6,427,677. These are original IOP guest trampolines,
+not synthetic HLE replies.
+
+The final replay stops with **IOP thread 24**, reason
+**`unhandled_syscall`** (enum value 2), at **0x00018048**,
+instruction `0x0000000c`. This is the reserved HLE syscall
+stub `c_sifman_bridge::k_set_dma_stub + 8`: SIFMAN
+**`sceSifSetDma` ordinal 7**, service `0x494f0007`. Unlike
+previous replays, **method 0x500:1 is no longer the blocker**.
+Final EE state: **3,639,873 dispatches**, **59,312,889
+instruction attempts**, `EE_EXIT_UNSUPPORTED`, PC
+`0x00178068`, because the IOP producer halted; SDBZ is not
+yet booted.
+
+The IOP SIFMAN bridge currently rejects DMA requests if the
+EE channel 5 receiver is not armed, descriptor list is malformed,
+a descriptor has invalid source/destination/size/attributes,
+source bytes cannot be read, or the EE DMA completion cannot
+be raised. **The uploaded log does not expose which condition
+rejected this call.** The original `ps2-web-recomp/SDBZ`
+SIFMAN implementation processes guest descriptor lists, but
+this runtime must not guess or silently copy data without its
+own existing DMA validation.
+
+Add a **read-only, bounded reason-specific rejection trace**
+in the real `sceSifSetDma` HLE handler: original IOP
+thread/PC/RA/cycles, list/count, failing descriptor fields,
+actual EE channel-5 CHCR and explicit failure reason. This
+does not modify any DMA acceptance rule, EE or IOP guest
+state, memory or scheduling. Existing tests for valid DMA,
+transactional invalid-descriptor rejection, unarmed EE
+receiver rejection, and disconnected backend must remain
+green. Use the next matched **`--quick`** probe to
+determine whether the true blocker is EE receiver state
+or a specific guest transfer descriptor before changing
+device semantics.
+

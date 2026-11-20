@@ -1,6 +1,7 @@
 #include "iop_sifman_bridge.h"
 
 #include <array>
+#include <cstdio>
 #include <utility>
 #include <vector>
 
@@ -241,12 +242,49 @@ bool c_sifman_bridge::handle_syscall(
         // descriptors (IOP src, EE dst, byte count, attributes).
         // Unlike the reference's eager memcpy, validate and stage
         // every transfer before writing a single guest EE byte.
+        const s_cpu_state& state = kernel.cpu().state();
+        const uint32_t list = state.m_gpr[4];
+        const uint32_t count = state.m_gpr[5];
+
+        // The retail ARKD worker reaches this import only after its
+        // original method-1 RPC and the 0x503:258/2 follow-up calls
+        // return. On rejection preserve the real IOP/EE state and
+        // identify the exact validation boundary rather than guessing
+        // which DMA producer is missing or synthesizing a completion.
+        const auto reject = [&](const char* reason,
+                                uint32_t descriptor_index = 0u,
+                                uint32_t source = 0u,
+                                uint32_t destination = 0u,
+                                uint32_t size = 0u,
+                                uint32_t attributes = 0u)
+        {
+            ee::s_ee_u128 channel{};
+            const bool channel_readable =
+                m_dmac != nullptr &&
+                ee::c_ee_dmac::mmio_read(
+                    m_dmac, ee::c_ee_dmac::k_sif0_base,
+                    4u, &channel);
+            std::fprintf(stderr,
+                "IOP HLE SifSetDma rejected: reason=%s "
+                "thread=%u pc=0x%08x ra=0x%08x "
+                "list=0x%08x count=%u index=%u "
+                "src=0x%08x dst=0x%08x size=%u attr=0x%08x "
+                "ee5_chcr=0x%08x ee5_readable=%u "
+                "iop_cycles=%llu\n",
+                reason, kernel.current_thread_id(),
+                state.m_pc, state.m_gpr[31],
+                list, count, descriptor_index,
+                source, destination, size, attributes,
+                static_cast<uint32_t>(channel.m_lo),
+                channel_readable ? 1u : 0u,
+                static_cast<unsigned long long>(kernel.cycles()));
+            return false;
+        };
+
         if (m_dmac == nullptr || m_ee_ram == nullptr)
         {
-            return false;
+            return reject("missing_ee_dma_backend");
         }
-        const uint32_t list = kernel.cpu().state().m_gpr[4];
-        const uint32_t count = kernel.cpu().state().m_gpr[5];
         const uint32_t list_physical = list & 0x1fffffffu;
         const uint32_t list_region = list & 0xe0000000u;
         if (count == 0u || count > 64u ||
@@ -256,16 +294,19 @@ bool c_sifman_bridge::handle_syscall(
              list_region != 0xa0000000u) ||
             list_physical > c_cpu::k_ram_size - count * 16u)
         {
-            return false;
+            return reject("invalid_descriptor_list");
         }
 
         ee::s_ee_u128 chcr{};
         if (!ee::c_ee_dmac::mmio_read(
                 m_dmac, ee::c_ee_dmac::k_sif0_base,
-                4u, &chcr) ||
-            (chcr.m_lo & ee::c_ee_dmac::k_chcr_str) == 0u)
+                4u, &chcr))
         {
-            return false;
+            return reject("unreadable_ee_sif0_chcr");
+        }
+        if ((chcr.m_lo & ee::c_ee_dmac::k_chcr_str) == 0u)
+        {
+            return reject("ee_sif0_receiver_not_armed");
         }
 
         struct s_transfer
@@ -286,7 +327,8 @@ bool c_sifman_bridge::handle_syscall(
                 !kernel.cpu().read32(descriptor + 8u, &size) ||
                 !kernel.cpu().read32(descriptor + 12u, &attributes))
             {
-                return false;
+                return reject("unreadable_descriptor", index,
+                              source, destination, size, attributes);
             }
 
             const uint32_t source_physical = source & 0x1fffffffu;
@@ -311,7 +353,8 @@ bool c_sifman_bridge::handle_syscall(
                     c_cpu::k_ram_size ||
                 !m_ee_ram->contains(destination_physical, size))
             {
-                return false;
+                return reject("invalid_descriptor_fields", index,
+                              source, destination, size, attributes);
             }
 
             s_transfer transfer{};
@@ -323,7 +366,8 @@ bool c_sifman_bridge::handle_syscall(
                 if (!kernel.cpu().read32(
                         source_physical + offset, &word))
                 {
-                    return false;
+                    return reject("unreadable_source_payload", index,
+                                  source, destination, size, attributes);
                 }
                 for (uint32_t b = 0u;
                      b < 4u && offset + b < size; ++b)
@@ -353,7 +397,7 @@ bool c_sifman_bridge::handle_syscall(
         }
         if (!m_dmac->raise(5u))
         {
-            return false;
+            return reject("ee_sif0_dmac_completion");
         }
         kernel.cpu().state().m_gpr[2] = m_next_dma_id++;
         return true;
