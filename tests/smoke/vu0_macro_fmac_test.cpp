@@ -295,14 +295,18 @@ int main()
               &cpu, &runtime, k_vaddz_vf5, 0x00106984u) == 0 &&
           lane(cpu.m_vu0[5], 0) == bits(25.f),
           "VADDy/VADDz computes squared length 25");
+    // The preceding VMUL.xyz produces a zero Z lane, which sets
+    // sticky SZ. Scalar RSQRT must preserve that unrelated flag;
+    // it only clears/updates current I/D on this successful input.
+    const uint32_t status_before_rsqrt = vu0.m_status_flags;
     check(ee::ee_vu0_macro_scalar(
               &cpu, &runtime, k_vrsqrt, 0x00106988u) == 0 &&
           vu0.m_q_pending == 1u &&
           vu0.m_q_ready_cycle == 43u &&
           vu0.m_q_pending_bits == bits(1.f / 5.f) &&
           static_cast<uint32_t>(vu0.m_q.m_lo) == 0u &&
-          vu0.m_status_flags == 0u,
-          "VRSQRT VF0.w/VF5.x queues Q with 13 virtual cycles");
+          vu0.m_status_flags == (status_before_rsqrt & ~0x30u),
+          "VRSQRT queues Q at 13 cycles without erasing FMAC sticky flags");
     const ee::s_ee_cpu_state early_cpu = cpu;
     const ee::s_ee_vu0_state early_vu0 = vu0;
     check(ee::ee_vu0_macro_fmac(
