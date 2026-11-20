@@ -185,7 +185,7 @@ int main()
         return fail("failed to install cdvdman #10 import trampoline");
     }
     if (bridge.install() || bridge.handle_syscall(kernel, 0xffffffffu) ||
-        kernel.load_module(make_irx(11u)).m_status !=
+        kernel.load_module(make_irx(6u)).m_status !=
             iop::e_irx_load_result::unresolved_import)
     {
         return fail("duplicate install or unknown cdvdman export accepted");
@@ -313,7 +313,7 @@ int main()
             return fail("supported CDVDMAN import has no guest stub");
         }
     }
-    for (uint16_t ordinal : {6u, 7u, 11u, 22u, 37u})
+    for (uint16_t ordinal : {6u, 7u, 22u, 37u})
     {
         uint32_t entry = 0u;
         if (kernel.lookup_library("cdvdman", ordinal, &entry))
@@ -366,10 +366,28 @@ int main()
             return fail("idle sceCdSync incorrectly completed a command");
         }
     }
-    if (standby_kernel.load_module(make_irx(11u)).m_status !=
-            iop::e_irx_load_result::success)
+    const iop::s_module_load_result sync_module =
+        standby_kernel.load_module(make_irx(11u));
+    if (sync_module.m_status != iop::e_irx_load_result::success)
     {
         return fail("sceCdSync guest import did not link");
+    }
+    const uint32_t sync_thread =
+        standby_kernel.create_module_thread(sync_module.m_id, 1u);
+    if (sync_thread == 0u || !standby_kernel.start_thread(sync_thread))
+    {
+        return fail("sceCdSync guest thread did not start");
+    }
+    const iop::s_kernel_run_result sync_run =
+        standby_kernel.run(64u, 64u);
+    const iop::s_kernel_thread* sync_guest =
+        standby_kernel.thread(sync_thread);
+    if (sync_run.m_stop != iop::e_kernel_stop::budget_exhausted ||
+        sync_guest == nullptr || sync_guest->m_cpu.m_gpr[2] != 0u ||
+        standby_kernel.hardware().pending_interrupts() != 0u ||
+        standby_kernel.hardware().cdvd_ncmd_pending())
+    {
+        return fail("sceCdSync guest import did not observe idle media");
     }
 
     // Isolate a second authentic guest IRX import for sceCdReadClock.
