@@ -205,6 +205,7 @@ bool test_arkd_deferred_bind(const std::filesystem::path& disc_root)
     if (!sif1.set_dma(k_list, 1u, &dma_id) ||
         rpc.pending_binds() != 1u ||
         rpc.pending_replies() != 0u ||
+        rpc.has_waiting_bind_guest_work() ||
         memory.read32(k_receive + 16u) != 0xcafef00du ||
         (dmac.status() & (1u << 5u)) != 0u)
     {
@@ -231,8 +232,27 @@ bool test_arkd_deferred_bind(const std::filesystem::path& disc_root)
     }
     const uint32_t thread_id = kernel.create_thread(
         k_handler, 0u, 1u, 0x400u);
-    if (thread_id == 0u)
+    // An allocated but dormant R3000 thread is not permission to
+    // advance IOP time or answer the waiting EE client.
+    if (thread_id == 0u || rpc.has_waiting_bind_guest_work())
     {
+        return false;
+    }
+    if (!kernel.start_thread(thread_id) ||
+        !rpc.has_waiting_bind_guest_work())
+    {
+        return false;
+    }
+    const iop::s_kernel_run_result guest_turn = kernel.run(1u, 1u);
+    if (guest_turn.m_stop != iop::e_kernel_stop::budget_exhausted ||
+        guest_turn.m_executed != 1u ||
+        !rpc.has_waiting_bind_guest_work() ||
+        rpc.pending_binds() != 1u ||
+        rpc.pending_replies() != 0u ||
+        (dmac.status() & (1u << 5u)) != 0u)
+    {
+        // A real guest instruction must be permitted to execute without
+        // prematurely manufacturing an RPC registration or EE IRQ.
         return false;
     }
 
@@ -259,6 +279,7 @@ bool test_arkd_deferred_bind(const std::filesystem::path& disc_root)
         !commands.has_guest_rpc_server(k_server) ||
         rpc.pending_binds() != 0u ||
         rpc.pending_replies() != 1u ||
+        rpc.has_waiting_bind_guest_work() ||
         memory.read32(k_receive + 16u) != 0xcafef00du)
     {
         return false;
@@ -294,7 +315,8 @@ bool test_arkd_deferred_bind(const std::filesystem::path& disc_root)
     }
     rpc.reset_for_reboot();
     return rpc.pending_binds() == 0u &&
-        rpc.pending_replies() == 0u;
+        rpc.pending_replies() == 0u &&
+        !rpc.has_waiting_bind_guest_work();
 }
 
 bool test_guest_rpc_lifecycle(const std::filesystem::path& disc_root)
