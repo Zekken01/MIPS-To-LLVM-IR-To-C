@@ -2091,6 +2091,7 @@ int main(int argc, char** argv)
     uint64_t guest_rpc_last_ee_cycle = 0u;
     uint64_t guest_rpc_schedule_turns = 0u;
     bool guest_rpc_schedule_active = false;
+    bool guest_rpc_idle_diagnostic_reported = false;
     ee::c_ee_dispatch_hotspots hotspots;
     std::vector<s_dispatch_sample> history;
     if (report_path != nullptr)
@@ -2162,6 +2163,7 @@ int main(int argc, char** argv)
         if (!guest_rpc_pending)
         {
             guest_rpc_schedule_active = false;
+            guest_rpc_idle_diagnostic_reported = false;
         }
         else
         {
@@ -2171,6 +2173,57 @@ int main(int argc, char** argv)
             {
                 guest_rpc_schedule_active = true;
                 guest_rpc_last_ee_cycle = ee_cycle;
+            }
+            else if (!iop_kernel->has_guest_work() &&
+                     !guest_rpc_idle_diagnostic_reported)
+            {
+                // An unfinished guest RPC with no ready IOP thread
+                // cannot be advanced by merely increasing EE dispatches.
+                // Record the actual guest states and DMA registers once.
+                guest_rpc_idle_diagnostic_reported = true;
+                uint32_t dma4_bcr = 0u;
+                uint32_t dma4_chcr = 0u;
+                uint32_t dma7_chcr = 0u;
+                uint32_t dicr = 0u;
+                uint32_t i_stat = 0u;
+                (void)iop_kernel->hardware().read(
+                    iop::c_hw::k_spu2_dma4_base + 4u,
+                    4u, &dma4_bcr);
+                (void)iop_kernel->hardware().read(
+                    iop::c_hw::k_spu2_dma4_base + 8u,
+                    4u, &dma4_chcr);
+                (void)iop_kernel->hardware().read(
+                    iop::c_hw::k_spu2_dma7_base + 8u,
+                    4u, &dma7_chcr);
+                (void)iop_kernel->hardware().read(
+                    iop::c_hw::k_dma_icr, 4u, &dicr);
+                (void)iop_kernel->hardware().read(
+                    iop::c_hw::k_i_stat, 4u, &i_stat);
+                std::printf(
+                    "IOP HLE guest RPC stalled without IOP work: "
+                    "turn=%llu ee_cycle=%llu pending_calls=%zu "
+                    "dma4_bcr=0x%08x dma4_chcr=0x%08x "
+                    "dma7_chcr=0x%08x dicr=0x%08x "
+                    "i_stat=0x%08x\n",
+                    static_cast<unsigned long long>(
+                        guest_rpc_schedule_turns),
+                    static_cast<unsigned long long>(ee_cycle),
+                    iop_rpc->pending_guest_calls(),
+                    dma4_bcr, dma4_chcr, dma7_chcr, dicr, i_stat);
+                for (const auto& item : iop_kernel->threads())
+                {
+                    const iop::s_kernel_thread& thread = item.second;
+                    if (thread.m_status == iop::e_thread_status::dormant)
+                    {
+                        continue;
+                    }
+                    std::printf(
+                        "IOP HLE pending thread: id=%u status=%u "
+                        "pc=0x%08x wait_type=%u wake_cycle=%llu\n",
+                        item.first, static_cast<uint32_t>(thread.m_status),
+                        thread.m_cpu.m_pc, thread.m_wait_type,
+                        static_cast<unsigned long long>(thread.m_wake_cycle));
+                }
             }
             else if (ee_cycle >= guest_rpc_last_ee_cycle &&
                      ee_cycle - guest_rpc_last_ee_cycle >= 2048u &&
@@ -2236,6 +2289,29 @@ int main(int argc, char** argv)
                         static_cast<uint32_t>(progressed.m_stop),
                         iop_rpc->pending_guest_calls(),
                         iop_rpc->pending_replies());
+                    const iop::s_kernel_thread* guest_thread =
+                        iop_kernel->thread(progressed.m_thread_id);
+                    uint32_t dma4_chcr = 0u;
+                    uint32_t dma4_bcr = 0u;
+                    uint32_t dma7_chcr = 0u;
+                    (void)iop_kernel->hardware().read(
+                        iop::c_hw::k_spu2_dma4_base + 8u,
+                        4u, &dma4_chcr);
+                    (void)iop_kernel->hardware().read(
+                        iop::c_hw::k_spu2_dma4_base + 4u,
+                        4u, &dma4_bcr);
+                    (void)iop_kernel->hardware().read(
+                        iop::c_hw::k_spu2_dma7_base + 8u,
+                        4u, &dma7_chcr);
+                    std::printf(
+                        "IOP HLE guest RPC progress: turn=%llu "
+                        "guest_pc=0x%08x dma4_chcr=0x%08x "
+                        "dma4_bcr=0x%08x dma7_chcr=0x%08x\n",
+                        static_cast<unsigned long long>(
+                            guest_rpc_schedule_turns),
+                        guest_thread != nullptr ?
+                            guest_thread->m_cpu.m_pc : 0u,
+                        dma4_chcr, dma4_bcr, dma7_chcr);
                 }
             }
         }

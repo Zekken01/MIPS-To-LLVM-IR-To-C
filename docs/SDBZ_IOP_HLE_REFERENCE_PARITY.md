@@ -1321,3 +1321,70 @@ remain unimplemented until grounded by a genuine transfer request.
 followed by a fresh matched Windows archive confirming this original
 BCR write advances and whether the next authentic blocker is a
 real IOP↔SPU2 RAM transfer or another guest operation.
+
+## 2026-11-20 06:13:34 — DMA4 BCR store cleared; ARKD method 1 stalls on IOP wait
+
+The matched archive `ps2-game-hle(20261120-061334).zip` contains all
+five expected diagnostic files plus three P6 GS/WebGPU captures. The
+original guest DMA4 BCR halfword store no longer faults. The EE reaches
+the **100,000-dispatch limit** after **16,912,906 guest instruction
+attempts** with **421 cached LLVM functions** and **29 committed
+RPC commands**. The original six IRX module entry threads completed
+and real ARKD servers `0x500..0x503` registered. All three captures
+remain entirely black. Guest ARKD method `0x500:1` is **still pending**:
+there is no real guest handler finish trampoline/SIF0->EE DMA5 reply.
+
+Unlike the preceding four matched replays, **no new IOP unhandled
+syscall or memory fault occurs**. The EE repeatedly visits
+`0x00178DE8` and `0x001BD58C` until the dispatch limit. The
+EE-cycle-based IOP scheduler continues thread 9 for at least 128
+bounded turns of 256 genuine R3000 instructions each, but the
+RPC remains pending. `WaitSema(0)` is still reported once during
+this run at IOP PC `0x000147A8`; its producer is unverified.
+The archived logs do not show the actual DMA4 CHCR/STR register
+state at the final stall, so **an uncompleted DMA is a hypothesis,
+not yet a proven guest dependency**.
+
+**Primary reference:**
+`ps2-web-recomp/SDBZ/runtime/src/iop/hw.cpp` implements IOP DMA4
+and DMA7 with MADR/BCR/CHCR, and calls the actual
+`spu2::dma()` from `start_dma()`. Its
+`runtime/src/iop/spu2.cpp` moves real little-endian halfwords
+between primary IOP RAM and shared SPU2 sound RAM at the guest
+TSA, wrapping at the 1M-word sound RAM boundary. Direct DMA
+completion is then scheduled after `64 + words/4` IOP cycles.
+A stopped transfer cannot complete. AutoDMA uses a different
+streaming input ring and cannot be faked using the direct path.
+
+**Coherent HLE-first batch:** Connect the real IOP CPU RAM to
+the existing guest DMA4/DMA7 register banks only when the IOP
+hardware is attached. Read the original BCR count and MADR,
+preflight the complete physical RAM span, copy actual guest
+bytes to/from the two cores' shared sound RAM, update the
+selected TSA, and raise SPU2 IRQ9 only if the original
+enabled IRQA is crossed. The direct DMA completion occurs
+after the reference-derived IOP instruction-clock interval:
+only then can CHCR.STR clear and the actual DICR/DICR2
+channel flag and IRQ3 be asserted. A guest CHCR.STR clear
+cancels the pending completion. Invalid RAM ranges,
+zero-length requests and AutoDMA must remain requested
+with no fabricated data, completion or interrupt.
+
+**New regression fixtures** exercise both DMA channels and
+directions with known *real guest RAM* data, SPU2 RAM
+wraparound, TSA progression, precise delayed STR clearing,
+DICR/DICR2 flag creation after actual copying,
+cancellation, invalid physical memory and AutoDMA fail
+closed. A bounded guest RPC scheduler snapshot now
+records thread-PC + actual DMA4/DMA7 register states
+every 64 turns and records the thread wait statuses once
+if a guest RPC remains pending with no runnable IOP work.
+This distinguishes genuine DMA blockage from a thread
+waiting on a guest kernel object or missing IRQ dispatch.
+
+**Acceptance:** all CI workflows must pass on the final
+branch HEAD. A fresh matched local Windows replay is then
+required to identify the next actual guest state and verify
+whether this real DMA backend advances ARKD method `0x500:1`.
+No sound synthesis/playback or kernel IRQ callback execution
+is claimed here.

@@ -22,10 +22,225 @@ void put32(std::vector<uint8_t>& data, uint32_t at, uint32_t value)
             static_cast<uint8_t>(value >> (8u * index));
     }
 }
+
+bool test_authentic_spu2_dma()
+{
+    iop::c_kernel kernel;
+    if (!kernel.attach_hle_hardware())
+    {
+        return false;
+    }
+    iop::c_hw& hw = kernel.hardware();
+    iop::c_cpu& cpu = kernel.cpu();
+    constexpr uint32_t dma4 = iop::c_hw::k_spu2_dma4_base;
+    constexpr uint32_t dma7 = iop::c_hw::k_spu2_dma7_base;
+    constexpr uint32_t spu2 = iop::c_spu2::k_base;
+    constexpr uint32_t source = 0x00032000u;
+    uint32_t actual = 0u;
+    uint16_t sample = 0u;
+    uint8_t bytes[16]{};
+
+    // Transfer four real IOP words to SPU2 RAM, crossing its 1M-word
+    // wrap. DICR and IRQ3 remain untouched until the scheduled
+    // completion, not merely because the guest wrote CHCR.STR.
+    for (uint32_t i = 0u; i < 16u; ++i)
+    {
+        if (!cpu.write8(source + i, static_cast<uint8_t>(i + 1u)))
+        {
+            return false;
+        }
+    }
+    if (!hw.set_interrupt_mask(36u, true) ||
+        !hw.write(spu2 + 0x1a8u, 2u, 0x000fu) ||
+        !hw.write(spu2 + 0x1aau, 2u, 0xfffeu) ||
+        !hw.write(dma4, 4u, source) ||
+        !hw.write(dma4 + 4u, 4u, 0x00010004u) ||
+        !cpu.write32(0xbf8010c8u, 0x01000001u) ||
+        !hw.spu2_ram_word(iop::c_spu2::k_ram_words - 2u, &sample) ||
+        sample != 0x0201u ||
+        !hw.spu2_ram_word(iop::c_spu2::k_ram_words - 1u, &sample) ||
+        sample != 0x0403u ||
+        !hw.spu2_ram_word(0u, &sample) ||
+        sample != 0x0605u ||
+        !hw.spu2_ram_word(5u, &sample) ||
+        sample != 0x100fu ||
+        !hw.read(spu2 + 0x1aau, 2u, &actual) || actual != 6u ||
+        !hw.read(dma4 + 8u, 4u, &actual) ||
+        (actual & iop::c_hw::k_spu2_dma_str_bit) == 0u ||
+        !hw.read(iop::c_hw::k_dma_icr, 4u, &actual) ||
+        (actual & 0x10000000u) != 0u ||
+        !hw.read(iop::c_hw::k_i_stat, 4u, &actual) ||
+        actual != 0u || hw.pending_interrupts() != 0u)
+    {
+        return false;
+    }
+    hw.advance_cycles(64u);
+    if (!hw.read(dma4 + 8u, 4u, &actual) ||
+        (actual & iop::c_hw::k_spu2_dma_str_bit) == 0u ||
+        !hw.read(iop::c_hw::k_i_stat, 4u, &actual) ||
+        actual != 0u)
+    {
+        return false;
+    }
+    hw.advance_cycles(1u);
+    if (!hw.read(dma4 + 8u, 4u, &actual) ||
+        (actual & iop::c_hw::k_spu2_dma_str_bit) != 0u ||
+        !hw.read(iop::c_hw::k_dma_icr, 4u, &actual) ||
+        (actual & 0x10000000u) == 0u ||
+        !hw.read(iop::c_hw::k_i_stat, 4u, &actual) ||
+        (actual & (1u << iop::c_hw::k_dma_irq)) == 0u ||
+        (hw.pending_interrupts() &
+         (1u << iop::c_hw::k_dma_irq)) == 0u)
+    {
+        return false;
+    }
+
+    // Program the second core's real SPU2 RAM data port and transfer
+    // four sound halfwords back to a different IOP RAM destination.
+    // No fabricated sample output or unrelated DMA4 CHCR mutation.
+    const uint32_t dest = 0x00033000u;
+    if (!hw.write(iop::c_hw::k_i_stat, 4u,
+                  ~(1u << iop::c_hw::k_dma_irq)) ||
+        !hw.write(spu2 + 0x400u + 0x1a8u, 2u, 0u) ||
+        !hw.write(spu2 + 0x400u + 0x1aau, 2u, 0x0500u))
+    {
+        return false;
+    }
+    for (uint32_t i = 0u; i < 4u; ++i)
+    {
+        if (!hw.write(spu2 + 0x400u + 0x1acu, 2u, 0x1000u + i))
+        {
+            return false;
+        }
+    }
+    if (!hw.write(spu2 + 0x400u + 0x1aau, 2u, 0x0500u) ||
+        !hw.write(dma7, 4u, dest) ||
+        !hw.write(dma7 + 4u, 4u, 0x00010002u) ||
+        !cpu.write32(0xbf801508u, 0x01000000u) ||
+        !cpu.dma_read(dest, bytes, 8u))
+    {
+        return false;
+    }
+    for (uint32_t i = 0u; i < 4u; ++i)
+    {
+        if (bytes[i * 2u] != i || bytes[i * 2u + 1u] != 0x10u)
+        {
+            return false;
+        }
+    }
+    if (!hw.read(dma7 + 8u, 4u, &actual) ||
+        (actual & iop::c_hw::k_spu2_dma_str_bit) == 0u ||
+        !hw.read(iop::c_hw::k_dma_icr2, 4u, &actual) ||
+        (actual & 0x01000000u) != 0u)
+    {
+        return false;
+    }
+    hw.advance_cycles(63u);
+    if (!hw.read(dma7 + 8u, 4u, &actual) ||
+        (actual & iop::c_hw::k_spu2_dma_str_bit) == 0u)
+    {
+        return false;
+    }
+    hw.advance_cycles(1u);
+    if (!hw.read(dma7 + 8u, 4u, &actual) ||
+        (actual & iop::c_hw::k_spu2_dma_str_bit) != 0u ||
+        !hw.read(iop::c_hw::k_dma_icr2, 4u, &actual) ||
+        (actual & 0x01000000u) == 0u ||
+        !hw.read(dma4 + 8u, 4u, &actual) ||
+        (actual & iop::c_hw::k_spu2_dma_str_bit) != 0u)
+    {
+        return false;
+    }
+
+    // Cancel a real in-flight DMA request before its timer fires.
+    // There must be no DMA completion even though the original
+    // memory transfer already occurred at CHCR.STR launch.
+    hw.reset();
+    if (!kernel.attach_hle_hardware() ||
+        !hw.write(spu2 + 0x1aau, 2u, 0x0500u) ||
+        !hw.write(dma4, 4u, source) ||
+        !hw.write(dma4 + 4u, 4u, 0x00010004u) ||
+        !cpu.write32(0xbf8010c8u, 0x01000001u) ||
+        !hw.write(dma4 + 8u, 4u, 0u))
+    {
+        return false;
+    }
+    hw.advance_cycles(1000u);
+    if (!hw.read(iop::c_hw::k_dma_icr, 4u, &actual) ||
+        actual != 0u ||
+        !hw.read(iop::c_hw::k_i_stat, 4u, &actual) ||
+        actual != 0u)
+    {
+        return false;
+    }
+
+    // AutoDMA is a separate streaming-ring protocol in the primary
+    // reference, not ordinary TSA memcpy. Fail closed until it exists.
+    hw.reset();
+    if (!kernel.attach_hle_hardware() ||
+        !hw.write(spu2 + 0x1b0u, 2u, 1u) ||
+        !hw.write(dma4, 4u, source) ||
+        !hw.write(dma4 + 4u, 4u, 0x00010004u) ||
+        !cpu.write32(0xbf8010c8u, 0x01000001u))
+    {
+        return false;
+    }
+    hw.advance_cycles(1000u);
+    if (!hw.read(dma4 + 8u, 4u, &actual) ||
+        (actual & iop::c_hw::k_spu2_dma_str_bit) == 0u ||
+        !hw.read(iop::c_hw::k_i_stat, 4u, &actual) ||
+        actual != 0u ||
+        !hw.read(spu2 + 0x1aau, 2u, &actual) ||
+        actual != 0u)
+    {
+        return false;
+    }
+
+    // A transfer outside the physically backed 2 MiB IOP RAM
+    // cannot complete or partially modify sound RAM.
+    hw.reset();
+    if (!kernel.attach_hle_hardware() ||
+        !hw.write(dma4, 4u, iop::c_cpu::k_ram_size - 2u) ||
+        !hw.write(dma4 + 4u, 4u, 0x00010004u) ||
+        !cpu.write32(0xbf8010c8u, 0x01000001u) ||
+        cpu.dma_read(iop::c_cpu::k_ram_size - 2u, bytes, 16u))
+    {
+        return false;
+    }
+    hw.advance_cycles(1000u);
+    if (!hw.read(dma4 + 8u, 4u, &actual) ||
+        (actual & iop::c_hw::k_spu2_dma_str_bit) == 0u ||
+        !hw.read(iop::c_hw::k_i_stat, 4u, &actual) ||
+        actual != 0u ||
+        !hw.read(iop::c_hw::k_dma_icr, 4u, &actual) ||
+        actual != 0u ||
+        !hw.spu2_ram_word(0u, &sample) ||
+        sample != 0u)
+    {
+        return false;
+    }
+
+    hw.reset();
+    if (!hw.read(dma4 + 8u, 4u, &actual) || actual != 0u ||
+        !hw.read(dma7 + 8u, 4u, &actual) || actual != 0u ||
+        !hw.read(iop::c_hw::k_dma_icr, 4u, &actual) ||
+        actual != 0u ||
+        !hw.read(iop::c_hw::k_dma_icr2, 4u, &actual) ||
+        actual != 0u)
+    {
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
 int main()
 {
+    if (!test_authentic_spu2_dma())
+    {
+        return fail("authentic SPU2 DMA4/7 copy, timing or cancellation");
+    }
     iop::c_hw hardware{};
     uint32_t actual = 0u;
 
