@@ -57,6 +57,7 @@ add_library(ee_core STATIC
 add_library(iop_cpu STATIC
     src/iop/iop_cpu.cpp
     src/iop/iop_hw.cpp
+    src/iop/iop_spu2.cpp
     src/iop/irx_loader.cpp
     src/iop/iop_kernel.cpp
     src/iop/iop_kernel_hle_bridge.cpp
