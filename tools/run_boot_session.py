@@ -202,10 +202,16 @@ def main(argv=None):
 
     work = args.work_dir.resolve()
     report = args.report.resolve()
-    work.mkdir(parents=True, exist_ok=True)
-    report.parent.mkdir(parents=True, exist_ok=True)
     catalog_path = work / ("quick-probe-iop-disc-catalog.json" if args.quick_probe
                            else "iop-disc-catalog.json")
+    boot_log = work / ("quick-probe.log" if args.quick_probe else "boot.log")
+    expansion_log = boot_log if args.quick_probe else work / "expansion.log"
+    metadata_path = work / "ir" / "ee_functions.json"
+    if report in (args.elf.resolve(), args.driver.resolve(), catalog_path,
+                  boot_log, expansion_log, metadata_path, work / "translation-cache.json"):
+        parser.error("report path must be distinct from inputs, logs, and cache metadata")
+    work.mkdir(parents=True, exist_ok=True)
+    report.parent.mkdir(parents=True, exist_ok=True)
     if args.no_iop_catalog and args.iop_auto_irx:
         parser.error("--iop-auto-irx requires disc catalog discovery")
     if args.iop_auto_irx and any(
@@ -269,9 +275,6 @@ def main(argv=None):
     # feature was explicitly requested. Diagnostic tools and tests use the
     # existing three-argument interface without a progress keyword.
     progress_kwargs = {"progress": progress} if progress is not None else {}
-    boot_log = work / ("quick-probe.log" if args.quick_probe else "boot.log")
-    expansion_log = boot_log if args.quick_probe else work / "expansion.log"
-    metadata_path = work / "ir" / "ee_functions.json"
     snapshots = [
         ("--gs-snapshot", args.gs_snapshot),
         ("--gs-upload-snapshot", args.gs_upload_snapshot),
@@ -304,6 +307,7 @@ def main(argv=None):
         # creates its initial linked baseline before replay zero.
         # A jump-table relink can compile many functions in one replay.
         prior_count = read_function_count(metadata_path) if reuse else None
+        report.unlink(missing_ok=True)
         code, output, elapsed = run_session(
             command, expansion_log, append=True, **progress_kwargs
         )
@@ -392,6 +396,7 @@ def main(argv=None):
             final_command.append(f"{option}={target}")
     if args.gs_webgpu_window:
         final_command.append("--gs-webgpu-window")
+    report.unlink(missing_ok=True)
     code, final_output, elapsed = run_session(
         final_command, boot_log, **progress_kwargs
     )

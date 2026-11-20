@@ -13,6 +13,8 @@ namespace iop
 {
 namespace
 {
+constexpr uint32_t k_loadfile_failure = 0xffffffffu;
+
 bool normalize_ee_ram(uint32_t pointer, uint32_t* physical)
 {
     if (physical == nullptr)
@@ -823,11 +825,8 @@ void c_sif_rpc_bridge::commit_command(const s_request& request)
                 m_last_observation = std::move(observed);
                 return;
             }
-            m_ee_ram.write32(
-                request.m_result_destination, static_cast<uint32_t>(-1));
-            m_ee_ram.write32(
-                request.m_result_destination + 4u,
-                static_cast<uint32_t>(-1));
+            m_ee_ram.write32(request.m_result_destination, k_loadfile_failure);
+            m_ee_ram.write32(request.m_result_destination + 4u, k_loadfile_failure);
         }
     }
     else if (request.m_words[2] == k_call_cid &&
@@ -1231,29 +1230,34 @@ void c_sif_rpc_bridge::queue_init_sreg_reply()
 
 bool c_sif_rpc_bridge::pump()
 {
-    // Only a real guest module-return trampoline permits LOADFILE
-    // completion. An unfinished, blocked or faulted thread cannot.
+    // A stopped initializer can still be restarted. A deleted or faulted
+    // initializer can never return, so complete its LOADFILE call with an error.
     for (auto it = m_pending_module_starts.begin();
          it != m_pending_module_starts.end();)
     {
         const s_kernel_thread* thread = m_kernel.thread(it->m_thread_id);
-        if (thread == nullptr ||
-            thread->m_status != e_thread_status::dormant ||
-            !thread->m_module_entry ||
-            !thread->m_module_entry_returned ||
-            thread->m_module_id != it->m_module_id)
+        const bool failed = thread == nullptr ||
+            thread->m_status == e_thread_status::faulted ||
+            !thread->m_module_entry || thread->m_module_id != it->m_module_id;
+        if (!failed && (thread->m_status != e_thread_status::dormant ||
+                        !thread->m_module_entry_returned))
         {
             ++it;
             continue;
         }
-        const uint32_t guest_start_result =
+        const uint32_t module_result = failed ? k_loadfile_failure : it->m_module_id;
+        const uint32_t guest_start_result = failed ? k_loadfile_failure :
             thread->m_module_entry_result;
-        m_ee_ram.write32(it->m_destination, it->m_module_id);
+        m_ee_ram.write32(it->m_destination, module_result);
         m_ee_ram.write32(it->m_destination + 4u,
                           guest_start_result);
         if (m_last_observation.m_sequence == it->m_sequence)
         {
-            m_last_observation.m_return_word = it->m_module_id;
+            m_last_observation.m_return_word = module_result;
+            if (failed)
+            {
+                m_last_observation.m_load_status = e_disc_load_result::thread_failed;
+            }
         }
         it->m_reply.m_module_start_reply = true;
         it->m_reply.m_module_start_id = it->m_module_id;

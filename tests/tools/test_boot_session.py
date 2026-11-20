@@ -43,6 +43,7 @@ def run_case(passes, initial_reuse=False, diagnostics=False,
             assert kwargs["check"] is False
             assert kwargs["text"] is True
             assert kwargs["stderr"] is SESSION.subprocess.STDOUT
+            assert not report.exists(), "a previous pass's report survived"
             calls.append(list(map(str, command)))
             trace = "--trace" in command
             index = len(calls) - 1
@@ -333,28 +334,41 @@ def main():
     assert code == 3
     assert len(calls) == 3
 
-    # Never retry or hide an actual compilation failure. Copy its
-    # output to boot.log, the file the Windows user normally uploads.
-    with tempfile.TemporaryDirectory(prefix="ee-boot-session-failure-") as temp:
-        work = Path(temp) / "work"
-        report = work / "first-boot.json"
-        elf = Path(temp) / "synthetic.elf"
-        elf.write_bytes(b"fixture")
-        calls = []
+    # A failed driver must leave only current diagnostics in either mode.
+    for quick_probe in (False, True):
+        with tempfile.TemporaryDirectory(prefix="ee-boot-session-failure-") as temp:
+            work = Path(temp) / "work"
+            work.mkdir()
+            report = work / ("quick-probe.json" if quick_probe else "first-boot.json")
+            report.write_text(json.dumps({
+                "schema": "ee-game-run-report-v1",
+                "snapshot_kind": "stopped",
+                "dispatches": 100000,
+                "final_pc": 0x001BD58C,
+            }), encoding="utf-8")
+            elf = Path(temp) / "synthetic.elf"
+            elf.write_bytes(b"fixture")
+            calls = []
 
-        def failing_run(command, **kwargs):
-            calls.append(command)
-            return SimpleNamespace(returncode=1, stdout="compilation failed\\n")
+            def failing_run(command, **kwargs):
+                calls.append(command)
+                return SimpleNamespace(returncode=1, stdout="compilation failed\n")
 
-        argv = [
-            str(elf), "--work-dir", str(work), "--report", str(report),
-            "--expansion-passes=2", "--expansion-per-pass=2",
-            "--driver", str(ROOT / "tools" / "run_game.py"),
-        ]
-        with patch.object(SESSION.subprocess, "run", side_effect=failing_run):
-            code = SESSION.main(argv)
-        assert code == 1 and len(calls) == 1
-        assert "compilation failed" in (work / "boot.log").read_text()
+            argv = [
+                str(elf), "--work-dir", str(work), "--report", str(report),
+                "--expansion-passes=2", "--expansion-per-pass=2",
+                "--driver", str(ROOT / "tools" / "run_game.py"), "--no-iop-catalog",
+            ]
+            if quick_probe:
+                argv.extend(("--quick-probe", "--no-recompile"))
+            with patch.object(SESSION.subprocess, "run", side_effect=failing_run):
+                code = SESSION.main(argv)
+            assert code == 1 and len(calls) == 1
+            assert not report.exists(), "a failed probe retained an old stop report"
+            log = work / ("quick-probe.log" if quick_probe else "boot.log")
+            summary = log.read_text()
+            assert "compilation failed" in summary
+            assert "dispatches=? stop=unknown" in summary
 
     print("boot session orchestration: PASS")
 

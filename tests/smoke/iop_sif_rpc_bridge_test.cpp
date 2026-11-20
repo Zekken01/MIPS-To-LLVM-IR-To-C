@@ -2424,6 +2424,38 @@ int main()
         return fail("argument-bearing LOADFILE replied before guest return");
     }
 
+    dmac.acknowledge(5u);
+    dmac.acknowledge(6u);
+    memory.write32(rpc_result, 0xcafebabeu);
+    memory.write32(rpc_result + 4u, 0xcafebabeu);
+    if (!sif1.set_dma(list, 2u, &dma_id) ||
+        rpc.pending_module_starts() != 1u ||
+        (dmac.status() & (1u << 5u)) != 0u)
+    {
+        return fail("LOADFILE cancellation fixture did not queue a start");
+    }
+    const uint32_t deleted_thread_id = rpc.last_observation().m_thread_id;
+    if (!kernel.stop_thread(deleted_thread_id) ||
+        !kernel.delete_thread(deleted_thread_id) ||
+        !rpc.pump() ||
+        rpc.pending_module_starts() != 0u ||
+        rpc.pending_replies() != 0u ||
+        !rpc.can_queue_replies(64u) ||
+        rpc.last_observation().m_load_status !=
+            iop::e_disc_load_result::thread_failed ||
+        rpc.last_observation().m_return_word != 0xffffffffu ||
+        memory.read32(rpc_result) != 0xffffffffu ||
+        memory.read32(rpc_result + 4u) != 0xffffffffu ||
+        (dmac.status() & (1u << 5u)) == 0u)
+    {
+        return fail("deleted LOADFILE initializer did not reply with failure");
+    }
+    dmac.acknowledge(5u);
+    if (rpc.pump() || (dmac.status() & (1u << 5u)) != 0u)
+    {
+        return fail("deleted LOADFILE initializer replied twice");
+    }
+
     // Reset may not retain the previous IOPRP's LOADFILE version.
     rpc.reset_for_reboot();
     packet(memory, call_source, version_call);
