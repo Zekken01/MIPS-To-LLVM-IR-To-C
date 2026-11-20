@@ -206,7 +206,25 @@ def test_ll_counter():
         updated.finish_line()
 
 
+def test_windows_launcher_preserves_guest_cache():
+    # The Windows launcher must try a safe host-only relink before any
+    # checkout-triggered cache miss falls back to recompiling all guest IR.
+    launcher = (ROOT / "run_ps2_game.bat").read_text(encoding="utf-8")
+    probe = launcher.split(
+        "rem Git checkout may rebuild host tools", 1
+    )[1].split("echo === Starting extracted-disc", 1)[0]
+    check = probe.index("--no-recompile --link-only")
+    recovery = probe.index("--relink-existing --link-only")
+    assert check < recovery, "must validate existing library first"
+    assert probe.count('--emit-opt=0') == 2, "both probes use boot optimization"
+    assert probe.count('--work-dir "%WORK_DIR%"') == 2, "same guest cache"
+    assert probe.count('set "CACHE_FLAG=--no-recompile"') == 2
+    assert "if not errorlevel 1 (" in probe, "failed relink must not reuse"
+    assert "full IR rebuild required" in probe
+
+
 def main():
+    test_windows_launcher_preserves_guest_cache()
     test_ll_counter()
     # First pass consumes its expansion cap; the second finds a real
     # non-DISPATCH blocker and the final run emits the useful trace.
