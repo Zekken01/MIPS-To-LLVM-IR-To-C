@@ -6,8 +6,8 @@ Main architectural reference: [twist84/ps2-web-recomp, `SDBZ` branch](https://gi
 
 Current native LLVM-IR implementation: [`src/iop/iop_kernel_hle_bridge.cpp`](../src/iop/iop_kernel_hle_bridge.cpp), audited blob `623875f9bacb21633a539ce2529570b81132c474`.
 
-The reference file defines **172 explicitly named `def("library", ordinal, ...)` handlers**. The HLE-first runtime now installs **179 guest-callable export ordinals** across
-the kernel bridge (146), CDVDMAN bridge (7), SIFCMD bridge (13) and
+The reference file defines **172 explicitly named `def("library", ordinal, ...)` handlers**. The HLE-first runtime now installs **181 guest-callable export ordinals** across
+the kernel bridge (148), CDVDMAN bridge (7), SIFCMD bridge (13) and
 SIFMAN bridge (13). **131** of the kernel bridge exports match explicitly
 named `libs.cpp` reference definitions. The earlier 152 count omitted
 seven pre-existing registrations in separate device/SIF bridges. Counts include no claim about full behavioral equivalence. The reference also uses loops/dynamic registrations (e.g. `secrman#4/#5`) and separate IOP modules (`io.cpp`, `sif.cpp`, `cdvd.cpp`, `spu2.cpp`) and EE kernel syscalls. The full reference runtime is larger than these 172 direct definitions.
@@ -27,7 +27,7 @@ Never bulk-register an unimplemented opcode. Each `k_exports` entry installs a *
 | `thmsgbx` | 6/6 | — |
 | `thfpool` | 6/6 | — |
 | `thvpool` | 8/8 | — |
-| `sysclib` | 27/31 | `4 setjmp`, `5 longjmp`, `19 sprintf`, `42 vsprintf` |
+| `sysclib` | 29/31 | `4 setjmp`, `5 longjmp` |
 | `stdio` | 3/3 | — |
 | `modload` | 6/8 | `7 LoadStartModule`, `8 StartModule` |
 | `vblank` | 0/6 | `4 WaitVblankStart`, `5 WaitVblankEnd`, `6 WaitVblank`, `7 WaitNonVblank`, `8 RegisterVblankHandler`, `9 ReleaseVblankHandler` |
@@ -53,7 +53,7 @@ Some reference HLE methods return hard-coded successful values or simulate timin
 ## Next coherent parity batches
 
 1. **IOP module lifecycle**: `modload` guest module registry/load/start/wait/search, exact LOADFILE/R3000 interactions; review installed exports before missing imports in `MCMAN/MCSERV/PADMAN`.
-2. **Synchronization and PS2SDK system**: remaining `thbase` priority/dispatch/release-wait variants, `sysclib` nonlocal jump and bounded formatted output; rigorously test guest CPU control flow.
+2. **Synchronization and PS2SDK system**: remaining `thbase` priority/dispatch/release-wait variants, `sysclib` nonlocal jump and extended formatted-output parity; rigorously test guest CPU control flow.
 3. **Timing**: `timrman`, IOP vblank, interrupt-context alarm callbacks, and EE/IOP clock calibration. Current timer scheduling remains an explicitly modeled guest-instruction clock, not hardware-certified timing.
 4. **Device services**: `secrman`, `ioman`, `libsd`, `cdvdman`, `sifman/sifcmd`, `sio2man`; reconcile existing runtime bridges and actual IRX exports instead of assuming all belong to `k_exports`.
 
@@ -382,3 +382,60 @@ is unchanged. Only the next matched real Windows boot
 can prove whether CRI_ADXI actually links/starts or
 uses an unimplemented callback/EE server path. Do not
 infer sound output or GS rendering from CI.
+
+## 2026-11-20 — CRI_ADXI SYSCLIB formatted output imports
+
+The next matched Windows archive `ps2-game-hle(6).zip` includes all
+five diagnostic files and three all-black GS captures. Its final
+`SLUS_214.42` replay matches the expected USA ELF SHA-256 and
+disc folder. **14,805 EE dispatches** (no change from the previous
+Windows boot), **0 new EE function modules** in expansion, and
+**3,526 translation-cache entries**. Four actual LOADFILEs
+continue to link and start guest module threads:
+`SIO2MAN.IRX` (1/1), `MCMAN.IRX` (2/3),
+`MCSERV.IRX` (3/4), and `LIBSD.IRX` (4/5).
+Their startup is not proof of completed module initialization.
+The genuine `CRI_ADXI.IRX` method-0 LOADFILE attempt (seq 17)
+now fails linking on **`sysclib#19 sprintf`**, rather than
+the previous `sifcmd#16`. The EE ends at the same
+`KExit` syscall, EPC `0x001748C4`, with no nonblack GS pixels.
+
+The reference `ps2-web-recomp/runtime/src/iop/libs.cpp`
+implements both `sysclib#19 sprintf` and
+`sysclib#42 vsprintf` using a 32-bit guest formatting helper.
+The native kernel HLE now registers and executes both in one
+coherent formatting batch. This is **real guest output**, not a
+return-zero success stub:
+
+- `#19` reads format from IOP RAM, then O32 variable arguments
+  beginning at `a2/a3`, with subsequent words at `sp+16`.
+  `#42` reads the caller's guest `va_list` through validated
+  32-bit IOP RAM accesses.
+- Supported C format conversions: signed and unsigned decimal,
+  hex/octal, pointer, byte character, bounded guest strings,
+  double-precision floating point, escaped percent, widths,
+  precision and common formatting flags; `ll` arguments and
+  double words use the guest's 64-bit argument alignment.
+  PS2SDK's IOP `long` remains 32 bits, regardless of host
+  machine ABI.
+- Format and each requested argument have hard upper limits.
+  Guest format/string/pointer reads and the complete destination
+  span are verified **before any output write**. Invalid
+  pointers, unsupported conversion patterns, oversized widths
+  and dangerous `%n` are refused without changing guest
+  destination RAM or faking a formatted string.
+- Regression tests execute actual guest-import calls for
+  `sprintf` and `vsprintf`, compare NUL-terminated guest
+  output and return byte counts, cover 64-bit integer/double
+  guest arguments, and verify transactional refusal.
+
+Registration is now **181 native HLE ordinals**, including
+**148** in the kernel bridge. Since the added services are
+both explicitly defined in the reference `libs.cpp`,
+reference matches increase from 131 to **133/172**; the
+`sysclib` family is **29/31**. No other device-driver or
+EE rendering behavior is claimed.
+
+**Next matched Windows boot is required** before declaring
+`CRI_ADXI.IRX` successfully linked or started, since CI
+only validates synthetic guest import and ABI fixtures.
