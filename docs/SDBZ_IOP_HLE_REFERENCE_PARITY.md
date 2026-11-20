@@ -6,8 +6,8 @@ Main architectural reference: [twist84/ps2-web-recomp, `SDBZ` branch](https://gi
 
 Current native LLVM-IR implementation: [`src/iop/iop_kernel_hle_bridge.cpp`](../src/iop/iop_kernel_hle_bridge.cpp); the baseline audited blob was `623875f9bacb21633a539ce2529570b81132c474`.
 
-The reference file defines **172 explicitly named `def("library", ordinal, ...)` handlers**. The HLE-first runtime now installs **185 guest-callable export ordinals** across
-the kernel bridge (152), CDVDMAN bridge (7), SIFCMD bridge (13) and
+The reference file defines **172 explicitly named `def("library", ordinal, ...)` handlers**. The HLE-first runtime now installs **192 guest-callable export ordinals** across
+the kernel bridge (152), CDVDMAN bridge (14), SIFCMD bridge (13) and
 SIFMAN bridge (13). **137** of the kernel bridge exports match explicitly
 named `libs.cpp` reference definitions. The earlier 152 count omitted
 seven pre-existing registrations in separate device/SIF bridges. Counts include no claim about full behavioral equivalence. The reference also uses loops/dynamic registrations (e.g. `secrman#4/#5`) and separate IOP modules (`io.cpp`, `sif.cpp`, `cdvd.cpp`, `spu2.cpp`) and EE kernel syscalls. The full reference runtime is larger than these 172 direct definitions.
@@ -555,3 +555,55 @@ fabricated interrupt.
 ARKD_DVD additionally imports CDVDMAN `#15/#37/#38/#75`,
 `vblank#8` and LIBSD functions. Their runtime behavior remains
 unverified; static import inventory alone does not establish it.
+
+
+## 2026-11-20 — Windows archive 10: complete observed CDVDMAN import set
+
+The matched `ps2-game-hle(10).zip` replay has the expected USA
+`SLUS_214.42` SHA-256 and extracted disc root. Its final replay still
+reports 15,057 EE dispatches, 3,529 translation-cache entries, five
+linked/started IOP modules and 18 committed RPC/LOADFILE operations.
+The first unresolved ARKD_DVD import moved from `cdvdman#6` to
+`cdvdman#15 sceCdStop`; ARKD_DVD itself remains unlinked, with
+no module ID or guest entry thread. The EE still ends with a syscall
+exception at EPC `0x001748C4`. All three PPM snapshots are black.
+
+The full ARKD_DVD static CDVDMAN import inventory contains #4, #5,
+#6, #8, #10, #12, #13, #15, #28, #37, #38, #75. The only missing
+CDVDMAN exports before this change were **#15 sceCdStop,
+#37 sceCdCallback, #38 sceCdPause, #75 sceCdMmode**.
+`MCMAN.IRX` imports only #24, which is already implemented. These
+are the complete observed CDVDMAN import gaps in the archive, not
+a statement about unscanned modules in future boot paths.
+
+For extracted, already mounted media, Stop and Pause acknowledge
+idempotent spindle requests without mutating the actual queued
+file-backed transfer or inventing completion. Mmode stores only
+supported auto/DVD selections; a request to switch to absent CD
+media is rejected. These calls do not interact with physical CDVD
+DMA or pretend that another disc was inserted.
+
+Unlike a fake callback registration stub, sceCdCallback records and
+returns the previous validated guest handler pointer, retains its
+registering-module GP and dispatches **actual guest R3000 code**
+with the CDVD read completion reason after a staged file-backed
+read finishes. A one-shot kernel callback thread is entered through
+the registered guest function and released when it returns to the
+dedicated R3000 breakpoint trampoline. This is a guest-thread HLE
+approximation to interrupt-context delivery, **not** proof of
+hardware-accurate interrupt timing or physical disc operation.
+The guest completion handler is never invoked merely by linking
+or by calling Stop/Pause/Mmode.
+
+Regression coverage exercises all 14 executable CDVDMAN import
+stubs, actual IRX guest callback registration and replacement,
+guest instruction execution and GP preservation on genuine sector
+completion, protection against early callbacks, and no fabricated
+physical IRQ or N-command completion. Unsupported seek #7 and
+other non-catalog hardware commands remain unregistered.
+
+**Next Windows milestone:** Verify whether ARKD_DVD links and starts.
+The static inventory also names `vblank#8` and LIBSD dependencies,
+which have independent behavior and may become subsequent blockers.
+No game-boot or visible-frame claim is justified by import parity
+and synthetic CI alone.
