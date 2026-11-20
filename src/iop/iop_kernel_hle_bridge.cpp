@@ -283,6 +283,7 @@ void c_kernel_hle_bridge::reset_for_reboot()
     m_strtok_next = 0u;
     m_check_kelf_path_callback = 0u;
     m_ioman_files.clear();
+    m_unknown_semaphore_wait_ids.clear();
     m_next_object = 1u;
     m_cpu_interrupts_suspended = false;
     m_installed = false;
@@ -513,6 +514,13 @@ bool c_kernel_hle_bridge::handle_fixed_pool(uint32_t ordinal)
     auto found = m_fixed_pools.find(id);
     if (found == m_fixed_pools.end())
     {
+        // PS2 IOP kernel: unknown FPL ID is an API error, not an
+        // unhandled host syscall. Preserve unsupported ordinals.
+        if (ordinal >= 5u && ordinal <= 9u)
+        {
+            cpu.m_gpr[2] = static_cast<uint32_t>(-412);
+            return true;
+        }
         return false;
     }
     s_fixed_pool& pool = found->second;
@@ -640,6 +648,12 @@ bool c_kernel_hle_bridge::handle_variable_pool(uint32_t ordinal)
     auto found = m_variable_pools.find(id);
     if (found == m_variable_pools.end())
     {
+        if ((ordinal >= 5u && ordinal <= 9u) ||
+            ordinal == 11u || ordinal == 12u)
+        {
+            cpu.m_gpr[2] = static_cast<uint32_t>(-411);
+            return true;
+        }
         return false;
     }
     s_variable_pool& pool = found->second;
@@ -859,6 +873,11 @@ bool c_kernel_hle_bridge::handle_thmsgbx(uint32_t ordinal)
     auto found = m_mailboxes.find(id);
     if (found == m_mailboxes.end())
     {
+        if (ordinal >= 5u && ordinal <= 9u)
+        {
+            cpu.m_gpr[2] = static_cast<uint32_t>(-410);
+            return true;
+        }
         return false;
     }
     s_mailbox& mailbox = found->second;
@@ -1704,6 +1723,11 @@ bool c_kernel_hle_bridge::handle_thevent(uint32_t ordinal)
     auto found = m_events.find(id);
     if (found == m_events.end())
     {
+        if (ordinal >= 5u && ordinal <= 14u)
+        {
+            cpu.m_gpr[2] = static_cast<uint32_t>(-409);
+            return true;
+        }
         return false;
     }
     s_event& event = found->second;
@@ -1862,6 +1886,36 @@ bool c_kernel_hle_bridge::handle_thsemap(uint32_t ordinal)
     auto found = m_semaphores.find(id);
     if (found == m_semaphores.end())
     {
+        if ((ordinal >= 5u && ordinal <= 9u) ||
+            ordinal == 11u || ordinal == 12u)
+        {
+            // The real ARKD RPC worker reached thsemap #8 WaitSema
+            // with an unknown guest object. Record the requested ID
+            // once without manufacturing a semaphore or waking a
+            // thread. Reference PS2 kernel returns KE_UNKNOWN_SEMID.
+            if (ordinal == 8u &&
+                m_unknown_semaphore_wait_ids.insert(id).second)
+            {
+                std::fprintf(stderr,
+                    "IOP HLE WaitSema unknown id: id=%u "
+                    "thread=%u pc=0x%08x ra=0x%08x "
+                    "registered_semaphores=%zu\n",
+                    id, m_kernel.current_thread_id(),
+                    cpu.m_pc, cpu.m_gpr[31],
+                    m_semaphores.size());
+                for (const auto& item : m_semaphores)
+                {
+                    std::fprintf(stderr,
+                        "IOP HLE WaitSema known id: id=%u count=%u "
+                        "max=%u waiters=%zu\n",
+                        item.first, item.second.m_count,
+                        item.second.m_maximum,
+                        item.second.m_waiters.size());
+                }
+            }
+            cpu.m_gpr[2] = static_cast<uint32_t>(-408);
+            return true;
+        }
         return false;
     }
     s_semaphore& sema = found->second;
