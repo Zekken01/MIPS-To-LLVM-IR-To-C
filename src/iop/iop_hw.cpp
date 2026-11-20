@@ -30,6 +30,7 @@ void c_hw::reset()
     m_i_mask = 0u;
     m_i_ctrl = 1u;
     m_cache_control = 0u;
+    m_spu2.reset();
     m_ssbus_spu2_addr = 0u;
     m_ssbus_spu2_addr1 = 0u;
     m_ssbus_spu2_delay = 0u;
