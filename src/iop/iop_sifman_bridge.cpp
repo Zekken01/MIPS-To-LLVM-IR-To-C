@@ -1,5 +1,6 @@
 #include "iop_sifman_bridge.h"
 
+#include <array>
 #include <utility>
 #include <vector>
 
@@ -42,27 +43,77 @@ c_sifman_bridge::c_sifman_bridge(
 
 bool c_sifman_bridge::install()
 {
-    // Validate before writing stubs. Duplicate library registrations
-    // are rejected rather than silently overwriting an IOP library.
-    if (!m_kernel.register_library("sifman", 23u, k_get_smflag_stub))
+    // Keep all existing guest stub addresses stable; this avoids
+    // collisions with SIFCMD and CDVDMAN in reserved low IOP RAM.
+    constexpr std::array<uint16_t, 13u> ordinals = {
+        4u, 5u, 6u, 7u, 8u, 21u, 22u,
+        23u, 24u, 25u, 26u, 27u, 29u
+    };
+    for (uint16_t ordinal : ordinals)
+    {
+        uint32_t pc = k_extra_stub_base + ordinal * 0x20u;
+        if (ordinal == 7u)
+        {
+            pc = k_set_dma_stub;
+        }
+        else if (ordinal == 23u)
+        {
+            pc = k_get_smflag_stub;
+        }
+        else if (ordinal == 24u)
+        {
+            pc = k_set_smflag_stub;
+        }
+        if (!create_stub(m_kernel.cpu(), pc,
+                         k_service_base + ordinal) ||
+            !m_kernel.register_library("sifman", ordinal, pc))
+        {
+            return false;
+        }
+    }
+    // Every successful re-install follows an actual IOP kernel reboot;
+    // no SIF init, DMA chain, or transaction is inferred from install.
+    m_dma2_initialized = false;
+    m_initialized = false;
+    m_dma_chain_configured = false;
+    m_next_dma_id = 1u;
+    return true;
+}
+
+bool c_sifman_bridge::initialize_dma2()
+{
+    if (m_dma2_initialized)
+    {
+        return true;
+    }
+    uint32_t control = 0u;
+    if (!m_kernel.hardware().read(c_hw::k_dma_pcr, 4u, &control) ||
+        !m_kernel.hardware().write(c_hw::k_dma_pcr, 4u,
+                                   control | 0x800u))
     {
         return false;
     }
-    if (!m_kernel.register_library("sifman", 24u, k_set_smflag_stub))
+    m_dma2_initialized = true;
+    return true;
+}
+
+bool c_sifman_bridge::configure_dma_chain()
+{
+    uint32_t bcr = 0u;
+    if (!m_kernel.hardware().read(
+            c_hw::k_sif1_dma_base + 4u, 4u, &bcr) ||
+        !m_kernel.hardware().write(
+            c_hw::k_sif1_dma_base + 4u, 4u,
+            (bcr & 0xffff0000u) | 0x20u))
     {
         return false;
     }
-    if (!m_kernel.register_library("sifman", 7u, k_set_dma_stub))
-    {
-        return false;
-    }
-    return create_stub(
-        m_kernel.cpu(), k_get_smflag_stub, k_get_smflag_syscall
-    ) && create_stub(
-        m_kernel.cpu(), k_set_smflag_stub, k_set_smflag_syscall
-    ) && create_stub(
-        m_kernel.cpu(), k_set_dma_stub, k_set_dma_syscall
-    );
+    // The real sceSifSetDChain arms SIF1 DMA10; in this HLE-first
+    // runtime EE SIF1 packets already pass through the validated
+    // transport, so merely calling the initializer MUST NOT trigger
+    // a phantom DMA transfer, callback or completion flag.
+    m_dma_chain_configured = true;
+    return true;
 }
 
 bool c_sifman_bridge::handle_syscall(
@@ -76,6 +127,114 @@ bool c_sifman_bridge::handle_syscall(
 
     switch (service)
     {
+    case k_service_base + 4u: // sceSifDma2Init
+        if (!initialize_dma2())
+        {
+            return false;
+        }
+        kernel.cpu().state().m_gpr[2] = 0u;
+        return true;
+
+    case k_service_base + 5u: // sceSifInit
+    {
+        if (!m_initialized)
+        {
+            uint32_t dpcr2 = 0u;
+            if (!initialize_dma2() ||
+                !kernel.hardware().read(c_hw::k_dma_pcr2, 4u, &dpcr2) ||
+                !kernel.hardware().write(
+                    c_hw::k_dma_pcr2, 4u, dpcr2 | 0x8800u) ||
+                !kernel.hardware().write(
+                    c_hw::k_sif0_dma_base + 8u, 4u, 0u) ||
+                !kernel.hardware().write(
+                    c_hw::k_sif1_dma_base + 8u, 4u, 0u) ||
+                !configure_dma_chain())
+            {
+                return false;
+            }
+            m_initialized = true;
+        }
+        // This does not independently establish SIF_STAT_SIFINIT,
+        // BOOTEND, an RPC reply or an IOP->EE DMA completion.
+        kernel.cpu().state().m_gpr[2] = 0u;
+        return true;
+    }
+
+    case k_service_base + 6u: // sceSifSetDChain
+        if (!configure_dma_chain())
+        {
+            return false;
+        }
+        kernel.cpu().state().m_gpr[2] = 0u;
+        return true;
+
+    case k_service_base + 8u: // sceSifDmaStat
+        // The supported SIFMAN #7 transfer stages/commits and raises
+        // the genuine EE SIF0 channel event synchronously. No async
+        // SIFMAN transaction is pending when this guest service runs.
+        kernel.cpu().state().m_gpr[2] =
+            static_cast<uint32_t>(-1);
+        return true;
+
+    case k_service_base + 21u: // sceSifGetMSFlag
+    {
+        uint32_t msflag = 0u;
+        if (!m_sif.get_reg(3u, &msflag))
+        {
+            return false;
+        }
+        kernel.cpu().state().m_gpr[2] = msflag;
+        return true;
+    }
+
+    case k_service_base + 22u: // sceSifSetMSFlag (IOP ack)
+    {
+        // On the IOP, writes to MSFLAG acknowledge EE-owned bits.
+        m_sif.acknowledge_ee_msflag(
+            kernel.cpu().state().m_gpr[4]);
+        uint32_t msflag = 0u;
+        if (!m_sif.get_reg(3u, &msflag))
+        {
+            return false;
+        }
+        kernel.cpu().state().m_gpr[2] = msflag;
+        return true;
+    }
+
+    case k_service_base + 25u: // sceSifGetMainAddr
+    case k_service_base + 26u: // sceSifGetSubAddr
+    {
+        uint32_t address = 0u;
+        if (!m_sif.get_reg(service == k_service_base + 25u
+                               ? 1u : 2u, &address))
+        {
+            return false;
+        }
+        kernel.cpu().state().m_gpr[2] = address;
+        return true;
+    }
+
+    case k_service_base + 27u: // sceSifSetSubAddr
+    {
+        const uint32_t guest = kernel.cpu().state().m_gpr[4];
+        const uint32_t region = guest & 0xe0000000u;
+        const uint32_t physical = guest & 0x1fffffffu;
+        if ((guest & 3u) != 0u ||
+            (region != 0u && region != 0x80000000u &&
+             region != 0xa0000000u) ||
+            (guest != 0u && physical >= c_cpu::k_ram_size))
+        {
+            return false;
+        }
+        m_sif.publish_iop_subaddr(guest);
+        kernel.cpu().state().m_gpr[2] = guest;
+        return true;
+    }
+
+    case k_service_base + 29u: // sceSifCheckInit
+        kernel.cpu().state().m_gpr[2] = m_initialized ? 1u : 0u;
+        return true;
+
     case k_set_dma_syscall:
     {
         // Guest sceSifSetDma receives a pointer to 16-byte
