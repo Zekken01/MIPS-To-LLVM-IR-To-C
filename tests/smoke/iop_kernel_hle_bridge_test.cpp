@@ -2153,7 +2153,7 @@ int main()
         !kernel.cpu().read32(restart_marker, &marker_value) ||
         marker_value != 1u || restarted == nullptr ||
         restarted->m_cpu.m_gpr[5] != 0x37u ||
-        restarted->m_cpu.m_gpr[31] != iop::c_kernel::k_thread_return_pc)
+        restarted->m_cpu.m_gpr[31] != 0x00013fc0u)
     {
         return fail("StartThread(0) failed to restart its real guest CPU");
     }
