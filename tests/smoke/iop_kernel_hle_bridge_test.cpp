@@ -1,5 +1,6 @@
 #include "iop_kernel_hle_bridge.h"
 #include "iop_folder_sector_source.h"
+#include "iop_sysclib_strings.h"
 
 #include <array>
 #include <cstdint>
@@ -1093,6 +1094,133 @@ int main()
         remaining != 0x12345678u)
     {
         return fail("SYSCLIB strtoul or word memory operations failed");
+    }
+
+
+    // The real CRI_ADXI IRX imports SYSCLIB sprintf #19. Its
+    // first variable arguments occupy O32 a2/a3, with further
+    // arguments in the guest stack; vsprintf #42 receives a guest
+    // va_list. Never pass guest pointers to the host formatter.
+    const auto write_guest_string =
+        [&kernel](uint32_t address, const std::string& value)
+    {
+        for (uint32_t i = 0u; i <= value.size(); ++i)
+        {
+            if (!kernel.cpu().write8(
+                    address + i,
+                    i == value.size() ? 0u :
+                        static_cast<uint8_t>(value[i])))
+            {
+                return false;
+            }
+        }
+        return true;
+    };
+    const auto check_guest_string =
+        [&kernel](uint32_t address, const std::string& value)
+    {
+        for (uint32_t i = 0u; i <= value.size(); ++i)
+        {
+            uint8_t actual = 0xffu;
+            if (!kernel.cpu().read8(address + i, &actual) ||
+                actual != (i == value.size() ? 0u :
+                           static_cast<uint8_t>(value[i])))
+            {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    constexpr uint32_t k_sprintf_destination = 0x3400u;
+    constexpr uint32_t k_sprintf_format = 0x3480u;
+    constexpr uint32_t k_sprintf_string = 0x34c0u;
+    constexpr uint32_t k_vsprintf_format = 0x3500u;
+    constexpr uint32_t k_vsprintf_argument_list = 0x3580u;
+    constexpr uint32_t k_vsprintf_destination = 0x3600u;
+
+    const std::string expected_sprintf = "mod=002A/audio";
+    if (!write_guest_string(
+            k_sprintf_format, "mod=%04X/%s") ||
+        !write_guest_string(k_sprintf_string, "audio") ||
+        !call_guest(
+            kernel, "sysclib", 19u,
+            {k_sprintf_destination, k_sprintf_format,
+             0x2au, k_sprintf_string}, &result) ||
+        result != expected_sprintf.size() ||
+        !check_guest_string(
+            k_sprintf_destination, expected_sprintf))
+    {
+        return fail("guest SYSCLIB sprintf O32 a2/a3 formatting failed");
+    }
+
+    const std::string expected_vsprintf = "00000012:-7:audio";
+    if (!write_guest_string(
+            k_vsprintf_format, "%08x:%d:%s") ||
+        !kernel.cpu().write32(
+            k_vsprintf_argument_list, 0x12u) ||
+        !kernel.cpu().write32(
+            k_vsprintf_argument_list + 4u, 0xfffffff9u) ||
+        !kernel.cpu().write32(
+            k_vsprintf_argument_list + 8u, k_sprintf_string) ||
+        !call_guest(
+            kernel, "sysclib", 42u,
+            {k_vsprintf_destination, k_vsprintf_format,
+             k_vsprintf_argument_list, 0u}, &result) ||
+        result != expected_vsprintf.size() ||
+        !check_guest_string(
+            k_vsprintf_destination, expected_vsprintf))
+    {
+        return fail("guest SYSCLIB vsprintf guest va_list was incorrect");
+    }
+
+    // The O32 guest va_list aligns 64-bit integer/double arguments
+    // and preserves their little-endian words.
+    const std::string expected_wide = "-42/1.5";
+    if (!write_guest_string(k_vsprintf_format, "%lld/%.1f") ||
+        !kernel.cpu().write32(
+            k_vsprintf_argument_list, 0xffffffd6u) ||
+        !kernel.cpu().write32(
+            k_vsprintf_argument_list + 4u, 0xffffffffu) ||
+        !kernel.cpu().write32(
+            k_vsprintf_argument_list + 8u, 0u) ||
+        !kernel.cpu().write32(
+            k_vsprintf_argument_list + 12u, 0x3ff80000u) ||
+        !call_guest(
+            kernel, "sysclib", 42u,
+            {k_vsprintf_destination, k_vsprintf_format,
+             k_vsprintf_argument_list, 0u}, &result) ||
+        result != expected_wide.size() ||
+        !check_guest_string(k_vsprintf_destination, expected_wide))
+    {
+        return fail("guest SYSCLIB 64-bit varargs were misaligned");
+    }
+
+    // Malformed or dangerous format strings must reject the whole
+    // request before changing any destination byte or guest result.
+    for (const std::string& unsafe : {
+             std::string("bad%n"), std::string("%5000d"),
+             std::string("dangling%")})
+    {
+        if (!write_guest_string(k_sprintf_format, unsafe) ||
+            !kernel.cpu().write32(
+                k_sprintf_destination, 0x55555555u))
+        {
+            return fail("cannot prepare rejected sprintf test");
+        }
+        kernel.cpu().state().m_gpr[4] = k_sprintf_destination;
+        kernel.cpu().state().m_gpr[5] = k_sprintf_format;
+        kernel.cpu().state().m_gpr[6] = k_sprintf_string;
+        const uint32_t prior = kernel.cpu().state().m_gpr[2];
+        uint32_t preserved = 0u;
+        if (iop::execute_sysclib_format(kernel.cpu(), 19u) ||
+            !kernel.cpu().read32(
+                k_sprintf_destination, &preserved) ||
+            preserved != 0x55555555u ||
+            kernel.cpu().state().m_gpr[2] != prior)
+        {
+            return fail("rejected SYSCLIB sprintf modified guest RAM");
+        }
     }
 
     // StartThreadArgs preserves both guest entry arguments; the new
