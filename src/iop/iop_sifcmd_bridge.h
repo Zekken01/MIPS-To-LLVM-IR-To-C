@@ -39,6 +39,12 @@ public:
         uint32_t m_value = 0u;
         bool m_request_sreg_reply = false;
         bool m_reboot_request = false;
+        bool m_rpc_end = false;
+        uint32_t m_rpc_client = 0u;
+        uint32_t m_rpc_command = 0u;
+        uint32_t m_rpc_server_data = 0u;
+        uint32_t m_rpc_buffer = 0u;
+        uint32_t m_rpc_cbuffer = 0u;
         std::string m_reboot_argument;
     };
 
@@ -94,6 +100,20 @@ private:
         uint32_t m_queue = 0u;
     };
 
+    struct s_rpc_client
+    {
+        uint32_t m_client = 0u;
+        uint32_t m_server_id = 0u;
+        uint32_t m_server_data = 0u;
+        uint32_t m_ee_buffer = 0u;
+        uint32_t m_packet_id = 0u;
+        uint32_t m_rpc_id = 0u;
+        uint32_t m_wait_thread = 0u;
+        uint32_t m_expected_command = 0u;
+        bool m_pending = false;
+        bool m_bound = false;
+    };
+
     struct s_rpc_request
     {
         uint32_t m_token = 0u;
@@ -110,6 +130,8 @@ private:
     ee::ee_memory* m_ee_ram = nullptr;
     c_sif_rpc_bridge* m_rpc_bridge = nullptr;
     std::map<uint32_t, s_rpc_server> m_rpc_servers;
+    std::map<uint32_t, s_rpc_client> m_rpc_clients;
+    uint32_t m_next_iop_rpc_id = 1u;
     std::map<uint32_t, uint32_t> m_rpc_queue_threads;
     std::map<uint32_t, std::deque<s_rpc_request>> m_rpc_requests;
     std::map<uint32_t, uint32_t> m_rpc_thread_queues;
