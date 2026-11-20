@@ -141,6 +141,9 @@ public:
     static bool supports_interrupt_line(uint32_t line);
     bool set_interrupt_mask(uint32_t line, bool enabled);
     uint32_t pending_interrupts() const;
+    // Resolve masked DMA channels before ordinary IRQ lines, as INTRMAN does.
+    int32_t next_pending_interrupt() const;
+    bool acknowledge_interrupt(uint32_t line);
     uint32_t cache_control() const;
     // Advance IOP timer clock by completed guest execution cycles.
     // The standalone R3000 runtime currently counts one cycle per instruction.

@@ -262,6 +262,27 @@ bool c_kernel_hle_bridge::install()
             return false;
         }
     }
+    m_kernel.bind_interrupts(
+        [this](uint32_t line, s_kernel_interrupt_target* target)
+        {
+            const auto found = m_interrupts.find(line);
+            if (found == m_interrupts.end() ||
+                found->second.m_handler == 0u || target == nullptr)
+            {
+                return false;
+            }
+            target->m_handler = found->second.m_handler;
+            target->m_argument = found->second.m_argument;
+            return true;
+        },
+        [this](uint32_t line, uint32_t guest_result)
+        {
+            if (guest_result == 0u && line < 32u)
+            {
+                (void)m_kernel.hardware().set_interrupt_mask(line, false);
+            }
+        }
+    );
     m_installed = true;
     return true;
 }
@@ -1076,9 +1097,8 @@ bool c_kernel_hle_bridge::handle_intrman(uint32_t ordinal)
     const uint32_t line = cpu.m_gpr[4];
     if (ordinal == 23u)
     {
-        // HLE kernel bridge executes in the scheduler's normal thread
-        // context, not inside a simulated interrupt callback.
-        cpu.m_gpr[2] = 0u;
+        // Real guest INTRMAN handler execution has its own context.
+        cpu.m_gpr[2] = m_kernel.in_interrupt_context() ? 1u : 0u;
         return true;
     }
     if (ordinal == 8u || ordinal == 9u)

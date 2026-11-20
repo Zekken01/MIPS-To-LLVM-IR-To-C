@@ -53,6 +53,8 @@ struct s_kernel_thread
     uint32_t m_wakeup_count = 0u;
     bool m_delete_on_exit = false;
     bool m_hle_guest_callback = false;
+    bool m_interrupt_callback = false;
+    uint32_t m_interrupt_line = 0u;
     // Module _start has a guest return trampoline; returning must
     // retire its init thread instead of executing zero-filled RAM.
     bool m_module_entry = false;
@@ -97,6 +99,19 @@ struct s_module_load_result
 // the CPU registers and call sleep_current()/stop_current(). Returning
 // false leaves the syscall unhandled and stops at the original guest PC.
 // No default kernel HLE, SIF service, or synthetic ready bit exists.
+struct s_kernel_interrupt_target
+{
+    uint32_t m_handler = 0u;
+    uint32_t m_argument = 0u;
+};
+
+using t_kernel_irq_lookup = std::function<bool(
+    uint32_t line, s_kernel_interrupt_target* target
+)>;
+using t_kernel_irq_complete = std::function<void(
+    uint32_t line, uint32_t guest_result
+)>;
+
 class c_kernel;
 using t_kernel_syscall = std::function<bool(
     c_kernel& kernel, uint32_t syscall_number
@@ -126,6 +141,7 @@ public:
     const c_cpu& cpu() const;
     uint64_t cycles() const;
     uint32_t current_thread_id() const;
+    bool in_interrupt_context() const;
 
     // Actual IOP library exports supply concrete executable targets.
     bool lookup_library(
@@ -214,6 +230,10 @@ public:
                               uint32_t argument);
 
     void bind_syscall(t_kernel_syscall handler);
+    // INTRMAN registrations resolve actual pending device IRQs to guest
+    // addresses. No IRQ handler executes unless the source is asserted.
+    void bind_interrupts(t_kernel_irq_lookup lookup,
+                         t_kernel_irq_complete complete);
     // Explicit IOP cycle budget. The EE must eventually provide this from
     // guest execution timing, never by counting native dispatches.
     s_kernel_run_result run(
@@ -227,6 +247,8 @@ private:
     ) const;
     uint32_t next_ready() const;
     void wake_due();
+    bool start_guest_interrupt(uint32_t line,
+                               const s_kernel_interrupt_target& target);
 
     c_cpu m_cpu{};
     c_hw m_hardware{};
@@ -238,6 +260,9 @@ private:
     std::map<uint32_t, s_kernel_alarm> m_alarms;
     std::multimap<uint64_t, std::function<void()>> m_hle_events;
     t_kernel_syscall m_syscall;
+    t_kernel_irq_lookup m_irq_lookup;
+    t_kernel_irq_complete m_irq_complete;
+    uint32_t m_interrupt_thread_id = 0u;
     uint64_t m_cycles = 0u;
     bool m_rom0_boot_active = false;
     uint32_t m_next_module_id = 1u;

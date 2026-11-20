@@ -16,6 +16,8 @@ constexpr uint32_t k_hle_callback_return_pc = 0x00013fe0u;
 // Reserved guest HLE trampoline immediately below the other return stubs.
 constexpr uint32_t k_module_return_pc = 0x00013fd0u;
 constexpr uint32_t k_thread_return_pc = 0x00013fc0u;
+constexpr uint32_t k_interrupt_return_pc = 0x00013fb0u;
+constexpr uint32_t k_interrupt_stack = 0x0001f000u;
 
 bool valid_range(size_t size, uint64_t offset, uint64_t length)
 {
@@ -78,6 +80,9 @@ void c_kernel::reset()
     m_alarms.clear();
     m_hle_events.clear();
     m_syscall = {};
+    m_irq_lookup = {};
+    m_irq_complete = {};
+    m_interrupt_thread_id = 0u;
     m_cycles = 0u;
     m_next_module_id = 1u;
     m_next_thread_id = 1u;
@@ -155,6 +160,12 @@ uint64_t c_kernel::cycles() const
 uint32_t c_kernel::current_thread_id() const
 {
     return m_current_thread_id;
+}
+
+bool c_kernel::in_interrupt_context() const
+{
+    return m_interrupt_thread_id != 0u &&
+           m_current_thread_id == m_interrupt_thread_id;
 }
 
 bool c_kernel::lookup_library(
@@ -769,7 +780,9 @@ bool c_kernel::has_guest_work() const
         }
     }
     return !m_alarms.empty() || !m_hle_events.empty() ||
-           m_hardware.spu2_dma_cycles_remaining() != 0u;
+           m_hardware.spu2_dma_cycles_remaining() != 0u ||
+           (m_irq_lookup && m_interrupt_thread_id == 0u &&
+            m_hardware.next_pending_interrupt() >= 0);
 }
 
 bool c_kernel::schedule_hle_event(
@@ -1217,6 +1230,54 @@ void c_kernel::bind_syscall(t_kernel_syscall handler)
     m_syscall = std::move(handler);
 }
 
+void c_kernel::bind_interrupts(
+    t_kernel_irq_lookup lookup, t_kernel_irq_complete complete
+)
+{
+    m_irq_lookup = std::move(lookup);
+    m_irq_complete = std::move(complete);
+}
+
+bool c_kernel::start_guest_interrupt(
+    uint32_t line, const s_kernel_interrupt_target& target
+)
+{
+    const uint32_t physical = target.m_handler & 0x1fffffffu;
+    const uint32_t region = target.m_handler & 0xe0000000u;
+    uint32_t opcode = 0u;
+    if (m_interrupt_thread_id != 0u ||
+        target.m_handler == 0u || (target.m_handler & 3u) != 0u ||
+        (region != 0u && region != 0x80000000u &&
+         region != 0xa0000000u) ||
+        physical >= c_cpu::k_ram_size ||
+        !m_cpu.read32(target.m_handler, &opcode) ||
+        !m_cpu.write32(k_interrupt_return_pc, 0x0000000du))
+    {
+        return false;
+    }
+    const uint32_t id = create_thread(
+        target.m_handler, 0u, 0u, 0x400u, target.m_argument);
+    if (id == 0u)
+    {
+        return false;
+    }
+    s_kernel_thread& thread = m_threads.at(id);
+    thread.m_interrupt_callback = true;
+    thread.m_interrupt_line = line;
+    if (!start_thread(id))
+    {
+        m_allocations.erase(thread.m_stack_base);
+        m_threads.erase(id);
+        return false;
+    }
+    // The original INTRMAN executes on its reserved interrupt stack;
+    // this wrapper runs only the registered guest handler instructions.
+    thread.m_cpu.m_gpr[29] = k_interrupt_stack;
+    thread.m_cpu.m_gpr[31] = k_interrupt_return_pc;
+    m_interrupt_thread_id = id;
+    return true;
+}
+
 uint32_t c_kernel::next_ready() const
 {
     uint32_t priority = std::numeric_limits<uint32_t>::max();
@@ -1350,6 +1411,40 @@ s_kernel_run_result c_kernel::run(
     while (remaining != 0u)
     {
         wake_due();
+        if (m_irq_lookup && m_interrupt_thread_id == 0u)
+        {
+            // Resolve the real device source and acknowledge before
+            // executing a registered guest INTRMAN callback.
+            for (uint32_t attempt = 0u; attempt < 32u; ++attempt)
+            {
+                const int32_t pending =
+                    m_hardware.next_pending_interrupt();
+                if (pending < 0)
+                {
+                    break;
+                }
+                const uint32_t line = static_cast<uint32_t>(pending);
+                s_kernel_interrupt_target target{};
+                const bool registered = m_irq_lookup(line, &target);
+                if (registered && !start_guest_interrupt(line, target))
+                {
+                    result.m_stop =
+                        e_kernel_stop::unsupported_instruction;
+                    result.m_guest_pc = target.m_handler;
+                    return result;
+                }
+                if (!m_hardware.acknowledge_interrupt(line))
+                {
+                    result.m_stop =
+                        e_kernel_stop::unsupported_instruction;
+                    return result;
+                }
+                if (registered)
+                {
+                    break;
+                }
+            }
+        }
         const uint32_t id = next_ready();
         if (id == 0u)
         {
@@ -1443,8 +1538,30 @@ s_kernel_run_result c_kernel::run(
         );
         const s_run_result step_result = m_cpu.run(slice);
         m_cycles += step_result.m_instructions;
+        m_hardware.advance_cycles(step_result.m_instructions);
         result.m_executed += step_result.m_instructions;
         remaining -= step_result.m_instructions;
+
+        // A registered INTRMAN handler has executed its real JR $ra.
+        // Its return value controls whether an ordinary (<32) IRQ
+        // becomes masked, exactly as in ps2-web-recomp/SDBZ.
+        if (step_result.m_result == e_step_result::breakpoint &&
+            step_result.m_pc == k_interrupt_return_pc &&
+            thread.m_interrupt_callback &&
+            m_interrupt_thread_id == id)
+        {
+            const uint32_t line = thread.m_interrupt_line;
+            const uint32_t guest_result = m_cpu.state().m_gpr[2];
+            m_allocations.erase(thread.m_stack_base);
+            m_threads.erase(id);
+            m_interrupt_thread_id = 0u;
+            m_current_thread_id = 0u;
+            if (m_irq_complete)
+            {
+                m_irq_complete(line, guest_result);
+            }
+            continue;
+        }
 
         // An ordinary guest thread has returned through its genuine
         // MIPS $ra trampoline. The completed guest thread is dormant;
@@ -1550,6 +1667,7 @@ s_kernel_run_result c_kernel::run(
             }
             m_cpu.resume_syscall();
             ++m_cycles;
+            m_hardware.advance_cycles(1u);
             ++result.m_executed;
             --remaining;
         }

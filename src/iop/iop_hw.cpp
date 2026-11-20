@@ -1032,6 +1032,64 @@ uint32_t c_hw::pending_interrupts() const
     return m_i_ctrl != 0u ? (m_i_stat & m_i_mask) : 0u;
 }
 
+int32_t c_hw::next_pending_interrupt() const
+{
+    const uint32_t pending = pending_interrupts();
+    if ((pending & (1u << k_dma_irq)) != 0u)
+    {
+        const uint32_t primary =
+            (m_dma_icr >> 24u) & (m_dma_icr >> 16u) & 0x7fu;
+        const uint32_t secondary =
+            (m_dma_icr2 >> 24u) & (m_dma_icr2 >> 16u) & 0x3fu;
+        for (uint32_t index = 0u; index < 7u; ++index)
+        {
+            if ((primary & (1u << index)) != 0u)
+            {
+                return static_cast<int32_t>(32u + index);
+            }
+        }
+        for (uint32_t index = 0u; index < 6u; ++index)
+        {
+            if ((secondary & (1u << index)) != 0u)
+            {
+                return static_cast<int32_t>(40u + index);
+            }
+        }
+    }
+    const uint32_t ordinary = pending & ~(1u << k_dma_irq);
+    for (uint32_t line = 0u; line < 32u; ++line)
+    {
+        if ((ordinary & (1u << line)) != 0u)
+        {
+            return static_cast<int32_t>(line);
+        }
+    }
+    return -1;
+}
+
+bool c_hw::acknowledge_interrupt(uint32_t line)
+{
+    if (line < 32u)
+    {
+        m_i_stat &= ~(1u << line);
+        return true;
+    }
+    if (!supports_interrupt_line(line))
+    {
+        return false;
+    }
+    const bool secondary = line >= 40u;
+    uint32_t& control = secondary ? m_dma_icr2 : m_dma_icr;
+    const uint32_t index = secondary ? line - 40u : line - 32u;
+    control &= ~(1u << (24u + index));
+    if (((m_dma_icr >> 24u) & 0x7fu) == 0u &&
+        ((m_dma_icr2 >> 24u) & 0x3fu) == 0u)
+    {
+        m_i_stat &= ~(1u << k_dma_irq);
+    }
+    return true;
+}
+
 uint32_t c_hw::cache_control() const
 {
     return m_cache_control;
