@@ -377,14 +377,16 @@ bool c_hw::write(
     if (address >= c_spu2::k_base &&
         address < c_spu2::k_base + c_spu2::k_size)
     {
+        const bool prior_irq = m_spu2.irq_pending();
         if (!m_spu2.write(address, width, value))
         {
             return false;
         }
-        // Only a real SPU2 data-port access to the guest-programmed
-        // IRQ address can assert line 9. Register latches, key-on
-        // commands, and arbitrary MMIO writes never complete DMA.
-        if (m_spu2.irq_pending())
+        // Only a real data-port access to the guest-selected IRQA
+        // can assert IRQ9. The SPU2 IRQ latch is edge-triggered here:
+        // an unrelated register write must not reassert an IRQ the
+        // guest already acknowledged at I_STAT.
+        if (!prior_irq && m_spu2.irq_pending())
         {
             (void)raise_interrupt(c_spu2::k_irq_line);
         }
