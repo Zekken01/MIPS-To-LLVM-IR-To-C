@@ -81,16 +81,44 @@ jobs:
         shell: pwsh
         run: cmake --build build --target ee_game_runner ee_webgpu_native_smoke --config Release --parallel 2
 
-      # The MSVC CI build does not reproduce an explicit clang++/lld-link
-      # developer configuration. Keep that path covered alongside MSVC:
-      # pinned Windows Rust wgpu_native.lib needs explicit system libraries.
+      # The GitHub image can have LLVM 20 under Program Files while
+      # VS 2026's MSVC STL requires Clang 22 or newer (STL1000).
+      # Pin the compiler instead of suppressing the version check.
+      - name: Install pinned Windows Clang 22 for the VS 2026 STL
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = '22.1.8'
+          $expectedSha256 = '16e5709785fef73c854646241c4a92c5cd574318d1b33c63330dd7721903e55c'
+          $installer = Join-Path $env:RUNNER_TEMP "LLVM-$version-win64.exe"
+          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$version/LLVM-$version-win64.exe"
+          Invoke-WebRequest -Uri $url -OutFile $installer -MaximumRetryCount 3 -RetryIntervalSec 5
+          $actualSha256 = (Get-FileHash -Algorithm SHA256 -Path $installer).Hash.ToLowerInvariant()
+          if ($actualSha256 -ne $expectedSha256) {
+            throw "LLVM installer checksum mismatch: $actualSha256"
+          }
+          $root = Join-Path $env:RUNNER_TEMP 'llvm-22'
+          $process = Start-Process -FilePath $installer -ArgumentList @('/S', "/D=$root") -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "LLVM 22 installer returned $($process.ExitCode)"
+          }
+          $clangxx = Join-Path $root 'bin/clang++.exe'
+          if (!(Test-Path $clangxx)) {
+            throw "Pinned Clang 22 missing: $clangxx"
+          }
+          & $clangxx --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      # Keep the explicit clang++/lld-link developer configuration
+      # covered alongside MSVC; the pinned native WebGPU SDK needs
+      # its existing Windows system-library link configuration.
       - name: Configure clang++ and lld-link with raylib from a clean tree
         shell: pwsh
         run: |
-          $clang = 'C:/Program Files/LLVM/bin/clang.exe'
-          $clangxx = 'C:/Program Files/LLVM/bin/clang++.exe'
+          $root = Join-Path $env:RUNNER_TEMP 'llvm-22'
+          $clang = Join-Path $root 'bin/clang.exe'
+          $clangxx = Join-Path $root 'bin/clang++.exe'
           if (!(Test-Path $clang) -or !(Test-Path $clangxx)) {
-            throw 'Expected LLVM clang/clang++ in the Windows runner'
+            throw 'Pinned LLVM 22 clang/clang++ installation missing'
           }
           cmake -S . -B build-clang -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `

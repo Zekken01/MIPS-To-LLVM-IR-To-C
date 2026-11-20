@@ -1115,3 +1115,18 @@ unchanged EE return memory and no DMA5 until its genuine R3000 handler
 finishes; the pending count then drops to zero. CI and the next local
 Windows replay must validate the runtime path. In particular, the
 origin and guest handling of `WaitSema(0)` remain unresolved.
+
+### Windows Clang CI environment regression at commit 6123aa14
+
+The first CI run after the 05:21:52 IOP scheduling batch passed
+SIF DMA acceptance and ROM0 acceptance. The Windows native WebGPU
+MSVC compile and Linux native WebGPU job passed; the *separate*
+Windows Clang clean-tree build failed before project code compiled:
+the hosted image's LLVM/Clang 20 is rejected by Visual Studio 2026
+MSVC STL 14.52.37025 (`yvals_core.h` STL1000 requires Clang >=22).
+This was a compiler/STL image mismatch, not an IOP logic regression.
+Pin the official LLVM 22.1.8 Windows installer in the existing
+native WebGPU workflow with its published SHA-256; do not define
+`_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH` to suppress the STL
+version guard. Final CI acceptance still requires passing jobs on
+the replacement commit, not only on the earlier implementation.
