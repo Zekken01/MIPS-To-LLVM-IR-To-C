@@ -799,3 +799,50 @@ through the previous PC, whether server `0x500` registers and replies
 via an armed SIF0 receiver, whether EE `WaitSema(8)` wakes through
 the original DMA5 callback, and what exact IOP/EE fault follows.
 Static module startup and CI tests alone do not establish gameplay.
+
+## 2026-11-20 03:47:27 — IRX guest execution exhausts bounded wait
+
+Matched archive: `ps2-game-hle(20261120-034727).zip` has exactly one
+final `replay=0`, zero newly discovered EE functions, and consistent
+`boot.log`, `expansion.log`, `first-boot.json`, `iop-disc-catalog.json`,
+`translation-cache.json`, and three GS PPM captures. USA game ELF SHA-256
+remains `1b213a85a2c305dc0f893c007a502c93e0851d1bb7db6164f9e0b72adb074a16`.
+
+The IOP RAM mirror regression has reached past the earlier attempted
+fetch at `0x00202080`, without the previous memory fault. Six real
+IRX loads link/start; committed SIFRPC sequence 19 queues one BIND
+for ARKD server `0x500` (client `0x005A9330`). Guest registration and
+an SIF0 reply have **not** been observed.
+
+EE still stops at original `WaitSema(8)`, EPC `0x00174CE4`,
+after 11,434 dispatches. The IOP advances the entire configured
+2,048-turn limit of 256 guest instructions per turn (524,288 guest
+instruction slots during that wait) without a fatal guest fault, yet
+`binds=1 replies=0` when exhausted, and the last IOP CPU PC is
+`0x0020B920`. All three GS PPMs remain entirely black.
+
+**Do not infer successful IOP initialization from an uninterrupted
+instruction count.** The final PC aliases backing IOP RAM offset
+`0x0000B920` and the difference from 2,048 × 256 × 4 bytes is exactly
+`0x0000B920`. This is consistent with — but does not prove — a
+linear NOP walk through mirrored uninitialized RAM. The current
+kernel completion result reports `thread=0` on `budget_exhausted`
+even though a real thread was chosen. It does not expose whether a
+high-priority guest thread starved ARKD's initial thread 8.
+
+**Diagnostic-only changes in the existing draft PR #145:** report
+the last actually scheduled IOP thread on a successful bounded turn;
+expose immutable `c_kernel::threads()` snapshots; capture per-thread
+status/priority/wait type/wake, entry and current PC, guest opcode
+in mapped RAM, and whether each PC falls in a linked IRX image.
+Log only before the first wait turn and after turns 1, 64, 512 and
+the configured bound; additionally capture snapshots on real IOP
+faults. Test scheduler reporting, snapshot immutability, and cleanup
+after reboot.
+
+The next Windows archive should identify actual scheduled thread
+IDs and whether any guest code enters ARKD module 6. Continue to
+require real `sceSifRegisterRpc`, armed SIF0 transfer, and original
+DMAC5/iSignalSema completion. Do not fabricate a server, inject a
+callback, alter EE semaphore count, assume unlimited budget, or
+blindly mark the bind successful.
