@@ -132,6 +132,166 @@ struct s_temp_dir
 };
 
 
+
+bool test_arkd_deferred_bind(const std::filesystem::path& disc_root)
+{
+    constexpr uint32_t k_list = 0x10000u;
+    constexpr uint32_t k_packet = 0x12000u;
+    constexpr uint32_t k_receive = 0x00180000u;
+    constexpr uint32_t k_queue = 0x00027000u;
+    constexpr uint32_t k_descriptor = 0x00027100u;
+    constexpr uint32_t k_handler = 0x00027200u;
+    constexpr uint32_t k_stack = 0x00027300u;
+    constexpr uint32_t k_server = 0x500u;
+
+    ee::ee_memory memory(32u * 1024u * 1024u);
+    ee::s_ee_cpu_state ee_cpu{};
+    ee::c_ee_sif sif;
+    ee::c_ee_dmac dmac;
+    sif.reset();
+    dmac.bind_cpu(&ee_cpu);
+    dmac.bind_memory(&memory);
+    dmac.reset();
+    iop::c_kernel kernel;
+    iop::c_sifcmd_bridge commands(kernel, sif, &memory);
+    iop::c_disc_loader loader(kernel, disc_root);
+    iop::c_folder_sector_source sectors(disc_root);
+    iop::c_sif_rpc_bridge rpc(
+        loader, kernel, commands, memory, dmac, &sectors);
+    iop::c_sif1_bridge sif1(
+        memory, kernel.cpu(), dmac, &commands, &rpc);
+    if (!sectors.valid() || !commands.install() ||
+        !init_sifcmd_guest(kernel))
+    {
+        return false;
+    }
+    kernel.cpu().state().m_gpr[4] = 0u;
+    if (!commands.handle_syscall(
+            kernel, iop::c_sifcmd_bridge::k_service_base + 14u) ||
+        kernel.cpu().state().m_gpr[2] != 0u)
+    {
+        return false;
+    }
+
+    uint32_t dma_id = 0u;
+    packet(memory, k_packet, {
+        24u, 0u, 0x80000002u, 0u, k_receive, 0u, 0u, 0u
+    });
+    descriptor(memory, k_list, k_packet,
+               iop::c_sifcmd_bridge::k_command_buffer, 24u);
+    if (!sif1.set_dma(k_list, 1u, &dma_id))
+    {
+        return false;
+    }
+    dmac.acknowledge(6u);
+
+    // Replay packet: 64-byte EE BIND for the guest ARKD server 0x500.
+    const std::vector<uint32_t> bind = {
+        64u, 0u, iop::c_sif_rpc_bridge::k_bind_cid, 0u,
+        5u, 0x20561900u, 15u, 0x005a9330u,
+        k_server, 0x200u, 0x00564b40u, 8u,
+        1u, 0x2cacacaau, 0u, 0u
+    };
+    memory.write32(k_receive + 16u, 0xcafef00du);
+    packet(memory, k_packet, bind);
+    descriptor(memory, k_list, k_packet,
+               iop::c_sifcmd_bridge::k_command_buffer, 64u);
+    memory.write32(k_list + 12u, 0x44u);
+    if (!sif1.set_dma(k_list, 1u, &dma_id) ||
+        rpc.pending_binds() != 1u ||
+        rpc.pending_replies() != 0u ||
+        memory.read32(k_receive + 16u) != 0xcafef00du ||
+        (dmac.status() & (1u << 5u)) != 0u)
+    {
+        return false;
+    }
+
+    // An unrelated unknown server still fails atomically.
+    dmac.acknowledge(6u);
+    memory.write32(k_packet + 32u, 0x8000beefu);
+    iop::s_sif1_dma_diagnostic rejected{};
+    if (sif1.set_dma(k_list, 1u, &dma_id, &rejected) ||
+        rejected.m_rpc_rejection != iop::e_rpc_rejection::unknown_server ||
+        rpc.pending_binds() != 1u ||
+        rpc.pending_replies() != 0u ||
+        memory.read32(k_receive + 16u) != 0xcafef00du)
+    {
+        return false;
+    }
+
+    if (!kernel.cpu().write32(k_handler, 0x03e00008u) ||
+        !kernel.cpu().write32(k_stack + 24u, k_queue))
+    {
+        return false;
+    }
+    const uint32_t thread_id = kernel.create_thread(
+        k_handler, 0u, 1u, 0x400u);
+    if (thread_id == 0u)
+    {
+        return false;
+    }
+
+    kernel.cpu().state().m_gpr[4] = k_queue;
+    kernel.cpu().state().m_gpr[5] = thread_id;
+    if (!commands.handle_syscall(
+            kernel, iop::c_sifcmd_bridge::k_service_base + 19u))
+    {
+        return false;
+    }
+    if (rpc.pending_binds() != 1u)
+    {
+        return false;
+    }
+
+    kernel.cpu().state().m_gpr[4] = k_descriptor;
+    kernel.cpu().state().m_gpr[5] = k_server;
+    kernel.cpu().state().m_gpr[6] = k_handler;
+    kernel.cpu().state().m_gpr[7] = k_handler + 0x40u;
+    kernel.cpu().state().m_gpr[29] = k_stack;
+    if (!commands.handle_syscall(
+            kernel, iop::c_sifcmd_bridge::k_service_base + 17u) ||
+        kernel.cpu().state().m_gpr[2] != 0u ||
+        !commands.has_guest_rpc_server(k_server) ||
+        rpc.pending_binds() != 0u ||
+        rpc.pending_replies() != 1u ||
+        memory.read32(k_receive + 16u) != 0xcafef00du)
+    {
+        return false;
+    }
+
+    const ee::s_ee_u128 armed{0x184u, 0u};
+    if (!ee::c_ee_dmac::mmio_write(
+            &dmac, ee::c_ee_dmac::k_sif0_base,
+            4u, &armed) ||
+        !rpc.pump() ||
+        rpc.pending_replies() != 0u ||
+        memory.read32(k_receive + 8u) !=
+            iop::c_sif_rpc_bridge::k_reply_cid ||
+        memory.read32(k_receive + 16u) != 5u ||
+        memory.read32(k_receive + 28u) != 0x005a9330u ||
+        memory.read32(k_receive + 32u) !=
+            iop::c_sif_rpc_bridge::k_bind_cid ||
+        memory.read32(k_receive + 36u) !=
+            (k_server ^ iop::c_sif_rpc_bridge::k_server_xor) ||
+        (dmac.status() & (1u << 5u)) == 0u)
+    {
+        return false;
+    }
+
+    // A pending bind to 0x501 must not survive an IOP reboot.
+    dmac.acknowledge(5u);
+    dmac.acknowledge(6u);
+    memory.write32(k_packet + 32u, 0x501u);
+    if (!sif1.set_dma(k_list, 1u, &dma_id) ||
+        rpc.pending_binds() != 1u)
+    {
+        return false;
+    }
+    rpc.reset_for_reboot();
+    return rpc.pending_binds() == 0u &&
+        rpc.pending_replies() == 0u;
+}
+
 bool test_guest_rpc_lifecycle(const std::filesystem::path& disc_root)
 {
     // A registered guest IOP server cannot satisfy a bind before
@@ -2150,6 +2310,10 @@ int main()
         rpc.pending_replies() != 0u)
     {
         return fail("reset retained stale LOADFILE version");
+    }
+    if (!test_arkd_deferred_bind(folder.m_path))
+    {
+        return fail("ARKD deferred BIND lifecycle failed");
     }
     if (!test_guest_rpc_lifecycle(folder.m_path))
     {
