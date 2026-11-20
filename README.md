@@ -89,7 +89,9 @@ retail diagnostic run defaults to 500,000. Use `run_ps2_game.bat --quick`
 to **force a non-traced probe** even when the preserved guest translation
 cache cannot be reused after pulling changes. The script still rebuilds
 or relinks guest IR as required; it simply avoids the large final trace.
-An explicit WebGPU snapshot/window request still selects the full replay. Both remain bounded and stop
+An explicit `--quick` takes priority over WebGPU snapshot/window
+environment flags, disabling capture only for that launcher invocation.
+Without `--quick`, WebGPU requests still select the full replay. Both remain bounded and stop
 at real guest failures; a longer run does not imply that a pending RPC
 has completed. Cached probes now include bounded outstanding-IOP-RPC
 thread/PC checkpoints and final instruction/register samples without

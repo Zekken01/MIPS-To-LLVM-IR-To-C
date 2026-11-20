@@ -247,6 +247,12 @@ def test_windows_launcher_preserves_guest_cache():
         'if /I "%~1"=="--quick"')
     assert launcher.index('if /I "%~1"=="--quick"') < launcher.index(
         'if /I "%~1"=="--full"')
+    assert 'set "EE_WEBGPU_SNAPSHOT=0"' in launcher
+    assert 'set "EE_WEBGPU_WINDOW=0"' in launcher
+    assert launcher.index('set "EE_WEBGPU_SNAPSHOT=0"') < launcher.index(
+        'if /I "%EE_WEBGPU_SNAPSHOT%"=="1"')
+    assert launcher.index('set "EE_WEBGPU_WINDOW=0"') < launcher.index(
+        'if /I "%EE_WEBGPU_WINDOW%"=="1"')
 
 
 def test_guest_rpc_snapshots_in_cached_probe():

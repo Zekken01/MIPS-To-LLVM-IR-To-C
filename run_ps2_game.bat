@@ -67,6 +67,13 @@ if errorlevel 1 (
 
 rem Optional WebGPU renderer and raylib Win32 window. The window opens
 rem only during the final traced replay; expansion remains headless.
+rem An explicitly requested quick probe never captures WebGPU, even if
+rem this command prompt has retained snapshot/window flags from a
+rem previous full run. It must remain non-traced after cache misses.
+if /I "%~1"=="--quick" (
+    set "EE_WEBGPU_SNAPSHOT=0"
+    set "EE_WEBGPU_WINDOW=0"
+)
 set "EE_WEBGPU_MODE=OFF"
 set "EE_RAYLIB_MODE=OFF"
 set "EE_WEBGPU_RUN_ARG="
@@ -106,7 +113,7 @@ if errorlevel 1 exit /b 1
 rem Git checkout may rebuild host tools without changing guest LLVM IR.
 rem Try exact reuse first; if host inputs changed, relink existing guest objects.
 rem --quick forces the non-traced probe even if no guest cache survives.
-rem WebGPU requests still require a full replay for their snapshots.
+rem Without --quick, WebGPU requests still require full replay snapshots.
 rem Only rebuild guest IR when preserved provenance cannot be verified.
 set "CACHE_FLAG="
 if exist "%WORK_DIR%\translation-cache.json" (
