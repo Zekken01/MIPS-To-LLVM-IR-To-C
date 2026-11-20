@@ -23,6 +23,8 @@ public:
     bool read(uint32_t address, uint32_t width, uint32_t* value);
     bool write(uint32_t address, uint32_t width, uint32_t value);
     bool irq_pending() const;
+    // One bit for each newly latched SPU2 core interrupt.
+    uint32_t irq_latches() const;
     // SPU2 uses shared 2 MiB sound RAM for both core DMA channels.
     // An ordinary DMA copies real little-endian halfwords starting at
     // the core's guest-programmed TSA, wrapping in the sound RAM.

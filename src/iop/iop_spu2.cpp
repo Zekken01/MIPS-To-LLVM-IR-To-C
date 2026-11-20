@@ -40,7 +40,13 @@ uint32_t c_spu2::set_lo(uint32_t address, uint32_t value)
 
 bool c_spu2::irq_pending() const
 {
-    return m_cores[0].m_irq || m_cores[1].m_irq;
+    return irq_latches() != 0u;
+}
+
+uint32_t c_spu2::irq_latches() const
+{
+    return (m_cores[0].m_irq ? 1u : 0u) |
+           (m_cores[1].m_irq ? 2u : 0u);
 }
 
 bool c_spu2::auto_dma_enabled(uint32_t core) const
@@ -394,6 +400,10 @@ bool c_spu2::write16(uint32_t offset, uint16_t value)
     {
     case 0x7c0u:
         m_spdif_out = value;
+        return true;
+    case 0x7c2u:
+        // Reference write_global ignores the IRQ status halfword.
+        // In particular SW at 0x7c0 must not fault after writing OUT.
         return true;
     case 0x7c6u:
         m_spdif_mode = value;

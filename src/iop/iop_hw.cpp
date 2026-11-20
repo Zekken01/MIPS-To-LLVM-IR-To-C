@@ -187,7 +187,7 @@ void c_hw::start_spu2_dma(uint32_t core)
     {
         return;
     }
-    const bool prior_irq = m_spu2.irq_pending();
+    const uint32_t prior_irq = m_spu2.irq_latches();
     if (!m_spu2.copy_dma(core, data, to_spu))
     {
         return;
@@ -198,7 +198,7 @@ void c_hw::start_spu2_dma(uint32_t core)
         // The complete IOP RAM range was preflight above.
         return;
     }
-    if (!prior_irq && m_spu2.irq_pending())
+    if ((m_spu2.irq_latches() & ~prior_irq) != 0u)
     {
         (void)raise_interrupt(c_spu2::k_irq_line);
     }
@@ -571,7 +571,7 @@ bool c_hw::write(
     if (address >= c_spu2::k_base &&
         address < c_spu2::k_base + c_spu2::k_size)
     {
-        const bool prior_irq = m_spu2.irq_pending();
+        const uint32_t prior_irq = m_spu2.irq_latches();
         if (!m_spu2.write(address, width, value))
         {
             return false;
@@ -580,7 +580,7 @@ bool c_hw::write(
         // can assert IRQ9. The SPU2 IRQ latch is edge-triggered here:
         // an unrelated register write must not reassert an IRQ the
         // guest already acknowledged at I_STAT.
-        if (!prior_irq && m_spu2.irq_pending())
+        if ((m_spu2.irq_latches() & ~prior_irq) != 0u)
         {
             (void)raise_interrupt(c_spu2::k_irq_line);
         }
