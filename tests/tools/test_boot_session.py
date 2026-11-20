@@ -243,10 +243,12 @@ def test_windows_launcher_preserves_guest_cache():
     assert '--timeout-seconds=%BOOT_TIMEOUT_SECONDS%' in launcher
     assert '--max-dispatches=100000 ^' not in launcher
     assert 'if /I "%~1"=="--quick" set "SESSION_ARGS=--quick-probe --no-iop-catalog"' in launcher
-    assert launcher.index('if not defined CACHE_FLAG set "SESSION_ARGS="') < launcher.index(
-        'if /I "%~1"=="--quick"')
-    assert launcher.index('if /I "%~1"=="--quick"') < launcher.index(
-        'if /I "%~1"=="--full"')
+    # There are two --quick checks: early WebGPU override and late
+    # session-mode selection. Only compare the latter with cache/full.
+    quick_session = launcher.index(
+        'if /I "%~1"=="--quick" set "SESSION_ARGS=--quick-probe --no-iop-catalog"')
+    assert launcher.index('if not defined CACHE_FLAG set "SESSION_ARGS="') < quick_session
+    assert quick_session < launcher.index('if /I "%~1"=="--full"')
     assert 'set "EE_WEBGPU_SNAPSHOT=0"' in launcher
     assert 'set "EE_WEBGPU_WINDOW=0"' in launcher
     assert launcher.index('set "EE_WEBGPU_SNAPSHOT=0"') < launcher.index(
