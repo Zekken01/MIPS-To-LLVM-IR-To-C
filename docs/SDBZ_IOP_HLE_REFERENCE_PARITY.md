@@ -1680,3 +1680,27 @@ and unsafe `%n` rejection. No invented guest RPC return, semaphore
 signal or DMA5 completion. This is functionally separate from
 the older SYSCLIB `sprintf` destination-memory interface.
 
+## 2026-11-20 — Force bounded quick probe after cache invalidation
+
+The 09:26:39 user archive unexpectedly contained a **266.9 MB**
+`boot.log` rather than a new `quick-probe.log` because the launcher
+selected its full path when saved guest IR could not be reused.
+To prevent another huge report while checking the new stdio#4 fix,
+the Windows launcher now recognizes an explicit `--quick` argument,
+which forces `--quick-probe --no-iop-catalog` even after a guest
+translation-cache miss. The ordinary default remains quick only with a
+valid cache, and `--full` / WebGPU requests still use the complete
+replay. This changes **only diagnostic output selection**, never R3000
+execution or guest RPC completion. Regression assertions verify
+override ordering.
+
+Next recommended retail run:
+```bat
+git pull --ff-only
+git rev-parse HEAD
+set "MAX_DISPATCHES=4000000"
+set "BOOT_TIMEOUT_SECONDS=300"
+run_ps2_game.bat --quick
+```
+Upload current `quick-probe.log`, `quick-probe.json` and any matching
+expansion logs; don't confuse preserved full logs with the quick probe.

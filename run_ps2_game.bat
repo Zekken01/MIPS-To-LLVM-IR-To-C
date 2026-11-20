@@ -105,6 +105,8 @@ if errorlevel 1 exit /b 1
 
 rem Git checkout may rebuild host tools without changing guest LLVM IR.
 rem Try exact reuse first; if host inputs changed, relink existing guest objects.
+rem --quick forces the non-traced probe even if no guest cache survives.
+rem WebGPU requests still require a full replay for their snapshots.
 rem Only rebuild guest IR when preserved provenance cannot be verified.
 set "CACHE_FLAG="
 if exist "%WORK_DIR%\translation-cache.json" (
@@ -136,6 +138,7 @@ set "SESSION_ARGS=--quick-probe --no-iop-catalog"
 set "REPORT_NAME=quick-probe.json"
 set "DEFAULT_MAX_DISPATCHES=100000"
 if not defined CACHE_FLAG set "SESSION_ARGS="
+if /I "%~1"=="--quick" set "SESSION_ARGS=--quick-probe --no-iop-catalog"
 if /I "%~1"=="--full" set "SESSION_ARGS="
 if "%EE_WEBGPU_MODE%"=="ON" set "SESSION_ARGS="
 if defined SESSION_ARGS (

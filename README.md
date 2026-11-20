@@ -85,12 +85,16 @@ bounded coverage probe and writes `quick-probe.json` and `quick-probe.log`.
 Run `run_ps2_game.bat --full` for the full dispatch trace, IOP catalog, and
 GS snapshots. Cold builds and explicit WebGPU requests also use the full path.
 The cached quick probe defaults to 100,000 EE dispatches, whereas the full
-retail diagnostic run defaults to 500,000. Both remain bounded and stop
+retail diagnostic run defaults to 500,000. Use `run_ps2_game.bat --quick`
+to **force a non-traced probe** even when the preserved guest translation
+cache cannot be reused after pulling changes. The script still rebuilds
+or relinks guest IR as required; it simply avoids the large final trace.
+An explicit WebGPU snapshot/window request still selects the full replay. Both remain bounded and stop
 at real guest failures; a longer run does not imply that a pending RPC
 has completed. Cached probes now include bounded outstanding-IOP-RPC
 thread/PC checkpoints and final instruction/register samples without
 the large per-dispatch full trace. For a long cached probe, use
-`set MAX_DISPATCHES=4000000` and `run_ps2_game.bat`; inspect the
+`set MAX_DISPATCHES=4000000` and `run_ps2_game.bat --quick`; inspect the
 **current** `quick-probe.log` and `quick-probe.json`, not preserved
 `boot.log` or `first-boot.json`. Override the per-pass ceiling or
 subprocess timeout for a full traced run with:

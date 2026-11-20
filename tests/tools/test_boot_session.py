@@ -242,6 +242,11 @@ def test_windows_launcher_preserves_guest_cache():
     assert '--max-dispatches=%MAX_DISPATCHES%' in launcher
     assert '--timeout-seconds=%BOOT_TIMEOUT_SECONDS%' in launcher
     assert '--max-dispatches=100000 ^' not in launcher
+    assert 'if /I "%~1"=="--quick" set "SESSION_ARGS=--quick-probe --no-iop-catalog"' in launcher
+    assert launcher.index('if not defined CACHE_FLAG set "SESSION_ARGS="') < launcher.index(
+        'if /I "%~1"=="--quick"')
+    assert launcher.index('if /I "%~1"=="--quick"') < launcher.index(
+        'if /I "%~1"=="--full"')
 
 
 def test_guest_rpc_snapshots_in_cached_probe():
