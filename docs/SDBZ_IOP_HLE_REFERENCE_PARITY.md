@@ -653,3 +653,38 @@ registration removal and reboot clearing.
 **Next Windows replay:** confirm that ARKD_DVD now links and
 starts; otherwise diagnose its newly exposed first unresolved
 import. No playable boot, sound or rendered image is implied.
+
+## 2026-11-20 02:55 — ARKD guest RPC bind (matched Windows evidence)
+
+Matched archive: `ps2-game-hle(20261120-025514).zip`, USA ELF SHA-256
+`1b213a85a2c305dc0f893c007a502c93e0851d1bb7db6164f9e0b72adb074a16`.
+The final committed replay starts all six modules: SIO2MAN, MCMAN,
+MCSERV, LIBSD, CRI_ADXI and ARKD_DVD (module 6/thread 8), with no
+unresolved IRX imports. The five earlier modules remain started.
+Successful linkage and thread creation do not establish module initialization.
+
+The next genuine EE SIF1 packet is a 64-byte BIND, CID `0x80000009`,
+server `0x500`, client `0x005A9330`, IOP destination `0x0001E000`,
+rejected as `unknown_server`. The final replay stops after 11,429
+EE dispatches, with 3,530 translation-cache hash entries and
+syscall exception EPC `0x00175064`. All three GS PPMs are black.
+The earlier 15,057 dispatches are a different stop path, not
+evidence of a loss of working IOP modules.
+
+The primary `ps2-web-recomp/SDBZ` reference, `runtime/src/iop/sif.cpp`,
+defers an EE bind until a guest IOP RPC server actually registers.
+Its Arika RPC trace explicitly recognizes server IDs `0x500..0x503`.
+The native implementation now stages only those specifically identified
+guest-owned server IDs when not yet registered; unrelated unknown
+servers and unsupported CALL methods still fail closed.
+The bounded pending bind is released only after real guest
+`sceSifRegisterRpc` and `sceSifSetRpcQueue` have made a server ready.
+No SIF0 Rend, client binding, guest callback, or completion interrupt
+is synthesized before that event. Reset clears pending bind state.
+
+The reference has an IOP-clock-based bind timeout. This native bridge
+does not yet have a calibrated shared deadline for these requests;
+they remain bounded by queue capacity but can wait indefinitely.
+The next matched Windows archive must establish whether ARKD_DVD's
+guest thread really registers server `0x500` and can service its
+subsequent RPC operations; passing synthetic CI is not boot validation.
