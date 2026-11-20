@@ -48,6 +48,10 @@ struct s_kernel_thread
     uint32_t m_id = 0u;
     uint32_t m_priority = 0u;
     uint32_t m_initial_priority = 0u;
+    // Original IOP CreateThread descriptor; ReferThreadStatus exposes
+    // these exact guest values rather than fabricated zeros.
+    uint32_t m_attr = 0u;
+    uint32_t m_option = 0u;
     uint32_t m_entry = 0u;
     uint32_t m_gp = 0u;
     uint32_t m_wakeup_count = 0u;
@@ -78,6 +82,8 @@ struct s_kernel_thread
     uint64_t m_guest_slices = 0u;
     uint64_t m_handled_syscalls = 0u;
     uint64_t m_self_restarts = 0u;
+    uint32_t m_last_self_restart_ra = 0u;
+    uint32_t m_last_self_restart_arg = 0u;
     uint32_t m_last_syscall_number = 0u;
     uint32_t m_last_syscall_pc = 0u;
     uint32_t m_last_syscall_ra = 0u;
@@ -198,7 +204,8 @@ public:
     uint32_t create_thread(
         uint32_t entry, uint32_t gp, uint32_t priority,
         uint32_t stack_size = 0x1000u,
-        uint32_t a0 = 0u, uint32_t a1 = 0u
+        uint32_t a0 = 0u, uint32_t a1 = 0u,
+        uint32_t attr = 0u, uint32_t option = 0u
     );
     uint32_t create_module_thread(
         uint32_t module_id, uint32_t priority,

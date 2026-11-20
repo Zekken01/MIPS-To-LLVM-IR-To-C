@@ -1510,8 +1510,8 @@ int main()
         return fail("SYS_MEM queried an impossible free-memory total");
     }
 
-    kernel.cpu().write32(0x2b00u, 0u);
-    kernel.cpu().write32(0x2b04u, 0u);
+    kernel.cpu().write32(0x2b00u, 0x02000000u);
+    kernel.cpu().write32(0x2b04u, 0x13572468u);
     kernel.cpu().write32(0x2b08u, 0x3000u);
     kernel.cpu().write32(0x2b0cu, 0x400u);
     kernel.cpu().write32(0x2b10u, 32u);
@@ -1525,6 +1525,8 @@ int main()
     const uint32_t managed_thread = result;
     uint32_t thread_status = 0u;
     uint32_t priority = 0u;
+    uint32_t attributes = 0u;
+    uint32_t options = 0u;
     if (!call_guest(
             kernel, "thbase", 14u,
             {managed_thread, 16u, 0u, 0u}, &result) ||
@@ -1533,6 +1535,10 @@ int main()
             kernel, "thbase", 22u,
             {managed_thread, 0x2b40u, 0u, 0u}, &result) ||
         result != 0u ||
+        !kernel.cpu().read32(0x2b40u, &attributes) ||
+        attributes != 0x02000000u ||
+        !kernel.cpu().read32(0x2b44u, &options) ||
+        options != 0x13572468u ||
         !kernel.cpu().read32(0x2b48u, &thread_status) ||
         thread_status != 16u ||
         !kernel.cpu().read32(0x2b60u, &priority) ||

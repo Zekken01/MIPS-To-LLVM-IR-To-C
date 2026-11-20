@@ -2228,3 +2228,78 @@ ARKD priority 50 when both are ready. The full bounded context
 list still includes all non-dormant threads. This changes only
 which real RAM words are printed at the final checkpoint, not the
 kernel scheduler, guest memory or any device state.
+
+
+## 2026-11-20 — 13:41 retail replay: PADMAN self-restart evidence
+
+The matched `ps2-game-hle(20261120-134117).zip`
+contains one 2,450,442-byte `quick-probe.log` and its
+39,423-byte `quick-probe.json`. Zero new IR functions
+were appended; final replay again has 830 linked
+functions, exactly 4,000,000 EE dispatches, 84,007,184
+guest instruction attempts, 16 GS fields and
+`DISPATCH` budget stop at `0x00178de8`. CDVDFSV
+RTC sequence 41 still returns result 1; PADMAN RPC
+14 returns the original guest buffer pointer. ARKD
+RPC token 15 (0x501 method 18, worker 12)
+queues, but does NOT enter or return.
+
+The new bounded thread counters supply the first concrete
+scheduler evidence: PADMAN thread **57**, ready/priority 46,
+executed **227,871** R3000 instructions in **177,422**
+slices, **2,075** handled syscalls and **259**
+original self-restarts. PADMAN thread **63**, same
+priority/status, executed **227,429** instructions
+in **177,370** slices, **2,073** handled syscalls
+and **259** self-restarts. ARKD thread **12**,
+ready/priority 50, remains at its earlier
+**87 instructions**, 15 slices, 7 syscalls,
+0 restarts. Strict native/reference priority
+scheduling correctly prevents ARKD worker 12
+from getting service while these PADMAN
+threads remain ready. The 259 self-restarts
+are real guest requests, not evidence that
+host scheduler should fabricate RPC or raise
+their priority. SIO2 starts/packets/completions
+are still all **0**, so SIO2 transport has
+not yet been invoked by the original PADMAN.
+
+The last observed syscall on PADMAN 57 is
+`0x494f1608` = `thevent#8 ClearEventFlag`.
+Thread 63's is `0x494f1516` =
+`thbase#22 ReferThreadStatus`. Their original
+opcode windows are at `0x001c6de0` and
+`0x001c8544` respectively, inside PADMAN
+IRX. These observations identify original
+guest behavior but do not prove the precise
+condition that makes it repeat.
+
+A separate reference parity omission was
+confirmed by reading the actual
+`ps2-web-recomp/SDBZ` kernel:
+`create_thread` persists guest descriptor
+`attr` and `option` in its Thread, and
+`thbase#22/#23` reports them at offsets
+0x00 and 0x04. Our native bridge ignored
+both descriptor words and fabricated zeros
+in `ReferThreadStatus`. Preserve the two
+original guest fields through the thread
+creation API (default zero for host-created
+threads) and return them in the 80-byte
+status record. Validate the whole five-word
+guest creation descriptor before reading.
+This is an independently justified semantic
+fix, not a claim that it alone resolves PADMAN.
+
+A regression now creates a real guest thread
+with descriptor attr `0x02000000`
+and option `0x13572468`, and verifies
+those exact fields are returned by
+`thbase#22` along with the original
+dormant status and priority. Additional
+bounded per-thread diagnostics retain
+the original self-restart caller's `ra`
+and new argument, to identify the exact
+guest callsite on the next retail run.
+Never overwrite original guest data,
+change priorities, or invent DMA/RPC completion.

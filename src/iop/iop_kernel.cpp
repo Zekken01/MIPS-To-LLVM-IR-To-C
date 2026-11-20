@@ -750,7 +750,8 @@ const std::map<uint32_t, s_kernel_module>& c_kernel::modules() const
 
 uint32_t c_kernel::create_thread(
     uint32_t entry, uint32_t gp, uint32_t priority,
-    uint32_t stack_size, uint32_t a0, uint32_t a1
+    uint32_t stack_size, uint32_t a0, uint32_t a1,
+    uint32_t attr, uint32_t option
 )
 {
     const uint32_t physical = entry & 0x1fffffffu;
@@ -777,6 +778,8 @@ uint32_t c_kernel::create_thread(
     thread.m_id = m_next_thread_id++;
     thread.m_priority = priority;
     thread.m_initial_priority = priority;
+    thread.m_attr = attr;
+    thread.m_option = option;
     thread.m_entry = entry;
     thread.m_gp = gp;
     thread.m_stack_base = stack_base;

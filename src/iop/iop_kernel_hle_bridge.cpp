@@ -1324,10 +1324,15 @@ bool c_kernel_hle_bridge::handle_thbase(uint32_t ordinal)
     case 4u:
     {
         const uint32_t descriptor = cpu.m_gpr[4];
+        uint32_t attr = 0u;
+        uint32_t option = 0u;
         uint32_t entry = 0u;
         uint32_t stack = 0u;
         uint32_t priority = 0u;
-        if (!m_kernel.cpu().read32(descriptor + 8u, &entry) ||
+        if (!is_iop_ram_span(descriptor, 20u) ||
+            !m_kernel.cpu().read32(descriptor, &attr) ||
+            !m_kernel.cpu().read32(descriptor + 4u, &option) ||
+            !m_kernel.cpu().read32(descriptor + 8u, &entry) ||
             !m_kernel.cpu().read32(descriptor + 12u, &stack) ||
             !m_kernel.cpu().read32(descriptor + 16u, &priority))
         {
@@ -1338,7 +1343,9 @@ bool c_kernel_hle_bridge::handle_thbase(uint32_t ordinal)
         // kernel error rather than faulting the caller's guest syscall.
         // Never publish a synthetic thread ID or an unusable stack.
         const uint32_t created =
-            m_kernel.create_thread(entry, cpu.m_gpr[28], priority, stack);
+            m_kernel.create_thread(
+                entry, cpu.m_gpr[28], priority, stack,
+                0u, 0u, attr, option);
         if (created == 0u)
         {
             const uint32_t physical = entry & 0x1fffffffu;
@@ -1410,6 +1417,21 @@ bool c_kernel_hle_bridge::handle_thbase(uint32_t ordinal)
                 ++m_thread_failure_trace_events;
             }
             return true;
+        }
+        // Record the actual guest caller before a self-restart
+        // resets its GPR context. Never change scheduling because of
+        // these bounded diagnostics.
+        if (self_restart)
+        {
+            // The kernel owns the cumulative counter and entry reset.
+            // Here we retain only guest-caller evidence for diagnosis.
+            s_kernel_thread* current =
+                m_kernel.mutable_thread(id);
+            if (current != nullptr)
+            {
+                current->m_last_self_restart_ra = cpu.m_gpr[31];
+                current->m_last_self_restart_arg = cpu.m_gpr[5];
+            }
         }
         const bool started = ordinal == 6u
             ? m_kernel.start_thread_with_argument(id, cpu.m_gpr[5])
@@ -1528,7 +1550,8 @@ bool c_kernel_hle_bridge::handle_thbase(uint32_t ordinal)
         default: return false;
         }
         const uint32_t words[20] = {
-            0u, 0u, status, thread->m_entry, thread->m_stack_base,
+            thread->m_attr, thread->m_option, status,
+            thread->m_entry, thread->m_stack_base,
             thread->m_stack_size, thread->m_gp,
             thread->m_initial_priority, thread->m_priority,
             thread->m_wait_type, 0u, thread->m_wakeup_count,
