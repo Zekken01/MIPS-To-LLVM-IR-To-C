@@ -155,6 +155,8 @@ private:
     std::map<uint32_t, s_ioman_file> m_ioman_files;
     std::map<uint32_t, s_interrupt> m_interrupts;
     std::map<uint32_t, s_semaphore> m_semaphores;
+    // Log each distinct guest WaitSema unknown ID once per IOP boot.
+    std::set<uint32_t> m_unknown_semaphore_wait_ids;
     std::map<uint32_t, s_event> m_events;
     std::map<uint32_t, s_mailbox> m_mailboxes;
     std::map<uint32_t, std::set<uint32_t>> m_heaps;
