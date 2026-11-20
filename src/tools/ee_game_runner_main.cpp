@@ -2085,6 +2085,12 @@ int main(int argc, char** argv)
     // diagnostic/scheduling guard, never a synthetic signal.
     uint32_t iop_semaphore_wait_turns = 0u;
     uint64_t iop_semaphore_wait_last_sif0 = 0u;
+    // The EE may poll a guest RPC indefinitely without another HLE syscall.
+    // Keep the IOP guest scheduler tied to elapsed EE guest cycles, not
+    // native dispatch counts or wall-clock time.
+    uint64_t guest_rpc_last_ee_cycle = 0u;
+    uint64_t guest_rpc_schedule_turns = 0u;
+    bool guest_rpc_schedule_active = false;
     ee::c_ee_dispatch_hotspots hotspots;
     std::vector<s_dispatch_sample> history;
     if (report_path != nullptr)
@@ -2140,6 +2146,98 @@ int main(int argc, char** argv)
                 "EE timing observer refused an event "
                 "(guest execution halted, no hardware timing inferred)\n");
             return 1;
+        }
+
+        // A genuine ARKD RPC handler may require several R3000 slices.
+        // Advancing only on SifSetDma / EE WaitSema starves the IOP when
+        // the EE polls its own RPC completion flag in translated code.
+        // ps2-web-recomp schedules IOP work against EE cycles (8:1).
+        // This bounded HLE-first cadence runs only for an outstanding
+        // guest call; it never creates an RPC reply, DMA completion or
+        // semaphore wakeup. The guest finish trampoline remains mandatory.
+        const bool guest_rpc_pending =
+            hle_startup && iop_rom0_path == nullptr &&
+            iop_rpc != nullptr && iop_kernel != nullptr &&
+            iop_rpc->pending_guest_calls() != 0u;
+        if (!guest_rpc_pending)
+        {
+            guest_rpc_schedule_active = false;
+        }
+        else
+        {
+            const uint64_t ee_cycle =
+                runtime.m_ee_cycle_scheduler.current_cycle();
+            if (!guest_rpc_schedule_active)
+            {
+                guest_rpc_schedule_active = true;
+                guest_rpc_last_ee_cycle = ee_cycle;
+            }
+            else if (ee_cycle >= guest_rpc_last_ee_cycle &&
+                     ee_cycle - guest_rpc_last_ee_cycle >= 2048u &&
+                     iop_kernel->has_guest_work())
+            {
+                // 2048 EE cycles permit at most 256 IOP guest steps.
+                // Do not backfill elapsed time with unbounded execution.
+                guest_rpc_last_ee_cycle = ee_cycle;
+                const iop::s_kernel_run_result progressed =
+                    iop_kernel->run(
+                        std::min<uint32_t>(iop_quantum, 256u), 128u);
+                ++guest_rpc_schedule_turns;
+                if (progressed.m_stop !=
+                        iop::e_kernel_stop::budget_exhausted &&
+                    progressed.m_stop != iop::e_kernel_stop::idle)
+                {
+                    const iop::s_cpu_state& state =
+                        iop_kernel->cpu().state();
+                    std::fprintf(stderr,
+                        "IOP HLE guest RPC scheduler stopped: "
+                        "thread=%u reason=%u pc=0x%08x "
+                        "opcode=0x%08x v0=0x%08x a0=0x%08x "
+                        "ra=0x%08x pending_calls=%zu\n",
+                        progressed.m_thread_id,
+                        static_cast<uint32_t>(progressed.m_stop),
+                        progressed.m_guest_pc, progressed.m_opcode,
+                        state.m_gpr[2], state.m_gpr[4],
+                        state.m_gpr[31], iop_rpc->pending_guest_calls());
+                    if (progressed.m_stop ==
+                        iop::e_kernel_stop::memory_fault)
+                    {
+                        const iop::s_memory_fault& fault =
+                            iop_kernel->cpu().last_memory_fault();
+                        std::fprintf(stderr,
+                            "IOP HLE guest RPC memory fault: "
+                            "address=0x%08x width=%u write=%u valid=%u\n",
+                            fault.m_address, fault.m_width,
+                            fault.m_write ? 1u : 0u,
+                            fault.m_valid ? 1u : 0u);
+                    }
+                    reason = static_cast<uint32_t>(
+                        ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED);
+                    status = 0u;
+                    cpu.m_exit_reason = reason;
+                    break;
+                }
+                if (trace &&
+                    (guest_rpc_schedule_turns <= 4u ||
+                     guest_rpc_schedule_turns % 64u == 0u ||
+                     iop_rpc->pending_guest_calls() == 0u))
+                {
+                    std::printf(
+                        "IOP HLE guest RPC scheduler turn: "
+                        "turn=%llu ee_cycle=%llu thread=%u "
+                        "instructions=%llu stop=%u pending_calls=%zu "
+                        "replies=%zu\n",
+                        static_cast<unsigned long long>(
+                            guest_rpc_schedule_turns),
+                        static_cast<unsigned long long>(ee_cycle),
+                        progressed.m_thread_id,
+                        static_cast<unsigned long long>(
+                            progressed.m_executed),
+                        static_cast<uint32_t>(progressed.m_stop),
+                        iop_rpc->pending_guest_calls(),
+                        iop_rpc->pending_replies());
+                }
+            }
         }
 
         // Kernel HLE services completed device interrupts before handing

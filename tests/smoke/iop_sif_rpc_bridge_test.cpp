@@ -565,6 +565,7 @@ bool test_guest_rpc_lifecycle(const std::filesystem::path& disc_root)
     dmac.acknowledge(5u);
     dmac.acknowledge(6u);
     if (!sif1.set_dma(k_list, 2u, &dma_id) ||
+        rpc.pending_guest_calls() != 1u ||
         memory.read32(k_result) != 0xcafebabeu ||
         rpc.pending_replies() != 0u ||
         (dmac.status() & (1u << 5u)) != 0u)
@@ -577,6 +578,7 @@ bool test_guest_rpc_lifecycle(const std::filesystem::path& disc_root)
     loop_thread = kernel.thread(loop_id);
     if ((finished.m_stop != iop::e_kernel_stop::idle &&
          finished.m_stop != iop::e_kernel_stop::budget_exhausted) ||
+        rpc.pending_guest_calls() != 0u ||
         loop_thread == nullptr ||
         loop_thread->m_status != iop::e_thread_status::blocked ||
         !kernel.cpu().read32(k_buffer, &guest_value) ||

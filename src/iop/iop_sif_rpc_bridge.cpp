@@ -1275,6 +1275,11 @@ size_t c_sif_rpc_bridge::pending_replies() const
     return m_replies.size();
 }
 
+size_t c_sif_rpc_bridge::pending_guest_calls() const
+{
+    return m_guest_pending.size();
+}
+
 size_t c_sif_rpc_bridge::pending_binds() const
 {
     return m_deferred_binds.size();

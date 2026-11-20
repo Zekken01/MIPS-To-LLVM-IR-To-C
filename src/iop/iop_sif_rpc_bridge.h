@@ -173,6 +173,9 @@ public:
     // Pending replies remain queued if the EE cannot accept them yet.
     bool pump();
     size_t pending_replies() const;
+    // Calls pending a real R3000 SIFCMD finish trampoline.
+    // A committed request alone never counts as a completed reply.
+    size_t pending_guest_calls() const;
     size_t pending_binds() const;
     // A blocked EE bind permits a guest IOP scheduler turn only while
     // real R3000 threads or guest-owned timed work are runnable.

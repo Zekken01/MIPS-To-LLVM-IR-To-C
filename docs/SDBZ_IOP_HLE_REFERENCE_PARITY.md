@@ -1076,3 +1076,42 @@ and the actual guest response after `-408`; determine whether
 the RPC method handles it or needs further authentic producer/
 allocator investigation. Keep SIF0/DMA5 and guest RPC completion
 evidence separate from successful server registration.
+
+## 2026-11-20 05:21:52 — ARKD method 1 survives unknown WaitSema; IOP scheduling gap
+
+Matched replay `ps2-game-hle(20261120-052152).zip` contains boot and expansion
+logs, first-boot report, disc catalog, translation cache and all three GS
+snapshots. The native runner reuses 421 cached LLVM functions, reaches the
+100,000 EE dispatch ceiling (16,912,906 EE instruction attempts), and
+commits the same 29 SIF RPC commands. Six original IRX start threads and
+ARKD server registrations `0x500..0x503` remain established. All three
+images are black. This is not a successful game boot.
+
+The prior fatal `thsemap` #8 at IOP PC `0x000147A8` is now handled as the
+reference kernel error `-408`; its requested ID is **zero**, not an
+allocated semaphore. The diagnostic reports IOP thread 9, RA `0x0007D648`,
+and existing semaphore IDs `2..8`. Do not invent ID zero or imply its
+producer has been found. Guest methods `0x12` and `0x11` reach idle after
+65 and 60 R3000 instructions respectively and have subsequent observed
+EE DMA5 callbacks. Method `0x01` instead exhausts the initial 256-step
+IOP guest quantum without a verified finish/reply.
+
+From EE dispatch 11,779 onward the native trace alternates between
+`0x00178DE8` and `0x001BD58C` and reaches its dispatch limit. The
+runner previously invoked guest IOP slices only at selected EE SIF
+HLE boundaries and trapped `WaitSema`, not while EE executed this
+translated-code polling loop. The primary `ps2-web-recomp/SDBZ`
+`runtime/src/iop/kernel.cpp` advances IOP work against elapsed EE
+cycles. The follow-up change therefore schedules at most one bounded
+256-instruction R3000 slice per 2,048 elapsed EE guest cycles while an
+actual guest RPC remains pending and IOP work is runnable. This is a
+narrow HLE-first scheduling step, **not** a full calibrated IOP clock.
+
+The IOP guest call pending count is read from actual unfinished RPC
+records. Errors and guest memory faults propagate as explicit stops;
+no reply, DMA5 completion, semaphore or readiness is synthesized. A
+regression checks that a committed guest request remains pending with
+unchanged EE return memory and no DMA5 until its genuine R3000 handler
+finishes; the pending count then drops to zero. CI and the next local
+Windows replay must validate the runtime path. In particular, the
+origin and guest handling of `WaitSema(0)` remain unresolved.
