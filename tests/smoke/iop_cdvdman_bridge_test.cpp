@@ -299,10 +299,12 @@ int main()
     }
 
 
-    // Clock and mounted-disc state are actual guest-callable imports,
-    // not merely synthetic static registration. No unsupported read,
-    // seek, interrupt, or callback completion may be registered.
-    for (uint16_t ordinal : {4u, 5u, 6u, 8u, 10u, 11u, 12u, 13u, 24u, 28u})
+    // Each supported CDVDMAN ordinal has an executable guest stub;
+    // unknown hardware commands still fail to link.
+    for (uint16_t ordinal : {
+        4u, 5u, 6u, 8u, 10u, 11u, 12u, 13u,
+        15u, 24u, 28u, 37u, 38u, 75u
+    })
     {
         uint32_t entry = 0u;
         uint32_t instruction = 0u;
@@ -313,7 +315,7 @@ int main()
             return fail("supported CDVDMAN import has no guest stub");
         }
     }
-    for (uint16_t ordinal : {7u, 22u, 37u})
+    for (uint16_t ordinal : {7u, 22u, 39u})
     {
         uint32_t entry = 0u;
         if (kernel.lookup_library("cdvdman", ordinal, &entry))
@@ -487,6 +489,161 @@ int main()
         sentinel != expected_word)
     {
         return fail("sceCdRead accepted out-of-range mounted-disc LBA");
+    }
+
+    // Exercise all four remaining static ARKD_DVD CDVDMAN imports.
+    // In particular, #37 must execute actual R3000 guest callback code
+    // when a real staged CDVD read finishes, not just store a pointer.
+    iop::c_kernel callback_kernel;
+    iop::c_cdvdman_bridge callback_bridge(callback_kernel, media);
+    std::vector<uint8_t> callback_irx = make_irx(37u);
+    put32(callback_irx, 0x104u, 0x34846000u); // a0=0x36000 callback
+    if (!callback_bridge.install())
+    {
+        return fail("CDVD callback bridge installation failed");
+    }
+    const iop::s_module_load_result callback_module =
+        callback_kernel.load_module(callback_irx);
+    if (callback_module.m_status != iop::e_irx_load_result::success)
+    {
+        return fail("ARKD_DVD sceCdCallback import did not link");
+    }
+    // A real guest handler writes its reason and GP to IOP RAM, then
+    // returns through the kernel's explicit one-shot callback target.
+    constexpr uint32_t k_guest_callback = 0x36000u;
+    constexpr uint32_t k_guest_callback_result = 0x35000u;
+    const uint32_t callback_words[] = {
+        0x3c080003u, // lui t0, 3
+        0x35085000u, // ori t0, t0, 0x5000
+        0xad040000u, // sw a0, 0(t0)
+        0xad1c0004u, // sw gp, 4(t0)
+        0x03e00008u, // jr ra
+        0x00000000u
+    };
+    for (uint32_t i = 0u;
+         i < sizeof(callback_words) / sizeof(callback_words[0]); ++i)
+    {
+        if (!callback_kernel.cpu().write32(
+                k_guest_callback + i * 4u, callback_words[i]))
+        {
+            return fail("could not install guest CDVD callback code");
+        }
+    }
+    if (!callback_kernel.cpu().write32(
+            k_guest_callback_result, 0xdeadbeefu) ||
+        !callback_kernel.cpu().write32(
+            k_guest_callback_result + 4u, 0xdeadbeefu))
+    {
+        return fail("could not initialize CDVD callback sentinels");
+    }
+    const uint32_t callback_thread =
+        callback_kernel.create_module_thread(callback_module.m_id, 1u);
+    const iop::s_kernel_module* callback_loaded =
+        callback_kernel.module(callback_module.m_id);
+    if (callback_thread == 0u || callback_loaded == nullptr ||
+        !callback_kernel.start_thread(callback_thread))
+    {
+        return fail("CDVD callback registration thread could not start");
+    }
+    const uint32_t expected_gp = callback_loaded->m_irx.m_gp;
+    callback_kernel.bind_syscall(
+        [&](iop::c_kernel& active, uint32_t service)
+        {
+            return callback_bridge.handle_syscall(active, service);
+        }
+    );
+    const iop::s_kernel_run_result registered =
+        callback_kernel.run(64u, 64u);
+    const iop::s_kernel_thread* registered_thread =
+        callback_kernel.thread(callback_thread);
+    if (registered.m_stop != iop::e_kernel_stop::budget_exhausted ||
+        registered_thread == nullptr ||
+        registered_thread->m_cpu.m_gpr[2] != 0u)
+    {
+        return fail("sceCdCallback guest registration failed");
+    }
+    callback_kernel.cpu().state().m_gpr[4] = expected.m_lba;
+    callback_kernel.cpu().state().m_gpr[5] = 1u;
+    callback_kernel.cpu().state().m_gpr[6] = 0x31000u;
+    callback_kernel.cpu().state().m_gpr[7] = 0u;
+    if (!callback_bridge.handle_syscall(
+            callback_kernel,
+            iop::c_cdvdman_bridge::k_service_base + 6u) ||
+        callback_kernel.cpu().state().m_gpr[2] != 1u)
+    {
+        return fail("CDVD read with registered callback was not queued");
+    }
+    for (uint32_t ordinal : {15u, 38u})
+    {
+        if (!callback_bridge.handle_syscall(
+                callback_kernel,
+                iop::c_cdvdman_bridge::k_service_base + ordinal) ||
+            callback_kernel.cpu().state().m_gpr[2] != 1u ||
+            !callback_bridge.handle_syscall(
+                callback_kernel,
+                iop::c_cdvdman_bridge::k_service_base + 28u) ||
+            callback_kernel.cpu().state().m_gpr[2] != 6u)
+        {
+            return fail("sceCdStop/Pause fabricated pending read completion");
+        }
+    }
+    // DVD mode and automatic selection are valid; CD-only does not
+    // transform our mounted virtual DVD into a different medium.
+    for (uint32_t mode : {0u, 2u})
+    {
+        callback_kernel.cpu().state().m_gpr[4] = mode;
+        if (!callback_bridge.handle_syscall(
+                callback_kernel,
+                iop::c_cdvdman_bridge::k_service_base + 75u) ||
+            callback_kernel.cpu().state().m_gpr[2] != 1u)
+        {
+            return fail("sceCdMmode rejected mounted DVD mode");
+        }
+    }
+    callback_kernel.cpu().state().m_gpr[4] = 1u;
+    if (!callback_bridge.handle_syscall(
+            callback_kernel,
+            iop::c_cdvdman_bridge::k_service_base + 75u) ||
+        callback_kernel.cpu().state().m_gpr[2] != 0u)
+    {
+        return fail("sceCdMmode accepted absent CD media");
+    }
+    uint32_t callback_reason = 0u;
+    uint32_t callback_gp = 0u;
+    if (!callback_kernel.cpu().read32(
+            k_guest_callback_result, &callback_reason) ||
+        callback_reason != 0xdeadbeefu ||
+        callback_kernel.hardware().pending_interrupts() != 0u)
+    {
+        return fail("CDVD callback fired before an actual read completion");
+    }
+    (void)callback_kernel.run(256u, 64u);
+    if (!callback_kernel.cpu().read32(
+            k_guest_callback_result, &callback_reason) ||
+        !callback_kernel.cpu().read32(
+            k_guest_callback_result + 4u, &callback_gp) ||
+        callback_reason != 1u || callback_gp != expected_gp ||
+        callback_kernel.hardware().pending_interrupts() != 0u ||
+        callback_kernel.hardware().cdvd_ncmd_pending())
+    {
+        return fail("completed CDVD read did not run real guest callback");
+    }
+    // The guest callback must be replaceable and unregisterable,
+    // returning the previous function address as the PS2 ABI requires.
+    callback_kernel.cpu().state().m_gpr[4] = 0u;
+    if (!callback_bridge.handle_syscall(
+            callback_kernel,
+            iop::c_cdvdman_bridge::k_service_base + 37u) ||
+        callback_kernel.cpu().state().m_gpr[2] != k_guest_callback)
+    {
+        return fail("sceCdCallback did not return previous guest handler");
+    }
+    callback_kernel.cpu().state().m_gpr[4] = 0x001fffffu;
+    if (callback_bridge.handle_syscall(
+            callback_kernel,
+            iop::c_cdvdman_bridge::k_service_base + 37u))
+    {
+        return fail("sceCdCallback accepted invalid guest code pointer");
     }
 
     // Isolate a second authentic guest IRX import for sceCdReadClock.
