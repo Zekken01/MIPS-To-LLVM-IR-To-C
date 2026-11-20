@@ -331,6 +331,33 @@ int main()
         }
     }
 
+    {
+        // These six original US game words form the reached VF4
+        // squared-length -> SQRT(Q) -> length sequence, and must be
+        // lifted to real native VU0 macro helpers (not HLE/no-ops).
+        constexpr uint32_t k_words[] = {
+            0x4bc4212au, 0x4b042101u, 0x4b042102u,
+            0x4a0403bdu, 0x4a0003bfu, 0x4b000120u
+        };
+        constexpr const char* k_names[] = {
+            "vmul", "vaddy", "vaddz", "vsqrt", "vwaitq", "vaddq"
+        };
+        for (uint32_t i = 0u; i < 6u; ++i)
+        {
+            const auto ins = decode(0x001069ecu + i * 4u, k_words[i]);
+            const bool ok = ins.valid == V &&
+                std::strcmp(ins.mnemonic, k_names[i]) == 0 &&
+                lift(ins).kind == LOP_VU0_MACRO;
+            ok ? ++g_pass : ++g_fail;
+            if (!ok)
+            {
+                std::printf(
+                    "FAIL retail SDBZ vector-length macro %u: %08x -> %s/%d\\n",
+                    i, k_words[i], ins.mnemonic, (int)ins.valid);
+            }
+        }
+    }
+
     expect("reserved macro", R(0x12,0x10,4,5,0,0x33), "cop2_reserved", X);
     expect("reserved special2", R(0x12,0x10,4,5,20,0x3c), "cop2_reserved", X); // index 80
     expect("reserved rs", R(0x12,0,4,5,0,0), "cop2_reserved", X);
@@ -374,14 +401,17 @@ int main()
     expect("bc2 rt=31", R(0x12,8,31,0,0,0x02), "cop2_reserved", X);
 
     // Exhaustively check the published SPECIAL1/SPECIAL2 dispatch tables.
-    // Reserved encodings must stay INVALID; recognized operations remain
-    // UNSUPPORTED until a complete VU0 lowering exists.
+    // Reserved encodings remain INVALID. Only actually implemented
+    // vector-length, matrix-FMAC and indexed-memory macros are VALID;
+    // other recognized COP2 encodings must remain UNSUPPORTED.
     for (uint32_t funct = 0; funct < 64; ++funct)
     {
         const bool defined = funct <= 50 || funct == 52 || funct == 53 ||
                              funct == 56 || funct == 57 || funct >= 60;
         const auto ins = decode(0x100000, R(0x12,0x10,0,0,0,funct));
-        const auto want = !defined ? X : (funct == 0x0bu ? V : U);
+        const bool native = funct == 0x0bu || funct == 0x01u ||
+            funct == 0x02u || funct == 0x20u || funct == 0x2au;
+        const auto want = !defined ? X : (native ? V : U);
         const bool ok = ins.valid == want;
         ok ? ++g_pass : ++g_fail;
         if (!ok) std::printf("FAIL COP2 SPECIAL1 funct=%02x valid=%u want=%u\n",
@@ -396,6 +426,7 @@ int main()
         const auto ins = decode(0x100000, R(0x12,0x10,0,0,sa,funct));
         const auto want = !defined ? X :
             (index == 0x09u || index == 0x0au || index == 0x18u ||
+             index == 0x39u || index == 0x3bu ||
              (index >= 0x34u && index <= 0x37u) ? V : U);
         const bool ok = ins.valid == want;
         ok ? ++g_pass : ++g_fail;
