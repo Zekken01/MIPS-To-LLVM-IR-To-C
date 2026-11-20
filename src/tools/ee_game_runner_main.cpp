@@ -225,11 +225,15 @@ void dump_pending_iop_guest_rpc(
     std::fprintf(stderr,
         "IOP guest RPC pending snapshot: phase=%s ee_dispatch=%llu "
         "iop_cycles=%llu pending_calls=%zu guest_work=%u "
-        "ready=%u blocked=%u faulted=%u threads=%zu\n",
+        "ready=%u blocked=%u faulted=%u threads=%zu "
+        "sio2_ctrl_starts=%u sio2_packets=%u sio2_completed=%u\n",
         phase, static_cast<unsigned long long>(ee_dispatches),
         static_cast<unsigned long long>(kernel.cycles()),
         pending_calls, kernel.has_guest_work() ? 1u : 0u,
-        ready, blocked, faulted, kernel.threads().size());
+        ready, blocked, faulted, kernel.threads().size(),
+        kernel.hardware().sio2_ctrl_starts(),
+        kernel.hardware().sio2_packets(),
+        kernel.hardware().sio2_completed_transfers());
 
     uint32_t sampled_opcode_windows = 0u;
     for (const auto& entry : kernel.threads())

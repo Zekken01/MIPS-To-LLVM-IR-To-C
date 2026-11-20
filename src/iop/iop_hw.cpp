@@ -50,6 +50,9 @@ void c_hw::reset()
     m_sio2_pending_tx.clear();
     m_sio2_rx.clear();
     m_sio2_transfer_requested = false;
+    m_sio2_ctrl_start_count = 0u;
+    m_sio2_packet_count = 0u;
+    m_sio2_transfer_count = 0u;
     m_timer5_count = 0u;
     m_timer5_mode = 0u;
     m_timer5_target = 0u;
@@ -320,6 +323,7 @@ bool c_hw::process_sio2_packet()
     }
     m_sio2_pending_tx.clear();
     ++m_sio2_index;
+    ++m_sio2_packet_count;
     return true;
 }
 
@@ -453,6 +457,7 @@ bool c_hw::run_sio2_transfer()
         (void)complete_dma_channel(12u);
     }
     m_sio2_transfer_requested = false;
+    ++m_sio2_transfer_count;
     (void)raise_interrupt(17u);
     return true;
 }
@@ -1200,6 +1205,7 @@ bool c_hw::write(
         }
         if ((value & 1u) != 0u)
         {
+            ++m_sio2_ctrl_start_count;
             m_sio2_transfer_requested = true;
             (void)run_sio2_transfer();
         }
@@ -1536,6 +1542,21 @@ bool c_hw::sio2_tx_byte(size_t index, uint8_t* value) const
 bool c_hw::sio2_transfer_requested() const
 {
     return m_sio2_transfer_requested;
+}
+
+uint32_t c_hw::sio2_ctrl_starts() const
+{
+    return m_sio2_ctrl_start_count;
+}
+
+uint32_t c_hw::sio2_packets() const
+{
+    return m_sio2_packet_count;
+}
+
+uint32_t c_hw::sio2_completed_transfers() const
+{
+    return m_sio2_transfer_count;
 }
 
 bool c_hw::complete_cdvd_read(uint8_t interrupt_reason)

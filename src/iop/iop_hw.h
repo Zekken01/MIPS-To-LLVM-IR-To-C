@@ -172,6 +172,11 @@ public:
     size_t sio2_pending_tx_bytes() const;
     bool sio2_tx_byte(size_t index, uint8_t* value) const;
     bool sio2_transfer_requested() const;
+    // Observability only: real guest MMIO requests and completed
+    // SIO2 transactions. Reading these values has no guest side effects.
+    uint32_t sio2_ctrl_starts() const;
+    uint32_t sio2_packets() const;
+    uint32_t sio2_completed_transfers() const;
 
 private:
     bool scratchpad_range(uint32_t address, uint32_t width) const;
@@ -224,6 +229,9 @@ private:
     std::vector<uint8_t> m_sio2_pending_tx;
     std::deque<uint8_t> m_sio2_rx;
     bool m_sio2_transfer_requested = false;
+    uint32_t m_sio2_ctrl_start_count = 0u;
+    uint32_t m_sio2_packet_count = 0u;
+    uint32_t m_sio2_transfer_count = 0u;
     uint32_t m_timer5_count = 0u;
     uint32_t m_timer5_mode = 0u;
     uint32_t m_timer5_target = 0u;

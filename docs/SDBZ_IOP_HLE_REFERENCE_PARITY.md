@@ -2128,3 +2128,23 @@ guest RPC completion is created.
 This is a verified original-semantic discrepancy. Whether
 PADMAN's original worker becomes blocked correctly and ARKD
 RPC token 15 completes must be verified by a new retail run.
+
+
+### Bounded SIO2 retail observability
+
+The previous retail log had no SIO2 event trace, so the mere
+presence of the new virtual-controller implementation did not
+establish that PADMAN actually reached it. Report three
+monotonically increasing device counters in the already-bounded
+`IOP guest RPC pending snapshot` diagnostic (only when a real
+guest RPC is outstanding): `sio2_ctrl_starts` counts actual
+guest CTRL.start writes; `sio2_packets` counts successfully
+parsed SEND3 packets; `sio2_completed` counts fully completed
+controller transactions with IRQ17. The counters reset with
+IOP reboot. PIO/DMA/regression tests assert the exact values,
+including no phantom completion after invalid DMA source.
+Counters do not create a device event, alter timing or log on
+every controller request. In the next retail batch, zeros
+indicate the device path was never used and nonzero values can
+be correlated with PADMAN worker state. Neither outcome is
+assumed here.

@@ -357,6 +357,12 @@ bool test_guest_sio2_controller()
     {
         return false;
     }
+    if (hw.sio2_ctrl_starts() != 2u ||
+        hw.sio2_packets() != 1u ||
+        hw.sio2_completed_transfers() != 1u)
+    {
+        return false;
+    }
     for (uint32_t index = 0u; index < 5u; ++index)
     {
         if (!hw.read(rx, 1u, &status) ||
@@ -408,6 +414,13 @@ bool test_guest_sio2_controller()
         return false;
     }
 
+    if (hw.sio2_ctrl_starts() != 3u ||
+        hw.sio2_packets() != 2u ||
+        hw.sio2_completed_transfers() != 2u)
+    {
+        return false;
+    }
+
     // An out-of-bounds DMA11 source cannot cause a false transfer or
     // clear STR. Real DMA reads must pass RAM preflight.
     if (!hw.write(ctrl, 4u, 0x0cu) ||
@@ -420,12 +433,18 @@ bool test_guest_sio2_controller()
         !hw.read(dma11 + 8u, 4u, &status) ||
         (status & 0x01000000u) == 0u ||
         !hw.read(iop::c_hw::k_i_stat, 4u, &status) ||
-        (status & irq) != 0u)
+        (status & irq) != 0u ||
+        hw.sio2_ctrl_starts() != 4u ||
+        hw.sio2_packets() != 2u ||
+        hw.sio2_completed_transfers() != 2u)
     {
         return false;
     }
     kernel.reset();
-    return !kernel.hardware().sio2_transfer_requested() &&
+    return kernel.hardware().sio2_ctrl_starts() == 0u &&
+        kernel.hardware().sio2_packets() == 0u &&
+        kernel.hardware().sio2_completed_transfers() == 0u &&
+        !kernel.hardware().sio2_transfer_requested() &&
         kernel.hardware().sio2_pending_tx_bytes() == 0u &&
         kernel.hardware().pending_interrupts() == 0u;
 }
