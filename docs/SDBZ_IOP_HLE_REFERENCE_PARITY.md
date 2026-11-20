@@ -519,3 +519,39 @@ link eligibility are synthetic/structural claims only until the next
 Windows replay. The lower EE dispatch count is not evidence of
 regression by itself; the new path terminates at an entirely
 different EE EPC and new IOP guest fault.
+
+
+## 2026-11-20 — Windows archive 9: CDVDMAN asynchronous read batch
+
+The matched `ps2-game-hle(9).zip` has the expected USA ELF hash
+`1b213a85a2c305dc0f893c007a502c93e0851d1bb7db6164f9e0b72adb074a16`,
+the same extracted-disc root, 15,057 EE dispatches, 3,529 cached IR
+functions, and five successfully linked/started guest IOP modules.
+LOADFILE request 18 for `ARKD_DVD.IRX` still failed linking, but
+its first missing import changed from `cdvdman#5` to `cdvdman#6`.
+No ARKD module ID or thread was created; this is a link dependency,
+not evidence that a guest read was executed. The EE stopped at
+syscall-exception EPC `0x001748C4`. All three PPMs are fully black.
+
+New `sceCdRead` HLE uses the validated folder-sector source and
+reference `ps2-web-recomp/runtime/src/iop/cdvd.cpp` command state.
+Only actual mounted 2048-byte sectors with a fully validated IOP
+guest-RAM output region are accepted. Actual disc data is staged
+at request time, then committed after an explicit virtual IOP
+instruction-clock event. No host-time polling, physical CDVD IRQ,
+DMA completion, SIF reply or unimplemented guest callback is invented.
+The compatibility delay is not calibrated to reference physical
+400us + 250us-per-sector disc timing.
+
+`sceCdSync` polling returns the genuine pending state; a nonpolling
+wait blocks the caller until the staged transfer is committed.
+`sceCdStatus` reports busy during the pending interval. The kernel
+advances explicitly scheduled HLE events while waiting and clears
+them on reboot. Synthetic guest R3000 tests cover import linking,
+the original JAL import call, exact returned mounted-sector bytes,
+polling/busy/idle states, invalid-source rejection and zero
+fabricated interrupt.
+
+ARKD_DVD additionally imports CDVDMAN `#15/#37/#38/#75`,
+`vblank#8` and LIBSD functions. Their runtime behavior remains
+unverified; static import inventory alone does not establish it.
