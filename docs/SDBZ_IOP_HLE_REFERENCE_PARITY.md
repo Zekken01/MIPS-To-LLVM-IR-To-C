@@ -4,11 +4,11 @@
 
 Main architectural reference: [twist84/ps2-web-recomp, `SDBZ` branch](https://github.com/twist84/ps2-web-recomp/tree/SDBZ), specifically [`runtime/src/iop/libs.cpp`](https://github.com/twist84/ps2-web-recomp/blob/SDBZ/runtime/src/iop/libs.cpp), blob `061b8a092688660005764d9d45d9fb1f348546df`.
 
-Current native LLVM-IR implementation: [`src/iop/iop_kernel_hle_bridge.cpp`](../src/iop/iop_kernel_hle_bridge.cpp), audited blob `623875f9bacb21633a539ce2529570b81132c474`.
+Current native LLVM-IR implementation: [`src/iop/iop_kernel_hle_bridge.cpp`](../src/iop/iop_kernel_hle_bridge.cpp); the baseline audited blob was `623875f9bacb21633a539ce2529570b81132c474`.
 
-The reference file defines **172 explicitly named `def("library", ordinal, ...)` handlers**. The HLE-first runtime now installs **181 guest-callable export ordinals** across
-the kernel bridge (148), CDVDMAN bridge (7), SIFCMD bridge (13) and
-SIFMAN bridge (13). **133** of the kernel bridge exports match explicitly
+The reference file defines **172 explicitly named `def("library", ordinal, ...)` handlers**. The HLE-first runtime now installs **185 guest-callable export ordinals** across
+the kernel bridge (152), CDVDMAN bridge (7), SIFCMD bridge (13) and
+SIFMAN bridge (13). **137** of the kernel bridge exports match explicitly
 named `libs.cpp` reference definitions. The earlier 152 count omitted
 seven pre-existing registrations in separate device/SIF bridges. Counts include no claim about full behavioral equivalence. The reference also uses loops/dynamic registrations (e.g. `secrman#4/#5`) and separate IOP modules (`io.cpp`, `sif.cpp`, `cdvd.cpp`, `spu2.cpp`) and EE kernel syscalls. The full reference runtime is larger than these 172 direct definitions.
 
@@ -30,7 +30,7 @@ Never bulk-register an unimplemented opcode. Each `k_exports` entry installs a *
 | `sysclib` | 29/31 | `4 setjmp`, `5 longjmp` |
 | `stdio` | 3/3 | — |
 | `modload` | 6/8 | `7 LoadStartModule`, `8 StartModule` |
-| `vblank` | 0/6 | `4 WaitVblankStart`, `5 WaitVblankEnd`, `6 WaitVblank`, `7 WaitNonVblank`, `8 RegisterVblankHandler`, `9 ReleaseVblankHandler` |
+| `vblank` | 4/6 | `8 RegisterVblankHandler`, `9 ReleaseVblankHandler` |
 | `timrman` | 0/13 | `4 AllocHardTimer`, `5 ReferHardTimer`, `6 FreeHardTimer`, `7 SetTimerMode`, `8 GetTimerStatus`, `9 SetTimerCounter`, `10 GetTimerCounter`, `11 SetTimerCompare`, `16 GetHardTimerIntrCode`, `20 SetTimerHandler`, `22 SetupHardTimer`, `23 StartHardTimer`, `24 StopHardTimer` |
 | `dmacman` | 5/7 | `16 dmac_set_dpcr2`, `17 dmac_get_dpcr2` |
 | `heaplib` | 4/4 | — |
@@ -439,3 +439,40 @@ EE rendering behavior is claimed.
 **Next matched Windows boot is required** before declaring
 `CRI_ADXI.IRX` successfully linked or started, since CI
 only validates synthetic guest import and ABI fixtures.
+
+## 2026-11-20 — CRI_ADXI VBLANK wait batch (archive 7)
+
+The matched Windows final replay in `ps2-game-hle(7).zip` has 14,805 EE
+dispatches, 3,526 translation-cache entries, zero new IR functions,
+17 committed LOADFILE requests and four actually started IRX modules.
+`CRI_ADXI.IRX` still fails its *link*, but its first unresolved import
+has changed from `sysclib#19` to `vblank#5`. The terminal guest
+`KExit` EPC remains `0x001748C4`; all three GS PPMs contain zero
+nonblack pixels. This is evidence that the previously added SYSCLIB
+formatter cleared a link dependency, **not** proof of gameplay,
+audio initialization or successful CRI startup.
+
+The reference `ps2-web-recomp/runtime/src/iop/libs.cpp` and PS2SDK
+`iop/kernel/include/vblank.h` agree on VBLANK ordinals `#4..#7`.
+They now install executable R3000 import stubs with real thread
+blocking: `#4/#6` wait for the next VBlank **start**, and `#5/#7`
+wait for the next VBlank **end**. A separately delivered matching
+edge wakes the original guest thread and returns zero. Opposite edges
+do not wake it; no host timeout, synthetic interrupt or fake GPU
+present event is used. Wait state is cleared on IOP reboot.
+
+The EE runner forwards **start** only when its scanout scheduler has
+actually delivered a field-start event. The current scanout clock
+does **not** expose a validated end-edge event, so `#5/#7` will
+remain blocked if invoked until that hardware-model event is
+implemented. The reference's callback registration `#8/#9` remains
+unregistered: no guest callback or interrupt-context completion is
+invented. The reference-compatibility EE clock is not hardware cycle
+calibration.
+
+Regression tests use actual guest R3000 calls for every wait ordinal,
+assert no wake without a matching edge, test start/end disjointness,
+and verify the guest resumes and reaches its own breakpoint after
+the matching edge. Link eligibility has advanced in synthetic tests;
+only a new matched Windows archive can establish actual CRI link
+and startup outcomes.

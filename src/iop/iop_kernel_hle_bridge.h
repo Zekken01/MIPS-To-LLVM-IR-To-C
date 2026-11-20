@@ -26,6 +26,9 @@ public:
 
     bool install();
     void reset_for_reboot();
+    // The producer must supply a real start/end event; the wait
+    // services never schedule or invent an edge themselves.
+    void signal_vblank_edge(bool start);
     bool handle_syscall(c_kernel& kernel, uint32_t service);
     void attach_disc_source(c_folder_sector_source* source);
 
@@ -130,6 +133,7 @@ private:
     bool handle_modload(uint32_t ordinal);
     bool handle_ioman(uint32_t ordinal);
     bool handle_secrman(uint32_t ordinal);
+    bool handle_vblank(uint32_t ordinal);
 
     struct s_ioman_file
     {
@@ -148,6 +152,8 @@ private:
     std::map<uint32_t, std::set<uint32_t>> m_heaps;
     std::map<uint32_t, s_fixed_pool> m_fixed_pools;
     std::map<uint32_t, s_variable_pool> m_variable_pools;
+    std::vector<uint32_t> m_vblank_start_waiters;
+    std::vector<uint32_t> m_vblank_end_waiters;
     uint32_t m_dma_direction[16]{};
     uint32_t m_strtok_next = 0u;
     uint32_t m_check_kelf_path_callback = 0u;

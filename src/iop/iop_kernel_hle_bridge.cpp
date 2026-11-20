@@ -102,7 +102,9 @@ constexpr s_export k_exports[] = {
     {"ioman", 8u, 15u}, {"ioman", 16u, 15u},
     {"ioman", 20u, 15u}, {"ioman", 21u, 15u},
     {"secrman", 4u, 16u}, {"secrman", 5u, 16u},
-    {"secrman", 6u, 16u}
+    {"secrman", 6u, 16u},
+    {"vblank", 4u, 17u}, {"vblank", 5u, 17u},
+    {"vblank", 6u, 17u}, {"vblank", 7u, 17u}
 };
 
 // SYSCLIB byte-memory functions operate on IOP RAM, including KSEG0/1
@@ -272,6 +274,8 @@ void c_kernel_hle_bridge::reset_for_reboot()
     m_heaps.clear();
     m_fixed_pools.clear();
     m_variable_pools.clear();
+    m_vblank_start_waiters.clear();
+    m_vblank_end_waiters.clear();
     std::fill(std::begin(m_dma_direction),
               std::end(m_dma_direction), 0u);
     m_strtok_next = 0u;
@@ -280,6 +284,32 @@ void c_kernel_hle_bridge::reset_for_reboot()
     m_next_object = 1u;
     m_cpu_interrupts_suspended = false;
     m_installed = false;
+}
+
+void c_kernel_hle_bridge::signal_vblank_edge(bool start)
+{
+    // Called only after the scanout scheduler has delivered an actual
+    // field-start edge, or by an explicit VBlank-end event producer.
+    // A wait never completes by elapsed host time or an IOP poll.
+    std::vector<uint32_t>& waiters =
+        start ? m_vblank_start_waiters : m_vblank_end_waiters;
+    const uint32_t wait_type = start ? 16u : 17u;
+    if (!m_installed)
+    {
+        waiters.clear();
+        return;
+    }
+    for (const uint32_t id : waiters)
+    {
+        const s_kernel_thread* thread = m_kernel.thread(id);
+        if (thread != nullptr &&
+            thread->m_status == e_thread_status::blocked &&
+            thread->m_wait_type == wait_type)
+        {
+            (void)m_kernel.wake_thread_with_result(id, 0u);
+        }
+    }
+    waiters.clear();
 }
 
 bool c_kernel_hle_bridge::read_argument(
@@ -2614,13 +2644,36 @@ bool c_kernel_hle_bridge::handle_secrman(uint32_t ordinal)
     return true;
 }
 
+bool c_kernel_hle_bridge::handle_vblank(uint32_t ordinal)
+{
+    // PS2SDK vblank ABI: 4/6 wait for start, 5/7 wait for end.
+    // The original caller's R3000 thread remains blocked until its
+    // matching edge is explicitly delivered; no fake success or frame.
+    if (ordinal < 4u || ordinal > 7u)
+    {
+        return false;
+    }
+    const uint32_t thread_id = m_kernel.current_thread_id();
+    const bool start = ordinal == 4u || ordinal == 6u;
+    if (thread_id == 0u ||
+        !m_kernel.block_current(start ? 16u : 17u))
+    {
+        return false;
+    }
+    std::vector<uint32_t>& waiters =
+        start ? m_vblank_start_waiters : m_vblank_end_waiters;
+    waiters.push_back(thread_id);
+    m_kernel.cpu().state().m_gpr[2] = 0u;
+    return true;
+}
+
 bool c_kernel_hle_bridge::handle_syscall(
     c_kernel& kernel, uint32_t service
 )
 {
     if (&kernel != &m_kernel ||
         service < k_service_base ||
-        service >= k_service_base + 0x1100u ||
+        service >= k_service_base + 0x1200u ||
         !m_installed)
     {
         return false;
@@ -2645,6 +2698,7 @@ bool c_kernel_hle_bridge::handle_syscall(
     case 14u: return handle_modload(ordinal);
     case 15u: return handle_ioman(ordinal);
     case 16u: return handle_secrman(ordinal);
+    case 17u: return handle_vblank(ordinal);
     default: return false;
     }
 }

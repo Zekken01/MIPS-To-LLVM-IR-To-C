@@ -163,6 +163,72 @@ bool call_guest(
     *result = thread->m_cpu.m_gpr[2];
     return true;
 }
+
+bool test_vblank_wait(uint16_t ordinal, bool start)
+{
+    iop::c_kernel kernel;
+    iop::c_kernel_hle_bridge hle(kernel);
+    uint32_t import_pc = 0u;
+    uint32_t unsupported = 0u;
+    if (!hle.install() ||
+        !kernel.lookup_library("vblank", ordinal, &import_pc) ||
+        kernel.lookup_library("vblank", 8u, &unsupported) ||
+        kernel.lookup_library("vblank", 9u, &unsupported))
+    {
+        return false;
+    }
+    kernel.bind_syscall(
+        [&](iop::c_kernel& active, uint32_t service)
+        {
+            return hle.handle_syscall(active, service);
+        }
+    );
+    constexpr uint32_t k_program = 0x3900u;
+    if (!kernel.cpu().write32(
+            k_program, 0x0c000000u |
+                ((import_pc >> 2u) & 0x03ffffffu)) ||
+        !kernel.cpu().write32(k_program + 4u, 0u) ||
+        !kernel.cpu().write32(k_program + 8u, 0x0000000du))
+    {
+        return false;
+    }
+    const uint32_t id = kernel.create_thread(
+        k_program, 0u, 1u, 0x400u);
+    if (id == 0u || !kernel.start_thread(id))
+    {
+        return false;
+    }
+    const iop::s_kernel_run_result blocked = kernel.run(128u);
+    const iop::s_kernel_thread* thread = kernel.thread(id);
+    if (blocked.m_stop != iop::e_kernel_stop::idle ||
+        thread == nullptr ||
+        thread->m_status != iop::e_thread_status::blocked ||
+        thread->m_wait_type != (start ? 16u : 17u) ||
+        kernel.has_guest_work())
+    {
+        return false;
+    }
+    // No edge and the opposite edge must not complete this import.
+    if (kernel.run(16u).m_stop != iop::e_kernel_stop::idle)
+    {
+        return false;
+    }
+    hle.signal_vblank_edge(!start);
+    thread = kernel.thread(id);
+    if (thread == nullptr ||
+        thread->m_status != iop::e_thread_status::blocked ||
+        kernel.run(16u).m_stop != iop::e_kernel_stop::idle)
+    {
+        return false;
+    }
+    hle.signal_vblank_edge(start);
+    const iop::s_kernel_run_result completed = kernel.run(128u);
+    thread = kernel.thread(id);
+    return completed.m_stop == iop::e_kernel_stop::breakpoint &&
+           completed.m_guest_pc == k_program + 8u &&
+           thread != nullptr &&
+           thread->m_cpu.m_gpr[2] == 0u;
+}
 } // namespace
 
 int main()
@@ -231,6 +297,15 @@ int main()
             return hle.handle_syscall(active, service);
         }
     );
+
+    for (uint16_t ordinal : {4u, 5u, 6u, 7u})
+    {
+        if (!test_vblank_wait(
+                ordinal, ordinal == 4u || ordinal == 6u))
+        {
+            return fail("VBLANK wait did not block until the real matching edge");
+        }
+    }
 
     uint32_t result = 0u;
     if (!call_guest(

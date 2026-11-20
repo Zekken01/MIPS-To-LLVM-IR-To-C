@@ -2403,6 +2403,7 @@ int main(int argc, char** argv)
         // Timer COUNT reads inside a long native loop sample the live
         // instruction budget rather than this after-dispatch checkpoint.
         host_timers.service();
+        const uint64_t fields_before = hardware.scanout().fields_started();
         const auto scanout_result = runtime.m_ee_cycle_scheduler.service_scanout(
             hardware, vsync_flags, *memory);
         if (scanout_result == ee::e_ee_scheduled_event_result::INVALID_TIMESTAMP_OR_DELIVERY)
@@ -2410,6 +2411,14 @@ int main(int argc, char** argv)
             std::fprintf(stderr, "EE scheduler rejected scanout delivery at cycle=%llu\n",
                 static_cast<unsigned long long>(runtime.m_ee_cycle_scheduler.current_cycle()));
             return 1;
+        }
+        // Only signal IOP VBlank *start* for an actually delivered
+        // GS field. There is no validated VBlank-end producer yet:
+        // WaitVblankEnd must remain blocked instead of timing out.
+        if (iop_hle != nullptr &&
+            hardware.scanout().fields_started() > fields_before)
+        {
+            iop_hle->signal_vblank_edge(true);
         }
 #ifdef EE_ENABLE_RAYLIB_WINDOW
         if (gs_webgpu_window)
