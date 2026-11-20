@@ -1843,6 +1843,48 @@ int main()
     constexpr uint32_t k_vsprintf_argument_list = 0x3580u;
     constexpr uint32_t k_vsprintf_destination = 0x3600u;
 
+    // STDIO #4 must share SYSCLIB's validated R3000 O32 formatter.
+    // The retail ARKD method-1 worker reached this import after
+    // millions of real byte operations. A previously narrower printf
+    // implementation rejected legitimate width/precision modifiers.
+    constexpr uint32_t k_printf_format = 0x3680u;
+    constexpr uint32_t k_printf_text = 0x36e0u;
+    uint32_t printf_result = 0u;
+    const std::string expected_printf = "blk:buf   /0x00002a/-7\n";
+    if (!write_guest_string(k_printf_format,
+            "blk:%-6.3s/%#08x/%+ld\n") ||
+        !write_guest_string(k_printf_text, "buffers") ||
+        !call_guest(kernel, "stdio", 4u,
+            {k_printf_format, k_printf_text, 0x2au, 0xfffffff9u},
+            &printf_result) ||
+        printf_result != expected_printf.size())
+    {
+        return fail("STDIO printf guest flags/precision/long formatting failed");
+    }
+    // O32 long long varargs consume an aligned 32-bit argument pair.
+    if (!write_guest_string(k_printf_format, "%08llX") ||
+        !call_guest(kernel, "stdio", 4u,
+            {k_printf_format, 0xabcdef01u, 0x89abcdefu, 0x12345678u},
+            &printf_result) || printf_result != 16u)
+    {
+        return fail("STDIO printf O32 64-bit vararg alignment failed");
+    }
+    // Unsafe printf formats must fail before printing or changing v0.
+    if (!write_guest_string(k_printf_format, "unsafe:%n"))
+    {
+        return fail("could not prepare unsafe STDIO printf test");
+    }
+    kernel.cpu().state().m_gpr[4] = k_printf_format;
+    kernel.cpu().state().m_gpr[5] = k_printf_text;
+    kernel.cpu().state().m_gpr[2] = 0x1234abcdu;
+    std::string rejected_printf = "preserve";
+    if (iop::render_stdio_format(kernel.cpu(), &rejected_printf) ||
+        rejected_printf != "preserve" ||
+        kernel.cpu().state().m_gpr[2] != 0x1234abcdu)
+    {
+        return fail("unsafe STDIO printf format was accepted or mutated state");
+    }
+
     const std::string expected_sprintf = "mod=002A/audio";
     if (!write_guest_string(
             k_sprintf_format, "mod=%04X/%s") ||

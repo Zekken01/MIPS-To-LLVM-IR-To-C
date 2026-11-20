@@ -1210,111 +1210,32 @@ bool c_kernel_hle_bridge::handle_stdio(uint32_t ordinal)
     {
         return false;
     }
-    std::string format;
-    if (!read_string(cpu.m_gpr[4], 4096u, &format))
-    {
-        return false;
-    }
     std::string output;
-    uint32_t argument = 1u;
-    for (size_t i = 0u; i < format.size(); ++i)
+    if (!render_stdio_format(m_kernel.cpu(), &output))
     {
-        if (format[i] != '%')
-        {
-            output += format[i];
-            continue;
-        }
-        if (++i >= format.size())
-        {
-            return false;
-        }
-        if (format[i] == '%')
-        {
-            output += '%';
-            continue;
-        }
-        bool zero = false;
-        if (format[i] == '0')
-        {
-            zero = true;
-            ++i;
-        }
-        uint32_t width = 0u;
-        while (i < format.size() &&
-               format[i] >= '0' && format[i] <= '9')
-        {
-            width = width * 10u + static_cast<uint32_t>(
-                format[i++] - '0');
-            if (width > 32u)
-            {
-                return false;
-            }
-        }
-        if (i >= format.size())
-        {
-            return false;
-        }
-        uint32_t value = 0u;
-        if (!read_argument(argument++, &value))
-        {
-            return false;
-        }
-        const char spec = format[i];
-        if (spec == 's')
-        {
-            std::string content;
-            if (!read_string(value, 4096u, &content))
-            {
-                return false;
-            }
-            output += content;
-        }
-        else if (spec == 'c')
-        {
-            output += static_cast<char>(value);
-        }
-        else if (spec == 'u' || spec == 'd' ||
-                 spec == 'x' || spec == 'X' || spec == 'p')
-        {
-            char buffer[96]{};
-            char option[16]{};
-            if (width != 0u)
-            {
-                std::snprintf(option, sizeof(option), "%%%s%u%c",
-                              zero ? "0" : "", width,
-                              spec == 'p' ? 'x' : spec);
-            }
-            else
-            {
-                std::snprintf(option, sizeof(option), "%%%c",
-                              spec == 'p' ? 'x' : spec);
-            }
-            if (spec == 'd')
-            {
-                std::snprintf(buffer, sizeof(buffer), option,
-                              static_cast<int32_t>(value));
-            }
-            else
-            {
-                std::snprintf(buffer, sizeof(buffer), option, value);
-            }
-            output += buffer;
-        }
-        else
-        {
-            return false;
-        }
-        if (output.size() > 8192u)
-        {
-            return false;
-        }
+        // An unsupported guest format must not silently appear as a
+        // successful print. Record enough bounded context to locate the
+        // original module's call without exposing its entire image.
+        std::string format;
+        const bool valid_format =
+            read_string(cpu.m_gpr[4], 4096u, &format);
+        std::fprintf(stderr,
+            "IOP HLE stdio printf rejected: thread=%u "
+            "format_addr=0x%08x format=%.160s "
+            "a1=0x%08x a2=0x%08x a3=0x%08x "
+            "sp=0x%08x ra=0x%08x cycles=%llu\n",
+            m_kernel.current_thread_id(), cpu.m_gpr[4],
+            valid_format ? format.c_str() : "(unreadable)",
+            cpu.m_gpr[5], cpu.m_gpr[6], cpu.m_gpr[7],
+            cpu.m_gpr[29], cpu.m_gpr[31],
+            static_cast<unsigned long long>(m_kernel.cycles()));
+        return false;
     }
     if (!write_console(output))
     {
         return false;
     }
-    m_kernel.cpu().state().m_gpr[2] =
-        static_cast<uint32_t>(output.size());
+    cpu.m_gpr[2] = static_cast<uint32_t>(output.size());
     return true;
 }
 

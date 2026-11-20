@@ -1636,3 +1636,47 @@ inspect its actual counter/bound and supporting data before deciding
 whether the repeated work is legitimate or caused by erroneous
 guest state. Keep PR #145 draft; require all four CI workflows on
 the final head.
+
+
+## 2026-11-20 — 09:26:39 long replay: real ARKD stdio#4 failure
+
+Archive `ps2-game-hle(20261120-092639).zip` has **current full**
+`boot.log`, `first-boot.json`, and GS PPMs at 09:26:12, plus an
+older `quick-probe.json` from 08:00:10. The local launcher selected the
+full trace instead of a cached quick probe; do not treat the stale
+quick-probe report as part of this run. No exact source SHA is embedded.
+
+The replay **crosses the previous ARKD 16-byte inner loop**.
+The IOP clock now stops with a real guest `unhandled_syscall` at
+`0x000141a8`: original thread **11**, `v0=0x494f1304`,
+`a0=0x00088c90` (format string pointer), `a1=0x0001ad40`,
+and `ra=0x0007dde4`. Decode `0x494f1304` through the installed
+kernel bridge: HLE family 3 / STDIO **`printf #4`**. The existing
+formatter supported only a narrow subset of printf formatting.
+The reference `ps2-web-recomp/SDBZ` `runtime/src/iop/libs.cpp`
+`install_stdio` reuses its more capable guest varargs formatting;
+this repo's own `iop_sysclib_strings.cpp` already has an independently
+tested bounded implementation for O32 flags, widths, precisions,
+h/l/ll length, integer and string specifiers.
+
+Full stopped report: **3,639,679 EE dispatches**, **52,309,904**
+guest instruction attempts, IOP cycle **6,427,050**, and
+`EE_EXIT_UNSUPPORTED` at `0x001bd58c` only after the original IOP
+stdio import was rejected. The last IOP snapshot shows thread 11
+**faulted**, 4 ready and 12 blocked, with guest ARKD method
+`0x500:1` still pending. This is a **new concrete HLE blocker**,
+not a limit or a missing semaphore signal. Three GS snapshots
+remain black.
+
+Implemented the narrow architectural fix: factor the already tested
+SYSCLIB guest-safe O32 formatter into a read-only `render_stdio_format`
+function. `stdio#4` now uses it for real guest printf parameters and
+returns the actual output byte count only after console writes succeed.
+Unsafe/unknown format conversions remain fail-closed, with bounded
+diagnostics including original guest format, argument registers,
+stack, RA and IOP cycle count if rejection occurs. Regression tests
+exercise width, flags, precision, long and 64-bit aligned O32 varargs,
+and unsafe `%n` rejection. No invented guest RPC return, semaphore
+signal or DMA5 completion. This is functionally separate from
+the older SYSCLIB `sprintf` destination-memory interface.
+
