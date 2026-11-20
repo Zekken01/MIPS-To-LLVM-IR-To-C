@@ -3670,8 +3670,7 @@ int main(int argc, char** argv)
                                     iop_rom0_path == nullptr &&
                                     iop_kernel != nullptr &&
                                     iop_rpc != nullptr &&
-                                    iop_rpc->pending_binds() != 0u &&
-                                    iop_kernel->has_guest_work();
+                                    iop_rpc->has_waiting_bind_guest_work();
                                 if (guest_rpc_wait)
                                 {
                                     if (iop_semaphore_wait_turns >=
