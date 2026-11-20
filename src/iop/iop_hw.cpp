@@ -38,9 +38,17 @@ void c_hw::reset()
     m_ssbus_spu2_delay = 0u;
     m_ssbus_spu2_delay1 = 0u;
     m_sio2_ctrl = 0u;
+    m_sio2_stat = 0u;
+    m_sio2_index = 0u;
     std::fill(m_sio2_send3, m_sio2_send3 + 16u, 0u);
     std::fill(m_sio2_port, m_sio2_port + 8u, 0u);
+    m_sio2_pad[0] = s_sio2_pad{};
+    m_sio2_pad[1] = s_sio2_pad{};
+    // Primary ps2-web-recomp/SDBZ reference has a neutral pad in port 0.
+    // This models a connected emulated peripheral, not host input.
+    m_sio2_pad[0].m_connected = true;
     m_sio2_pending_tx.clear();
+    m_sio2_rx.clear();
     m_sio2_transfer_requested = false;
     m_timer5_count = 0u;
     m_timer5_mode = 0u;
@@ -125,6 +133,328 @@ void c_hw::bind_cdvd_start(void* user, t_cdvd_start_callback callback)
 void c_hw::bind_dma_cpu(c_cpu* cpu)
 {
     m_dma_cpu = cpu;
+}
+
+// SIO2 controller exchange from ps2-web-recomp/SDBZ's sio2.cpp:
+// SEND3 supplies the input and output sizes; the guest's actual TX bytes
+// select the device command. Never make a response to a write-only setup.
+bool c_hw::process_sio2_packet()
+{
+    if (m_dma_cpu == nullptr || m_sio2_index >= 16u)
+    {
+        return false;
+    }
+    const uint32_t send = m_sio2_send3[m_sio2_index];
+    const uint32_t in_size = (send >> 8u) & 0x1ffu;
+    const uint32_t out_size = (send >> 18u) & 0x1ffu;
+    if (in_size == 0u || out_size == 0u ||
+        in_size > k_sio2_tx_limit || out_size > k_sio2_tx_limit ||
+        m_sio2_pending_tx.size() < in_size ||
+        m_sio2_rx.size() > k_sio2_tx_limit - out_size)
+    {
+        return false;
+    }
+
+    const uint32_t port = send & 3u;
+    std::vector<uint8_t> reply(out_size, 0xffu);
+    const auto put = [&reply](uint32_t index, uint8_t value)
+    {
+        if (index < reply.size())
+        {
+            reply[index] = value;
+        }
+    };
+    if (m_sio2_index == 0u)
+    {
+        m_sio2_stat = 0x1100u;
+    }
+    // Port 2 is the memory card. No card is attached until a real
+    // persistent image is mounted: report absence, not fake save data.
+    const bool pad_present = port < 2u &&
+        m_sio2_pad[port].m_connected &&
+        m_sio2_port[port * 2u + 1u] != 0x5ffffu &&
+        m_sio2_port[port * 2u + 1u] != 0x00030064u &&
+        m_sio2_pending_tx[0u] == 0x01u;
+    if (!pad_present)
+    {
+        m_sio2_stat |= 0xc000u |
+            (0x10000u << (m_sio2_index & 15u));
+    }
+    else
+    {
+        s_sio2_pad& pad = m_sio2_pad[port];
+        const uint8_t command = in_size >= 2u ?
+            m_sio2_pending_tx[1u] : 0u;
+        put(0u, 0xffu);
+        put(1u, pad.m_config ? 0xf3u : pad.m_mode);
+        put(2u, 0x5au);
+        const auto neutral_data = [&]()
+        {
+            put(3u, 0xffu);
+            put(4u, 0xffu);
+            if (pad.m_mode != 0x41u)
+            {
+                for (uint32_t index = 5u; index < 9u; ++index)
+                {
+                    put(index, 0x80u);
+                }
+            }
+            if (pad.m_mode == 0x79u)
+            {
+                for (uint32_t index = 9u; index < 21u; ++index)
+                {
+                    put(index, 0u);
+                }
+            }
+        };
+        switch (command)
+        {
+        case 0x40u:
+            put(3u, 0u); put(4u, 0u); put(5u, 2u);
+            put(6u, 0u); put(7u, 0u); put(8u, 0x5au);
+            break;
+        case 0x41u:
+            if (pad.m_mode == 0x41u)
+            {
+                for (uint32_t index = 3u; index < 9u; ++index)
+                {
+                    put(index, 0u);
+                }
+            }
+            else
+            {
+                put(3u, pad.m_poll_mask[0u]);
+                put(4u, pad.m_poll_mask[1u]);
+                put(5u, pad.m_poll_mask[2u]);
+                put(6u, 0u); put(7u, 0u); put(8u, 0x5au);
+            }
+            break;
+        case 0x42u:
+            neutral_data();
+            break;
+        case 0x43u:
+            if (!pad.m_config)
+            {
+                neutral_data();
+            }
+            else
+            {
+                for (uint32_t index = 3u; index < 9u; ++index)
+                {
+                    put(index, 0u);
+                }
+            }
+            if (in_size > 3u)
+            {
+                pad.m_config = m_sio2_pending_tx[3u] == 1u;
+            }
+            break;
+        case 0x44u:
+            if (in_size > 4u)
+            {
+                pad.m_mode = m_sio2_pending_tx[3u] != 0u ? 0x73u : 0x41u;
+                pad.m_locked = m_sio2_pending_tx[4u] == 3u;
+            }
+            for (uint32_t index = 3u; index < 9u; ++index)
+            {
+                put(index, 0u);
+            }
+            break;
+        case 0x45u:
+            put(3u, 3u); put(4u, 2u);
+            put(5u, pad.m_mode == 0x41u ? 0u : 1u);
+            put(6u, 2u); put(7u, 1u); put(8u, 0u);
+            break;
+        case 0x46u:
+            put(3u, 0u); put(4u, 0u); put(5u, 1u);
+            put(6u, m_sio2_pending_tx.size() > 3u &&
+                m_sio2_pending_tx[3u] == 0u ? 2u : 1u);
+            put(7u, m_sio2_pending_tx.size() > 3u &&
+                m_sio2_pending_tx[3u] == 0u ? 0u : 1u);
+            put(8u, m_sio2_pending_tx.size() > 3u &&
+                m_sio2_pending_tx[3u] == 0u ? 0x0au : 0x14u);
+            break;
+        case 0x47u:
+            put(3u, 0u); put(4u, 0u); put(5u, 2u);
+            put(6u, 0u); put(7u, 1u); put(8u, 0u);
+            break;
+        case 0x4cu:
+            put(3u, 0u); put(4u, 0u); put(5u, 0u);
+            put(6u, m_sio2_pending_tx.size() > 3u &&
+                m_sio2_pending_tx[3u] == 0u ? 4u : 7u);
+            put(7u, 0u); put(8u, 0u);
+            break;
+        case 0x4du:
+            for (uint32_t index = 3u; index < 9u; ++index)
+            {
+                put(index, 0xffu);
+            }
+            for (uint32_t index = 0u;
+                 index < 6u && 3u + index < in_size; ++index)
+            {
+                pad.m_motors[index] = m_sio2_pending_tx[3u + index];
+            }
+            break;
+        case 0x4fu:
+            if (in_size > 5u)
+            {
+                pad.m_poll_mask[0u] = m_sio2_pending_tx[3u];
+                pad.m_poll_mask[1u] = m_sio2_pending_tx[4u];
+                pad.m_poll_mask[2u] = m_sio2_pending_tx[5u];
+            }
+            pad.m_mode = 0x79u;
+            for (uint32_t index = 3u; index < 9u; ++index)
+            {
+                put(index, 0u);
+            }
+            put(8u, 0x5au);
+            break;
+        default:
+            neutral_data();
+            break;
+        }
+    }
+    for (const uint8_t byte : reply)
+    {
+        m_sio2_rx.push_back(byte);
+    }
+    m_sio2_pending_tx.clear();
+    ++m_sio2_index;
+    return true;
+}
+
+// CTRL.start is the only SIO2 transaction boundary. Transfer actual IOP
+// RAM bytes for armed DMA11/12 and acknowledge precisely those channels.
+// An absent guest buffer or incomplete packet keeps STR armed and raises no
+// IRQ; setup writes alone never generate successful completion.
+bool c_hw::run_sio2_transfer()
+{
+    if (m_dma_cpu == nullptr)
+    {
+        return false;
+    }
+    const bool input_dma =
+        (m_sio2_dma[0u][2u] & k_spu2_dma_str_bit) != 0u;
+    const bool output_dma =
+        (m_sio2_dma[1u][2u] & k_spu2_dma_str_bit) != 0u;
+    std::vector<uint8_t> inbound;
+    uint32_t input_words = 0u;
+    uint32_t input_blocks = 0u;
+    uint32_t output_words = 0u;
+    uint32_t output_blocks = 0u;
+    if (input_dma)
+    {
+        const uint32_t bcr = m_sio2_dma[0u][1u];
+        input_words = bcr & 0xffffu;
+        input_blocks = bcr >> 16u;
+        const uint64_t total = static_cast<uint64_t>(
+            input_words) * input_blocks * 4u;
+        if (input_words == 0u || input_blocks == 0u ||
+            input_blocks > 16u || total > k_sio2_tx_limit ||
+            m_sio2_index + input_blocks > 16u)
+        {
+            return false;
+        }
+        inbound.resize(static_cast<size_t>(total));
+        if (!m_dma_cpu->dma_read(
+                m_sio2_dma[0u][0u], inbound.data(),
+                static_cast<uint32_t>(total)))
+        {
+            return false;
+        }
+    }
+    if (output_dma)
+    {
+        const uint32_t bcr = m_sio2_dma[1u][1u];
+        output_words = bcr & 0xffffu;
+        output_blocks = bcr >> 16u;
+        const uint64_t total = static_cast<uint64_t>(
+            output_words) * output_blocks * 4u;
+        if (output_words == 0u || output_blocks == 0u ||
+            output_blocks > 16u || total > k_sio2_tx_limit)
+        {
+            return false;
+        }
+        // Validate the write range before processing the device command.
+        // A failed target must never perform partial peripheral writes.
+        uint8_t check = 0u;
+        if (!m_dma_cpu->dma_read(m_sio2_dma[1u][0u], &check, 1u) ||
+            !m_dma_cpu->dma_read(
+                m_sio2_dma[1u][0u] +
+                    static_cast<uint32_t>(total) - 1u, &check, 1u))
+        {
+            return false;
+        }
+    }
+    bool processed = false;
+    if (input_dma)
+    {
+        const uint32_t block_bytes = input_words * 4u;
+        for (uint32_t block = 0u; block < input_blocks; ++block)
+        {
+            const uint8_t* begin = inbound.data() + block * block_bytes;
+            m_sio2_pending_tx.insert(
+                m_sio2_pending_tx.end(), begin, begin + block_bytes);
+            if (!process_sio2_packet())
+            {
+                return false;
+            }
+            processed = true;
+        }
+    }
+    else if (!m_sio2_pending_tx.empty())
+    {
+        processed = process_sio2_packet();
+    }
+    else if (!m_sio2_rx.empty())
+    {
+        processed = true;
+    }
+    if (!processed)
+    {
+        return false;
+    }
+    if (output_dma)
+    {
+        const uint32_t block_bytes = output_words * 4u;
+        for (uint32_t block = 0u; block < output_blocks; ++block)
+        {
+            if (m_sio2_index < output_blocks ||
+                m_sio2_rx.size() <
+                    ((m_sio2_send3[block] >> 18u) & 0x1ffu))
+            {
+                return false;
+            }
+            const uint32_t count =
+                (m_sio2_send3[block] >> 18u) & 0x1ffu;
+            std::vector<uint8_t> bytes(count);
+            for (uint32_t index = 0u; index < count; ++index)
+            {
+                bytes[index] = m_sio2_rx.front();
+                m_sio2_rx.pop_front();
+            }
+            if (count > block_bytes ||
+                !m_dma_cpu->dma_write(
+                    m_sio2_dma[1u][0u] + block * block_bytes,
+                    bytes.data(), count))
+            {
+                return false;
+            }
+        }
+    }
+    if (input_dma)
+    {
+        m_sio2_dma[0u][2u] &= ~k_spu2_dma_str_bit;
+        (void)complete_dma_channel(11u);
+    }
+    if (output_dma)
+    {
+        m_sio2_dma[1u][2u] &= ~k_spu2_dma_str_bit;
+        (void)complete_dma_channel(12u);
+    }
+    m_sio2_transfer_requested = false;
+    (void)raise_interrupt(17u);
+    return true;
 }
 
 bool c_hw::spu2_ram_word(uint32_t address, uint16_t* value) const
@@ -392,11 +722,17 @@ bool c_hw::read(
         *value = k_cdvd_no_disc;
         return true;
     }
-    // No guest controller or memory-card producer is installed.
-    // An empty receive FIFO cannot supply fictitious reply bytes.
-    if (address == k_sio2_rx_fifo)
+    if (address == k_sio2_rx_fifo &&
+        (width == 1u || width == 4u))
     {
-        return false;
+        // Never invent a response to an unexecuted guest transaction.
+        if (m_sio2_rx.empty())
+        {
+            return false;
+        }
+        *value = m_sio2_rx.front();
+        m_sio2_rx.pop_front();
+        return true;
     }
 
     // The actual LIBSD DMA4.BCR path uses SH, and the
@@ -538,8 +874,7 @@ bool c_hw::read(
         *value = m_sio2_ctrl;
         return true;
     case k_sio2_stat:
-        // No SIO2 transaction has completed.
-        *value = 0u;
+        *value = m_sio2_stat;
         return true;
     case k_sio2_port_status:
         *value = 0x0fu; // Port register mask, not pad readiness.
@@ -646,8 +981,8 @@ bool c_hw::write(
         }
         return true;
     }
-    // Guest FIFO transmit requests are queued, never executed without
-    // a real SIO2 producer; no DMA completion or IRQ follows.
+    // A transmitted byte can finish the guest's SEND3 packet. The
+    // neutral controller responds only when a live HLE CPU is attached.
     if (address == k_sio2_tx_fifo &&
         (width == 1u || width == 4u))
     {
@@ -656,6 +991,7 @@ bool c_hw::write(
             return false;
         }
         m_sio2_pending_tx.push_back(static_cast<uint8_t>(value));
+        (void)process_sio2_packet();
         return true;
     }
 
@@ -731,8 +1067,8 @@ bool c_hw::write(
             ? k_sio2_dma_rx_base : k_sio2_dma_tx_base;
         if (address >= base && address < base + 12u)
         {
-            // No SIO2 DMA data producer is connected. The transfer
-            // remains requested, and no hardware IRQ/completion occurs.
+            // DMA11 and DMA12 are armed by CHCR.STR but can only
+            // complete through a real SIO2 CTRL.start transaction.
             m_sio2_dma[index][(address - base) / 4u] = value;
             return true;
         }
@@ -857,14 +1193,16 @@ bool c_hw::write(
         m_sio2_ctrl = value;
         if ((value & 0x0cu) == 0x0cu)
         {
+            m_sio2_index = 0u;
             m_sio2_pending_tx.clear();
+            m_sio2_rx.clear();
             m_sio2_transfer_requested = false;
         }
         if ((value & 1u) != 0u)
         {
             m_sio2_transfer_requested = true;
+            (void)run_sio2_transfer();
         }
-        // No device bytes, completion, or interrupt are manufactured.
         return true;
     default:
         return false;

@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <string>
 #include <vector>
 
@@ -38,8 +39,9 @@ public:
     static constexpr uint32_t k_ssbus_spu2_addr1 = 0x1f80140cu;
     static constexpr uint32_t k_ssbus_spu2_delay = 0x1f801014u;
     static constexpr uint32_t k_ssbus_spu2_delay1 = 0x1f801414u;
-    // SIO2 serial-interface control. Firmware resets/configures this
-    // register while loading IOP modules; transfer emulation is separate.
+    // SIO2 serial-interface control. The HLE path performs actual
+    // bounded controller transfers on guest CTRL.start, not on
+    // register setup, and raises IRQ17 only for a completed exchange.
     static constexpr uint32_t k_sio2_send3_base = 0x1f808200u;
     static constexpr uint32_t k_sio2_port_base = 0x1f808240u;
     static constexpr uint32_t k_sio2_tx_fifo = 0x1f808260u;
@@ -79,8 +81,8 @@ public:
     static constexpr uint32_t k_dma_global_enable = 0x1f801578u;
     // Secondary controller DMA9 (IOP -> EE SIF0) and
     // DMA10 (EE -> IOP SIF1) channel registers.
-    // SIO2 DMA11/12 register banks. Programming STR records a
-    // request; no transfer or completion is fabricated without SIO2.
+    // Secondary DMA11/12 used by real SIO2 controller exchanges.
+    // Programming STR only arms a request; CTRL.start drives the transfer.
     static constexpr uint32_t k_sio2_dma_rx_base = 0x1f801540u;
     static constexpr uint32_t k_sio2_dma_tx_base = 0x1f801550u;
     static constexpr uint32_t k_sif0_dma_base = 0x1f801520u;
@@ -182,6 +184,8 @@ private:
     void assert_dma_irq(uint32_t& control, bool sif_channel);
     void start_spu2_dma(uint32_t core);
     void advance_spu2_dma(uint32_t cycles);
+    bool process_sio2_packet();
+    bool run_sio2_transfer();
 
     // Guest SPU2 register bank is separate from SSBUS configuration.
     c_spu2 m_spu2;
@@ -202,10 +206,23 @@ private:
     uint32_t m_ssbus_spu2_addr1 = 0u;
     uint32_t m_ssbus_spu2_delay = 0u;
     uint32_t m_ssbus_spu2_delay1 = 0u;
+    struct s_sio2_pad
+    {
+        bool m_connected = false;
+        bool m_config = false;
+        bool m_locked = false;
+        uint8_t m_mode = 0x41u;
+        uint8_t m_poll_mask[3]{0xffu, 0xffu, 0x03u};
+        uint8_t m_motors[6]{0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu};
+    };
     uint32_t m_sio2_ctrl = 0u;
+    uint32_t m_sio2_stat = 0u;
+    uint32_t m_sio2_index = 0u;
     uint32_t m_sio2_send3[16]{};
     uint32_t m_sio2_port[8]{};
+    s_sio2_pad m_sio2_pad[2]{};
     std::vector<uint8_t> m_sio2_pending_tx;
+    std::deque<uint8_t> m_sio2_rx;
     bool m_sio2_transfer_requested = false;
     uint32_t m_timer5_count = 0u;
     uint32_t m_timer5_mode = 0u;

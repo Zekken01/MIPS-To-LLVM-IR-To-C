@@ -2029,3 +2029,51 @@ The EE exception after that 229-replay sequence is distinct from
 this rejected transport. The next retail replay must identify
 whether further original ARKD RPC work becomes reachable after
 accepting this packet; no first rendered frame has been proven.
+
+
+## 2026-11-20 — 12:18 native controller transport gap, SIO2 batch
+
+The matched archive `ps2-game-hle(20261120-121854).zip` contains a
+115,454,273-byte `quick-probe.log` and `quick-probe.json`. The
+driver performed **52 independent replays**, with 51 real IR append
+transactions adding **86 modules**, for **830** linked functions.
+Final replay reaches the requested **4,000,000 dispatch limit**
+(`exit=4, DISPATCH status=1`), 84,007,184 guest instruction
+attempts, 16 GS fields. This is **not** an unhandled syscall,
+finished boot or first rendered frame.
+
+**Previous fix verified on actual retail transport:** CDVDFSV
+`server=0x80000593 method=1` commits as sequence **41**, returns
+`1`, and the earlier `invalid_envelope` SIF1 error is absent.
+Genuine PADMAN guest RPC 14 still completes. The next ARKD
+`server=0x501 method=18`, token **15** is queued on every replay,
+but not entered/returned. IOP thread **12** is ready, priority
+**50**; PADMAN threads **57 and 63** are ready, priority **46**
+(smaller priority wins). The final IOP kernel has 7 ready, 16
+blocked, 0 faulted threads. The observed strict priority may
+starve the ARKD worker; do not bypass or synthesize its completion.
+
+The missing hardware producer is concrete, independent of possible
+guest-script loops: native `src/iop/iop_hw.cpp` only recorded SIO2
+TX FIFO, SEND3, DMA11/12 and CTRL registers; it returned no RX bytes,
+no completed transfer and no IRQ17. The primary reference
+`twist84/ps2-web-recomp`, `SDBZ` branch,
+`runtime/src/iop/sio2.cpp`, has a virtual controller in port 0
+with neutral (unpressed) input, executes real guest SEND3-described
+port commands, performs IOP RAM DMA11/12 and signals IRQ17 when
+the guest starts a completed SIO2 exchange. It does not require
+fabricating an EE RPC reply or changing priorities.
+
+This batch implements bounded guest-driven SIO2 controller
+initialization/protocol/DMA, with no memory-card backend. Controller
+responses are produced only for valid actual guest FIFO/DMA bytes;
+other ports and card slot remain explicitly absent. DMA channels
+complete and IRQ17 raises **only** after an actual CTRL.start event,
+never when CHCR/CTRL is merely configured. Invalid memory spans
+fail closed. The relevant IOP hardware smoke tests cover genuine
+FIFO and DMA exchange as well as no-producer/no-IRQ conditions.
+
+This is a transport gap fix with inferred boot relevance. The next
+real SDBZ replay must independently establish whether PADMAN
+actually reaches this bus path and whether ARKD token 15 completes;
+neither is claimed as already verified.
