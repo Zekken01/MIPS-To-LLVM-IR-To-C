@@ -64,7 +64,8 @@ public:
     static constexpr uint32_t k_cdrom_dma_chcr = k_cdrom_dma_base + 8u;
     // SPU2 core 0 DMA4 and core 1 DMA7. Original PS2 IOP DMAC
     // channel slots: MADR, BCR, CHCR, TADR (16-byte register stride).
-    // Control register storage alone never starts/completes sound DMA.
+    // Supports aligned byte, halfword and word register access;
+    // control writes alone never start or complete sound DMA.
     static constexpr uint32_t k_spu2_dma4_base = 0x1f8010c0u;
     static constexpr uint32_t k_spu2_dma7_base = 0x1f801500u;
     static constexpr uint32_t k_spu2_dma_register_size = 0x10u;
@@ -162,8 +163,9 @@ private:
     bool scratchpad_range(uint32_t address, uint32_t width) const;
     bool sif_dma_register(uint32_t address, uint32_t* channel,
                           uint32_t* reg) const;
-    bool spu2_dma_register(uint32_t address, uint32_t* core,
-                           uint32_t* reg) const;
+    bool spu2_dma_register(uint32_t address, uint32_t width,
+                           uint32_t* core, uint32_t* reg,
+                           uint32_t* shift) const;
     uint32_t update_dma_icr(uint32_t previous, uint32_t value);
     void assert_dma_irq(uint32_t& control, bool sif_channel);
 

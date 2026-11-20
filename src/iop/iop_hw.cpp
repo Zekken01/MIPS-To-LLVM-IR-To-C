@@ -158,10 +158,13 @@ bool c_hw::sif_dma_register(uint32_t address, uint32_t* channel,
 }
 
 bool c_hw::spu2_dma_register(
-    uint32_t address, uint32_t* core, uint32_t* reg
+    uint32_t address, uint32_t width, uint32_t* core,
+    uint32_t* reg, uint32_t* shift
 ) const
 {
-    if (core == nullptr || reg == nullptr || (address & 3u) != 0u)
+    if (core == nullptr || reg == nullptr || shift == nullptr ||
+        (width != 1u && width != 2u && width != 4u) ||
+        (address & (width - 1u)) != 0u)
     {
         return false;
     }
@@ -170,12 +173,18 @@ bool c_hw::spu2_dma_register(
     };
     for (uint32_t index = 0u; index < 2u; ++index)
     {
-        if (address >= bases[index] &&
-            address - bases[index] < k_spu2_dma_register_size)
+        if (address >= bases[index])
         {
-            *core = index;
-            *reg = (address - bases[index]) / 4u;
-            return true;
+            const uint32_t offset = address - bases[index];
+            if (offset < k_spu2_dma_register_size &&
+                width <= k_spu2_dma_register_size - offset &&
+                width <= 4u - (offset & 3u))
+            {
+                *core = index;
+                *reg = offset / 4u;
+                *shift = (offset & 3u) * 8u;
+                return true;
+            }
         }
     }
     return false;
@@ -251,6 +260,23 @@ bool c_hw::read(
     {
         return false;
     }
+
+    // The actual LIBSD DMA4.BCR path uses SH, and the
+    // ps2-web-recomp/SDBZ hardware model extracts subword lanes.
+    // Only these two known DMA4/DMA7 register banks are relaxed.
+    uint32_t spu2_core = 0u;
+    uint32_t spu2_reg = 0u;
+    uint32_t spu2_shift = 0u;
+    if (spu2_dma_register(
+            address, width, &spu2_core, &spu2_reg, &spu2_shift))
+    {
+        const uint32_t mask = width == 4u ?
+            0xffffffffu : ((uint32_t{1} << (width * 8u)) - 1u);
+        *value = (m_spu2_dma[spu2_core][spu2_reg] >>
+                  spu2_shift) & mask;
+        return true;
+    }
+
     if (width != 4u || (address & 3u) != 0u)
     {
         return false;
@@ -275,16 +301,6 @@ bool c_hw::read(
         return true;
     }
 
-    // The original LIBSD worker reads DMA4.CHCR through KSEG1 at
-    // 0xBF8010C8. All four primary and secondary SPU2 DMA register
-    // words have independent storage; none is a completion status.
-    uint32_t spu2_core = 0u;
-    uint32_t spu2_reg = 0u;
-    if (spu2_dma_register(address, &spu2_core, &spu2_reg))
-    {
-        *value = m_spu2_dma[spu2_core][spu2_reg];
-        return true;
-    }
 
     for (uint32_t index = 0u; index < 2u; ++index)
     {
@@ -504,6 +520,26 @@ bool c_hw::write(
         m_sio2_pending_tx.push_back(static_cast<uint8_t>(value));
         return true;
     }
+
+    uint32_t spu2_core = 0u;
+    uint32_t spu2_reg = 0u;
+    uint32_t spu2_shift = 0u;
+    if (spu2_dma_register(
+            address, width, &spu2_core, &spu2_reg, &spu2_shift))
+    {
+        // Retain the untouched bits of MADR, BCR, CHCR or TADR.
+        // This is the primary reference's little-endian subword
+        // merge, including 0xBF8010C4 and its upper half at 0xC6.
+        const uint32_t lane_mask = width == 4u ?
+            0xffffffffu : ((uint32_t{1} << (width * 8u)) - 1u);
+        const uint32_t mask = lane_mask << spu2_shift;
+        uint32_t& word = m_spu2_dma[spu2_core][spu2_reg];
+        word = (word & ~mask) | ((value << spu2_shift) & mask);
+        // CHCR.STR records only a guest request; there is no
+        // sound-RAM transfer, DICR ack, IRQ3 or DMA completion.
+        return true;
+    }
+
     if (width != 4u || (address & 3u) != 0u)
     {
         return false;
@@ -518,19 +554,6 @@ bool c_hw::write(
         address < k_sio2_port_base + 0x20u)
     {
         m_sio2_port[(address - k_sio2_port_base) / 4u] = value;
-        return true;
-    }
-
-    uint32_t spu2_core = 0u;
-    uint32_t spu2_reg = 0u;
-    if (spu2_dma_register(address, &spu2_core, &spu2_reg))
-    {
-        // Only latch real guest DMA4/DMA7 register writes. A rising
-        // CHCR.STR is a request, not permission to copy fake sound
-        // samples, acknowledge DICR, clear STR or raise IOP IRQ3.
-        // The original ps2-web-recomp/SDBZ DMA4/7 backend moves real
-        // IOP <-> SPU2 RAM data before scheduling a completion.
-        m_spu2_dma[spu2_core][spu2_reg] = value;
         return true;
     }
 

@@ -1275,3 +1275,49 @@ that passes the original CHCR read. If ARKD next actually requests a
 SPU2 DMA transfer, implement an authentic bounded IOP↔sound-RAM DMA4/7
 backend using the guest MADR/BCR/CHCR and original timing/IRQ model;
 never clear a requested transfer without moving its real data.
+
+## 2026-11-20 06:03:34 — ARKD method 1 reaches DMA4 BCR halfword write
+
+Matched archive `ps2-game-hle(20261120-060334).zip` contains the five
+expected diagnostic reports and three P6 PPM captures from a single
+Windows replay. The preceding DMA4 CHCR word-read fault at IOP
+`0x0005B450` has cleared. The current replay reaches **41,231 EE
+dispatches**, **16,325,205 guest instruction attempts**, reuses
+**421 cached LLVM functions**, and commits **29 RPC commands**.
+Six original IRX module-start threads complete and guest ARKD
+registers servers `0x500..0x503`. All three snapshots (display
+512x448, upload 1024x64, WebGPU 512x448) remain fully black.
+
+**Exact stop:** guest IOP thread 9, PC `0x0005B5D4`, opcode
+`0xA4A30000` (`sh v1, 0(a1)`), KSEG1 address `0xBF8010C4`
+(physical `0x1F8010C4` = primary DMA4 **BCR**), 16-bit write,
+`v0=0xBF8010C6` (address of BCR upper halfword), `a0=1`,
+RA `0x0005B514`, `memory_fault=4` with **one genuine guest
+RPC still pending**. The earlier `WaitSema(0)` diagnostic recurs,
+with no verified producer or resolution. No guest ARKD method-`0x500:1`
+completion, genuine SIF0/DMA5 reply, nonblack display or game boot
+has been observed.
+
+**Primary reference:** `ps2-web-recomp/SDBZ/runtime/src/iop/hw.cpp`
+decodes DMA registers into 32-bit MADR/BCR/CHCR/TADR words, extracting
+the correct byte or halfword from a read and merging 8-/16-/32-bit
+writes using a little-endian lane mask, preserving untouched bits.
+DMA4 and DMA7 use independent primary/secondary channel banks.
+Thus `SH` at `0x1F8010C4` must preserve BCR high 16 bits;
+`0x1F8010C6` addresses the upper halfword of the *same* BCR.
+
+**Coherent batch:** extend only the two previously verified DMA4/DMA7
+banks to aligned 8-, 16- and 32-bit access, with per-lane read/write,
+unaltered opposite halfword, independent sound-DMA channels, exact
+R3000 `SH` guest regression at `0x0005B5D4`, invalid-width/
+unaligned/bank-boundary rejection, no-fake-DMA/IRQ and cold reboot
+checks. Other MMIO width rules remain unchanged. Programming CHCR.STR
+still does **not** copy sound samples, complete a transfer, clear
+STR, fabricate DICR flags, raise IRQ3 or release an EE semaphore.
+The actual guest DMA sound-data movement and completion producer
+remain unimplemented until grounded by a genuine transfer request.
+
+**Next acceptance:** all CI checks on the exact new branch HEAD,
+followed by a fresh matched Windows archive confirming this original
+BCR write advances and whether the next authentic blocker is a
+real IOP↔SPU2 RAM transfer or another guest operation.

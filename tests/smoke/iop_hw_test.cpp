@@ -267,8 +267,26 @@ int main()
         !hardware.read(iop::c_hw::k_i_stat, 4u, &actual) ||
         actual != 0u ||
         hardware.pending_interrupts() != 0u ||
-        hardware.write(dma4 + 8u, 2u, 0u) ||
-        hardware.read(dma4 + 8u, 2u, &actual) ||
+        !hardware.write(dma4 + 4u, 2u, 0x00abu) ||
+        !hardware.read(dma4 + 4u, 4u, &actual) ||
+        actual != 0x000100abu ||
+        !hardware.write(dma4 + 6u, 2u, 0x3344u) ||
+        !hardware.read(dma4 + 4u, 4u, &actual) ||
+        actual != 0x334400abu ||
+        !hardware.read(dma4 + 6u, 2u, &actual) ||
+        actual != 0x3344u ||
+        !hardware.read(dma4 + 4u, 1u, &actual) ||
+        actual != 0xabu ||
+        !hardware.write(dma7 + 8u, 1u, 0x55u) ||
+        !hardware.read(dma7 + 8u, 4u, &actual) ||
+        actual != 0x01000255u ||
+        !hardware.read(dma7 + 9u, 1u, &actual) ||
+        actual != 0x02u ||
+        !hardware.write(dma7 + 0xbu, 1u, 0x7au) ||
+        !hardware.read(dma7 + 8u, 4u, &actual) ||
+        actual != 0x7a000255u ||
+        hardware.write(dma4 + 5u, 2u, 0u) ||
+        hardware.read(dma4 + 7u, 2u, &actual) ||
         hardware.write(dma7 + 0x10u, 4u, 0u) ||
         hardware.read(dma7 + 0x10u, 4u, &actual))
     {
@@ -291,6 +309,45 @@ int main()
         audio_kernel.hardware().pending_interrupts() != 0u)
     {
         return fail("retail LIBSD R3000 lw DMA4.CHCR faulted");
+    }
+
+    // Original R3000 SH v1, 0(a1) at 0x0005B5D4 in the
+    // matched 06:03:34 replay: a1=0xBF8010C4 (DMA4.BCR).
+    // The guest also addresses the upper BCR halfword at 0xC6.
+    if (!audio_kernel.cpu().write32(0x0005b5d4u, 0xa4a30000u) ||
+        !audio_kernel.hardware().write(
+            dma4 + 4u, 4u, 0xaabbccddu))
+    {
+        return fail("cannot stage retail LIBSD DMA4 BCR store");
+    }
+    audio_cpu.m_pc = 0x0005b5d4u;
+    audio_cpu.m_next_pc = 0x0005b5d8u;
+    audio_cpu.m_gpr[5] = 0xbf8010c4u;
+    audio_cpu.m_gpr[3] = 0x1234u;
+    if (audio_kernel.cpu().step() != iop::e_step_result::completed ||
+        !audio_kernel.cpu().read32(0xbf8010c4u, &actual) ||
+        actual != 0xaabb1234u ||
+        audio_kernel.cpu().last_memory_fault().m_valid)
+    {
+        return fail("retail LIBSD R3000 SH DMA4.BCR low half fault");
+    }
+    audio_cpu.m_pc = 0x0005b5d4u;
+    audio_cpu.m_next_pc = 0x0005b5d8u;
+    audio_cpu.m_gpr[5] = 0xbf8010c6u;
+    audio_cpu.m_gpr[3] = 0x5678u;
+    if (audio_kernel.cpu().step() != iop::e_step_result::completed ||
+        !audio_kernel.cpu().read32(0xbf8010c4u, &actual) ||
+        actual != 0x56781234u ||
+        !audio_kernel.hardware().read(
+            iop::c_hw::k_dma_icr, 4u, &actual) ||
+        actual != 0u ||
+        !audio_kernel.hardware().read(
+            iop::c_hw::k_i_stat, 4u, &actual) ||
+        actual != 0u ||
+        audio_kernel.hardware().pending_interrupts() != 0u ||
+        audio_kernel.cpu().last_memory_fault().m_valid)
+    {
+        return fail("retail LIBSD R3000 SH DMA4.BCR upper half fault");
     }
 
     hardware.reset();
