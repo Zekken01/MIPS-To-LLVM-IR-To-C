@@ -102,14 +102,32 @@ if errorlevel 1 exit /b 1
 if not exist "%WORK_DIR%" mkdir "%WORK_DIR%"
 if errorlevel 1 exit /b 1
 
-rem A verified cache may be reused; failed fingerprints trigger a rebuild.
+rem Git checkout may rebuild host tools without changing guest LLVM IR.
+rem Try exact reuse first; if host inputs changed, relink existing guest objects.
+rem Only rebuild guest IR when preserved provenance cannot be verified.
 set "CACHE_FLAG="
 if exist "%WORK_DIR%\translation-cache.json" (
+    echo === Validating saved EE translation ===
     python tools\run_game.py "%GAME_ELF%" ^
         --build-dir build --config Release ^
         --work-dir "%WORK_DIR%" --emit-opt=0 ^
         --no-recompile --link-only >nul 2>nul
-    if not errorlevel 1 set "CACHE_FLAG=--no-recompile"
+    if not errorlevel 1 (
+        echo EE translation cache valid; reusing existing functions.
+        set "CACHE_FLAG=--no-recompile"
+    ) else (
+        echo Native cache changed; checking preserved guest IR and objects...
+        python tools\run_game.py "%GAME_ELF%" ^
+            --build-dir build --config Release ^
+            --work-dir "%WORK_DIR%" --emit-opt=0 ^
+            --relink-existing --link-only
+        if not errorlevel 1 (
+            echo Preserved guest IR and objects; relinked host library.
+            set "CACHE_FLAG=--no-recompile"
+        ) else (
+            echo Guest translation provenance changed; full IR rebuild required.
+        )
+    )
 )
 
 echo === Starting extracted-disc HLE boot session ===
