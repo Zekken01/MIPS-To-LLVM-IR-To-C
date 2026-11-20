@@ -421,7 +421,7 @@ bool test_iop_to_ee_rpc(const std::filesystem::path& disc_root)
     const auto fail_stage = [](int line) -> bool
     {
         std::fprintf(stderr,
-                     "IOP reverse SIFRPC stage failed at line %d\\n",
+                     "IOP reverse SIFRPC stage failed at line %d\n",
                      line);
         return false;
     };
@@ -625,11 +625,13 @@ bool test_iop_to_ee_rpc(const std::filesystem::path& disc_root)
         !kernel.cpu().write32(call_pc + 16u, 0u) ||
         !kernel.cpu().write32(call_pc + 20u, 0x0000000du) ||
         !kernel.cpu().write32(iop_payload, 41u) ||
-        !kernel.cpu().write32(iop_result, 0xdeadbeefu) ||
-        !kernel.cpu().write32(data_source, 42u))
+        !kernel.cpu().write32(iop_result, 0xdeadbeefu))
     {
         return fail_stage(__LINE__);
     }
+    // This is EE memory: SIF1 reads its DMA source from the EE,
+    // not from the IOP CPU's guest RAM.
+    memory.write32(data_source, 42u);
     const uint32_t call_thread = kernel.create_thread(
         call_pc, 0u, 1u, 0x400u, client, 3u);
     const iop::s_kernel_thread* caller = kernel.thread(call_thread);
@@ -710,7 +712,7 @@ bool test_iop_to_ee_rpc(const std::filesystem::path& disc_root)
     {
         std::fprintf(stderr,
             "reverse RPC completion: dma=%u copied=%u value=%u "
-            "before=%u stop=%u pc=%08x status_read=%u status=%08x\\n",
+            "before=%u stop=%u pc=%08x status_read=%u status=%08x\n",
             completed_dma ? 1u : 0u, copied ? 1u : 0u,
             copied_result,
             static_cast<uint32_t>(prior_thread_status),
