@@ -165,10 +165,13 @@ bool c_cpu::read(uint32_t address, uint32_t width, uint32_t* value) const
 
     const uint8_t* source = nullptr;
     uint32_t offset = 0u;
-    if (physical <= k_ram_size - width)
+    // The standard IOP has 2 MiB of RAM repeated in the first
+    // 8 MiB of physical space. This applies to instruction fetches
+    // as well as data reads, without aliasing MMIO, ROM or KSEG2.
+    if (physical < k_ram_mirror_size)
     {
         source = m_ram.data();
-        offset = physical;
+        offset = physical & (k_ram_size - 1u);
     }
     else if (has_rom0() && physical >= k_rom0_physical &&
              static_cast<uint64_t>(physical - k_rom0_physical) + width <=
@@ -225,7 +228,7 @@ bool c_cpu::write(uint32_t address, uint32_t width, uint32_t value)
     {
         return fail_memory(address, width, true);
     }
-    if (physical > k_ram_size - width)
+    if (physical >= k_ram_mirror_size)
     {
         if (m_hardware != nullptr &&
             m_hardware->write(physical, width, value))
@@ -235,9 +238,10 @@ bool c_cpu::write(uint32_t address, uint32_t width, uint32_t value)
         return fail_memory(address, width, true);
     }
 
+    const uint32_t offset = physical & (k_ram_size - 1u);
     for (uint32_t index = 0u; index < width; ++index)
     {
-        m_ram[physical + index] =
+        m_ram[offset + index] =
             static_cast<uint8_t>(value >> (index * 8u));
     }
     return true;
