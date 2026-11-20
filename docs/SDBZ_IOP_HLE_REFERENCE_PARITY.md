@@ -6,8 +6,8 @@ Main architectural reference: [twist84/ps2-web-recomp, `SDBZ` branch](https://gi
 
 Current native LLVM-IR implementation: [`src/iop/iop_kernel_hle_bridge.cpp`](../src/iop/iop_kernel_hle_bridge.cpp); the baseline audited blob was `623875f9bacb21633a539ce2529570b81132c474`.
 
-The reference file defines **172 explicitly named `def("library", ordinal, ...)` handlers**. The HLE-first runtime now installs **192 guest-callable export ordinals** across
-the kernel bridge (152), CDVDMAN bridge (14), SIFCMD bridge (13) and
+The reference file defines **172 explicitly named `def("library", ordinal, ...)` handlers**. The HLE-first runtime now installs **196 guest-callable export ordinals** across
+the kernel bridge (154), CDVDMAN bridge (14), SIFCMD bridge (15) and
 SIFMAN bridge (13). **137** of the kernel bridge exports match explicitly
 named `libs.cpp` reference definitions. The earlier 152 count omitted
 seven pre-existing registrations in separate device/SIF bridges. Counts include no claim about full behavioral equivalence. The reference also uses loops/dynamic registrations (e.g. `secrman#4/#5`) and separate IOP modules (`io.cpp`, `sif.cpp`, `cdvd.cpp`, `spu2.cpp`) and EE kernel syscalls. The full reference runtime is larger than these 172 direct definitions.
@@ -30,7 +30,7 @@ Never bulk-register an unimplemented opcode. Each `k_exports` entry installs a *
 | `sysclib` | 29/31 | `4 setjmp`, `5 longjmp` |
 | `stdio` | 3/3 | — |
 | `modload` | 6/8 | `7 LoadStartModule`, `8 StartModule` |
-| `vblank` | 4/6 | `8 RegisterVblankHandler`, `9 ReleaseVblankHandler` |
+| `vblank` | 6/6 | — |
 | `timrman` | 0/13 | `4 AllocHardTimer`, `5 ReferHardTimer`, `6 FreeHardTimer`, `7 SetTimerMode`, `8 GetTimerStatus`, `9 SetTimerCounter`, `10 GetTimerCounter`, `11 SetTimerCompare`, `16 GetHardTimerIntrCode`, `20 SetTimerHandler`, `22 SetupHardTimer`, `23 StartHardTimer`, `24 StopHardTimer` |
 | `dmacman` | 5/7 | `16 dmac_set_dpcr2`, `17 dmac_get_dpcr2` |
 | `heaplib` | 4/4 | — |
@@ -607,3 +607,49 @@ The static inventory also names `vblank#8` and LIBSD dependencies,
 which have independent behavior and may become subsequent blockers.
 No game-boot or visible-frame claim is justified by import parity
 and synthetic CI alone.
+
+## 2026-11-20 — matched Windows 02:26:45 archive: SIFCMD and VBLANK import parity
+
+The matched final replay confirms that the previous four CDVDMAN
+import blockers (#15/#37/#38/#75) were resolved. It still has five
+started IRX modules, 18 committed RPC operations, 15,057 EE
+dispatches and 3,529 translation-cache entries. The next unresolved
+ARKD_DVD import is **`sifcmd#12 sceSifSendCmd`**; no ARKD module
+or thread was started. The terminal EE exception is unchanged at
+EPC `0x001748C4`. PPM captures remain fully black.
+
+The full seven-module static catalog contains exactly four previously
+unregistered imports in these two libraries: `sifcmd#12` used by
+ARKD_DVD, `sifcmd#28 isceSifSendCmd` (intr variant) used by PADMAN,
+and `vblank#8 RegisterVblankHandler`/`#9 ReleaseVblankHandler`
+(PADMAN uses both; ARKD uses #8). Other observed imports in those
+two libraries already had implementations. Static dependencies
+are not proof of runtime handler execution.
+
+The native SIFCMD bridge now stages **actual R3000 guest command
+packet bytes**, with the two stack-passed extra-data parameters,
+and enqueues them into the existing IOP-to-EE SIF0 DMA queue.
+Enqueueing does not synthesize an EE reply or DMAC interrupt; an
+actual armed EE SIF0 receiver must accept the packet. Bounded
+packet/payload lengths and guest IO/EE memory spans are validated.
+The intr-context ordinal uses the same transport and does not
+fabricate an IOP interrupt.
+
+The VBLANK bridge now retains actual guest handler pointers and
+registration GP per start/end edge, supports removal by
+(edge, function), and calls the **real R3000 guest callback**
+through a one-shot return trampoline only when the scanout
+scheduler delivers the matching edge. No registration or wait
+manufactures an edge. The existing EE scanout producer supplies
+start edges; end-edge delivery is still unsupported until a
+real producer exists. Registration is cleared on IOP reboot.
+
+Regression tests verify the original guest R3000 import stubs,
+complete SIFCMD packet plus extra payload traversing an armed
+EE SIF0 receiver, atomic failure for invalid guest spans,
+VBLANK edge matching, actual callback argument execution,
+registration removal and reboot clearing.
+
+**Next Windows replay:** confirm that ARKD_DVD now links and
+starts; otherwise diagnose its newly exposed first unresolved
+import. No playable boot, sound or rendered image is implied.
