@@ -322,6 +322,10 @@ bool test_guest_sio2_controller()
     {
         0xffu, 0x41u, 0x5au, 0xffu, 0xffu
     };
+    // The original SIO2MAN interrupt handler at 0x00020180
+    // accesses this device latch through its KSEG1 alias.
+    constexpr uint32_t intr = iop::c_hw::k_sio2_intr;
+    constexpr uint32_t guest_intr = 0xbf808280u;
 
     // Real PIO: a started and fully transmitted SEND3-described packet
     // can obtain the neutral virtual controller reply and IRQ17.
@@ -330,7 +334,8 @@ bool test_guest_sio2_controller()
         !hw.write(tx, 1u, poll[0u]) ||
         !hw.read(iop::c_hw::k_i_stat, 4u, &status) ||
         (status & irq) != 0u ||
-        hw.read(rx, 1u, &status))
+        hw.read(rx, 1u, &status) ||
+        !cpu.read32(guest_intr, &status) || status != 0u)
     {
         return false;
     }
@@ -358,7 +363,8 @@ bool test_guest_sio2_controller()
         first_rejection.m_rx_bytes_at_last_start != 0u ||
         first_rejection.m_send3[0u] !=
             ((5u << 8u) | (5u << 18u)) ||
-        !hw.sio2_transfer_requested())
+        !hw.sio2_transfer_requested() ||
+        !hw.read(intr, 4u, &status) || status != 0u)
     {
         return false;
     }
@@ -382,6 +388,16 @@ bool test_guest_sio2_controller()
     if (hw.sio2_ctrl_starts() != 2u ||
         hw.sio2_packets() != 1u ||
         hw.sio2_completed_transfers() != 1u ||
+        // The authentic SIO2 interrupt completion bit is latched
+        // before the IOP IRQ17 handler reads and acknowledges it.
+        !cpu.read32(guest_intr, &status) || status != 1u ||
+        !cpu.write32(guest_intr, 2u) ||
+        !hw.read(intr, 4u, &status) || status != 1u ||
+        !cpu.write32(guest_intr, 1u) ||
+        !cpu.read32(guest_intr, &status) || status != 0u ||
+        // Device W1C does not acknowledge the separate IOP INTC bit.
+        !hw.read(iop::c_hw::k_i_stat, 4u, &status) ||
+        (status & irq) == 0u ||
         first_packet.m_first_packet_count != 1u ||
         first_packet.m_packets_at_last_start != 1u ||
         first_packet.m_tx_bytes_at_last_start != 0u ||
@@ -420,6 +436,9 @@ bool test_guest_sio2_controller()
         hw.sio2_diagnostics().m_rx_bytes != 0u ||
         hw.sio2_transfer_requested() ||
         hw.sio2_completed_transfers() != 2u ||
+        !cpu.read32(guest_intr, &status) || status != 1u ||
+        !cpu.write32(guest_intr, status) ||
+        !cpu.read32(guest_intr, &status) || status != 0u ||
         !hw.read(iop::c_hw::k_i_stat, 4u, &status) ||
         (status & irq) == 0u ||
         !hw.write(iop::c_hw::k_i_stat, 4u, ~irq))
@@ -573,6 +592,11 @@ bool test_guest_sio2_controller()
         after_start.m_rx_bytes_at_last_start != 0u ||
         after_start.m_rx_bytes != 0u ||
         retail_hw.read(rx, 1u, &status) ||
+        !retail_kernel.cpu().read32(guest_intr, &status) ||
+        status != 1u ||
+        !retail_kernel.cpu().write32(guest_intr, status) ||
+        !retail_kernel.cpu().read32(guest_intr, &status) ||
+        status != 0u ||
         !retail_hw.read(iop::c_hw::k_i_stat, 4u, &status) ||
         (status & irq) == 0u ||
         !retail_hw.read(dma11 + 8u, 4u, &status) ||
@@ -586,6 +610,8 @@ bool test_guest_sio2_controller()
     kernel.reset();
     return kernel.hardware().sio2_ctrl_starts() == 0u &&
         kernel.hardware().sio2_packets() == 0u &&
+        kernel.hardware().read(intr, 4u, &status) &&
+        status == 0u &&
         kernel.hardware().sio2_completed_transfers() == 0u &&
         !kernel.hardware().sio2_transfer_requested() &&
         kernel.hardware().sio2_pending_tx_bytes() == 0u &&
