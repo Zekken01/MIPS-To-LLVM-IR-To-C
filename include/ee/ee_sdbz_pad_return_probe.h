@@ -31,7 +31,7 @@ public:
 
     bool observe(uint32_t pc, uint64_t dispatch,
                  uint64_t stack_pointer, uint64_t return_value,
-                 const ee_memory* memory)
+                 ee_memory* memory)
     {
         if (pc != k_return_pc)
         {
