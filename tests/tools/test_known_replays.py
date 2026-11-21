@@ -36,6 +36,14 @@ def test_read_manifest():
         json_path = root / "translation-cache.json"
         json_path.write_text(json.dumps(manifest), encoding="utf-8")
         assert known.read_manifest(json_path)[1] == [0x100008, 0x180000]
+        # Snapshots use sorted JSON keys but retain original discovery order.
+        reordered = dict(manifest)
+        reordered["known_entries"] = [
+            "sub_0x180000_0x180000.ll", "sub_0x100008_0x100008.ll",
+        ]
+        json_path.write_text(json.dumps(reordered, sort_keys=True), encoding="utf-8")
+        assert known.read_manifest(json_path)[1] == [0x180000, 0x100008]
+        json_path.write_text(json.dumps(manifest), encoding="utf-8")
         archive = root / "diagnostic.zip"
         with zipfile.ZipFile(archive, "w") as output:
             output.writestr("translation-cache.json", json.dumps(manifest))
@@ -45,6 +53,8 @@ def test_read_manifest():
             {"ir_hashes": {"sub_0x100008_0x10000c.ll": "a" * 64}},
             {"ir_hashes": {"sub_0x100008_0x100008.ll": "not a SHA"}},
             {"inputs": {"ELF": "x"}},
+            {"known_entries": ["sub_0x100008_0x100008.ll"]},
+            {"known_entries": ["sub_0x100008_0x100008.ll"] * 2},
         ]
         for change in invalid:
             bad = {**manifest, **change}
