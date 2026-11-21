@@ -9,6 +9,7 @@
 #include "ee_reached_isa_inventory.h"
 #include "ee_vsync_flags.h"
 #include "ee_sdbz_dma_wait_probe.h"
+#include "ee_sdbz_pad_return_probe.h"
 #include "ee_gif.h"
 #include "ee_gs.h"
 #include "ee_gs_display.h"
@@ -938,6 +939,7 @@ bool write_report(
     const iop::c_iop_guest_fault_probe& iop_fault_probe,
     const iop::c_kernel* guest_iop_kernel,
     const ee::c_ee_sdbz_dma_wait_probe& dma_wait_probe,
+    const ee::c_ee_sdbz_pad_return_probe& pad_return_probe,
     const ee::c_ee_dispatch_hotspots& hotspots,
     bool in_progress
 )
@@ -1142,6 +1144,8 @@ bool write_report(
     }
     std::fputs(",\n  \"m2_sdbz_dma_wait\": ", output);
     dma_wait_probe.write_json(output);
+    std::fputs(",\n  \"m2_sdbz_ee_pad_return\": ", output);
+    pad_return_probe.write_json(output);
     std::fputs("\n}\n", output);
     const bool no_write_error = std::ferror(output) == 0;
     const bool closed = std::fclose(output) == 0;
@@ -2336,6 +2340,10 @@ int main(int argc, char** argv)
     // pair without reading MMIO, changing RAM, or issuing any completion.
     ee::c_ee_sdbz_dma_wait_probe dma_wait_probe{};
 
+    // Original USA game pad-read return continuation at 0x00109ba0.
+    // Observe guest EE stack bytes only; do not alter device responses.
+    ee::c_ee_sdbz_pad_return_probe pad_return_probe{};
+
     struct s_kernel_thread
     {
         bool m_used = false;
@@ -2809,7 +2817,7 @@ int main(int argc, char** argv)
                 reason, status, history, syscall_history, gs_state.state(),
                 gif_path1, gif_path2, gif_path3,
                 graphics_probe, iop_fault_probe, iop_kernel.get(),
-                dma_wait_probe, hotspots, true
+                dma_wait_probe, pad_return_probe, hotspots, true
             );
             report_time_ms += std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - report_start
@@ -2883,6 +2891,13 @@ int main(int argc, char** argv)
         }
 
         const uint32_t from_pc = cpu.m_pc;
+        if (report_path != nullptr)
+        {
+            (void)pad_return_probe.observe(
+                from_pc, dispatched + 1u,
+                cpu.m_gpr[29u].m_lo, cpu.m_gpr[2u].m_lo,
+                memory.get());
+        }
         if (report_path != nullptr &&
             dma_wait_probe.observe(
                 from_pc, dispatched + 1u, current_thread_id,
@@ -6280,7 +6295,7 @@ int main(int argc, char** argv)
                       reason, status, history, syscall_history, gs_state.state(),
                       gif_path1, gif_path2, gif_path3,
                       graphics_probe, iop_fault_probe, iop_kernel.get(),
-                      dma_wait_probe, hotspots, false))
+                      dma_wait_probe, pad_return_probe, hotspots, false))
     {
         return 1;
     }
