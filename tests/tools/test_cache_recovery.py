@@ -57,7 +57,7 @@ def test_snapshots_are_content_addressed_and_reusable():
             elf, [0x100040, 0x100020, 0x100008, 0x100010], source
         )
         legacy_bytes = (json.dumps(legacy, sort_keys=True, indent=2) +
-                        "\\n").encode("utf-8")
+                        "\n").encode("utf-8")
         legacy_digest = hashlib.sha256(legacy_bytes).hexdigest()[:16]
         legacy_path = recovery.history_dir(base) / (
             f"ee-{run_game.sha256_path(elf)[:12]}-000004-{legacy_digest}.json"
