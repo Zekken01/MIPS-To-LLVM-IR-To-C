@@ -54,6 +54,12 @@ struct s_kernel_thread
     uint32_t m_option = 0u;
     uint32_t m_entry = 0u;
     uint32_t m_gp = 0u;
+    // Host-only origin. When created inside a guest syscall, m_creator_pc
+    // is the executing R3000's resume/continuation PC, not a fabricated
+    // guest callsite. Zero creator means host-originated module/IRQ/callback.
+    uint32_t m_creator_thread_id = 0u;
+    uint32_t m_creator_pc = 0u;
+    uint64_t m_created_cycle = 0u;
     uint32_t m_wakeup_count = 0u;
     bool m_delete_on_exit = false;
     bool m_hle_guest_callback = false;
