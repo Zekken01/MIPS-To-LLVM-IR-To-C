@@ -51,6 +51,10 @@ void c_hw::reset()
     m_sio2_pending_tx.clear();
     m_sio2_rx.clear();
     m_sio2_empty_rx_read_count = 0u;
+    m_sio2_pad0_poll_count = 0u;
+    m_sio2_pad0_cross_pressed_polls = 0u;
+    m_sio2_pad0_cross_first_poll = 0u;
+    m_sio2_pad0_cross_poll_count = 0u;
     m_sio2_transfer_requested = false;
     m_sio2_ctrl_start_count = 0u;
     m_sio2_packet_count = 0u;
@@ -151,6 +155,19 @@ void c_hw::bind_dma_cpu(c_cpu* cpu)
     m_dma_cpu = cpu;
 }
 
+void c_hw::configure_sio2_pad0_cross_pulse(
+    uint32_t first_poll, uint32_t poll_count)
+{
+    // A test pulse is explicitly opt-in and only modifies the bytes
+    // returned to a real guest pad read; it never queues a new packet.
+    m_sio2_pad0_cross_first_poll =
+        first_poll != 0u && poll_count != 0u ? first_poll : 0u;
+    m_sio2_pad0_cross_poll_count =
+        m_sio2_pad0_cross_first_poll != 0u ? poll_count : 0u;
+    m_sio2_pad0_poll_count = 0u;
+    m_sio2_pad0_cross_pressed_polls = 0u;
+}
+
 // SIO2 controller exchange from ps2-web-recomp/SDBZ's sio2.cpp:
 // SEND3 supplies the input and output sizes; the guest's actual TX bytes
 // select the device command. Never make a response to a write-only setup.
@@ -247,6 +264,23 @@ bool c_hw::process_sio2_packet()
             break;
         case 0x42u:
             neutral_data();
+            if (port == 0u)
+            {
+                // PS2 pad button bits are active-low: Cross is bit 14,
+                // the upper byte's bit 6. Only a genuine guest 0x42
+                // read on a connected port-0 pad consumes the probe.
+                ++m_sio2_pad0_poll_count;
+                if (m_sio2_pad0_cross_poll_count != 0u &&
+                    m_sio2_pad0_poll_count >=
+                        m_sio2_pad0_cross_first_poll &&
+                    m_sio2_pad0_poll_count -
+                        m_sio2_pad0_cross_first_poll <
+                        m_sio2_pad0_cross_poll_count)
+                {
+                    put(4u, 0xbfu);
+                    ++m_sio2_pad0_cross_pressed_polls;
+                }
+            }
             break;
         case 0x43u:
             if (!pad.m_config)
@@ -1677,6 +1711,13 @@ c_hw::s_sio2_diagnostics c_hw::sio2_diagnostics() const
     result.m_tx_bytes = m_sio2_pending_tx.size();
     result.m_rx_bytes = m_sio2_rx.size();
     result.m_empty_rx_reads = m_sio2_empty_rx_read_count;
+    result.m_pad0_polls = m_sio2_pad0_poll_count;
+    result.m_pad0_cross_pressed_polls =
+        m_sio2_pad0_cross_pressed_polls;
+    result.m_pad0_cross_first_poll =
+        m_sio2_pad0_cross_first_poll;
+    result.m_pad0_cross_poll_count =
+        m_sio2_pad0_cross_poll_count;
     result.m_last_rejection = m_sio2_last_rejection;
     result.m_rejected_starts = m_sio2_rejected_start_count;
     return result;
