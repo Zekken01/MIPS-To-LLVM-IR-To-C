@@ -293,3 +293,82 @@ beyond the old four-million-dispatch limit.
 after these bounded knobs, with the existing IR cache retained.
 Do not claim that boot reached a visible screen until a real,
 nonblack CPU/GPU capture is verified.
+
+## Fifth matched archive: cumulative native HOST_YIELD cap
+
+The full archive `sdbz-graphics-pr148(4).zip` is the post-change
+retail replay with `MAX_DISPATCHES=6000000`,
+`LOOP_YIELD_RESUMES=16`, native watchdog 1,000,000,
+`SDBZ_DISPATCH_TRACE_EVERY=1024` and cached translation intact.
+
+**The stop is a host watchdog configuration limitation, not a newly
+reached missing game opcode.** The final report shows:
+
+| Metric | Previous replay (4) | Fifth replay |
+|---|---:|---:|
+| EE dispatches | 3,981,062 | 3,667,736 |
+| Guest instruction attempts | 1,847,424,953 | 157,999,642 |
+| EE GS fields | 375 | 31 |
+| Window presents succeeded | 268 | 25 |
+| Native GPU GS draws | 255 | 15 |
+| Committed IOP RPC events | 292 | 51 |
+| Guest IOP fault | null | null |
+| EE exit | HOST_YIELD | HOST_YIELD |
+| Cached LLVM IR modules | 1,285 | 1,285 |
+
+`first-boot.json` and the final replay `boot.log` agree on
+`dispatches=3667736`, `ee_cycles=157999642`,
+`scheduler_yields=16`, final EE PC `0x00175210`,
+`INTC_STAT=0x4`, `INTC_MASK=0x804` and
+`m2_iop_guest_fault=null`. The actual 6-million-dispatch
+budget is **not** reached. All three PPM captures remain black;
+CPU and native-GPU display captures are pixel-for-pixel identical,
+while the upload PPM is also black. PATH1/VU1 XGKICK still has
+zero accepted batches; PATH2 committed 16 batches and PATH3
+committed 49. The final `translation-cache.json` still contains
+1,285 `ir_hashes`; the one outer expansion pass appended no
+functions.
+
+The boot log has seventeen actual
+`0x00175204 -> 0x00175210 HOST_YIELD` transitions,
+of which the first sixteen were resumed. The first two happened
+at dispatch 10,426 and 10,514. There was then substantial
+genuine EE/IOP/GS activity until the next native loop watchdog
+at dispatch 3,639,873, followed by later watchdogs while
+fields and GIF register writes continued. The previous runner
+counted all sixteen resumes cumulatively across the *entire*
+boot, so the seventeenth was rejected unconditionally at
+dispatch 3,667,736, regardless of intervening progress.
+This explains the new early stop; the smaller field/graphics
+counts must not be described as a rendering regression.
+
+### Causal host-only correction
+
+New `ee::c_host_loop_yield_budget` preserves a strict finite
+`LOOP_YIELD_RESUMES` allowance of sixteen **while no newly
+observed real progress occurs**, but reopens a fresh bounded
+window when at least one independently recorded GS field,
+committed IOP RPC sequence, or GIF DMA register write
+changes between watchdog events. Guest instruction counts,
+ordinary dispatches, host wall time, and the host's own
+yield counter do *not* qualify as progress. An unchanged
+loop still stops after the configured number of resumes,
+while setting `LOOP_YIELD_RESUMES=0` stops immediately.
+
+This is observer-only host scheduling: no guest-visible PC,
+GPR, timer, INTc state, DMA completion, callback, RPC result,
+GS packet or frame is fabricated. CTest
+`ee_host_loop_yield_budget` tests both fail-closed stationary
+loops and genuine GS, GIF and RPC progress, including
+the previous cumulative-cap failure.
+
+`run_ps2_game.bat --full` retains the native watchdog,
+the explicit user's 6-million-dispatch budget and
+the low-volume verbose text cadence. The guest IR cache,
+`run_game.py` cache schema and fingerprints remain
+unchanged.
+
+**Next gate:** a matched retail replay at the corrected
+branch head to determine whether later boot traffic and
+nonblack graphics appear. Neither a visible first frame
+nor an EE/IOP timing-parity result is yet established.
