@@ -17,6 +17,7 @@ The archived SHA-256 list authenticates IR identities, not their contents.
 """
 import argparse
 import csv
+from datetime import datetime
 import hashlib
 import json
 import os
@@ -63,7 +64,8 @@ def read_manifest(path):
         if address == 0 or address & 3 or address in entries:
             raise ValueError(f"duplicate/unaligned function address: 0x{address:08x}")
         entries.append(address)
-    elf_hash = data.get("inputs", {}).get("ELF")
+    inputs = data.get("inputs")
+    elf_hash = inputs.get("ELF") if isinstance(inputs, dict) else None
     if not isinstance(elf_hash, str) or not DIGEST.fullmatch(elf_hash):
         raise ValueError("manifest is missing a valid ELF SHA-256")
     return data, entries
@@ -249,6 +251,11 @@ def replay_pair(elf, disc, build, config, work, output,
         if not report.is_file():
             raise ValueError(f"{profile} run did not produce report")
         report_data = json.loads(report.read_text(encoding="utf-8"))
+        if report_data.get("dispatches") != max_dispatches:
+            raise ValueError(
+                f"{profile} stopped after {report_data.get('dispatches')} "
+                f"dispatches; expected {max_dispatches}; replay parity is incomplete"
+            )
         count = trace_branch_count(trace)
         outcomes[profile] = {
             "exit_code": result.returncode,
@@ -294,7 +301,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.reconstruct and args.manifest is None:
         parser.error("--reconstruct requires --manifest")
-    if args.reconstruct and args.work_dir == DEFAULT_WORK:
+    if args.reconstruct and args.work_dir.resolve() == DEFAULT_WORK.resolve():
         parser.error("--reconstruct requires an isolated --work-dir")
     if args.allow_ir_mismatches and not args.reconstruct:
         parser.error("--allow-ir-mismatches requires --reconstruct")
@@ -313,7 +320,8 @@ def main(argv=None):
     elf = Path(boot).resolve(strict=True)
     build = args.build_dir.resolve()
     work = args.work_dir.resolve()
-    output = (args.output_dir or (work / "known-replays")).resolve()
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    output = (args.output_dir or (work / "known-replays" / timestamp)).resolve()
     if output == work or output == work / "ir" or output == work / "objects":
         parser.error("--output-dir cannot replace guest cache directories")
     try:
