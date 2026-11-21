@@ -318,6 +318,105 @@ def test_windows_launcher_preserves_guest_cache():
         'if /I "%EE_WEBGPU_WINDOW%"=="1"')
 
 
+def test_clean_ctrl_c_cancellation():
+    # The real subprocess.run implementation kills its direct child when
+    # KeyboardInterrupt propagates out of communicate(). The orchestration
+    # layer must convert that interrupt to exit 130, not show a traceback.
+    with tempfile.TemporaryDirectory(prefix="ee-boot-interrupt-") as temp:
+        work = Path(temp)
+        log = work / "interrupt.log"
+        with patch.object(SESSION.subprocess, "run", side_effect=KeyboardInterrupt):
+            code, output, elapsed = SESSION.run_session(
+                ["fake-ee-game", "--auto-expand=2"], log
+            )
+        assert code == 130
+        assert elapsed >= 0.0
+        assert "cancelled by user (Ctrl+C)" in output
+        assert "cancelled by user (Ctrl+C)" in log.read_text(encoding="utf-8")
+        assert "fake-ee-game" in log.read_text(encoding="utf-8")
+
+    for quick_probe in (False, True):
+        with tempfile.TemporaryDirectory(prefix="ee-boot-interrupt-") as temp:
+            work = Path(temp) / "work"
+            work.mkdir()
+            report = work / ("quick-probe.json" if quick_probe else "first-boot.json")
+            report.write_text('{"stale":true}', encoding="utf-8")
+            elf = Path(temp) / "synthetic.elf"
+            elf.write_bytes(b"synthetic")
+            argv = [
+                str(elf), "--work-dir", str(work),
+                "--report", str(report), "--expansion-passes=2",
+                "--driver", str(ROOT / "tools" / "run_game.py"),
+                "--no-iop-catalog",
+            ]
+            if quick_probe:
+                argv.append("--quick-probe")
+            cancelled_stderr = io.StringIO()
+            with patch.object(SESSION.subprocess, "run",
+                              side_effect=KeyboardInterrupt) as subprocess_call:
+                with patch("sys.stderr", cancelled_stderr):
+                    code = SESSION.main(argv)
+            assert code == 130
+            assert subprocess_call.call_count == 1, "must not start another guest pass"
+            assert not report.exists(), "stale previous guest report must be removed"
+            output = (work / ("quick-probe.log" if quick_probe else "boot.log")
+                      ).read_text(encoding="utf-8")
+            assert "cancelled by user (Ctrl+C)" in output
+            assert "cancelled by user (Ctrl+C)" in cancelled_stderr.getvalue()
+            if not quick_probe:
+                expansion = (work / "expansion.log").read_text(encoding="utf-8")
+                assert "exit=130" in expansion
+
+    # Interruption during the final traced replay must not be interpreted
+    # as a normal DISPATCH/GPU exit or trigger further guest work.
+    with tempfile.TemporaryDirectory(prefix="ee-boot-final-interrupt-") as temp:
+        work = Path(temp) / "work"
+        work.mkdir()
+        report = work / "first-boot.json"
+        elf = Path(temp) / "synthetic.elf"
+        elf.write_bytes(b"synthetic")
+        seen = []
+
+        def interrupted_final(command, **kwargs):
+            seen.append(list(map(str, command)))
+            if len(seen) == 1:
+                report.write_text(json.dumps({
+                    "schema": "ee-game-run-report-v1",
+                    "dispatches": 500,
+                    "exit_reason": 5,
+                    "dispatch_status": 0,
+                    "final_pc": 0x00109ba0
+                }), encoding="utf-8")
+                return SimpleNamespace(returncode=3, stdout="expansion complete\\n")
+            raise KeyboardInterrupt
+
+        argv = [
+            str(elf), "--work-dir", str(work),
+            "--report", str(report), "--expansion-passes=1",
+            "--driver", str(ROOT / "tools" / "run_game.py"),
+            "--no-iop-catalog",
+        ]
+        cancelled_stderr = io.StringIO()
+        with patch.object(SESSION.subprocess, "run", side_effect=interrupted_final):
+            with patch("sys.stderr", cancelled_stderr):
+                code = SESSION.main(argv)
+        assert code == 130 and len(seen) == 2
+        assert "--trace" in seen[1]
+        assert "expansion complete" in (work / "expansion.log").read_text(
+            encoding="utf-8")
+        assert "cancelled by user (Ctrl+C)" in (work / "boot.log").read_text(
+            encoding="utf-8")
+        assert "no guest completion is inferred" in cancelled_stderr.getvalue()
+        assert not report.exists(), "interrupted final run must not retain prior state"
+
+    # Ctrl+C during catalog/setup (outside a child) must also exit cleanly.
+    cancelled_stderr = io.StringIO()
+    with patch.object(SESSION, "main", side_effect=KeyboardInterrupt):
+        with patch("sys.stderr", cancelled_stderr):
+            assert SESSION.cli_main([]) == 130
+    assert "Native boot cancelled by user" in cancelled_stderr.getvalue()
+
+
 def test_guest_rpc_snapshots_in_cached_probe():
     # A long cached probe must retain read-only guest worker diagnostics
     # without writing one line for every EE dispatch.
@@ -331,6 +430,7 @@ def test_guest_rpc_snapshots_in_cached_probe():
 
 
 def main():
+    test_clean_ctrl_c_cancellation()
     test_guest_rpc_snapshots_in_cached_probe()
     test_windows_launcher_preserves_guest_cache()
     test_ll_counter()
