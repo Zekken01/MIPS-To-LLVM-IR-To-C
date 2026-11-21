@@ -298,24 +298,90 @@ def test_windows_launcher_preserves_guest_cache():
     # The full retail replay must be able to continue genuine guest IOP
     # execution past the old fixed 100k ceiling; quick probes stay short.
     assert 'set "DEFAULT_MAX_DISPATCHES=100000"' in launcher
-    assert 'set "DEFAULT_MAX_DISPATCHES=500000"' in launcher
+    assert 'set "DEFAULT_MAX_DISPATCHES=6000000"' in launcher
     assert 'if not defined MAX_DISPATCHES set "MAX_DISPATCHES=%DEFAULT_MAX_DISPATCHES%"' in launcher
     assert '--max-dispatches=%MAX_DISPATCHES%' in launcher
     assert '--timeout-seconds=%BOOT_TIMEOUT_SECONDS%' in launcher
     assert '--max-dispatches=100000 ^' not in launcher
-    assert 'if /I "%~1"=="--quick" set "SESSION_ARGS=--quick-probe --no-iop-catalog"' in launcher
-    # There are two --quick checks: early WebGPU override and late
-    # session-mode selection. Only compare the latter with cache/full.
+    assert (
+        'if /I "%REQUESTED_SESSION_MODE%"=="quick" '
+        'set "SESSION_ARGS=--quick-probe --no-iop-catalog"'
+    ) in launcher
     quick_session = launcher.index(
-        'if /I "%~1"=="--quick" set "SESSION_ARGS=--quick-probe --no-iop-catalog"')
+        'if /I "%REQUESTED_SESSION_MODE%"=="quick" '
+        'set "SESSION_ARGS=--quick-probe --no-iop-catalog"'
+    )
     assert launcher.index('if not defined CACHE_FLAG set "SESSION_ARGS="') < quick_session
-    assert quick_session < launcher.index('if /I "%~1"=="--full"')
+    assert quick_session < launcher.index(
+        'if /I "%REQUESTED_SESSION_MODE%"=="full"'
+    )
     assert 'set "EE_WEBGPU_SNAPSHOT=0"' in launcher
     assert 'set "EE_WEBGPU_WINDOW=0"' in launcher
     assert launcher.index('set "EE_WEBGPU_SNAPSHOT=0"') < launcher.index(
         'if /I "%EE_WEBGPU_SNAPSHOT%"=="1"')
     assert launcher.index('set "EE_WEBGPU_WINDOW=0"') < launcher.index(
         'if /I "%EE_WEBGPU_WINDOW%"=="1"')
+
+    # The user's repeatable 6M / 600s SDBZ graphics replay should not
+    # require entering a dozen SET commands before every full run.
+    # Existing caller-set overrides are respected; --quick stays headless
+    # with its original 100k/120s default budget.
+    assert 'if not defined EE_WEBGPU_SNAPSHOT set "EE_WEBGPU_SNAPSHOT=1"' in launcher
+    assert 'if not defined EE_WEBGPU_WINDOW set "EE_WEBGPU_WINDOW=1"' in launcher
+    assert 'if not defined SDBZ_REPORT_SNAPSHOT_MS set "SDBZ_REPORT_SNAPSHOT_MS=2000"' in launcher
+    assert 'if not defined SDBZ_DISPATCH_TRACE_EVERY set "SDBZ_DISPATCH_TRACE_EVERY=1024"' in launcher
+    assert 'if not defined LOOP_YIELD_RESUMES set "LOOP_YIELD_RESUMES=16"' in launcher
+    assert 'if /I "%REPORT_NAME%"=="first-boot.json" (' in launcher
+    assert 'set "BOOT_TIMEOUT_SECONDS=600"' in launcher
+    assert 'set "BOOT_TIMEOUT_SECONDS=120"' in launcher
+    assert '--loop-yield-resumes=%LOOP_YIELD_RESUMES%' in launcher
+    assert '--max-dispatches=%MAX_DISPATCHES%' in launcher
+
+    # Cross experiments are an explicit option; neutral can clear
+    # inherited manual pad injection, without changing the caller's
+    # variables because the launcher is wrapped in SETLOCAL.
+    assert 'set "REQUESTED_PAD_PROFILE="' in launcher
+    assert 'if /I "%~1"=="--cross" (' in launcher
+    assert 'if /I "%~1"=="--neutral" (' in launcher
+    assert 'set "SDBZ_PAD0_CROSS_FIRST_POLL=200"' in launcher
+    assert 'set "SDBZ_PAD0_CROSS_POLL_COUNT=8"' in launcher
+    assert 'set "SDBZ_PAD0_CROSS_FIRST_POLL="' in launcher
+    assert 'set "SDBZ_PAD0_CROSS_POLL_COUNT="' in launcher
+    assert 'set "CAPTURE_PROFILE=neutral"' in launcher
+    assert 'set "CAPTURE_PROFILE=pad-custom"' in launcher
+    assert 'set "CAPTURE_PROFILE=cross"' in launcher
+
+    # A full run always captures a uniquely named upload-ready archive.
+    # It must never silently overwrite the neutral/Cross evidence nor
+    # include the expensive cached guest .ll or .o files.
+    archive = launcher.split("\n:archive_full_run\n", 1)[1].split(
+        "\n:confirm_guest_cache_rebuild\n", 1
+    )[0]
+    assert "Get-ChildItem -LiteralPath '%WORK_DIR%' -File" in archive
+    for diagnostic in (
+        "boot.log", "expansion.log", "first-boot.json",
+        "translation-cache.json", "iop-disc-catalog.json",
+        "gs-display.ppm", "gs-webgpu.ppm", "gs-upload.ppm",
+    ):
+        assert f"'{diagnostic}'" in archive
+    assert "Get-Date -Format 'yyyyMMdd-HHmmssfff'" in archive
+    assert "sdbz-graphics-pr148-%CAPTURE_PROFILE%-" in archive
+    assert "Compress-Archive -LiteralPath $files.FullName" in archive
+    assert "-Force" not in archive
+    assert "'*.ll'" not in archive and "'*.o'" not in archive
+    assert 'set "EXIT_CODE=%ERRORLEVEL%"' in launcher
+    assert 'if /I "%REPORT_NAME%"=="first-boot.json" call :archive_full_run' in launcher
+    assert 'exit /b %EXIT_CODE%' in launcher
+    assert launcher.index('set "EXIT_CODE=%ERRORLEVEL%"') < launcher.index(
+        'call :archive_full_run'
+    )
+    assert launcher.index('if exist "%WORK_DIR%\\%%F" del /q "%WORK_DIR%\\%%F"') < (
+        launcher.index('python tools\\run_boot_session.py "%GAME_ELF%"')
+    )
+    # Earlier cache protections remain ahead of any destructive build.
+    assert launcher.index('call :confirm_guest_cache_rebuild') < (
+        launcher.index('call :archive_full_run')
+    )
 
 
 def test_clean_ctrl_c_cancellation():
