@@ -409,19 +409,20 @@ bool test_guest_sio2_controller()
     {
         return false;
     }
-    // The primary reference unconditionally raises IRQ17 on CTRL.start.
-    // This HLE implementation intentionally rejects an empty new request,
-    // but must expose that difference instead of a silent false return.
+    // As in ps2-web-recomp/SDBZ, an actual empty PIO CTRL.start
+    // still completes through IRQ17. No new controller bytes or
+    // DMA11/12 completion may be generated for this control event.
     if (!hw.write(ctrl, 4u, 1u) ||
-        hw.sio2_rejection_name() == nullptr ||
         hw.sio2_diagnostics().m_last_rejection !=
-            iop::c_hw::e_sio2_rejection::no_processed_packet ||
-        hw.sio2_diagnostics().m_rejected_starts != 2u ||
+            iop::c_hw::e_sio2_rejection::none ||
+        hw.sio2_diagnostics().m_rejected_starts != 1u ||
         hw.sio2_diagnostics().m_packet_index != 1u ||
         hw.sio2_diagnostics().m_rx_bytes != 0u ||
-        !hw.sio2_transfer_requested() ||
+        hw.sio2_transfer_requested() ||
+        hw.sio2_completed_transfers() != 2u ||
         !hw.read(iop::c_hw::k_i_stat, 4u, &status) ||
-        (status & irq) != 0u)
+        (status & irq) == 0u ||
+        !hw.write(iop::c_hw::k_i_stat, 4u, ~irq))
     {
         return false;
     }
@@ -466,10 +467,10 @@ bool test_guest_sio2_controller()
         hw.sio2_diagnostics();
     if (hw.sio2_ctrl_starts() != 4u ||
         hw.sio2_packets() != 2u ||
-        hw.sio2_completed_transfers() != 2u ||
+        hw.sio2_completed_transfers() != 3u ||
         second_packet.m_last_rejection !=
             iop::c_hw::e_sio2_rejection::none ||
-        second_packet.m_rejected_starts != 2u ||
+        second_packet.m_rejected_starts != 1u ||
         second_packet.m_first_packet_count != 2u ||
         second_packet.m_packets_at_last_start != 1u ||
         second_packet.m_tx_bytes_at_last_start != 0u ||
@@ -498,15 +499,90 @@ bool test_guest_sio2_controller()
         (status & irq) != 0u ||
         hw.sio2_ctrl_starts() != 5u ||
         hw.sio2_packets() != 2u ||
-        hw.sio2_completed_transfers() != 2u ||
+        hw.sio2_completed_transfers() != 3u ||
         hw.sio2_diagnostics().m_last_rejection !=
             iop::c_hw::e_sio2_rejection::dma11_source ||
-        hw.sio2_diagnostics().m_rejected_starts != 3u ||
+        hw.sio2_diagnostics().m_rejected_starts != 2u ||
         hw.sio2_diagnostics().m_dma11[0u] !=
             iop::c_cpu::k_ram_size - 4u)
     {
         return false;
     }
+    // Exact SDBZ retail sequence: SIO2MAN sends two original pad
+    // 0x42 PIO polls (connected port 0, disconnected port 1),
+    // then writes CTRL=0x3bd (FIFO reset + START simultaneously).
+    // The reset discards both queued replies before the start handler
+    // runs, but IRQ17 must still signal genuine CTRL completion.
+    iop::c_kernel retail_kernel;
+    if (!retail_kernel.attach_hle_hardware())
+    {
+        return false;
+    }
+    iop::c_hw& retail_hw = retail_kernel.hardware();
+    if (!retail_hw.set_interrupt_mask(17u, true) ||
+        !retail_hw.write(send3, 4u, (5u << 8u) | (5u << 18u)) ||
+        !retail_hw.write(send3 + 4u, 4u,
+                         (5u << 8u) | (5u << 18u) | 1u))
+    {
+        return false;
+    }
+    for (uint32_t packet = 0u; packet < 2u; ++packet)
+    {
+        for (const uint8_t byte : poll)
+        {
+            if (!retail_hw.write(tx, 1u, byte))
+            {
+                return false;
+            }
+        }
+    }
+    const iop::c_hw::s_sio2_diagnostics before_start =
+        retail_hw.sio2_diagnostics();
+    if (before_start.m_first_packet_count != 2u ||
+        before_start.m_packet_index != 2u ||
+        before_start.m_tx_bytes != 0u ||
+        before_start.m_rx_bytes != 10u ||
+        before_start.m_first_packets[0u].m_port != 0u ||
+        !before_start.m_first_packets[0u].m_pad_present ||
+        before_start.m_first_packets[1u].m_port != 1u ||
+        before_start.m_first_packets[1u].m_pad_present ||
+        before_start.m_first_packets[0u].m_command != 0x42u ||
+        before_start.m_first_packets[1u].m_command != 0x42u ||
+        !retail_hw.read(iop::c_hw::k_i_stat, 4u, &status) ||
+        (status & irq) != 0u)
+    {
+        return false;
+    }
+    if (!retail_hw.write(ctrl, 4u, 0x03bdu))
+    {
+        return false;
+    }
+    const iop::c_hw::s_sio2_diagnostics after_start =
+        retail_hw.sio2_diagnostics();
+    if (retail_hw.sio2_ctrl_starts() != 1u ||
+        retail_hw.sio2_packets() != 2u ||
+        retail_hw.sio2_completed_transfers() != 1u ||
+        retail_hw.sio2_transfer_requested() ||
+        after_start.m_last_rejection !=
+            iop::c_hw::e_sio2_rejection::none ||
+        after_start.m_rejected_starts != 0u ||
+        after_start.m_ctrl != 0x03bdu ||
+        after_start.m_packet_index != 0u ||
+        after_start.m_packets_at_last_start != 2u ||
+        after_start.m_tx_bytes_at_last_start != 0u ||
+        after_start.m_rx_bytes_at_last_start != 0u ||
+        after_start.m_rx_bytes != 0u ||
+        retail_hw.read(rx, 1u, &status) ||
+        !retail_hw.read(iop::c_hw::k_i_stat, 4u, &status) ||
+        (status & irq) == 0u ||
+        !retail_hw.read(dma11 + 8u, 4u, &status) ||
+        (status & 0x01000000u) != 0u ||
+        !retail_hw.read(dma12 + 8u, 4u, &status) ||
+        (status & 0x01000000u) != 0u)
+    {
+        return false;
+    }
+
     kernel.reset();
     return kernel.hardware().sio2_ctrl_starts() == 0u &&
         kernel.hardware().sio2_packets() == 0u &&
