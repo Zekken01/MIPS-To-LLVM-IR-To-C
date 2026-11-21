@@ -882,7 +882,9 @@ void write_gif_path_counters_json(
         "\"committed_packed_events\": %llu, "
         "\"committed_reglist_events\": %llu, "
         "\"committed_image_events\": %llu, "
-        "\"committed_image_qwc\": %llu}",
+        "\"committed_image_qwc\": %llu, "
+        "\"committed_image_nonzero_bytes\": %llu, "
+        "\"committed_image_payload_fnv1a64\": %llu}",
         comma ? "," : "", name,
         static_cast<unsigned long long>(counters.m_accepted_batches),
         static_cast<unsigned long long>(counters.m_rejected_batches),
@@ -892,7 +894,9 @@ void write_gif_path_counters_json(
         static_cast<unsigned long long>(counters.m_packed_events),
         static_cast<unsigned long long>(counters.m_reglist_events),
         static_cast<unsigned long long>(counters.m_image_events),
-        static_cast<unsigned long long>(counters.m_image_qwc));
+        static_cast<unsigned long long>(counters.m_image_qwc),
+        static_cast<unsigned long long>(counters.m_image_nonzero_bytes),
+        static_cast<unsigned long long>(counters.m_image_payload_fnv1a64));
 }
 
 void write_gif_paths_json(
