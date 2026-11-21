@@ -66,8 +66,8 @@ def main():
             "0010000c jal",
             "00100014 beq",
             "0010001c jalr(metadata)",
-            "0x1000f000: 1 proven-local references",
-            "0x1000f010: 1 proven-local references",
+            "0x1000f000: 1 local-constant candidate references",
+            "0x1000f010: 1 local-constant candidate references",
             "[read] lw",
             "[write] sw",
         ]:
