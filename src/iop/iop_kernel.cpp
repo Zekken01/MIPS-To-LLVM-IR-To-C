@@ -782,6 +782,10 @@ uint32_t c_kernel::create_thread(
     thread.m_option = option;
     thread.m_entry = entry;
     thread.m_gp = gp;
+    thread.m_creator_thread_id = m_current_thread_id;
+    thread.m_creator_pc = m_current_thread_id != 0u ?
+        m_cpu.state().m_pc : 0u;
+    thread.m_created_cycle = m_cycles;
     thread.m_stack_base = stack_base;
     thread.m_stack_size = allocated_size;
     thread.m_cpu.m_pc = entry;
