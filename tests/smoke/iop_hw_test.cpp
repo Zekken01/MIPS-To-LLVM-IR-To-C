@@ -623,6 +623,79 @@ bool test_guest_sio2_controller()
         return false;
     }
 
+    // A deliberate host Cross press is delivered ONLY in genuine
+    // connected port-0 SIO2 0x42 reply bytes, for a bounded number of
+    // guest pad polls. No new packet/IRQ is created by configuration,
+    // and the ordinary neutral state must resume automatically.
+    iop::c_kernel input_probe_kernel;
+    if (!input_probe_kernel.attach_hle_hardware())
+    {
+        return false;
+    }
+    iop::c_hw& input_probe = input_probe_kernel.hardware();
+    input_probe.configure_sio2_pad0_cross_pulse(3u, 2u);
+    if (input_probe.sio2_diagnostics().m_pad0_cross_first_poll != 3u ||
+        input_probe.sio2_diagnostics().m_pad0_cross_poll_count != 2u ||
+        input_probe.sio2_packets() != 0u ||
+        input_probe.sio2_completed_transfers() != 0u)
+    {
+        return false;
+    }
+    for (uint32_t pad_poll = 1u; pad_poll <= 5u; ++pad_poll)
+    {
+        if (!input_probe.write(ctrl, 4u, 0x0cu) ||
+            !input_probe.write(send3, 4u, (5u << 8u) | (5u << 18u)))
+        {
+            return false;
+        }
+        for (const uint8_t byte : poll)
+        {
+            if (!input_probe.write(tx, 1u, byte))
+            {
+                return false;
+            }
+        }
+        for (uint32_t reply_index = 0u; reply_index < 5u;
+             ++reply_index)
+        {
+            const uint32_t expected =
+                reply_index == 4u && (pad_poll == 3u || pad_poll == 4u)
+                ? 0xbfu : neutral_reply[reply_index];
+            if (!input_probe.read(rx, 1u, &status) ||
+                status != expected)
+            {
+                return false;
+            }
+        }
+        if (input_probe.sio2_completed_transfers() != pad_poll - 1u ||
+            !input_probe.write(ctrl, 4u, 0x03bdu) ||
+            input_probe.sio2_completed_transfers() != pad_poll ||
+            !input_probe.write(intr, 4u, 1u) ||
+            !input_probe.write(iop::c_hw::k_i_stat, 4u, ~irq))
+        {
+            return false;
+        }
+    }
+    const iop::c_hw::s_sio2_diagnostics input_result =
+        input_probe.sio2_diagnostics();
+    if (input_result.m_pad0_polls != 5u ||
+        input_result.m_pad0_cross_pressed_polls != 2u ||
+        input_result.m_pad0_cross_first_poll != 3u ||
+        input_result.m_pad0_cross_poll_count != 2u ||
+        input_probe.sio2_packets() != 5u ||
+        input_probe.sio2_ctrl_starts() != 5u ||
+        input_probe.sio2_completed_transfers() != 5u ||
+        input_result.m_rx_bytes != 0u)
+    {
+        return false;
+    }
+    input_probe_kernel.reset();
+    if (input_probe_kernel.hardware().sio2_diagnostics()
+            .m_pad0_cross_poll_count != 0u)
+    {
+        return false;
+    }
+
     kernel.reset();
     return kernel.hardware().sio2_ctrl_starts() == 0u &&
         kernel.hardware().sio2_packets() == 0u &&
