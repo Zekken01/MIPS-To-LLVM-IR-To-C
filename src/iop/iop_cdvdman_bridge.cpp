@@ -82,6 +82,8 @@ bool c_cdvdman_bridge::install()
     m_sync_waiters.clear();
     m_callback = 0u;
     m_callback_gp = 0u;
+    m_callback_origin = {};
+    m_callback_registration_reports = 0u;
     m_requested_media_mode = 0u;
     m_initialized = false;
     m_last_error = 0u;
@@ -238,7 +240,7 @@ void c_cdvdman_bridge::complete_read()
     // if its guest entry cannot be scheduled.
     if (m_callback != 0u &&
         !m_kernel.start_guest_callback(
-            m_callback, m_callback_gp, 1u))
+            m_callback, m_callback_gp, 1u, m_callback_origin))
     {
         m_last_error = 1u;
     }
@@ -405,6 +407,23 @@ bool c_cdvdman_bridge::handle_syscall(
         const uint32_t previous = m_callback;
         m_callback = callback;
         m_callback_gp = callback != 0u ? state.m_gpr[28] : 0u;
+        m_callback_origin = callback != 0u ?
+            m_kernel.make_guest_callback_origin(
+                e_guest_callback_source::cdvdman_read) :
+            s_guest_callback_origin{};
+        if (m_callback_registration_reports < 32u)
+        {
+            ++m_callback_registration_reports;
+            std::fprintf(stderr,
+                "IOP CDVDMAN callback registered: "
+                "callback=0x%08x first_word=0x%08x previous=0x%08x "
+                "thread=%u syscall_pc=0x%08x ra=0x%08x gp=0x%08x\n",
+                callback, opcode, previous,
+                m_callback_origin.m_registration_thread_id,
+                m_callback_origin.m_registration_pc,
+                m_callback_origin.m_registration_ra,
+                m_callback_origin.m_registration_gp);
+        }
         state.m_gpr[2] = previous;
         return true;
     }
