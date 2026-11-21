@@ -312,8 +312,10 @@ def test_windows_launcher_preserves_guest_cache():
         'set "SESSION_ARGS=--quick-probe --no-iop-catalog"'
     )
     assert launcher.index('if not defined CACHE_FLAG set "SESSION_ARGS="') < quick_session
+    # There is also an earlier --full block configuring WebGPU
+    # defaults. Compare the two session-mode assignments specifically.
     assert quick_session < launcher.index(
-        'if /I "%REQUESTED_SESSION_MODE%"=="full"'
+        'if /I "%REQUESTED_SESSION_MODE%"=="full" set "SESSION_ARGS="'
     )
     assert 'set "EE_WEBGPU_SNAPSHOT=0"' in launcher
     assert 'set "EE_WEBGPU_WINDOW=0"' in launcher
