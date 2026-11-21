@@ -544,8 +544,16 @@ make a false DMA completion.
   objects additionally include the actual
   `queued_rx_bytes`, `packet_index`,
   `ctrl_word`, `stat_word`,
-  first four `send3` descriptors and
-  DMA11/DMA12 MADR-BCR-CHCR triplets.
+  first four `send3` descriptors,
+  DMA11/DMA12 MADR-BCR-CHCR triplets,
+  the actual guest IOP PC/RA of CTRL.start,
+  and the first four *real decoded packet*
+  port numbers, input/output byte counts,
+  leading TX bytes, command IDs and
+  connected-pad decisions. These records
+  distinguish controller port 0/1 from
+  memory-card port 2 without generating
+  any new peripheral response.
 - The original no-completion/no-IRQ invariant
   remains intact until sufficient authentic
   guest evidence identifies the actual mismatch.
