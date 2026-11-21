@@ -360,7 +360,12 @@ def archive_known_function_manifest(path, snapshot):
             not isinstance(inputs.get("ELF"), str) or
             snapshot.get("emit_opt") != 0):
         return
-    serialized = json.dumps(snapshot, sort_keys=True, indent=2) + "\n"
+    # Preserve guest discovery/batch order independently of JSON key sorting.
+    # Reconstructing the same address SET in a different order can change
+    # overlapping block ownership and emitted IR hashes.
+    archived = dict(snapshot)
+    archived["known_entries"] = list(hashes)
+    serialized = json.dumps(archived, sort_keys=True, indent=2) + "\n"
     digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
     folder = path.parent.parent / "ee-known-manifests"
     folder.mkdir(parents=True, exist_ok=True)
