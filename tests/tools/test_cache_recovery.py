@@ -39,7 +39,8 @@ def test_snapshots_are_content_addressed_and_reusable():
         base.mkdir(parents=True)
         source = {"ELF": run_game.sha256_path(elf), "src/lift/test.cpp": "1" * 64}
         early = manifest_for(elf, [0x100008, 0x100010], source)
-        later = manifest_for(elf, [0x100008, 0x100010, 0x100020], source)
+        # Preserve original discovery order even if sorted JSON keys differ.
+        later = manifest_for(elf, [0x100020, 0x100008, 0x100010], source)
         cache = base / "translation-cache.json"
         run_game.archive_known_function_manifest(cache, early)
         run_game.archive_known_function_manifest(cache, later)
@@ -48,7 +49,7 @@ def test_snapshots_are_content_addressed_and_reusable():
         chosen, selected, entries, same = recovery.select_manifest(
             base, elf, source
         )
-        assert chosen.exists() and entries == [0x100008, 0x100010, 0x100020]
+        assert chosen.exists() and entries == [0x100020, 0x100008, 0x100010]
         assert selected["ir_hashes"] == later["ir_hashes"] and same
 
         # Altering a content-addressed historical snapshot invalidates it.
