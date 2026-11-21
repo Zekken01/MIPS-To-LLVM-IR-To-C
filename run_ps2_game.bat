@@ -253,9 +253,15 @@ if /I "%REQUESTED_SESSION_MODE%"=="recover" (
 )
 
 rem Strict unattended recovery: hashes AND lowering sources must match.
+rem The user's first post-update invalidation may predate snapshot support;
+rem the existing cache record itself is also a known-entry manifest.
 rem Any changed generator or differing IR remains an explicit user decision.
+set "HAVE_KNOWN_MANIFEST="
+if exist "build\ee-known-manifests\*.json" set "HAVE_KNOWN_MANIFEST=1"
+if exist "%WORK_DIR%\translation-cache.json" set "HAVE_KNOWN_MANIFEST=1"
+if exist "%BASE_WORK_DIR%\translation-cache.json" set "HAVE_KNOWN_MANIFEST=1"
 if not defined CACHE_FLAG (
-    if exist "build\ee-known-manifests\*.json" (
+    if defined HAVE_KNOWN_MANIFEST (
         echo === Attempting strict, non-destructive known-IR recovery ===
         python tools\recover_translation_cache.py --elf "%GAME_ELF%" ^
             --build-dir build --config Release ^
