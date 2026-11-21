@@ -15,8 +15,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import re
 import sys
+import subprocess
 from datetime import datetime, timezone
 
 import run_game
@@ -137,6 +137,7 @@ def recover(elf, build, config, base_work, jobs, allow_ir_changes=False):
     candidate, manifest, entries, same_sources = select_manifest(
         base_work, elf, ir_sources, allow_ir_changes
     )
+    previous_cache = active_work(base_work)
     work = new_recovery_work(base_work)
     print(
         f"Cache recovery: {len(entries)} known entries from {candidate}; "
@@ -166,7 +167,7 @@ def recover(elf, build, config, base_work, jobs, allow_ir_changes=False):
     promote_pointer(base_work, work)
     print(
         f"Cache recovery validated and activated: {work}\n"
-        f"Previous cache retained: {active_work_before}\n"
+        f"Previous cache retained: {previous_cache}\n"
         f"To undo, delete {pointer_path(base_work)}",
         flush=True,
     )
@@ -175,7 +176,9 @@ def recover(elf, build, config, base_work, jobs, allow_ir_changes=False):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--elf", required=True, type=Path)
+    parser.add_argument("--elf", type=Path)
+    parser.add_argument("--print-active", action="store_true",
+                        help="print only the validated active work directory")
     parser.add_argument("--build-dir", type=Path, default=Path("build"))
     parser.add_argument("--config", choices=("Debug", "Release", "RelWithDebInfo",
                                             "MinSizeRel"), default="Release")
@@ -185,17 +188,20 @@ def main(argv=None):
     parser.add_argument("--allow-ir-changes", action="store_true",
                         help="explicitly allow changed lowering/IR hashes")
     args = parser.parse_args(argv)
+    if args.print_active:
+        print(active_work(args.base_work_dir.resolve()))
+        return 0
+    if args.elf is None:
+        parser.error("--elf is required for recovery")
     if not 1 <= args.emit_jobs <= 32:
         parser.error("--emit-jobs must be in 1..32")
     try:
         elf = args.elf.resolve(strict=True)
         build = args.build_dir.resolve()
         base_work = args.base_work_dir.resolve()
-        global active_work_before
-        active_work_before = active_work(base_work)
         recover(elf, build, args.config, base_work, args.emit_jobs,
                 args.allow_ir_changes)
-    except (OSError, ValueError, RuntimeError) as error:
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         print(f"Cache recovery stopped without changing the active cache: {error}",
               file=sys.stderr)
         return 1
