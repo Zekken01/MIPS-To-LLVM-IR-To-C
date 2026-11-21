@@ -451,9 +451,25 @@ bool c_hw::run_sio2_transfer()
     }
     if (!processed)
     {
-        return reject(m_sio2_pending_tx.empty()
-            ? e_sio2_rejection::no_processed_packet
-            : e_sio2_rejection::packet_incomplete);
+        // Original SDBZ SIO2MAN issues CTRL=0x3bd after sending its
+        // two PIO pad polls. The combined FIFO reset/start clears both
+        // queues *before* entering here. The primary ps2-web-recomp
+        // SIO2 run_transfer() still acknowledges that actual START
+        // through IRQ17, even with no additional data to transfer.
+        //
+        // An empty PIO START is therefore a real control completion,
+        // not a missing device reply. Incomplete PIO packets and armed
+        // DMA11/12 requests must still pass their normal preflight.
+        if (!input_dma && !output_dma && m_sio2_pending_tx.empty())
+        {
+            processed = true;
+        }
+        else
+        {
+            return reject(m_sio2_pending_tx.empty()
+                ? e_sio2_rejection::no_processed_packet
+                : e_sio2_rejection::packet_incomplete);
+        }
     }
     if (output_dma)
     {
