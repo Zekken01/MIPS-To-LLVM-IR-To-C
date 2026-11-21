@@ -93,6 +93,20 @@ def verify_preservation_when_host_only_inputs_change():
             "ir_hashes": run_game.translated_ir_hashes(metadata_path)
         }), encoding="utf-8")
 
+        # A cache produced during the short-lived misplaced-header
+        # window may include this exact host-only key in ir_sources.
+        # Permit migration only when the relocated header bytes match.
+        original_cache = json.loads(cache.read_text(encoding="utf-8"))
+        legacy_cache = dict(original_cache)
+        legacy_cache["ir_sources"] = dict(initial_guest)
+        legacy_cache["ir_sources"][
+            "include/ee/ee_sdbz_pad_return_probe.h"
+        ] = initial_host["src/runtime/ee_sdbz_pad_return_probe.h"]
+        cache.write_text(json.dumps(legacy_cache), encoding="utf-8")
+        run_game.validate_preserved_translation(
+            cache, initial_host, initial_guest, 0, metadata_path, object_dir
+        )
+
         probe = source_root / "src/runtime/ee_sdbz_pad_return_probe.h"
         probe.write_bytes(b"updated host diagnostics")
         extra = source_root / "src/runtime/ee_sdbz_other_diagnostic.h"
@@ -101,6 +115,18 @@ def verify_preservation_when_host_only_inputs_change():
         next_guest = run_game.ir_generation_inputs(elf, source_root)
         assert next_host != initial_host
         assert next_guest == initial_guest
+
+        # Byte-mismatched relocation is NOT permitted to bypass guest
+        # IR source provenance; only the exact saved host header may move.
+        try:
+            run_game.validate_preserved_translation(
+                cache, next_host, next_guest, 0, metadata_path, object_dir
+            )
+        except ValueError as error:
+            assert "guest IR generation input changed:" in str(error)
+        else:
+            raise AssertionError("modified relocated host header was accepted")
+        cache.write_text(json.dumps(original_cache), encoding="utf-8")
 
         # This is the exact fallback used by run_ps2_game.bat:
         # the saved DLL needs a host relink, but valid IR/objects remain.
