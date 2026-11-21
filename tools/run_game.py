@@ -121,7 +121,25 @@ def validate_preserved_translation(path, inputs, ir_sources,
         raise ValueError("preserved function metadata was modified")
     saved_sources = snapshot.get("ir_sources")
     if saved_sources is not None:
-        if not isinstance(saved_sources, dict) or saved_sources != ir_sources:
+        # A host-only SDBZ pad-return observer was briefly installed in
+        # include/ee and therefore mistakenly fingerprinted as a guest
+        # lowering input. It now lives in src/runtime. Permit ONLY this
+        # exact byte-identical relocation; all other guest source keys
+        # must still match, and verified IR/object hashes are checked below.
+        old_host_key = "include/ee/ee_sdbz_pad_return_probe.h"
+        new_host_key = "src/runtime/ee_sdbz_pad_return_probe.h"
+        migrated_host_header = (
+            isinstance(saved_sources, dict)
+            and old_host_key in saved_sources
+            and old_host_key not in ir_sources
+            and saved_sources[old_host_key] == inputs.get(new_host_key)
+            and {
+                name: digest for name, digest in saved_sources.items()
+                if name != old_host_key
+            } == ir_sources
+        )
+        if (not isinstance(saved_sources, dict) or
+                (saved_sources != ir_sources and not migrated_host_header)):
             changed = next((
                 name for name in sorted(
                     set(saved_sources if isinstance(saved_sources, dict) else {}) |
@@ -131,6 +149,12 @@ def validate_preserved_translation(path, inputs, ir_sources,
                    != ir_sources.get(name)
             ), "unknown")
             raise ValueError(f"guest IR generation input changed: {changed}")
+        if migrated_host_header:
+            print(
+                "run_game: migrated misplaced host-only pad probe "
+                "fingerprint; preserving verified guest IR",
+                flush=True
+            )
     else:
         # Older snapshots did not separately fingerprint guest-generator
         # sources. Byte equality of the complete generator binary plus the
