@@ -161,6 +161,13 @@ if defined SESSION_ARGS (
     echo Guest display VRAM if configured: "%WORK_DIR%\gs-display.ppm"
     echo GS texture upload if complete: "%WORK_DIR%\gs-upload.ppm"
 )
+rem Full replays have millions of dispatch boundaries. Retain every
+rem actual dispatch and the complete JSON diagnostic summaries while
+rem sampling *only* ordinary verbose stdout lines. Set
+rem SDBZ_DISPATCH_TRACE_EVERY=1 for the historical full text trace.
+rem The environment is host-only and never fingerprints guest LLVM IR.
+if not defined SESSION_ARGS if not defined SDBZ_DISPATCH_TRACE_EVERY set "SDBZ_DISPATCH_TRACE_EVERY=1024"
+if not defined SESSION_ARGS echo Verbose dispatch trace: first 64, each %SDBZ_DISPATCH_TRACE_EVERY%, and exceptional transitions
 rem Keep quick probes short; full retail traces need sufficient real EE/IOP
 rem cycles to observe long-running IRX work. Preserve explicit overrides.
 if not defined MAX_DISPATCHES set "MAX_DISPATCHES=%DEFAULT_MAX_DISPATCHES%"
