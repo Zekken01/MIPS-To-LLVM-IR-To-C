@@ -1,0 +1,276 @@
+#!/usr/bin/env python3
+"""Regression tests for known-IR reconstruction and matched CPU-only replay."""
+import hashlib
+import json
+from pathlib import Path
+import sys
+import tempfile
+from unittest.mock import patch
+import zipfile
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools"))
+import run_known_replays as known
+
+
+def digest(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def sample_manifest(entries, elf_bytes=b"fixture-elf"):
+    hashes = {
+        f"sub_0x{entry:x}_0x{entry:x}.ll": digest(f"; IR {entry}\n".encode())
+        for entry in entries
+    }
+    return {
+        "schema": "ee-translation-cache-v1",
+        "inputs": {"ELF": digest(elf_bytes)},
+        "ir_hashes": hashes,
+    }
+
+
+def test_read_manifest():
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        manifest = sample_manifest([0x100008, 0x180000])
+        json_path = root / "translation-cache.json"
+        json_path.write_text(json.dumps(manifest), encoding="utf-8")
+        assert known.read_manifest(json_path)[1] == [0x100008, 0x180000]
+        archive = root / "diagnostic.zip"
+        with zipfile.ZipFile(archive, "w") as output:
+            output.writestr("translation-cache.json", json.dumps(manifest))
+        assert known.read_manifest(archive)[1] == [0x100008, 0x180000]
+        invalid = [
+            {"ir_hashes": {**manifest["ir_hashes"], "../evil.ll": "a" * 64}},
+            {"ir_hashes": {"sub_0x100008_0x10000c.ll": "a" * 64}},
+            {"ir_hashes": {"sub_0x100008_0x100008.ll": "not a SHA"}},
+            {"inputs": {"ELF": "x"}},
+        ]
+        for change in invalid:
+            bad = {**manifest, **change}
+            json_path.write_text(json.dumps(bad), encoding="utf-8")
+            try:
+                known.read_manifest(json_path)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(f"accepted malformed manifest: {change}")
+        with zipfile.ZipFile(archive, "w") as output:
+            output.writestr("translation-cache.json", json.dumps(manifest))
+            output.writestr("nested/translation-cache.json", json.dumps(manifest))
+        try:
+            known.read_manifest(archive)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("accepted ambiguous archive")
+
+
+def test_hash_comparison():
+    with tempfile.TemporaryDirectory() as temp:
+        work = Path(temp)
+        ir = work / "ir"
+        ir.mkdir()
+        (ir / "sub_0x100008_0x100008.ll").write_bytes(b"one")
+        (ir / "sub_0x180000_0x180000.ll").write_bytes(b"two")
+        hashes = {
+            "sub_0x100008_0x100008.ll": digest(b"one"),
+            "sub_0x180000_0x180000.ll": digest(b"else"),
+            "sub_0x190000_0x190000.ll": digest(b"third"),
+        }
+        compare = known.compare_ir(work, hashes)
+        assert compare["expected"] == 3
+        assert compare["observed"] == 2
+        assert compare["matching"] == 1
+        assert compare["missing"] == ["sub_0x190000_0x190000.ll"]
+        assert compare["mismatched_sha256"] == ["sub_0x180000_0x180000.ll"]
+
+
+def test_reconstruction_is_batched_and_linked_once():
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        elf = root / "SLUS_214.42"
+        elf.write_bytes(b"fixture-elf")
+        entries = [0x100008 + 4 * i for i in range(260)]
+        manifest = sample_manifest(entries)
+        work = root / "isolated"
+        original_name = lambda entry: f"sub_0x{entry:x}_0x{entry:x}.ll"
+        calls = {"seed": 0, "batches": [], "link": 0, "write_cache": 0}
+
+        def emit_one(entry):
+            (work / "ir" / original_name(entry)).write_bytes(f"; IR {entry}\n".encode())
+
+        def fake_seed(command):
+            assert "--function=0x00100008" in command
+            calls["seed"] += 1
+            emit_one(entries[0])
+            metadata = {
+                "elf": str(elf), "entry_point": "0x00100008",
+                "functions": [{
+                    "vaddr": f"0x{entries[0]:08x}",
+                    "ir_path": str(work / "ir" / original_name(entries[0])),
+                }],
+                "function_count": 1,
+            }
+            (work / "ir" / "ee_functions.json").write_text(json.dumps(metadata))
+
+        def fake_append(recomp, elf_path, work_dir, metadata_path, addresses):
+            assert work_dir == work and elf_path == elf
+            calls["batches"].append(list(addresses))
+            metadata = json.loads(metadata_path.read_text())
+            for entry in addresses:
+                emit_one(entry)
+                metadata["functions"].append({
+                    "vaddr": f"0x{entry:08x}",
+                    "ir_path": str(work / "ir" / original_name(entry)),
+                })
+            metadata["function_count"] = len(metadata["functions"])
+            metadata_path.write_text(json.dumps(metadata))
+            return addresses
+
+        def fake_link(*args, **kwargs):
+            calls["link"] += 1
+            args[4].write_bytes(b"dummy library")
+
+        def fake_cache(*args, **kwargs):
+            calls["write_cache"] += 1
+            args[0].write_text("{}")
+
+        with patch.object(known.run_game, "native_executable", return_value=root / "ee_recomp"), \
+             patch.object(known.run_game, "run", side_effect=fake_seed), \
+             patch.object(known.run_game, "batch_append_functions", side_effect=fake_append), \
+             patch.object(known.run_game, "build_linked_library", side_effect=fake_link), \
+             patch.object(known.run_game, "write_translation_cache", side_effect=fake_cache), \
+             patch.object(known.run_game, "translation_inputs", return_value={}), \
+             patch.object(known.run_game, "ir_generation_inputs", return_value={}):
+            compare = known.reconstruct(manifest, entries, elf, root, "Release",
+                                        work, 8, False)
+            assert compare["matching"] == 260
+            assert calls["seed"] == 1
+            assert [len(batch) for batch in calls["batches"]] == [128, 128, 3]
+            assert calls["link"] == calls["write_cache"] == 1
+            try:
+                known.reconstruct(manifest, entries, elf, root, "Release",
+                                  work, 8, False)
+            except ValueError as exc:
+                assert "not fresh" in str(exc)
+            else:
+                raise AssertionError("overwrote prior guest IR")
+
+
+def test_reconstruction_hash_mismatch_fails_closed():
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        elf = root / "SLUS_214.42"
+        elf.write_bytes(b"fixture-elf")
+        manifest = sample_manifest([0x100008])
+        work = root / "isolated"
+        def fake_seed(command):
+            (work / "ir" / "sub_0x100008_0x100008.ll").write_bytes(b"; different IR")
+            (work / "ir" / "ee_functions.json").write_text(json.dumps({
+                "functions": [{"vaddr": "0x100008"}], "function_count": 1,
+            }))
+        with patch.object(known.run_game, "native_executable", return_value=root / "ee_recomp"), \
+             patch.object(known.run_game, "run", side_effect=fake_seed), \
+             patch.object(known.run_game, "build_linked_library") as link:
+            try:
+                known.reconstruct(manifest, [0x100008], elf, root, "Release",
+                                  work, 8, False)
+            except ValueError as exc:
+                assert "IR SHA-256 mismatch" in str(exc)
+            else:
+                raise AssertionError("allowed mismatched IR without opt-in")
+            link.assert_not_called()
+
+
+def test_replay_pair_is_cpu_only_and_uses_one_library():
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        elf = root / "SLUS_214.42"
+        disc = root / "PS2_GAME"
+        disc.mkdir()
+        work = root / "existing"
+        work.mkdir()
+        cache = work / "translation-cache.json"
+        cache.write_bytes(b"verified unchanged cache")
+        calls = []
+        def fake_run(command, env=None, check=False):
+            assert "--no-recompile" in command and "--auto-expand=0" in command
+            assert not any("--auto-expand=" in c and c != "--auto-expand=0" for c in command)
+            assert not any("--gs-webgpu" in c or "--gs-snapshot" in c for c in command)
+            assert "--disc-folder" in command
+            report = Path(command[command.index("--report") + 1])
+            trace = Path(command[command.index("--trace-instructions") + 1])
+            cross = env.get("SDBZ_PAD0_CROSS_FIRST_POLL")
+            if cross:
+                assert cross == "200" and env["SDBZ_PAD0_CROSS_POLL_COUNT"] == "8"
+            else:
+                assert "SDBZ_PAD0_CROSS_POLL_COUNT" not in env
+            report.write_text(json.dumps({"dispatches": 6000000, "final_pc": 0x100008}))
+            trace.write_text(
+                "attempt,pc,opcode_word,kind,reference_slot,hle_service\n" +
+                ("1,0x00109d50,0x00000000,0,0,0\n" * (8 if cross else 0)) +
+                "# truncated=false range=0x00109d50:0x00109d50\n"
+            )
+            calls.append(cross)
+            return type("Result", (), {"returncode": 4})()
+        with patch.object(known.subprocess, "run", side_effect=fake_run), \
+             patch.dict(known.os.environ, {
+                 "SDBZ_PAD0_CROSS_FIRST_POLL": "999",
+                 "SDBZ_PAD0_CROSS_POLL_COUNT": "99",
+             }):
+            result = known.replay_pair(elf, disc, root, "Release", work,
+                                       root / "output", 6000000, 600, 8)
+        assert calls == [None, "200"]
+        assert result["results"]["neutral"]["original_branch_0x00109d50"] == 0
+        assert result["results"]["cross"]["original_branch_0x00109d50"] == 8
+        assert cache.read_bytes() == b"verified unchanged cache"
+
+
+def test_incomplete_branch_trace_is_not_evidence():
+    with tempfile.TemporaryDirectory() as temp:
+        trace = Path(temp) / "branch.csv"
+        trace.write_text(
+            "attempt,pc,opcode_word,kind,reference_slot,hle_service\n"
+            "1,0x00109d50,0x00000000,0,0,0\n"
+            "# truncated=true range=0x00109d50:0x00109d50\n"
+        )
+        try:
+            known.trace_branch_count(trace)
+        except ValueError as exc:
+            assert "truncated" in str(exc)
+        else:
+            raise AssertionError("accepted partial guest branch evidence")
+
+
+def test_existing_cache_uses_only_safe_relink():
+    with tempfile.TemporaryDirectory() as temp:
+        calls = []
+        def fake_run(command, check=False):
+            calls.append(command)
+            return type("Result", (), {
+                "returncode": 1 if "--no-recompile" in command else 0,
+            })()
+        with patch.object(known.subprocess, "run", side_effect=fake_run):
+            known.prepare_existing(Path("SLUS_214.42"), Path("build"),
+                                   "Release", Path(temp), 8)
+        assert len(calls) == 2
+        assert "--no-recompile" in calls[0] and "--link-only" in calls[0]
+        assert "--relink-existing" in calls[1] and "--link-only" in calls[1]
+        assert all("--auto-expand=0" not in cmd for cmd in calls)
+        assert all("--functions=all" not in cmd for cmd in calls)
+
+
+def main():
+    test_read_manifest()
+    test_hash_comparison()
+    test_reconstruction_is_batched_and_linked_once()
+    test_reconstruction_hash_mismatch_fails_closed()
+    test_replay_pair_is_cpu_only_and_uses_one_library()
+    test_incomplete_branch_trace_is_not_evidence()
+    test_existing_cache_uses_only_safe_relink()
+    print("known-function matched replays: PASS")
+
+
+if __name__ == "__main__":
+    main()
