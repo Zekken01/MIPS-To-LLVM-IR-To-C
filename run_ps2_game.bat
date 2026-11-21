@@ -172,6 +172,11 @@ rem Keep quick probes short; full retail traces need sufficient real EE/IOP
 rem cycles to observe long-running IRX work. Preserve explicit overrides.
 if not defined MAX_DISPATCHES set "MAX_DISPATCHES=%DEFAULT_MAX_DISPATCHES%"
 if not defined BOOT_TIMEOUT_SECONDS set "BOOT_TIMEOUT_SECONDS=120"
+rem Preserve the original hard watchdog; its existing host safepoints can
+rem resume a bounded number of times without forging EE/IOP clock events.
+rem To recover strict immediate-stop behavior, set LOOP_YIELD_RESUMES=0.
+if not defined LOOP_YIELD_RESUMES set "LOOP_YIELD_RESUMES=16"
+echo Native loop watchdog: 1000000 instructions per native slice, %LOOP_YIELD_RESUMES% bounded resumes
 echo Expansion budget: %EXPANSION_PASSES% passes, %EXPANSION_PER_PASS% new functions per pass
 echo Dispatch budget: %MAX_DISPATCHES% per pass; timeout: %BOOT_TIMEOUT_SECONDS% seconds
 echo Report: "%WORK_DIR%\%REPORT_NAME%"
@@ -195,6 +200,7 @@ python tools\run_boot_session.py "%GAME_ELF%" ^
     --emit-opt=0 ^
     --max-dispatches=%MAX_DISPATCHES% ^
     --loop-budget=1000000 ^
+    --loop-yield-resumes=%LOOP_YIELD_RESUMES% ^
     --sif-poll-limit=%SIF_POLL_LIMIT% ^
     --timeout-seconds=%BOOT_TIMEOUT_SECONDS% %CACHE_FLAG% %SESSION_ARGS% %EE_WEBGPU_RUN_ARG% %EE_WEBGPU_WINDOW_ARG%
 set "EXIT_CODE=%ERRORLEVEL%"
