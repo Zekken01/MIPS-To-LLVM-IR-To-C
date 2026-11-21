@@ -334,11 +334,27 @@ bool test_guest_sio2_controller()
         !hw.write(tx, 1u, poll[0u]) ||
         !hw.read(iop::c_hw::k_i_stat, 4u, &status) ||
         (status & irq) != 0u ||
-        hw.read(rx, 1u, &status) ||
+        !hw.read(rx, 1u, &status) || status != 0xffu ||
         !cpu.read32(guest_intr, &status) || status != 0u)
     {
         return false;
     }
+    // The actual SIO2MAN IRX reads the uncached byte RX FIFO at
+    // 0xbf808264. An empty FIFO returns 0xff without creating a
+    // controller response, interrupt or DMA completion.
+    uint8_t guest_empty_rx = 0u;
+    if (!cpu.read8(0xbf808264u, &guest_empty) ||
+        guest_empty_rx != 0xffu ||
+        hw.sio2_diagnostics().m_empty_rx_reads != 2u ||
+        hw.sio2_diagnostics().m_rx_bytes != 0u ||
+        hw.sio2_packets() != 0u ||
+        hw.sio2_completed_transfers() != 0u ||
+        !hw.read(iop::c_hw::k_i_stat, 4u, &status) ||
+        (status & irq) != 0u)
+    {
+        return false;
+    }
+
     // Requesting a transfer with an incomplete packet must not
     // manufacture a device response, DMA completion or interrupt.
     if (!hw.write(ctrl, 4u, 1u) ||
@@ -419,7 +435,7 @@ bool test_guest_sio2_controller()
             return false;
         }
     }
-    if (hw.read(rx, 1u, &status) ||
+    if (!hw.read(rx, 1u, &status) || status != 0xffu ||
         !hw.write(iop::c_hw::k_i_stat, 4u, ~irq) ||
         hw.pending_interrupts() != 0u)
     {
@@ -591,7 +607,7 @@ bool test_guest_sio2_controller()
         after_start.m_tx_bytes_at_last_start != 0u ||
         after_start.m_rx_bytes_at_last_start != 0u ||
         after_start.m_rx_bytes != 0u ||
-        retail_hw.read(rx, 1u, &status) ||
+        !retail_hw.read(rx, 1u, &status) || status != 0xffu ||
         !retail_kernel.cpu().read32(guest_intr, &status) ||
         status != 1u ||
         !retail_kernel.cpu().write32(guest_intr, status) ||
@@ -1279,8 +1295,10 @@ int main()
         hardware.write(send3, 2u, 1u) ||
         !hardware.write(iop::c_hw::k_sio2_tx_fifo, 1u, 0xabu) ||
         !hardware.write(iop::c_hw::k_sio2_tx_fifo, 4u, 0xcdu) ||
-        hardware.read(iop::c_hw::k_sio2_rx_fifo, 4u, &actual) ||
-        hardware.read(iop::c_hw::k_sio2_rx_fifo, 1u, &actual) ||
+        !hardware.read(iop::c_hw::k_sio2_rx_fifo, 4u, &actual) ||
+        actual != 0xffu ||
+        !hardware.read(iop::c_hw::k_sio2_rx_fifo, 1u, &actual) ||
+        actual != 0xffu ||
         hardware.sio2_pending_tx_bytes() != 2u ||
         !hardware.sio2_tx_byte(1u, &transmit) ||
         transmit != 0xcdu ||
