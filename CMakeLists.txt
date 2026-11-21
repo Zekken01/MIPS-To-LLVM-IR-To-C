@@ -468,6 +468,10 @@ add_executable(ee_sdbz_dma_wait_probe_test tests/smoke/ee_sdbz_dma_wait_probe_te
 target_link_libraries(ee_sdbz_dma_wait_probe_test PRIVATE ee_core)
 add_test(NAME ee_sdbz_dma_wait_probe COMMAND ee_sdbz_dma_wait_probe_test)
 
+add_executable(ee_sdbz_pad_return_probe_test tests/smoke/ee_sdbz_pad_return_probe_test.cpp)
+target_link_libraries(ee_sdbz_pad_return_probe_test PRIVATE ee_core)
+add_test(NAME ee_sdbz_pad_return_probe COMMAND ee_sdbz_pad_return_probe_test)
+
 add_executable(ee_gs_gif_diagnostics_test tests/smoke/ee_gs_gif_diagnostics_test.cpp)
 target_link_libraries(ee_gs_gif_diagnostics_test PRIVATE ee_core)
 add_test(NAME ee_gs_gif_diagnostics COMMAND ee_gs_gif_diagnostics_test)
