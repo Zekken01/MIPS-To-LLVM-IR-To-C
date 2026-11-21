@@ -275,7 +275,8 @@ def test_matched_launcher_never_falls_back_to_guest_rebuild():
     section = launcher[matched:confirm]
     assert 'if not defined CACHE_FLAG (' in section
     assert 'exit /b 1' in section
-    assert 'exit /b %ERRORLEVEL%' in section
+    assert 'exit /b\n)' in section
+    assert 'exit /b %ERRORLEVEL%' not in section
     assert '--max-dispatches=%MAX_DISPATCHES%' in section
     assert '--timeout-seconds=%BOOT_TIMEOUT_SECONDS%' in section
     assert '--auto-expand' not in section
