@@ -63,6 +63,53 @@
 namespace
 {
 
+// Host-only CRT adapters: never change emitted guest LLVM IR or cache keys.
+FILE* open_host_file(const char* path, const char* mode)
+{
+    FILE* result = nullptr;
+#if defined(_WIN32)
+    if (path != nullptr && mode != nullptr)
+    {
+        (void)::fopen_s(&result, path, mode);
+    }
+#else
+    if (path != nullptr && mode != nullptr)
+    {
+        result = std::fopen(path, mode);
+    }
+#endif
+    return result;
+}
+
+const char* read_host_environment(
+    const char* name, std::string* storage
+)
+{
+    const char* result = nullptr;
+    if (name != nullptr && storage != nullptr)
+    {
+#if defined(_WIN32)
+        char* allocated = nullptr;
+        size_t length = 0u;
+        if (::_dupenv_s(&allocated, &length, name) == 0 &&
+            allocated != nullptr)
+        {
+            *storage = allocated;
+            result = storage->c_str();
+        }
+        std::free(allocated);
+#else
+        const char* value = std::getenv(name);
+        if (value != nullptr)
+        {
+            *storage = value;
+            result = storage->c_str();
+        }
+#endif
+    }
+    return result;
+}
+
 constexpr uint32_t k_ee_ram_size = 32u * 1024u * 1024u;
 constexpr uint32_t k_default_stack = 0x01fff000u;
 constexpr uint32_t k_default_dispatch_budget = 10000u;
@@ -497,7 +544,7 @@ bool write_gs_ppm(
     {
         return false;
     }
-    FILE* output = std::fopen(path, "wb");
+    FILE* output = open_host_file(path, "wb");
     if (output == nullptr)
     {
         return false;
@@ -893,7 +940,7 @@ bool write_report(
     bool in_progress
 )
 {
-    FILE* output = std::fopen(path, "wb");
+    FILE* output = open_host_file(path, "wb");
     if (output == nullptr)
     {
         std::fprintf(stderr, "failed to create runner report: %s\n", path);
@@ -1007,7 +1054,7 @@ bool write_report(
 
 bool load_kernel_ram_snapshot(const char* path, ee::ee_memory* memory)
 {
-    FILE* input = std::fopen(path, "rb");
+    FILE* input = open_host_file(path, "rb");
     if (input == nullptr)
     {
         std::fprintf(stderr, "could not open EE kernel RAM snapshot: %s\n", path);
@@ -1121,6 +1168,8 @@ int main(int argc, char** argv)
     bool instruction_trace_window_seen = false;
     std::vector<std::string> iop_irx_paths;
     const char* iop_rom0_path = nullptr;
+    // Retain ownership when Windows allocates the environment value.
+    std::string iop_rom0_environment;
     const char* disc_image_path = nullptr;
     const char* disc_folder_path = nullptr;
     bool iop_start_all = false;
@@ -1463,7 +1512,8 @@ int main(int argc, char** argv)
         // Host-only boot configuration: run_game.py can pass this
         // through unchanged without invalidating the existing EE
         // translation provenance / --no-recompile cache.
-        iop_rom0_path = std::getenv("SDBZ_IOP_ROM0");
+        iop_rom0_path = read_host_environment(
+            "SDBZ_IOP_ROM0", &iop_rom0_environment);
     }
     if (iop_rom0_path != nullptr && iop_rom0_path[0] == '\0')
     {
@@ -1478,7 +1528,9 @@ int main(int argc, char** argv)
         // This bounded quantum gives firmware time to actually execute;
         // it does not invent SIF register values or claim cycle accuracy.
         iop_quantum = 65536u;
-        const char* configured = std::getenv("SDBZ_IOP_ROM0_QUANTUM");
+        std::string quantum_environment;
+        const char* configured = read_host_environment(
+            "SDBZ_IOP_ROM0_QUANTUM", &quantum_environment);
         if (configured != nullptr &&
             !parse_u32(configured, &iop_quantum))
         {
@@ -2333,7 +2385,9 @@ int main(int argc, char** argv)
     // the guest still returns to the host after EVERY native dispatch while
     // --report is enabled, so DMA/interrupt/callback scheduling is unchanged.
     uint32_t report_snapshot_milliseconds = 0u;
-    const char* snapshot_interval = std::getenv("SDBZ_REPORT_SNAPSHOT_MS");
+    std::string snapshot_environment;
+    const char* snapshot_interval = read_host_environment(
+        "SDBZ_REPORT_SNAPSHOT_MS", &snapshot_environment);
     if (snapshot_interval != nullptr && *snapshot_interval != '\0')
     {
         char* end = nullptr;
@@ -6035,7 +6089,7 @@ int main(int argc, char** argv)
     }
     if (instruction_trace_path != nullptr)
     {
-        FILE* output = std::fopen(instruction_trace_path, "wb");
+        FILE* output = open_host_file(instruction_trace_path, "wb");
         if (output == nullptr)
         {
             std::fprintf(stderr, "failed to write instruction trace: %s\n",
