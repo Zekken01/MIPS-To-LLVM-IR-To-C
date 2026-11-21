@@ -362,6 +362,7 @@ bool c_ee_vif1::execute(
     if (accepted)
     {
         ++machine.m_commands;
+        ++machine.m_committed_opcodes[op];
     }
     return accepted;
 }
@@ -369,16 +370,29 @@ bool c_ee_vif1::execute(
 bool c_ee_vif1::consume(const uint8_t* data, uint32_t qwc)
 {
     constexpr size_t k_max_pending_words = 0x40000u + 0x400u;
+    // Host-only provenance. A failed DMA may be retried with identical
+    // bytes, so rejection totals count attempts, not unique guest commands.
+    const auto reject_packet = [this](e_reject reason, uint32_t code)
+    {
+        ++m_diagnostic.m_rejected_batches;
+        if (m_diagnostic.m_first_rejection == e_reject::none)
+        {
+            m_diagnostic.m_first_rejection = reason;
+            m_diagnostic.m_first_rejected_code = code;
+        }
+        m_diagnostic.m_reason = reason;
+        m_diagnostic.m_code = code;
+    };
     if (qwc > 0xffffu || (qwc != 0u && data == nullptr))
     {
-        m_diagnostic.m_reason = e_reject::invalid_packet;
+        reject_packet(e_reject::invalid_packet, 0u);
         return false;
     }
     s_machine next = m_machine;
     if (next.m_pending.size() + static_cast<size_t>(qwc) * 4u >
         k_max_pending_words)
     {
-        m_diagnostic.m_reason = e_reject::pending_limit;
+        reject_packet(e_reject::pending_limit, 0u);
         return false;
     }
     const size_t previous = next.m_pending.size();
@@ -452,8 +466,9 @@ bool c_ee_vif1::consume(const uint8_t* data, uint32_t qwc)
     }
     if (rejection != e_reject::none)
     {
-        m_diagnostic.m_reason = rejection;
-        m_diagnostic.m_code = rejected_code;
+        reject_packet(rejection, rejected_code);
+        m_diagnostic.m_pending_words =
+            static_cast<uint32_t>(next.m_pending.size());
         m_diagnostic.m_vu_pc = vu_issue.m_pc;
         m_diagnostic.m_vu_lower = vu_issue.m_lower;
         m_diagnostic.m_vu_upper = vu_issue.m_upper;
@@ -463,7 +478,14 @@ bool c_ee_vif1::consume(const uint8_t* data, uint32_t qwc)
                          next.m_pending.begin() +
                              static_cast<std::ptrdiff_t>(index));
     m_machine = std::move(next);
-    m_diagnostic = {};
+    // A successful packet clears only the latest failure, not the
+    // lifetime evidence of a previously rejected VU1/GIF command.
+    m_diagnostic.m_reason = e_reject::none;
+    m_diagnostic.m_code = 0u;
+    m_diagnostic.m_vu_pc = 0u;
+    m_diagnostic.m_vu_lower = 0u;
+    m_diagnostic.m_vu_upper = 0u;
+    m_diagnostic.m_committed_opcodes = m_machine.m_committed_opcodes;
     m_diagnostic.m_pending_words =
         static_cast<uint32_t>(m_machine.m_pending.size());
     m_diagnostic.m_commands = m_machine.m_commands;
