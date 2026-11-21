@@ -1462,16 +1462,20 @@ int main()
         return fail("cache-control register access validation");
     }
 
-    // Module startup resets/configures SIO2 before any controller transfer.
-    // Preserve that register state without inventing peripheral data or IRQs.
+    // Module startup resets/configures SIO2 before a pad transfer.
+    // The primary reference returns zero on CTRL reads, not the last
+    // written 0x3bc: original SIO2MAN uses this for both reset and
+    // START read-modify-write. Preserve the write in diagnostics only.
     if (!hardware.write(iop::c_hw::k_sio2_ctrl, 4u, 0x3bcu) ||
         !hardware.read(iop::c_hw::k_sio2_ctrl, 4u, &actual) ||
-        actual != 0x3bcu || hardware.pending_interrupts() != 0u ||
+        actual != 0u ||
+        hardware.sio2_diagnostics().m_ctrl != 0x3bcu ||
+        hardware.pending_interrupts() != 0u ||
         hardware.write(iop::c_hw::k_sio2_ctrl, 2u, 0u) ||
         !hardware.read(iop::c_hw::k_sio2_stat, 4u, &actual) ||
         actual != 0u)
     {
-        return fail("SIO2 control register storage and width validation");
+        return fail("SIO2 CTRL reference readback and write validation");
     }
 
     // SIO2 register family backed by guest-written state only.
