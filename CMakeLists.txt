@@ -652,6 +652,9 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME ee_interrupted_append_recovery
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_interrupted_append_recovery.py)
+    add_test(NAME ee_known_function_replays
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/tools/test_known_replays.py)
     add_test(NAME iop_rom0_runner
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_iop_rom0_runner.py
