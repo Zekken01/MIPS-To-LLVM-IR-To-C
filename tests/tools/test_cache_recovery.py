@@ -52,6 +52,20 @@ def test_snapshots_are_content_addressed_and_reusable():
         assert chosen.exists() and entries == [0x100020, 0x100008, 0x100010]
         assert selected["ir_hashes"] == later["ir_hashes"] and same
 
+        # Reject older sorted-key snapshots: they lost original entry order.
+        legacy = manifest_for(
+            elf, [0x100040, 0x100020, 0x100008, 0x100010], source
+        )
+        legacy_bytes = (json.dumps(legacy, sort_keys=True, indent=2) +
+                        "\\n").encode("utf-8")
+        legacy_digest = hashlib.sha256(legacy_bytes).hexdigest()[:16]
+        legacy_path = recovery.history_dir(base) / (
+            f"ee-{run_game.sha256_path(elf)[:12]}-000004-{legacy_digest}.json"
+        )
+        legacy_path.write_bytes(legacy_bytes)
+        _, _, retained, _ = recovery.select_manifest(base, elf, source)
+        assert retained == [0x100020, 0x100008, 0x100010]
+
         # Altering a content-addressed historical snapshot invalidates it.
         chosen.write_text(chosen.read_text() + " ", encoding="utf-8")
         _, _, entries, same = recovery.select_manifest(base, elf, source)
