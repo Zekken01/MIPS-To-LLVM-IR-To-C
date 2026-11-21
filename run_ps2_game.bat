@@ -7,7 +7,10 @@ rem Never switch branches, fetch ROM0, or require an ISO.
 cd /d "%~dp0"
 if errorlevel 1 exit /b 1
 
-rem Usage: run_ps2_game.bat [--full^|--quick^|--matched] [--cross^|--neutral]
+rem Usage: run_ps2_game.bat [--full^|--quick^|--matched^|--recover-cache] [--cross^|--neutral]
+rem --recover-cache reconstructs known IR without a game replay. Optional
+rem --accept-new-ir explicitly permits changed lowering IR hashes; this never
+rem deletes or overwrites the previous guest cache.
 rem --matched executes a CPU-only neutral/Cross pair with known cached IR,
 rem never running guest function discovery or auto-expansion.
 rem Full retail diagnostics use the usual local replay settings below.
@@ -16,6 +19,7 @@ rem clears any pad injection left in the caller's environment.
 rem Without either switch, retain explicitly configured pad variables.
 set "REQUESTED_SESSION_MODE="
 set "REQUESTED_PAD_PROFILE="
+set "ACCEPT_NEW_IR="
 :parse_launcher_options
 if "%~1"=="" goto :launcher_options_ready
 if /I "%~1"=="--full" (
@@ -33,6 +37,16 @@ if /I "%~1"=="--matched" (
     shift
     goto :parse_launcher_options
 )
+if /I "%~1"=="--recover-cache" (
+    set "REQUESTED_SESSION_MODE=recover"
+    shift
+    goto :parse_launcher_options
+)
+if /I "%~1"=="--accept-new-ir" (
+    set "ACCEPT_NEW_IR=--allow-ir-changes"
+    shift
+    goto :parse_launcher_options
+)
 if /I "%~1"=="--cross" (
     set "REQUESTED_PAD_PROFILE=cross"
     shift
@@ -44,10 +58,18 @@ if /I "%~1"=="--neutral" (
     goto :parse_launcher_options
 )
 echo ERROR: Unknown launcher option "%~1".
-echo Usage: run_ps2_game.bat [--full or --quick or --matched] [--cross or --neutral]
+echo Usage: run_ps2_game.bat [--full or --quick or --matched or --recover-cache] [--cross or --neutral] [--accept-new-ir]
 exit /b 2
 
 :launcher_options_ready
+if defined ACCEPT_NEW_IR if /I not "%REQUESTED_SESSION_MODE%"=="recover" (
+    echo ERROR: --accept-new-ir requires --recover-cache.
+    exit /b 2
+)
+if /I "%REQUESTED_SESSION_MODE%"=="recover" if defined REQUESTED_PAD_PROFILE (
+    echo ERROR: Cache recovery does not run the game; omit --cross or --neutral.
+    exit /b 2
+)
 if /I "%REQUESTED_SESSION_MODE%"=="matched" if defined REQUESTED_PAD_PROFILE (
     echo ERROR: --matched runs both profiles; omit --cross and --neutral.
     exit /b 2
@@ -66,7 +88,8 @@ if defined SDBZ_PAD0_CROSS_POLL_COUNT set "CAPTURE_PROFILE=pad-custom"
 if "%SDBZ_PAD0_CROSS_FIRST_POLL%"=="200" if "%SDBZ_PAD0_CROSS_POLL_COUNT%"=="8" set "CAPTURE_PROFILE=cross"
 
 set "DISC_ROOT=%CD%\PS2_GAME"
-set "WORK_DIR=build\ps2-game-hle"
+set "BASE_WORK_DIR=build\ps2-game-hle"
+set "WORK_DIR=%BASE_WORK_DIR%"
 if not defined EMIT_JOBS set "EMIT_JOBS=8"
 if not defined SIF_POLL_LIMIT set "SIF_POLL_LIMIT=2048"
 rem Bound each native auto-expansion session; both limits are configurable.
@@ -82,6 +105,9 @@ if errorlevel 1 (
     echo ERROR: Python was not found in PATH.
     exit /b 1
 )
+rem A recovered cache is selected by an atomically written pointer, checked
+rem against the safe sibling namespace. Never trust the raw pointer file.
+for /f "usebackq delims=" %%I in (`python "tools\recover_translation_cache.py" --base-work-dir "%CD%\%BASE_WORK_DIR%" --print-active`) do set "WORK_DIR=%%I"
 set "GAME_ELF="
 for /f "usebackq delims=" %%I in (`python "tools\resolve_ps2_boot.py" "%DISC_ROOT%"`) do set "GAME_ELF=%%I"
 if not defined GAME_ELF (
@@ -133,6 +159,11 @@ if /I "%REQUESTED_SESSION_MODE%"=="quick" (
 )
 if /I "%REQUESTED_SESSION_MODE%"=="matched" (
     rem Force CPU-only; do not download/configure WebGPU for paired replays.
+    set "EE_WEBGPU_SNAPSHOT=0"
+    set "EE_WEBGPU_WINDOW=0"
+)
+if /I "%REQUESTED_SESSION_MODE%"=="recover" (
+    rem Cache recovery never runs the game or starts WebGPU.
     set "EE_WEBGPU_SNAPSHOT=0"
     set "EE_WEBGPU_WINDOW=0"
 )
@@ -202,6 +233,38 @@ if exist "%WORK_DIR%\translation-cache.json" (
             set "CACHE_FLAG=--no-recompile"
         ) else (
             echo Guest translation provenance changed; full IR rebuild required.
+        )
+    )
+)
+
+rem Cache recovery is reconstruction-only: no guest replay or discovery.
+rem Do not enter the interactive destructive rebuild path on failure.
+if /I "%REQUESTED_SESSION_MODE%"=="recover" (
+    if defined CACHE_FLAG (
+        echo Translation cache is already valid; no recovery needed.
+        exit /b 0
+    )
+    echo === Reconstructing known EE functions in a new cache directory ===
+    python tools\recover_translation_cache.py --elf "%GAME_ELF%" ^
+        --build-dir build --config Release ^
+        --base-work-dir "%CD%\%BASE_WORK_DIR%" ^
+        --emit-jobs=%EMIT_JOBS% %ACCEPT_NEW_IR%
+    exit /b
+)
+
+rem Strict unattended recovery: hashes AND lowering sources must match.
+rem Any changed generator or differing IR remains an explicit user decision.
+if not defined CACHE_FLAG (
+    if exist "build\ee-known-manifests\*.json" (
+        echo === Attempting strict, non-destructive known-IR recovery ===
+        python tools\recover_translation_cache.py --elf "%GAME_ELF%" ^
+            --build-dir build --config Release ^
+            --base-work-dir "%CD%\%BASE_WORK_DIR%" ^
+            --emit-jobs=%EMIT_JOBS%
+        if not errorlevel 1 (
+            for /f "usebackq delims=" %%I in (`python "tools\recover_translation_cache.py" --base-work-dir "%CD%\%BASE_WORK_DIR%" --print-active`) do set "WORK_DIR=%%I"
+            set "CACHE_FLAG=--no-recompile"
+            echo Recovered translated library validated; guest discovery skipped.
         )
     )
 )
