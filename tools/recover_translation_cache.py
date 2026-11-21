@@ -79,6 +79,11 @@ def select_manifest(base_work, elf, ir_sources, allow_ir_changes=False):
             if manifest.get("emit_opt") != 0:
                 continue
             if candidate.parent == history_dir(base_work):
+                # Early snapshots serialized the IR map with sorted keys,
+                # losing original discovery order. Never reconstruct from one
+                # unless its explicit ordered-entry inventory is present.
+                if not isinstance(manifest.get("known_entries"), list):
+                    continue
                 # Saved snapshots are content-addressed, so a truncated or
                 # altered history record cannot quietly supply guest entries.
                 canonical = (json.dumps(manifest, sort_keys=True, indent=2) +
