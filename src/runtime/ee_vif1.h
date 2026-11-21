@@ -58,6 +58,14 @@ public:
         uint64_t m_rejected_batches = 0u;
         e_reject m_first_rejection = e_reject::none;
         uint32_t m_first_rejected_code = 0u;
+        // Parsed attempts include retries of a rejected DMA packet.
+        uint64_t m_vu_start_attempts = 0u;
+        uint64_t m_vu_start_rejections = 0u;
+        uint32_t m_last_vu_start_code = 0u;
+        uint32_t m_last_rejected_vu_start_code = 0u;
+        uint32_t m_last_rejected_vu_pc = 0u;
+        uint32_t m_last_rejected_vu_lower = 0u;
+        uint32_t m_last_rejected_vu_upper = 0u;
         std::array<uint64_t, 128u> m_committed_opcodes{};
     };
 
