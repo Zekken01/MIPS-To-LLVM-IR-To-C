@@ -40,6 +40,10 @@ struct s_ee_gif_path_counters
     uint64_t m_reglist_events = 0u;
     uint64_t m_image_events = 0u;
     uint64_t m_image_qwc = 0u;
+    // Read-only provenance of accepted GIF IMAGE/IMAGE2 payload bytes.
+    // These bytes are not necessarily visible texture/framebuffer pixels.
+    uint64_t m_image_nonzero_bytes = 0u;
+    uint64_t m_image_payload_fnv1a64 = 0u;
 };
 
 struct s_ee_gif_path3_state
