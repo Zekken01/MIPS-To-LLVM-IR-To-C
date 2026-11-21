@@ -172,11 +172,12 @@ rem Keep quick probes short; full retail traces need sufficient real EE/IOP
 rem cycles to observe long-running IRX work. Preserve explicit overrides.
 if not defined MAX_DISPATCHES set "MAX_DISPATCHES=%DEFAULT_MAX_DISPATCHES%"
 if not defined BOOT_TIMEOUT_SECONDS set "BOOT_TIMEOUT_SECONDS=120"
-rem Preserve the original hard watchdog; its existing host safepoints can
-rem resume a bounded number of times without forging EE/IOP clock events.
-rem To recover strict immediate-stop behavior, set LOOP_YIELD_RESUMES=0.
+rem Preserve the 1000000-instruction native watchdog. Bounded resumes
+rem reset only after genuine guest GS fields, IOP RPC commits or GIF writes,
+rem not on arbitrary dispatches, guest instructions or host time.
+rem Use LOOP_YIELD_RESUMES=0 to stop on the first native loop watchdog.
 if not defined LOOP_YIELD_RESUMES set "LOOP_YIELD_RESUMES=16"
-echo Native loop watchdog: 1000000 instructions per native slice, %LOOP_YIELD_RESUMES% bounded resumes
+echo Native loop watchdog: 1000000 instructions per native slice, %LOOP_YIELD_RESUMES% resumes between real GS/GIF/IOP progress
 echo Expansion budget: %EXPANSION_PASSES% passes, %EXPANSION_PER_PASS% new functions per pass
 echo Dispatch budget: %MAX_DISPATCHES% per pass; timeout: %BOOT_TIMEOUT_SECONDS% seconds
 echo Report: "%WORK_DIR%\%REPORT_NAME%"
