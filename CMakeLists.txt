@@ -56,6 +56,7 @@ add_library(ee_core STATIC
 # runner until module loading, timing and SIF transport are integrated.
 add_library(iop_cpu STATIC
     src/iop/iop_cpu.cpp
+    src/iop/iop_guest_fault_probe.cpp
     src/iop/iop_hw.cpp
     src/iop/iop_spu2.cpp
     src/iop/irx_loader.cpp
@@ -76,6 +77,9 @@ add_library(iop_cpu STATIC
 target_include_directories(iop_cpu PUBLIC ${CMAKE_SOURCE_DIR}/src/iop)
 add_executable(iop_cpu_test tests/smoke/iop_cpu_test.cpp)
 target_link_libraries(iop_cpu_test PRIVATE iop_cpu)
+add_executable(iop_guest_fault_probe_test
+    tests/smoke/iop_guest_fault_probe_test.cpp)
+target_link_libraries(iop_guest_fault_probe_test PRIVATE iop_cpu)
 add_executable(iop_rom0_boot_test tests/smoke/iop_rom0_boot_test.cpp)
 target_link_libraries(iop_rom0_boot_test PRIVATE iop_cpu)
 add_executable(iop_hw_test tests/smoke/iop_hw_test.cpp)
@@ -669,6 +673,7 @@ if(Python3_Interpreter_FOUND)
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_vu0_differential_x11_config.py)
 endif()
 add_test(NAME iop_cpu COMMAND iop_cpu_test)
+add_test(NAME iop_guest_fault_probe COMMAND iop_guest_fault_probe_test)
 add_test(NAME iop_rom0_boot COMMAND iop_rom0_boot_test)
 add_test(NAME iop_hw COMMAND iop_hw_test)
 add_test(NAME iop_timer5_exception COMMAND iop_timer5_exception_test)
