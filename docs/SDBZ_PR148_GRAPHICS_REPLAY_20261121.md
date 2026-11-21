@@ -922,3 +922,168 @@ appears, and actual PADMAN/IOP RPC/GS behaviour
 is recorded. Do not claim the memory-card warning
 or visible scene is reproduced while captures remain
 black.
+
+## Eleventh matched archive: SIO2MAN runs without a guest fault, black frame persists
+
+The exact attachment `sdbz-graphics-pr148(20261121-161638).zip`,
+SHA-256
+`bb06cee793d122eceba9498d87462739f93a16e71c202998908ed693adffbb61`,
+contains the eight expected matched members, including a
+fresh 16:16 UTC stopped `first-boot.json`.
+This report was produced **before** the optional
+controller-input probe added below, and must be evaluated
+as the normal neutral-controller baseline.
+
+### Original guest IOP hardware progress versus the tenth archive
+
+| Verified measurement | Tenth replay | 16:16 replay |
+| --- | ---: | ---: |
+| EE native dispatch boundaries | 3,657,851 | **6,000,000** |
+| Original guest instruction attempts | 101,646,685 | **12,779,550,806** |
+| SIO2 CTRL.start writes | 1 | **3,613** |
+| SIO2 decoded original packets | 2 | **3,614** |
+| SIO2 completed transfers | 1 | **3,613** |
+| SIO2 empty RX reads handled | worker MMIO fault | **18,070** |
+| SIO2 rejected starts | 0 | **0** |
+| SIO2 completion status at final report | 0 | **0** |
+| IOP guest fault | `0x00020158` | **null** |
+| Original guest GS fields | 20 | **2,597** |
+| Successful WebGPU window presents | 17 | **1,830** |
+| Native GPU draws | 7 | **1,809** |
+
+The `0xBF808264` empty-FIFO instruction is now
+supported, and original SIO2MAN continues for
+thousands of *real* port-0/port-1 poll exchanges.
+The final IOP controller request is not armed,
+`pending_tx_bytes=0`, `queued_rx_bytes=0`,
+`last_rejection=none`, `intr_word=0`.
+The full replay ends at the configured 6m
+**dispatch budget** (last EE PC `0x002F401C`),
+not a new IOP or R5900 instruction fault.
+
+The existing game translation cache is
+**byte-for-byte identical** to the tenth archive:
+1,285 cached original guest LLVM modules.
+The expansion log says `new_functions=0` in
+the first pass, so this is not guest-translation
+cache invalidation.
+
+### No visible game frame: GS provenance is now decisive
+
+The guest submitted 3,653 accepted GIF
+batches, including 1,810 VIF1 DIRECT PATH2
+batches and 1,843 GIF DMA PATH3 batches;
+VU1 PATH1 has **zero accepted XGKICK batches**.
+The original GS parsed **16 IMAGE transfers**
+totalling **262,144 QWC**.
+There are 1,809 sprite-pair kicks and 1,809
+native GPU committed draws, but:
+
+- `sprite_textured_kicks_total=0`
+- `sprite_nonblack_rgb_kicks_total=0`
+- The bounded first and last samples record
+  untextured `PRIM=0x6` sprites and
+  **`RGBAQ=0x3F80000000000000`**, with
+  the colour bytes all zero (Q=1.0).
+- Both 512x448 CPU and GPU display images,
+  plus the 1024x64 upload image,
+  have **zero nonblack pixels**.
+  The exact PPM files are unchanged from
+  the tenth replay.
+
+This proves genuine black/untextured sprite
+commands dominate the recorded committed draws;
+it does **not** prove that WebGPU is failing to
+render coloured/textured commands, nor that
+the original game has reached the rendered
+memory-card warning. Do not fabricate
+coloured geometry or infer original UI
+progress from the PCSX2 reference screenshot.
+
+Original EE execution still heavily visits the
+SIF RPC client-status checker `0x00178DE8`
+and return continuation `0x001BD58C`,
+but the runtime log independently shows
+many successful original ARKD_DVD `0x503`
+method-2 guest IOP RPC worker returns.
+The guest also executes many original
+animation/VU0/vector routines. Therefore
+counting dispatch edges is not sufficient
+to call this a stuck input loop.
+
+### Reproducible opt-in controller confirmation experiment
+
+The native IOP SIO2 pad state is **neutral**
+by default and has **no host keyboard or gamepad
+input binding**. The original guest is now
+polling that state thousands of times, so a
+bounded, user-authorized button pulse is a
+concrete experiment for the screenshot's
+possible controller-confirmation gate.
+
+An opt-in host-only setting is now available
+**only on later PR commits**, through these
+two environment variables:
+
+- `SDBZ_PAD0_CROSS_FIRST_POLL`: positive,
+  one-based count of original connected
+  port-0 command-`0x42` controller reads
+  at which to first press Cross.
+- `SDBZ_PAD0_CROSS_POLL_COUNT`: number
+  of those real polls to hold the input
+  pressed, from 1 to 120.
+
+Both variables must be set together. When
+unset, all original pad responses remain
+**bit-for-bit unchanged**. When enabled,
+only the authentic port-0 `0x42`
+response button high byte is returned as
+`0xBF` instead of `0xFF` during
+the selected range. This is the active-low
+PS2 Cross bit (`0x4000`); the low byte,
+device identity, commands, other port
+and all non-controller SIO2 interactions
+remain original. No guest hardware start,
+DMA, interrupt, memory-card reply,
+RPC return or other event is synthesized.
+
+The new `m2_iop_sio2` diagnostic fields
+`pad0_polls`, `pad0_cross_pressed_polls`,
+`pad0_cross_first_poll` and
+`pad0_cross_poll_count` prove how many
+actual guest controller replies were
+delivered with Cross held.
+
+Example for a deliberate comparative
+Windows full replay:
+
+```bat
+set "SDBZ_PAD0_CROSS_FIRST_POLL=200"
+set "SDBZ_PAD0_CROSS_POLL_COUNT=8"
+run_ps2_game.bat --full
+```
+
+Then **clear** both settings before a
+neutral control replay:
+
+```bat
+set "SDBZ_PAD0_CROSS_FIRST_POLL="
+set "SDBZ_PAD0_CROSS_POLL_COUNT="
+```
+
+The probe is an *input stimulus* for testing
+the game, not evidence that the game
+actually presented a warning or accepted
+a button. Compare the **same** replay
+budget with/without stimulus: native
+GS coloured/textured command counts,
+new MCSERV requests, original EE
+execution hotspots, SIO2 poll response
+counts and CPU/GPU PPM captures. If nothing
+changes, do not conclude a game-visible
+input gate from the neutral baseline.
+
+The control and report changes only touch
+host-side IOP hardware and runner,
+synthetic-IOP tests and docs. They do
+not fingerprint guest retranslation.
