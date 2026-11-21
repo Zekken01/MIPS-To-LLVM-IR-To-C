@@ -161,3 +161,70 @@ replay was supplied on 21 November and is analysed in
 beyond the previous VU0 blocker, native GS presentation succeeded,
 but the actual stopping failure is guest IOP thread 81 executing
 unsupported text-like opcode `0x6e736168` at `0x001cdf78`.
+
+
+## Current retail graphics blocker — VIF1/VU1 producer gate
+
+The completed November 21 matched Linux 6,000,000-dispatch neutral/Cross
+replays established authentic game input handling: the original EE branch
+`0x00109D50` executed 0/8 times. The same runs produced **zero textured or
+nonblack sprite draws**. Prior *full* Windows GPU captures from the retail
+ELF agreed byte-for-byte with CPU scanout and were entirely black. The GS did
+render genuine untextured sprites, but their original RGBAQ RGB bytes were
+zero and GIF PATH1 committed zero VU1 XGKICK batches. Therefore, changing
+WebGPU shaders or forcing colours would not address the evidenced missing
+guest graphics production.
+
+This diagnostic batch adds the read-only `m2_vif1_producer` JSON object to
+both interim and stopped full runner reports. It distinguishes:
+
+- `mpg_uploads`: committed VU1 microprogram uploads.
+- `unpack_commands`: committed VU data uploads.
+- `direct_qwc`, `direct`, `directhl`: genuine PATH2 traffic.
+- `mscal`, `mscalf`, `mscnt`, `vu_program_starts`: **committed**
+  VU1 start commands, which do not themselves prove XGKICK was executed.
+- `vu_start_attempts`: parsed VU1 start commands, including DMA retries;
+  `vu_start_rejections` and `last_rejected_vu_* ` preserve rejected
+  microinstruction PC/lower/upper even when a later packet succeeds.
+- `rejected_dma_attempts`, `first_rejection` and last rejection fields:
+  separate unsupported VIF/VU instructions from a guest that never
+  attempts a VU1 start.
+
+The command histogram is accumulated on a **transactionally committed VIF
+machine**, not guessed from DMA QWC. Rejected chunks do not count as
+committed commands. Attempted-start/rejection counts are diagnostic only:
+the same rejected guest packet may be retried, so they are not unique
+guest operations. No IOP/EE/GS, DMA completion, VU1 state, guest instruction,
+IRQ, scheduler or display semantics were changed.
+
+### Next full retail replay
+
+After checking out PR #148 and preserving the verified translation cache,
+run:
+
+```bat
+git pull --ff-only
+run_ps2_game.bat --full --neutral
+```
+
+Inspect the generated neutral ZIP's stopped `first-boot.json`:
+compare `m2_vif1_producer`, `m2_gif_paths.paths.vu1_xgkick_path1`,
+`m2_gif_gs` and `m2_gs_presentation`, plus all three PPMs.
+
+Interpretation:
+
+1. Zero `mpg_uploads` and `vu_start_attempts` indicates graphics
+   microprogram dispatch is **not yet reached**. Investigate original
+   EE/ARKD/SIF/asset-boot progress, not shaders or VU1 arithmetic.
+2. Nonzero `mpg_uploads` and VU attempts, but zero committed starts with
+   `vu_start_rejections > 0`, identifies a VIF/VU implementation blocker.
+   The recorded failing VU instruction directs a focused reference-backed fix.
+3. Committed VU starts with zero PATH1 XGKICK identify a microprogram
+   control-flow or data-producer gap. Compare actual VU1 program trace and
+   output before altering GIF/GS behavior.
+4. Nonzero accepted PATH1 packets with zero visible pixels shifts
+   investigation to *committed* GIF/GS render state, display selection,
+   image upload and CPU/WebGPU parity.
+
+This is a **diagnostic milestone**, not a claim of a visible frame.
+No synthetic first frame or fabricated game GS writes are introduced.
