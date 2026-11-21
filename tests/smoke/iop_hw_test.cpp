@@ -353,6 +353,9 @@ bool test_guest_sio2_controller()
         first_rejection.m_tx_bytes != 1u ||
         first_rejection.m_rx_bytes != 0u ||
         first_rejection.m_packet_index != 0u ||
+        first_rejection.m_packets_at_last_start != 0u ||
+        first_rejection.m_tx_bytes_at_last_start != 1u ||
+        first_rejection.m_rx_bytes_at_last_start != 0u ||
         first_rejection.m_send3[0u] !=
             ((5u << 8u) | (5u << 18u)) ||
         !hw.sio2_transfer_requested())
@@ -380,6 +383,9 @@ bool test_guest_sio2_controller()
         hw.sio2_packets() != 1u ||
         hw.sio2_completed_transfers() != 1u ||
         first_packet.m_first_packet_count != 1u ||
+        first_packet.m_packets_at_last_start != 1u ||
+        first_packet.m_tx_bytes_at_last_start != 0u ||
+        first_packet.m_rx_bytes_at_last_start != 5u ||
         first_packet.m_first_packets[0u].m_port != 0u ||
         first_packet.m_first_packets[0u].m_input_size != 5u ||
         first_packet.m_first_packets[0u].m_output_size != 5u ||
@@ -465,6 +471,9 @@ bool test_guest_sio2_controller()
             iop::c_hw::e_sio2_rejection::none ||
         second_packet.m_rejected_starts != 2u ||
         second_packet.m_first_packet_count != 2u ||
+        second_packet.m_packets_at_last_start != 1u ||
+        second_packet.m_tx_bytes_at_last_start != 0u ||
+        second_packet.m_rx_bytes_at_last_start != 0u ||
         second_packet.m_first_packets[1u].m_port != 0u ||
         second_packet.m_first_packets[1u].m_input_size != 8u ||
         second_packet.m_first_packets[1u].m_output_size != 8u ||
