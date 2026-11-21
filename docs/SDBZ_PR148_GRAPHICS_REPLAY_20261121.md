@@ -96,3 +96,57 @@ No first rendered game frame has been claimed.
 
 The PR must stay draft and unmerged. Eventual merge is squash-only
 after the user explicitly authorizes it.
+
+## Follow-up matched archive: callback registration source
+
+The user's second full graphics archive, `sdbz-graphics-pr148(1).zip`,
+repeated the same final stopped replay: EE PC `0x00175210`,
+3,656,670 dispatches, 94,621,123 guest instruction attempts,
+18 GS fields, 16 successful native presents and six untextured
+black sprite draws. All three captures remain black.
+
+The previously implemented `m2_iop_guest_fault` report identifies
+**thread 81 as a newly scheduled hosted callback**, not a routine
+that branched into text after executing legitimate code.
+Original entry `0x001cdf70`, module ownership `7`, module
+load `PADMAN.IRX`, GP `0x001d5ff0`, SP `0x001d6cf0`,
+callback-return RA `0x00013fe0`. Its entire fetched
+history is:
+
+```text
+0x001CDF70  0x20746579  "yet "
+0x001CDF74  0x20666973  "sif "
+0x001CDF78  0x6E736168  "hasn"  <-- unsupported R3000
+```
+
+This string is in the loaded PADMAN allocation, but is not code.
+No corrupt return is needed to explain the direct entry. The
+registration producer is not yet identified in the supplied archive.
+
+The PADMAN static import table includes VBLANK ordinals 8 and 9,
+making a bad VBLANK registration plausible, but source attribution
+requires registration evidence. The existing VBLANK handler uses
+`a2` as the callback pointer, which matches both PS2SDK and the
+primary `ps2-web-recomp/SDBZ` reference. Do not swap arguments
+without a guest-side explanation.
+
+### New coherent host-only provenance batch
+
+- Preserve the original callback registration source: VBLANK start,
+  VBLANK end, or CDVDMAN read; registration thread, syscall PC,
+  RA/GP and original A0–A3.
+- Preserve the last eight fetched R3000 instructions **from the
+  registering thread** in a bounded ring, copied into the deferred
+  callback thread without affecting its guest registers or execution.
+- Record bounded registration events in the boot log, and include the
+  carried callback registration origin in `m2_iop_guest_fault`
+  when a guest callback actually fails.
+- Add a regression for deferred callback provenance alongside the
+  existing exact-unsupported-opcode failure test.
+
+The IOP guest still executes its provided callback pointer.
+A bad pointer still stops fail-closed. This batch does not change
+IRX relocations, import ordinals, guest scheduling, DMA, VBLANK,
+register values, or fabricate work. The next matched replay can
+identify the original registration call, after which an evidence-backed
+fix can be selected.
