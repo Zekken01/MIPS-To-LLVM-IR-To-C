@@ -250,7 +250,7 @@ def test_windows_launcher_preserves_guest_cache():
     recovery = probe.index("--relink-existing --link-only")
     assert check < recovery, "must validate existing library first"
     cache_probes = probe.split(
-        "rem A paired experiment MUST use the existing guest IR", 1
+        "rem Cache recovery is reconstruction-only", 1
     )[0]
     assert cache_probes.count('--emit-opt=0') == 2, "both probes use boot optimization"
     assert cache_probes.count('--work-dir "%WORK_DIR%"') == 2, "same guest cache"
