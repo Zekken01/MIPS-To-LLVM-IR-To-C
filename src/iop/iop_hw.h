@@ -238,6 +238,9 @@ public:
         uint32_t m_pad0_cross_pressed_polls = 0u;
         uint32_t m_pad0_cross_first_poll = 0u;
         uint32_t m_pad0_cross_poll_count = 0u;
+        uint32_t m_pad0_cross_bytes_pio_read = 0u;
+        uint32_t m_pad0_cross_bytes_dma_written = 0u;
+        uint32_t m_pad0_cross_bytes_fifo_discarded = 0u;
         e_sio2_rejection m_last_rejection = e_sio2_rejection::none;
         uint32_t m_rejected_starts = 0u;
     };
@@ -295,11 +298,17 @@ private:
     s_sio2_pad m_sio2_pad[2]{};
     std::vector<uint8_t> m_sio2_pending_tx;
     std::deque<uint8_t> m_sio2_rx;
+    // Host-only provenance tag for each queued RX byte. A tag is set
+    // only for the active-low Cross byte of a genuine port-0 0x42 reply.
+    std::deque<uint8_t> m_sio2_rx_cross_tags;
     // Host-only count of genuine reads while the SIO2 output FIFO is empty.
     // Original SDBZ SIO2 register semantics return 0xff for such a read.
     uint32_t m_sio2_empty_rx_read_count = 0u;
     uint32_t m_sio2_pad0_poll_count = 0u;
     uint32_t m_sio2_pad0_cross_pressed_polls = 0u;
+    uint32_t m_sio2_pad0_cross_bytes_pio_read = 0u;
+    uint32_t m_sio2_pad0_cross_bytes_dma_written = 0u;
+    uint32_t m_sio2_pad0_cross_bytes_fifo_discarded = 0u;
     uint32_t m_sio2_pad0_cross_first_poll = 0u;
     uint32_t m_sio2_pad0_cross_poll_count = 0u;
     bool m_sio2_transfer_requested = false;
