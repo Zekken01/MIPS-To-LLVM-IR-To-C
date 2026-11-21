@@ -547,7 +547,10 @@ make a false DMA completion.
   first four `send3` descriptors,
   DMA11/DMA12 MADR-BCR-CHCR triplets,
   the actual guest IOP PC/RA of CTRL.start,
-  and the first four *real decoded packet*
+  packet count and TX/RX queue sizes **at the moment
+  CTRL.start was issued**, to establish whether
+  the first packets were sent before or after
+  the start request, and the first four *real decoded packet*
   port numbers, input/output byte counts,
   leading TX bytes, command IDs and
   connected-pad decisions. These records
