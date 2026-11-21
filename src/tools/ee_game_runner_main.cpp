@@ -1090,6 +1090,27 @@ bool write_report(
             std::fprintf(output, "%s%u",
                 index != 0u ? "," : "", detail.m_dma12[index]);
         }
+        std::fprintf(output,
+            "],\"last_start_guest_pc\":%u,"
+            "\"last_start_guest_ra\":%u,\"first_packets\":[",
+            detail.m_last_start_guest_pc,
+            detail.m_last_start_guest_ra);
+        for (uint32_t index = 0u;
+             index < detail.m_first_packet_count; ++index)
+        {
+            const iop::c_hw::s_sio2_packet_observation& packet =
+                detail.m_first_packets[index];
+            std::fprintf(output,
+                "%s{\"port\":%u,\"send3\":%u,"
+                "\"input_size\":%u,\"output_size\":%u,"
+                "\"first_tx_byte\":%u,\"command\":%u,"
+                "\"pad_present\":%s}",
+                index != 0u ? "," : "",
+                packet.m_port, packet.m_send3,
+                packet.m_input_size, packet.m_output_size,
+                packet.m_first_tx_byte, packet.m_command,
+                packet.m_pad_present ? "true" : "false");
+        }
         std::fputs(
             "],\"limitations\":["
             "\"hardware_counters_not_pad_button_state\","
