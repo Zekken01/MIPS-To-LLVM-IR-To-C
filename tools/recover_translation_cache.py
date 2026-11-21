@@ -84,7 +84,8 @@ def select_manifest(base_work, elf, ir_sources, allow_ir_changes=False):
                 canonical = (json.dumps(manifest, sort_keys=True, indent=2) +
                              "\n").encode("utf-8")
                 digest = hashlib.sha256(canonical).hexdigest()[:16]
-                if not candidate.name.endswith("-" + digest + ".json"):
+                if (not candidate.name.endswith("-" + digest + ".json") or
+                        candidate.read_bytes() != canonical):
                     continue
             same_sources = manifest.get("ir_sources") == ir_sources
             if not same_sources and not allow_ir_changes:
