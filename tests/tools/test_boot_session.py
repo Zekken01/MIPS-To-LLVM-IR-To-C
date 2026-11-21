@@ -325,13 +325,24 @@ def test_clean_ctrl_c_cancellation():
     with tempfile.TemporaryDirectory(prefix="ee-boot-interrupt-") as temp:
         work = Path(temp)
         log = work / "interrupt.log"
-        with patch.object(SESSION.subprocess, "run", side_effect=KeyboardInterrupt):
+        def interrupt_with_partial_output(command, **kwargs):
+            # Check that in-progress child output is preserved even when
+            # subprocess.run raises while waiting for the child.
+            assert kwargs["stdout"].write(b"already emitted guest diagnostics\\n")
+            kwargs["stdout"].flush()
+            raise KeyboardInterrupt
+
+        with patch.object(SESSION.subprocess, "run",
+                          side_effect=interrupt_with_partial_output):
             code, output, elapsed = SESSION.run_session(
                 ["fake-ee-game", "--auto-expand=2"], log
             )
         assert code == 130
         assert elapsed >= 0.0
+        assert "already emitted guest diagnostics" in output
         assert "cancelled by user (Ctrl+C)" in output
+        assert "already emitted guest diagnostics" in log.read_text(
+            encoding="utf-8")
         assert "cancelled by user (Ctrl+C)" in log.read_text(encoding="utf-8")
         assert "fake-ee-game" in log.read_text(encoding="utf-8")
 
