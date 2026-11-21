@@ -343,7 +343,7 @@ bool test_guest_sio2_controller()
     // 0xbf808264. An empty FIFO returns 0xff without creating a
     // controller response, interrupt or DMA completion.
     uint8_t guest_empty_rx = 0u;
-    if (!cpu.read8(0xbf808264u, &guest_empty) ||
+    if (!cpu.read8(0xbf808264u, &guest_empty_rx) ||
         guest_empty_rx != 0xffu ||
         hw.sio2_diagnostics().m_empty_rx_reads != 2u ||
         hw.sio2_diagnostics().m_rx_bytes != 0u ||
