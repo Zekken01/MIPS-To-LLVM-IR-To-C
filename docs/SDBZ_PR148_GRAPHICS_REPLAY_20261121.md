@@ -579,3 +579,104 @@ smoke tests and this document are changed. No
 original executable, guest LLVM IR, function
 discovery metadata, translation cache or guest
 input is modified.
+
+## Eighth matched archive: genuine controller polling, missing empty-START IRQ17
+
+The matched archive `sdbz-graphics-pr148(8).zip` is a
+replay **with the additional SIO2 rejection and packet-origin
+diagnostics**, not a replay of this latest corrective change.
+Compared with `(7).zip`, the ELF/translation cache,
+IOP disc catalogue and all three black PPMs are byte-identical.
+The deterministic guest execution counters are unchanged:
+6,000,000 EE dispatches, 12,737,447,297 instruction attempts,
+2,588 GS fields, 1,826 successful GPU presents, 1,803 black
+sprite draws, no IOP guest fault, and 1,285 cached IR modules.
+
+### Exact original IOP hardware evidence
+
+The final `first-boot.json.m2_iop_sio2` reports:
+
+| Field | Recorded value |
+| --- | --- |
+| CTRL.start writes | 1 |
+| Decoded PIO packets | 2 |
+| Transfer completions | 0 |
+| Last rejection | `no_processed_packet` (code 7) |
+| Rejected start count | 1 |
+| CTRL value | `0x000003BD` |
+| Guest IOP CTRL.start PC / RA | `0x00020008` / `0x00020314` |
+| Packets at CTRL.start | **2** |
+| TX / RX queue bytes at CTRL.start | **0 / 0** |
+| DMA11 registers (MADR/BCR/CHCR) | **0/0/0** |
+| DMA12 registers (MADR/BCR/CHCR) | **0/0/0** |
+| Pending transfer at report | true |
+| Packet index after start | 0 |
+
+The *actual* first two packets target **controller**
+ports, not the memory-card port:
+
+1. Port 0, `SEND3=0x00140500`, in/out=5/5,
+   TX first byte `0x01`, command `0x42`
+   (controller poll), `pad_present=true`.
+2. Port 1, `SEND3=0x00140501`, in/out=5/5,
+   TX `0x01 0x42 ...`, `pad_present=false`.
+
+The first controller is a neutral connected emulated pad;
+there is no injected button press. The second controller
+is absent. These observations **do not** establish that
+the native game is displaying the original memory-card
+warning seen on PCSX2.
+
+### Root cause, confirmed against primary reference
+
+The guest's exact `CTRL=0x3BD` has *both* FIFO
+reset bits (`0x0C`) **and** START (`0x01`) set.
+In the existing native `c_hw::write(k_sio2_ctrl)` it
+therefore **clears the already processed PIO replies and
+packet index first**, then calls `run_sio2_transfer()`.
+With no DMA11/12 armed and no queued PIO bytes remaining,
+the native code rejects with `no_processed_packet`
+and never raises **IRQ17**. This explains *all* SIO2
+diagnostic fields without assuming an unsent packet or
+missing controller input.
+
+The primary implementation
+`twist84/ps2-web-recomp:SDBZ/runtime/src/iop/sio2.cpp`
+also clears FIFO/index when bits `0x0C` are set, but
+on START always calls `run_transfer()`. That routine
+raises IRQ17 after servicing any armed DMA channels,
+**including an empty/control-only PIO start**.
+
+### Evidence-backed correction
+
+The native `run_sio2_transfer()` now treats an actual
+START as completed when **neither DMA11 nor DMA12 is
+armed and there are no incomplete PIO TX bytes**, even
+when there are no newly queued RX bytes. It preserves
+all existing unsupported/incomplete packet rejection
+and DMA buffer preflight behaviour:
+
+- No artificial SIO2 response bytes or pad key presses.
+- No invented DMA11/12 completion; unarmed DMA remains
+  unarmed and only genuine DMA still clears STR.
+- Genuine SIO2 START signals IRQ17 and records one
+  control transfer completion, as in the primary
+  reference, even if the guest already read or reset
+  PIO reply queues.
+- PIO TX with insufficient bytes remains fail-closed.
+  Invalid DMA11/12 geometry or RAM stays fail-closed.
+
+The `iop_hw_test` smoke suite now models the **exact
+retail port0+port1 0x42 poll followed by CTRL=0x3BD**
+and asserts a real IRQ17 without fabricated device
+data or DMA completion. Earlier tests for partial PIO
+and invalid DMA source remain active. An empty
+ordinary CTRL.start also asserts IRQ17 to match the
+primary reference.
+
+This is an IOP host/HLE hardware change only, not an
+EE LLVM IR source change or translated object change.
+Preserve the existing **1,285-module translation cache**.
+A **new post-fix retail replay** is required before
+claiming improved PADMAN behaviour, new game graphics
+or a visible memory-card warning.
