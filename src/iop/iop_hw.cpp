@@ -1647,6 +1647,7 @@ c_hw::s_sio2_diagnostics c_hw::sio2_diagnostics() const
     s_sio2_diagnostics result{};
     result.m_ctrl = m_sio2_ctrl;
     result.m_stat = m_sio2_stat;
+    result.m_intr = m_sio2_intr;
     result.m_packet_index = m_sio2_index;
     result.m_last_start_guest_pc = m_sio2_last_start_guest_pc;
     result.m_last_start_guest_ra = m_sio2_last_start_guest_ra;
