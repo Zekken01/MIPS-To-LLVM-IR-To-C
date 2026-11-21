@@ -140,6 +140,13 @@ if exist "%WORK_DIR%\translation-cache.json" (
     )
 )
 
+rem This is the only fallback that can wipe and regenerate old guest IR.
+rem A failed exact-cache validation AND failed safe relink are not permission
+rem to delete saved translations. Require an explicit affirmative response
+rem if ANY previously generated guest translation artifact still exists.
+if not defined CACHE_FLAG call :confirm_guest_cache_rebuild
+if errorlevel 1 exit /b 1
+
 echo === Starting extracted-disc HLE boot session ===
 set "SESSION_ARGS=--quick-probe --no-iop-catalog"
 set "REPORT_NAME=quick-probe.json"
@@ -209,3 +216,40 @@ echo.
 echo Native HLE boot session exit code: %EXIT_CODE%
 echo Logs are in "%WORK_DIR%".
 exit /b %EXIT_CODE%
+
+:confirm_guest_cache_rebuild
+rem Fresh builds with no saved guest output need no confirmation.
+rem Detect remnants even when translation-cache.json itself was removed.
+set "SAVED_GUEST_TRANSLATION="
+if exist "%WORK_DIR%\translation-cache.json" set "SAVED_GUEST_TRANSLATION=1"
+if exist "%WORK_DIR%\ir\ee_functions.json" set "SAVED_GUEST_TRANSLATION=1"
+if exist "%WORK_DIR%\ir\*.ll" set "SAVED_GUEST_TRANSLATION=1"
+if exist "%WORK_DIR%\objects\objects.json" set "SAVED_GUEST_TRANSLATION=1"
+if exist "%WORK_DIR%\game-translated.dll" set "SAVED_GUEST_TRANSLATION=1"
+if not defined SAVED_GUEST_TRANSLATION exit /b 0
+
+echo.
+echo ================================================================
+echo WARNING: The existing guest LLVM IR cache could not be reused.
+echo Both exact cache validation and safe host-only relinking failed,
+echo or saved translation metadata is missing.
+echo.
+echo A full rebuild may DELETE existing .ll modules and REPLACE the
+echo translated game library, objects, and translation-cache.json in:
+echo   "%WORK_DIR%"
+echo.
+echo Back up this directory before continuing if you need its contents.
+echo Press Y to authorize the rebuild, or N to abort without rebuilding.
+echo ================================================================
+choice /C YN /N /M "Rebuild saved guest translations? [Y/N] "
+rem CHOICE: Y=1; N=2; error/no-console=255. Anything but Y aborts.
+if errorlevel 2 (
+    echo Guest translation rebuild cancelled; saved IR was not regenerated.
+    exit /b 1
+)
+if errorlevel 1 (
+    echo Guest translation rebuild explicitly authorized.
+    exit /b 0
+)
+echo ERROR: Cache rebuild confirmation was not received.
+exit /b 1
