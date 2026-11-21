@@ -249,16 +249,21 @@ def test_windows_launcher_preserves_guest_cache():
     check = probe.index("--no-recompile --link-only")
     recovery = probe.index("--relink-existing --link-only")
     assert check < recovery, "must validate existing library first"
-    assert probe.count('--emit-opt=0') == 2, "both probes use boot optimization"
-    assert probe.count('--work-dir "%WORK_DIR%"') == 2, "same guest cache"
-    assert probe.count('set "CACHE_FLAG=--no-recompile"') == 2
+    cache_probes = probe.split(
+        "rem A paired experiment MUST use the existing guest IR", 1
+    )[0]
+    assert cache_probes.count('--emit-opt=0') == 2, "both probes use boot optimization"
+    assert cache_probes.count('--work-dir "%WORK_DIR%"') == 2, "same guest cache"
+    assert cache_probes.count('set "CACHE_FLAG=--no-recompile"') == 2
     assert "if not errorlevel 1 (" in probe, "failed relink must not reuse"
     assert "full IR rebuild required" in probe
 
     # A failed exact-cache check and safe relink must never silently
     # overwrite previously emitted guest IR. The caller must reach the
     # confirmation before launching even the first full expansion pass.
-    confirm_call = probe.index("if not defined CACHE_FLAG (")
+    confirm_call = probe.index(
+        "if not defined CACHE_FLAG (\n    call :confirm_guest_cache_rebuild"
+    )
     assert confirm_call > recovery
     assert 'call :confirm_guest_cache_rebuild' in probe[confirm_call:]
     assert 'if errorlevel 1 exit /b 1' in probe[confirm_call:]
