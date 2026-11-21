@@ -598,6 +598,9 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME ee_m2_dispatch_trace_analysis
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_analyze_m2_dispatch_trace.py)
+    add_test(NAME ee_sdbz_elf_hotspot_xrefs
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/tools/test_inspect_sdbz_elf_hotspots.py)
     add_test(NAME ee_wgpu_native_sdk_bootstrap
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_ensure_wgpu_native.py)
