@@ -255,6 +255,46 @@ def test_windows_launcher_preserves_guest_cache():
     assert "if not errorlevel 1 (" in probe, "failed relink must not reuse"
     assert "full IR rebuild required" in probe
 
+    # A failed exact-cache check and safe relink must never silently
+    # overwrite previously emitted guest IR. The caller must reach the
+    # confirmation before launching even the first full expansion pass.
+    confirm_call = probe.index("if not defined CACHE_FLAG (")
+    assert confirm_call > recovery
+    assert 'call :confirm_guest_cache_rebuild' in probe[confirm_call:]
+    assert 'if errorlevel 1 exit /b 1' in probe[confirm_call:]
+    assert launcher.index('call :confirm_guest_cache_rebuild') < (
+        launcher.index("echo === Starting extracted-disc")
+    )
+
+    # Safe cache hits skip the prompt, and completely fresh directories
+    # have nothing to invalidate. Include partial/orphaned cached outputs
+    # so that missing translation-cache.json never silently authorizes
+    # removal of previously generated .ll files and host objects.
+    confirmation = launcher.split(
+        "\n:confirm_guest_cache_rebuild\n", 1
+    )[1]
+    for artifact in (
+        "translation-cache.json", "ir\\ee_functions.json",
+        "ir\\*.ll", "objects\\objects.json",
+        "objects\\*.o", "game-translated.dll",
+    ):
+        assert f'if exist "%WORK_DIR%\\{artifact}" ' in confirmation, artifact
+    assert 'if not defined SAVED_GUEST_TRANSLATION exit /b 0' in confirmation
+    assert "WARNING: The existing guest LLVM IR cache could not be reused." in confirmation
+    assert "may DELETE existing .ll modules and REPLACE" in confirmation
+    assert "Back up this directory" in confirmation
+
+    choice_pos = confirmation.index('choice /C YN /N /M')
+    cancel_pos = confirmation.index('if errorlevel 2 (')
+    approve_pos = confirmation.index('if errorlevel 1 (')
+    assert choice_pos < cancel_pos < approve_pos
+    assert "Guest translation rebuild cancelled;" in confirmation
+    assert "Guest translation rebuild explicitly authorized." in confirmation
+    assert "exit /b 1" in confirmation[cancel_pos:approve_pos]
+    assert "exit /b 0" in confirmation[approve_pos:]
+    # Even CHOICE failures (for example, no usable console) must abort.
+    assert "Cache rebuild confirmation was not received." in confirmation
+
     # The full retail replay must be able to continue genuine guest IOP
     # execution past the old fixed 100k ceiling; quick probes stay short.
     assert 'set "DEFAULT_MAX_DISPATCHES=100000"' in launcher
