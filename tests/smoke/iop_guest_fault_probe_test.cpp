@@ -143,6 +143,45 @@ int main()
         return fail("new guest thread inherited execution history");
     }
 
+    // Deferred callbacks must retain their original guest registration
+    // source, ABI argument values, RA and preceding R3000 instructions.
+    iop::s_guest_callback_origin origin{};
+    origin.m_source = iop::e_guest_callback_source::vblank_end;
+    origin.m_registration_thread_id = 52u;
+    origin.m_registration_pc = 0x001cab00u;
+    origin.m_registration_ra = 0x001cab18u;
+    origin.m_registration_gp = 0x001d5ff0u;
+    origin.m_registration_a0 = 1u;
+    origin.m_registration_a1 = 46u;
+    origin.m_registration_a2 = 0x001cdf70u;
+    origin.m_registration_a3 = 1u;
+    origin.m_registration_recent_count = 2u;
+    origin.m_registration_recent_pc[0] = 0x001caafcu;
+    origin.m_registration_recent_opcode[0] = 0x03e00008u;
+    origin.m_registration_recent_pc[1] = 0x001cab00u;
+    origin.m_registration_recent_opcode[1] = 0x0000000cu;
+    if (!kernel.cpu().write32(0x00017000u, 0x03e00008u) ||
+        !kernel.start_guest_callback(
+            0x00017000u, 0x001d5ff0u, 1u, origin))
+    {
+        return fail("could not schedule guest callback");
+    }
+    const iop::s_kernel_thread& callback_thread =
+        kernel.threads().rbegin()->second;
+    if (!callback_thread.m_hle_guest_callback ||
+        callback_thread.m_callback_origin.m_source !=
+            iop::e_guest_callback_source::vblank_end ||
+        callback_thread.m_callback_origin.m_registration_thread_id != 52u ||
+        callback_thread.m_callback_origin.m_registration_recent_count != 2u ||
+        callback_thread.m_callback_origin.m_registration_recent_pc[1] !=
+            0x001cab00u ||
+        callback_thread.m_callback_origin.m_registration_a2 !=
+            0x001cdf70u ||
+        callback_thread.m_cpu.m_gpr[4] != 1u)
+    {
+        return fail("deferred guest callback registration provenance lost");
+    }
+
     std::puts("IOP guest stopped-thread provenance: PASS");
     return 0;
 }
