@@ -190,6 +190,18 @@ both interim and stopped full runner reports. It distinguishes:
   separate unsupported VIF/VU instructions from a guest that never
   attempts a VU1 start.
 
+The adjacent `m2_gif_paths.paths[*]` records
+`committed_image_nonzero_bytes` and
+`committed_image_payload_fnv1a64` for the original GIF IMAGE/IMAGE2
+payloads accepted by the GS sink, separated by PATH1, PATH2 and PATH3.
+A large `committed_image_qwc` with zero nonzero payload bytes indicates
+that only zero-valued image data reached those parser boundaries.
+Nonzero input indicates some real image bytes reached the sink; it does
+**not** establish texture sampling, CLUT correctness, frame-buffer
+writes or a visible display. Digests are over the concatenated accepted
+IMAGE event bytes in transaction order, and equal digests are only a
+diagnostic hint, not pixel-equivalence evidence.
+
 The command histogram is accumulated on a **transactionally committed VIF
 machine**, not guessed from DMA QWC. Rejected chunks do not count as
 committed commands. Attempted-start/rejection counts are diagnostic only:
@@ -208,8 +220,9 @@ run_ps2_game.bat --full --neutral
 ```
 
 Inspect the generated neutral ZIP's stopped `first-boot.json`:
-compare `m2_vif1_producer`, `m2_gif_paths.paths.vu1_xgkick_path1`,
-`m2_gif_gs` and `m2_gs_presentation`, plus all three PPMs.
+compare `m2_vif1_producer`, all three `m2_gif_paths.paths` including
+image payload nonzero counts/digests, `m2_gif_gs` and
+`m2_gs_presentation`, plus all three PPMs.
 
 Interpretation:
 
