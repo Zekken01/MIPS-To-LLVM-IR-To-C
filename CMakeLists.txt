@@ -655,6 +655,9 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME ee_known_function_replays
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_known_replays.py)
+    add_test(NAME ee_known_cache_recovery
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/tools/test_cache_recovery.py)
     add_test(NAME iop_rom0_runner
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_iop_rom0_runner.py
