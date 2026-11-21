@@ -213,6 +213,9 @@ public:
         uint32_t m_packet_index = 0u;
         uint32_t m_last_start_guest_pc = 0u;
         uint32_t m_last_start_guest_ra = 0u;
+        uint32_t m_packets_at_last_start = 0u;
+        size_t m_tx_bytes_at_last_start = 0u;
+        size_t m_rx_bytes_at_last_start = 0u;
         uint32_t m_first_packet_count = 0u;
         s_sio2_packet_observation m_first_packets[4]{};
         uint32_t m_send3[4]{};
@@ -282,6 +285,9 @@ private:
     uint32_t m_sio2_transfer_count = 0u;
     uint32_t m_sio2_last_start_guest_pc = 0u;
     uint32_t m_sio2_last_start_guest_ra = 0u;
+    uint32_t m_sio2_packets_at_last_start = 0u;
+    size_t m_sio2_tx_bytes_at_last_start = 0u;
+    size_t m_sio2_rx_bytes_at_last_start = 0u;
     s_sio2_packet_observation m_sio2_first_packets[4]{};
     e_sio2_rejection m_sio2_last_rejection = e_sio2_rejection::none;
     uint32_t m_sio2_rejected_start_count = 0u;
