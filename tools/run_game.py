@@ -20,6 +20,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 
 
 STOP_PATTERN = re.compile(
@@ -103,6 +104,125 @@ def translated_ir_hashes(metadata_path):
     return hashes
 
 
+def recover_append_only_metadata(snapshot, metadata_path):
+    """Prove a crash left only an appended function-map suffix.
+
+    Compare the SHA-256 of the *reconstructed previous JSON bytes* with
+    the saved cache. This authenticates every original function entry,
+    block ownership and all other metadata, not just module filenames.
+    Never accept a changed map, reordered entry or unknown provenance.
+    The recovered suffix must still be retranslated and verified before
+    it is allowed into the native dispatcher.
+    """
+    old_ir = snapshot.get("ir_hashes")
+    if not isinstance(old_ir, dict) or not old_ir:
+        raise ValueError("preserved function metadata was modified")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    functions = metadata.get("functions")
+    previous_count = len(old_ir)
+    if (not isinstance(functions, list) or
+            not previous_count < len(functions) <= previous_count + 128 or
+            metadata.get("function_count") != len(functions)):
+        raise ValueError("preserved function metadata was modified")
+
+    reconstructed = dict(metadata)
+    reconstructed["functions"] = functions[:previous_count]
+    reconstructed["function_count"] = previous_count
+    original_bytes = (json.dumps(reconstructed, indent=2) + "\n").encode("utf-8")
+    if hashlib.sha256(original_bytes).hexdigest() != snapshot.get("metadata_sha256"):
+        raise ValueError(
+            "preserved function metadata was modified "
+            "(not a verified append-only extension)"
+        )
+    # A single appended transaction may be interrupted after publication
+    # but before its object emission, link, or cache record is committed.
+    suffix = functions[previous_count:]
+    if len(set(item.get("host_symbol") for item in suffix)) != len(suffix):
+        raise ValueError("interrupted append has duplicate host symbols")
+    return suffix
+
+
+def verify_recovered_append(recomp, elf, work, metadata_path, suffix):
+    """Re-lift only appended guest entries and require bit-identical IR.
+
+    The old function map is authenticated by its cached metadata hash;
+    suffix entries are trusted only if a fresh translation of the same
+    ELF produces the same symbol, function metadata, block ownership
+    and SHA-256 of each .ll module. Never alter the original cached IR.
+    """
+    if not suffix:
+        return
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    count = len(metadata["functions"]) - len(suffix)
+    owned = covered_pcs({"functions": metadata["functions"][:count]})
+    expected_addresses = []
+    expected_symbols = set()
+    destination_dir = (work / "ir").resolve()
+    for function in suffix:
+        address = int(function["vaddr"], 0)
+        if (address == 0 or address & 3 or address in owned or
+                address in expected_addresses or
+                function["host_symbol"] in expected_symbols):
+            raise ValueError("interrupted append contains invalid guest entry")
+        expected_addresses.append(address)
+        expected_symbols.add(function["host_symbol"])
+        module = Path(function["ir_path"]).resolve(strict=True)
+        if module.parent != destination_dir or module.suffix != ".ll":
+            raise ValueError("interrupted append references unexpected IR path")
+
+    with tempfile.TemporaryDirectory(
+            prefix="ee-verify-interrupted-append-") as temporary:
+        output = Path(temporary)
+        run([
+            recomp, elf, output,
+            "--functions=" + ",".join(
+                f"0x{address:08x}" for address in expected_addresses
+            ),
+        ])
+        recovered = json.loads(
+            (output / "ee_functions.json").read_text(encoding="utf-8")
+        )
+        generated = {
+            int(item["vaddr"], 0): item
+            for item in recovered.get("functions", [])
+        }
+        if len(generated) != len(suffix):
+            raise ValueError("interrupted append retranslation count mismatch")
+        for old in suffix:
+            address = int(old["vaddr"], 0)
+            fresh = generated.get(address)
+            if fresh is None:
+                raise ValueError(
+                    f"interrupted append entry 0x{address:08x} not retranslated"
+                )
+            fresh = dict(fresh)
+            fresh_path = Path(fresh.pop("ir_path")).resolve(strict=True)
+            expected_path = Path(old["ir_path"]).resolve(strict=True)
+            fresh["block_pcs"] = [
+                pc for pc in fresh["block_pcs"]
+                if int(pc, 0) not in owned
+            ]
+            expected = {key: value for key, value in old.items()
+                        if key != "ir_path"}
+            if (fresh != expected or
+                    fresh_path.name != expected_path.name or
+                    sha256_path(fresh_path) != sha256_path(expected_path)):
+                raise ValueError(
+                    f"interrupted append entry 0x{address:08x} "
+                    "does not match a fresh guest translation"
+                )
+            if address not in {int(pc, 0) for pc in fresh["block_pcs"]}:
+                raise ValueError(
+                    "interrupted append lost its guest function entry"
+                )
+            owned.update(int(pc, 0) for pc in fresh["block_pcs"])
+    print(
+        f"run_game: verified {len(suffix)} interrupted guest append(s) "
+        "against fresh ELF translation; original IR preserved",
+        flush=True,
+    )
+
+
 def validate_preserved_translation(path, inputs, ir_sources,
                                    emit_opt, metadata_path, object_dir):
     """Never relink modified guest IR or an untrusted function map.
@@ -117,8 +237,9 @@ def validate_preserved_translation(path, inputs, ir_sources,
         raise ValueError("preserved translation has unknown provenance")
     if snapshot.get("emit_opt") != emit_opt:
         raise ValueError("preserved translation uses a different --emit-opt")
-    if snapshot.get("metadata_sha256") != sha256_path(metadata_path):
-        raise ValueError("preserved function metadata was modified")
+    metadata_changed = (
+        snapshot.get("metadata_sha256") != sha256_path(metadata_path)
+    )
     saved_sources = snapshot.get("ir_sources")
     if saved_sources is not None:
         # A host-only SDBZ pad-return observer was briefly installed in
@@ -166,9 +287,22 @@ def validate_preserved_translation(path, inputs, ir_sources,
                     f"legacy guest IR cache cannot be reused: {name} changed"
                 )
 
+    # Normal reuse still requires exact metadata bytes. Interrupted auto-
+    # expansion is the only exception: a verified, appended function suffix
+    # may have been published before the next cache record was committed.
+    suffix = (
+        recover_append_only_metadata(snapshot, metadata_path)
+        if metadata_changed else []
+    )
     current_ir = translated_ir_hashes(metadata_path)
     recorded_ir = snapshot.get("ir_hashes")
-    if recorded_ir is not None and recorded_ir != current_ir:
+    if suffix:
+        if (not isinstance(recorded_ir, dict) or
+                any(current_ir.get(key) != digest
+                    for key, digest in recorded_ir.items()) or
+                len(current_ir) != len(recorded_ir) + len(suffix)):
+            raise ValueError("preserved LLVM IR module was modified")
+    elif recorded_ir is not None and recorded_ir != current_ir:
         raise ValueError("preserved LLVM IR module was modified")
     manifest_path = object_dir / "objects.json"
     if not manifest_path.is_file():
@@ -177,12 +311,27 @@ def validate_preserved_translation(path, inputs, ir_sources,
     if not manifest.get("complete") or manifest.get("optimization_level") != emit_opt:
         raise ValueError("preserved object manifest incomplete or incompatible")
     objects = manifest.get("objects")
-    if not isinstance(objects, list) or len(objects) != len(current_ir):
+    if not isinstance(objects, list):
         raise ValueError("preserved object manifest count mismatch")
     expected = {Path(item["input"]).name: item.get("ir_sha256")
                 for item in objects}
+    if len(expected) != len(objects):
+        raise ValueError("preserved object manifest has duplicate IR input")
+    if suffix:
+        # A crash may have occurred either before or after append-only
+        # object emission. No intermediate or inconsistent manifest accepted.
+        old_complete = (len(objects) == len(recorded_ir) and
+                        expected == recorded_ir)
+        new_complete = (len(objects) == len(current_ir) and
+                        expected == current_ir)
+        if not old_complete and not new_complete:
+            raise ValueError("preserved object manifest does not match append")
+        return suffix, new_complete
+    if len(objects) != len(current_ir):
+        raise ValueError("preserved object manifest count mismatch")
     if expected != current_ir:
         raise ValueError("preserved IR does not match compiled object manifest")
+    return [], True
 
 
 def write_translation_cache(path, inputs, emit_opt, metadata_path, library,
@@ -975,17 +1124,32 @@ def main(argv=None):
                     f"--no-recompile entry 0x{entry:08x} has no translated block"
                 )
             if args.relink_existing:
-                validate_preserved_translation(
+                pending_append, objects_complete = validate_preserved_translation(
                     cache_path, inputs, ir_sources,
                     args.emit_opt, metadata_path, object_dir
                 )
-                print(
-                    "run_game: preserving guest IR and objects; "
-                    "rebuilding host DLL only", flush=True
-                )
+                if pending_append:
+                    verify_recovered_append(
+                        recomp, elf, work, metadata_path, pending_append
+                    )
+                    print(
+                        f"run_game: recovering {len(pending_append)} "
+                        "genuine interrupted guest function(s), "
+                        "without retranslating cached IR", flush=True
+                    )
+                else:
+                    print(
+                        "run_game: preserving guest IR and objects; "
+                        "rebuilding host DLL only", flush=True
+                    )
                 build_linked_library(
                     source_root, work, metadata_path, object_dir, library,
-                    args.emit_opt, pdb=args.pdb, emit_jobs=args.emit_jobs
+                    args.emit_opt, pdb=args.pdb, emit_jobs=args.emit_jobs,
+                    reuse_objects=objects_complete,
+                    appended_ir=(
+                        [Path(item["ir_path"]) for item in pending_append]
+                        if pending_append and not objects_complete else None
+                    ),
                 )
                 write_translation_cache(
                     cache_path, inputs, args.emit_opt,
