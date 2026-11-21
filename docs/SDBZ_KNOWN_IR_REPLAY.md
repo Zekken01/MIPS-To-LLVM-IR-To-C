@@ -112,3 +112,70 @@ environment where those assets exist.
 
 The separate \`--full\` path retains normal auto-expansion and GS
 graphics diagnostics for when new code needs to be discovered.
+
+
+## Recovery after translation-cache invalidation (PR #148)
+
+Verified translation caches now create **content-addressed known-function
+manifest snapshots** under `build/ee-known-manifests/`. Snapshots contain
+the original ELF digest, IR module entry names and digests, lowering source
+fingerprints, and other cache provenance. They do **not** contain copyrighted
+game code or the actual IR. Validation of a preexisting cache also creates
+a snapshot, so an existing Windows cache is migrated on its first successful
+check without triggering translation.
+
+The launcher still tries exact cache validation and the verified host-only
+relink/interrupted-append recovery *first*. If neither works, the normal
+launcher attempts **strict** reconstruction using the largest compatible
+known-function inventory, building each entry without a guest replay.
+Strict unattended recovery requires the **same ELF and same guest-lowering
+sources and byte-identical reconstructed IR**. It never silently accepts
+changed IR, an unknown ELF or incomplete objects. On failure the original
+rebuild confirmation remains authoritative; declining preserves the cache.
+
+To request **reconstruction only** without running the game:
+
+    run_ps2_game.bat --recover-cache
+
+If guest lowering was deliberately changed, or legitimate batch-boundary
+differences cause IR hashes to differ, the strict mode fails safely. After
+reviewing the code change and understanding that OLD IR equivalence is not
+established, explicitly opt in:
+
+    run_ps2_game.bat --recover-cache --accept-new-ir
+
+This invokes `tools/recover_translation_cache.py --allow-ir-changes`.
+It **still requires the identical original ELF**, the exact known
+function-entry set, verified generated LLVM IR, a successful object/link
+pipeline, a complete translation-cache provenance record, and final cache
+validation. The old IR SHA-256 comparison is recorded in
+`ir-comparison.json`; it is *not* described as byte-identical or
+semantically equivalent. New guest-function discovery remains disabled in
+the reconstruction step.
+
+Every attempt builds into a uniquely named sibling directory:
+
+    build/ps2-game-hle-recovery-YYYYMMDD-HHMMSS-ffffff/
+
+Only after successful reconstruction, linking and validation is
+`build/ps2-game-hle.active.txt` atomically replaced with that directory's
+full path. On subsequent launcher runs, `--print-active` checks that the
+pointer names an existing sibling recovery directory. The original
+`build/ps2-game-hle` directory, existing objects and any earlier recoveries
+are left untouched, including on failure. **Rollback** is simply to delete
+`build/ps2-game-hle.active.txt` and rerun the launcher; this selects the
+original cache. No eager promotion into its guest IR directory occurs.
+
+Both the normal launcher's strict fallback and explicit recovery path reuse
+the same batched emitter/linker in `run_known_replays.reconstruct` but **do
+not execute the neutral/Cross replay pair**. Once a recovered cache is
+selected, ordinary boot sessions can resume guest execution and discover
+*additional genuinely missing functions* through the unchanged expansion
+path. This workflow is not a replacement for a full guest/game/graphics
+validation after changing the recompiler's semantics.
+
+`ee_known_cache_recovery` CTest exercises snapshot selection, content
+integrity, exact-ELF scoping, changed-source opt-in, safe active pointers,
+failure preservation, and activation only after validation. Its fixtures
+are synthetic; testing against a real user-owned 1,296-function cache
+remains an end-to-end acceptance step.
