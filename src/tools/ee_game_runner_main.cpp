@@ -1060,6 +1060,7 @@ bool write_report(
             "\"transfer_requested\":%s,"
             "\"pending_tx_bytes\":%zu,"
             "\"queued_rx_bytes\":%zu,"
+            "\"empty_rx_reads\":%u,"
             "\"packet_index\":%u,\"ctrl_word\":%u,\"stat_word\":%u,"
             "\"intr_word\":%u,"
             "\"last_rejection\":\"%s\",\"last_rejection_code\":%u,"
@@ -1070,6 +1071,7 @@ bool write_report(
             sio2.sio2_completed_transfers(),
             sio2.sio2_transfer_requested() ? "true" : "false",
             detail.m_tx_bytes, detail.m_rx_bytes,
+            detail.m_empty_rx_reads,
             detail.m_packet_index, detail.m_ctrl, detail.m_stat,
             detail.m_intr, sio2.sio2_rejection_name(),
             static_cast<uint32_t>(detail.m_last_rejection),
