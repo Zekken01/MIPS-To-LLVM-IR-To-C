@@ -176,21 +176,25 @@ bool c_cdvdman_bridge::handle_read_clock(uint32_t destination)
         return false;
     }
     const std::time_t in_japan = now + k_jst_offset;
-    const std::tm* calendar = std::gmtime(&in_japan);
-    if (calendar == nullptr)
+    std::tm calendar{};
+#if defined(_WIN32)
+    if (::gmtime_s(&calendar, &in_japan) != 0)
+#else
+    if (::gmtime_r(&in_japan, &calendar) == nullptr)
+#endif
     {
         return false;
     }
     const uint32_t year = static_cast<uint32_t>(
-        (calendar->tm_year + 1900) % 100);
+        (calendar.tm_year + 1900) % 100);
     const std::array<uint8_t, 8u> rtc = {
         0u,
-        decimal_to_bcd(static_cast<uint32_t>(calendar->tm_sec)),
-        decimal_to_bcd(static_cast<uint32_t>(calendar->tm_min)),
-        decimal_to_bcd(static_cast<uint32_t>(calendar->tm_hour)),
+        decimal_to_bcd(static_cast<uint32_t>(calendar.tm_sec)),
+        decimal_to_bcd(static_cast<uint32_t>(calendar.tm_min)),
+        decimal_to_bcd(static_cast<uint32_t>(calendar.tm_hour)),
         0u,
-        decimal_to_bcd(static_cast<uint32_t>(calendar->tm_mday)),
-        decimal_to_bcd(static_cast<uint32_t>(calendar->tm_mon + 1)),
+        decimal_to_bcd(static_cast<uint32_t>(calendar.tm_mday)),
+        decimal_to_bcd(static_cast<uint32_t>(calendar.tm_mon + 1)),
         decimal_to_bcd(year)
     };
     for (uint32_t i = 0u; i < rtc.size(); ++i)
