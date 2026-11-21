@@ -447,7 +447,7 @@ bool test_guest_sio2_controller()
         return false;
     }
 
-    if (hw.sio2_ctrl_starts() != 3u ||
+    if (hw.sio2_ctrl_starts() != 4u ||
         hw.sio2_packets() != 2u ||
         hw.sio2_completed_transfers() != 2u ||
         hw.sio2_diagnostics().m_last_rejection !=
