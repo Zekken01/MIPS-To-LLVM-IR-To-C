@@ -50,6 +50,10 @@ public:
     static constexpr uint32_t k_sio2_stat = 0x1f80826cu;
     static constexpr uint32_t k_sio2_port_status = 0x1f808270u;
     static constexpr uint32_t k_sio2_aux_status = 0x1f808274u;
+    // Original SIO2MAN IRQ17 handler reads this latch and writes the
+    // value back. Bit 0 = transfer complete; bit 1 = transfer error.
+    // Write-one-to-clear is independent of IOP INTC I_STAT.
+    static constexpr uint32_t k_sio2_intr = 0x1f808280u;
     static constexpr size_t k_sio2_tx_limit = 4096u;
     // OpenPS2BIOS emits guest TTY bytes to this emulator-facing port.
     // It is a write-only diagnostic extension, not IOP boot readiness.
@@ -273,6 +277,7 @@ private:
     };
     uint32_t m_sio2_ctrl = 0u;
     uint32_t m_sio2_stat = 0u;
+    uint32_t m_sio2_intr = 0u;
     uint32_t m_sio2_index = 0u;
     uint32_t m_sio2_send3[16]{};
     uint32_t m_sio2_port[8]{};
