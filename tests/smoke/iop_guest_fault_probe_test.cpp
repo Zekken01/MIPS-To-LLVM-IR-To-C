@@ -160,7 +160,7 @@ int main()
     origin.m_registration_recent_opcode[0] = 0x03e00008u;
     origin.m_registration_recent_pc[1] = 0x001cab00u;
     origin.m_registration_recent_opcode[1] = 0x0000000cu;
-    if (!kernel.cpu().write32(0x00017000u, 0x03e00008u) ||
+    if (!kernel.cpu().write32(0x00017000u, 0x6e736168u) ||
         !kernel.start_guest_callback(
             0x00017000u, 0x001d5ff0u, 1u, origin))
     {
@@ -180,6 +180,35 @@ int main()
         callback_thread.m_cpu.m_gpr[4] != 1u)
     {
         return fail("deferred guest callback registration provenance lost");
+    }
+
+    // The actual deferred callback may still fault. The snapshot must
+    // include its original registration provenance and not rewrite the
+    // unsupported R3000 instruction into an emulated success.
+    const iop::s_kernel_run_result callback_stop = kernel.run(8u, 8u);
+    if (callback_stop.m_stop !=
+            iop::e_kernel_stop::unsupported_instruction ||
+        callback_stop.m_guest_pc != 0x00017000u ||
+        callback_stop.m_opcode != 0x6e736168u ||
+        !probe.capture(kernel, callback_stop))
+    {
+        return fail("bad deferred callback did not fail closed");
+    }
+    FILE* origin_file = std::tmpfile();
+    if (origin_file == nullptr)
+    {
+        return fail("could not create callback provenance JSON output");
+    }
+    probe.write_json(origin_file);
+    const std::string origin_json = read_file(origin_file);
+    std::fclose(origin_file);
+    if (!contains(origin_json, "\"callback_registration\": {") ||
+        !contains(origin_json, "\"source\": 2") ||
+        !contains(origin_json, "\"thread\": 52") ||
+        !contains(origin_json, "\"a2\": \"0x001cdf70\"") ||
+        !contains(origin_json, "\"pc\": \"0x001cab00\""))
+    {
+        return fail("failing guest callback lost original registration");
     }
 
     std::puts("IOP guest stopped-thread provenance: PASS");
