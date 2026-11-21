@@ -40,6 +40,8 @@ private:
     std::vector<uint32_t> m_sync_waiters;
     uint32_t m_callback = 0u;
     uint32_t m_callback_gp = 0u;
+    s_guest_callback_origin m_callback_origin{};
+    uint32_t m_callback_registration_reports = 0u;
     uint32_t m_requested_media_mode = 0u;
     bool m_initialized = false;
     uint32_t m_last_error = 0u;
