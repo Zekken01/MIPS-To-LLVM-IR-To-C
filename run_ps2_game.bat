@@ -245,7 +245,8 @@ echo Native loop watchdog: 1000000 instructions per native slice, %LOOP_YIELD_RE
 echo Expansion budget: %EXPANSION_PASSES% passes, %EXPANSION_PER_PASS% new functions per pass
 echo Dispatch budget: %MAX_DISPATCHES% per pass; timeout: %BOOT_TIMEOUT_SECONDS% seconds
 echo Report: "%WORK_DIR%\%REPORT_NAME%"
-echo Controller profile: %CAPTURE_PROFILE% ^(Cross starts at poll %SDBZ_PAD0_CROSS_FIRST_POLL%, count %SDBZ_PAD0_CROSS_POLL_COUNT%^)
+echo Controller profile: %CAPTURE_PROFILE%
+if defined SDBZ_PAD0_CROSS_FIRST_POLL echo Injected Cross: first poll %SDBZ_PAD0_CROSS_FIRST_POLL%, count %SDBZ_PAD0_CROSS_POLL_COUNT%
 if /I "%EE_WEBGPU_SNAPSHOT%"=="1" echo Native WebGPU raster: "%WORK_DIR%\gs-webgpu.ppm"
 if /I "%EE_WEBGPU_WINDOW%"=="1" echo Native WebGPU presentation: raylib Win32 window in final replay
 rem Clear only presentation outputs before a full replay, so that a
