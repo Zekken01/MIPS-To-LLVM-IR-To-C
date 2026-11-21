@@ -203,3 +203,93 @@ RPC reply, DMA event, or graphical frame. It restores existing guest
 SIFMAN service dispatch to the previously linked correct function.
 A fresh **post-fix** retail replay is required before claiming
 progress beyond thread 81 or a visible image.
+
+## Fourth matched archive: after SIFMAN/CDVDMAN stub fix
+
+Uploaded `sdbz-graphics-pr148(3).zip` is the first post-fix Windows
+full graphics replay. Its `first-boot.json`, `expansion.log`,
+`boot.log`, translation cache, catalogue and all three PPMs match.
+
+| Metric | Previous IOP-stopped replay | Post-stub-fix replay |
+|---|---:|---:|
+| EE dispatches | 3,656,670 | 3,981,062 |
+| Guest-instruction attempts | 94,621,123 | 1,847,424,953 |
+| Guest GS fields | 18 | 375 |
+| Native WebGPU successful presents | 16 | 268 |
+| GPU committed GS draws | 6 | 255 |
+| Committed GIF tags | 51 | 1,040 |
+| VIF1 DIRECT / PATH2 batches | 7 | 256 |
+| GIF DMA / PATH3 batches | 40 | 289 |
+| VU1 XGKICK / PATH1 batches | 0 | 0 |
+| IOP RPC commits | 46 | 292 |
+| Cached native guest IR modules | 1,167 | 1,285 |
+| Guest IOP failure | Thread 81 invalid text opcode | **None** |
+
+The final `m2_iop_guest_fault` is `null`, and the boot log contains
+no new guest unsupported IOP instruction, load/relocation failure or
+fatal callback fault. The PADMAN misroute is resolved: the new run
+enters genuine SIFMAN and survives to hundreds of IOP RPC and GS
+field events.
+
+**Visible image remains unverified.** CPU and WebGPU 512x448 captures
+match byte-for-byte and have zero nonblack RGB pixels; the 1024x64
+upload capture is also black. The GS committed 255 sprite pairs, all
+untextured with zero RGB. The absence of a visible frame after 375
+fields is not itself proof of missing GPU functionality, especially
+because PATH1 has not committed any event.
+
+### Exact stop classification
+
+The authoritative final report ended with `HOST_YIELD (6)`, not an
+unsupported opcode or crash, at EE PC `0x00175210`. The 4,000,000
+configured dispatch limit was not reached: dispatch count was
+3,981,062. The native runner had a 1,000,000-guest-instruction
+loop-header watchdog but the `--loop-yield-resumes` option was not
+forwarded by `run_ps2_game.bat`, so its CLI default was **zero**.
+Thus the first translated-loop HOST_YIELD ended execution. It must
+not be described as a fresh EE INTC MMIO blocker: the current EE PC
+is again adjacent to the modeled `INTC_STAT` read.
+
+`m2_runtime` pinpoints two dominant native dispatch entry PCs:
+`0x00178de8` (1,815,980 visits) and `0x001bd58c`
+(1,813,916 visits), with 1,813,916 cycles through each
+direction of their edge. These two entrypoints account for
+approximately 91% of all observed dispatches. The guest is
+nonetheless continuing to run real IOP RPC, DMA/GIF and VBlank work:
+a hot loop is **not** a demonstrated deadlock.
+
+The one **outer** expansion pass printed `replay=78`,
+`new_functions=118` and elapsed=1,221.55s. This is a per-pass
+footer, not 78 outer passes. The final cache includes 1,285
+`ir_hashes`. Preserve it; no more IR reconstruction is required
+for these host-side diagnostic improvements.
+
+### Host-only improvements for next long replay
+
+- Runner supports optional environment
+  `SDBZ_DISPATCH_TRACE_EVERY=N` (positive integer). Only the
+  *verbose per-dispatch stdout text* is sampled. The first 64,
+  every Nth and all non-ordinary or non-successful dispatches
+  remain. CTest, all actual guest dispatches, recent JSON history,
+  hotspots, hardware state and timing boundaries remain unsampled.
+- `run_ps2_game.bat --full` defaults this cadence to **1024**;
+  set `SDBZ_DISPATCH_TRACE_EVERY=1` to restore the old full trace.
+  The previous 4-million-line `boot.log` was 293 MB uncompressed.
+- The batch script now forwards the existing
+  `--loop-yield-resumes` option via `LOOP_YIELD_RESUMES`,
+  default **16**, preserving a hard bounded watchdog and
+  allowing the already-committed guest state to resume at native
+  safepoints. Set it to zero for the original immediate stop.
+  It creates no synthetic cycle, IRQ, RPC result, DMA completion,
+  GS field or frame.
+
+These options are entirely host/launcher-side; do not delete the
+existing translation cache or regenerate guest LLVM IR just to
+change logging or native-loop resume counts. Use a larger explicit
+`MAX_DISPATCHES` on the next run if the goal is to observe activity
+beyond the old four-million-dispatch limit.
+
+**Next evidence gate:** a new matched Windows full graphics replay
+after these bounded knobs, with the existing IR cache retained.
+Do not claim that boot reached a visible screen until a real,
+nonblack CPU/GPU capture is verified.
