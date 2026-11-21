@@ -623,6 +623,85 @@ bool test_guest_sio2_controller()
         return false;
     }
 
+    // Reproduce original SIO2MAN's two read-modify-write CTRL calls:
+    // first reset via CTRL | 0x0c, then START via CTRL | 1 AFTER
+    // transmitting the two genuine 5-byte PADMAN poll packets.
+    // The reference returns zero for CTRL reads, so START does not
+    // repeat the FIFO reset and the original worker receives the
+    // already-queued pad replies after IRQ17.
+    iop::c_kernel guest_sequence_kernel;
+    if (!guest_sequence_kernel.attach_hle_hardware())
+    {
+        return false;
+    }
+    iop::c_hw& guest_sequence = guest_sequence_kernel.hardware();
+    guest_sequence.configure_sio2_pad0_cross_pulse(1u, 1u);
+    uint32_t guest_ctrl = 0u;
+    if (!guest_sequence.read(ctrl, 4u, &guest_ctrl) ||
+        guest_ctrl != 0u ||
+        !guest_sequence.write(ctrl, 4u, guest_ctrl | 0x0cu) ||
+        !guest_sequence.read(ctrl, 4u, &guest_ctrl) ||
+        guest_ctrl != 0u ||
+        !guest_sequence.write(send3, 4u,
+            (5u << 8u) | (5u << 18u)) ||
+        !guest_sequence.write(send3 + 4u, 4u,
+            (5u << 8u) | (5u << 18u) | 1u))
+    {
+        return false;
+    }
+    for (uint32_t port = 0u; port < 2u; ++port)
+    {
+        for (const uint8_t byte : poll)
+        {
+            if (!guest_sequence.write(tx, 1u, byte))
+            {
+                return false;
+            }
+        }
+    }
+    if (guest_sequence.sio2_diagnostics().m_rx_bytes != 10u ||
+        guest_sequence.sio2_completed_transfers() != 0u ||
+        !guest_sequence.read(ctrl, 4u, &guest_ctrl) ||
+        guest_ctrl != 0u ||
+        !guest_sequence.write(ctrl, 4u, guest_ctrl | 1u) ||
+        guest_sequence.sio2_completed_transfers() != 1u ||
+        guest_sequence.sio2_diagnostics().m_ctrl != 1u ||
+        guest_sequence.sio2_diagnostics().m_rx_bytes != 10u)
+    {
+        return false;
+    }
+    for (uint32_t port = 0u; port < 2u; ++port)
+    {
+        for (uint32_t reply_index = 0u; reply_index < 5u;
+             ++reply_index)
+        {
+            uint8_t guest_byte = 0u;
+            const uint8_t expected =
+                port == 0u ? (reply_index == 4u ?
+                    0xbfu : neutral_reply[reply_index]) : 0xffu;
+            if (!guest_sequence_kernel.cpu().read8(
+                    0xbf808264u, &guest_byte) ||
+                guest_byte != expected)
+            {
+                return false;
+            }
+        }
+    }
+    const iop::c_hw::s_sio2_diagnostics guest_sequence_result =
+        guest_sequence.sio2_diagnostics();
+    if (guest_sequence_result.m_pad0_polls != 1u ||
+        guest_sequence_result.m_pad0_cross_pressed_polls != 1u ||
+        guest_sequence_result.m_pad0_cross_bytes_pio_read != 1u ||
+        guest_sequence_result.m_pad0_cross_bytes_dma_written != 0u ||
+        guest_sequence_result.m_pad0_cross_bytes_fifo_discarded != 0u ||
+        guest_sequence_result.m_rx_bytes != 0u ||
+        guest_sequence_result.m_empty_rx_reads != 0u ||
+        guest_sequence_result.m_rejected_starts != 0u ||
+        guest_sequence.sio2_packets() != 2u)
+    {
+        return false;
+    }
+
     // A deliberate host Cross press is delivered ONLY in genuine
     // connected port-0 SIO2 0x42 reply bytes, for a bounded number of
     // guest pad polls. No new packet/IRQ is created by configuration,
