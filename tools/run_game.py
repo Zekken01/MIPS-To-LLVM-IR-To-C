@@ -128,11 +128,24 @@ def recover_append_only_metadata(snapshot, metadata_path):
     reconstructed = dict(metadata)
     reconstructed["functions"] = functions[:previous_count]
     reconstructed["function_count"] = previous_count
-    original_bytes = (json.dumps(reconstructed, indent=2) + "\n").encode("utf-8")
-    if hashlib.sha256(original_bytes).hexdigest() != snapshot.get("metadata_sha256"):
+    # batch_append_functions() writes JSON using Path.write_text().
+    # On Windows this text-mode write converts every LF to CRLF; on
+    # Linux it leaves LF unchanged. The cache hashes on-disk bytes,
+    # not normalized JSON, so reconstruct BOTH exact byte spellings.
+    # Requiring the saved SHA-256 for either spelling keeps the
+    # complete original map authenticated without relaxing provenance.
+    original_text = json.dumps(reconstructed, indent=2) + "\n"
+    original_lf = original_text.encode("utf-8")
+    original_crlf = original_text.replace("\n", "\r\n").encode("utf-8")
+    expected_digest = snapshot.get("metadata_sha256")
+    if not any(
+        hashlib.sha256(candidate).hexdigest() == expected_digest
+        for candidate in (original_lf, original_crlf)
+    ):
         raise ValueError(
             "preserved function metadata was modified "
-            "(not a verified append-only extension)"
+            "(not a verified append-only extension; "
+            "tried both LF and Windows CRLF JSON serialization)"
         )
     # A single appended transaction may be interrupted after publication
     # but before its object emission, link, or cache record is committed.
