@@ -20,6 +20,7 @@
 #endif
 #include "elf_loader.h"
 #include "iop_kernel.h"
+#include "iop_guest_fault_probe.h"
 #include "iop_cdvd.h"
 #include "iop_folder_sector_source.h"
 #include "iop_cdvdman_bridge.h"
@@ -886,6 +887,7 @@ bool write_report(
     const ee::c_ee_gif_path3& gif_path2,
     const ee::c_ee_gif_path3& gif_path3,
     const ee::c_ee_gs_presentation_probe& graphics_probe,
+    const iop::c_iop_guest_fault_probe& iop_fault_probe,
     const ee::c_ee_sdbz_dma_wait_probe& dma_wait_probe,
     const ee::c_ee_dispatch_hotspots& hotspots,
     bool in_progress
@@ -988,6 +990,8 @@ bool write_report(
     write_gif_paths_json(output, gif_path1, gif_path2, gif_path3);
     std::fputs(",\n  \"m2_gs_presentation\": ", output);
     graphics_probe.write_json(output, hardware.scanout().fields_started());
+    std::fputs(",\n  \"m2_iop_guest_fault\": ", output);
+    iop_fault_probe.write_json(output);
     std::fputs(",\n  \"m2_sdbz_dma_wait\": ", output);
     dma_wait_probe.write_json(output);
     std::fputs("\n}\n", output);
@@ -1672,6 +1676,7 @@ int main(int argc, char** argv)
     // rendezvous, NOT EE/IOP hardware cycle synchronization: the native
     // dispatcher does not yet expose an accurate EE-cycle clock.
     std::unique_ptr<iop::c_kernel> iop_kernel;
+    iop::c_iop_guest_fault_probe iop_fault_probe{};
     std::unique_ptr<iop::c_sif1_dma_transport> iop_sif1_transport;
     std::unique_ptr<iop::c_sif0_dma_transport> iop_sif0_transport;
     std::unique_ptr<iop::c_sifman_bridge> iop_sifman;
@@ -2436,6 +2441,12 @@ int main(int argc, char** argv)
                         progressed.m_thread_id,
                         static_cast<uint32_t>(progressed.m_stop),
                         progressed.m_guest_pc, progressed.m_opcode);
+                    // Preserve the actual IOP failure, not the EE PC
+                    // where host scheduling happened to observe it.
+                    if (iop_fault_probe.capture(*iop_kernel, progressed))
+                    {
+                        iop_fault_probe.write_text(stderr);
+                    }
                     reason = static_cast<uint32_t>(
                         ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED);
                     status = 0u;
@@ -2581,7 +2592,8 @@ int main(int argc, char** argv)
                 runtime, hardware, vsync_flags,
                 reason, status, history, syscall_history, gs_state.state(),
                 gif_path1, gif_path2, gif_path3,
-                graphics_probe, dma_wait_probe, hotspots, true
+                graphics_probe, iop_fault_probe,
+                dma_wait_probe, hotspots, true
             );
             report_time_ms += std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - report_start
@@ -6016,7 +6028,8 @@ int main(int argc, char** argv)
                       runtime, hardware, vsync_flags,
                       reason, status, history, syscall_history, gs_state.state(),
                       gif_path1, gif_path2, gif_path3,
-                      graphics_probe, dma_wait_probe, hotspots, false))
+                      graphics_probe, iop_fault_probe,
+                      dma_wait_probe, hotspots, false))
     {
         return 1;
     }
