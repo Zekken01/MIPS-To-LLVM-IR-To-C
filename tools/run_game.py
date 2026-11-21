@@ -1145,7 +1145,7 @@ def main(argv=None):
                 build_linked_library(
                     source_root, work, metadata_path, object_dir, library,
                     args.emit_opt, pdb=args.pdb, emit_jobs=args.emit_jobs,
-                    reuse_objects=objects_complete,
+                    reuse_objects=bool(pending_append and objects_complete),
                     appended_ir=(
                         [Path(item["ir_path"]) for item in pending_append]
                         if pending_append and not objects_complete else None
