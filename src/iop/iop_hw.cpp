@@ -52,6 +52,7 @@ void c_hw::reset()
     m_sio2_rx.clear();
     m_sio2_rx_cross_tags.clear();
     m_sio2_empty_rx_read_count = 0u;
+    m_pad_trace_dispatch = 0u;
     m_sio2_pad0_poll_count = 0u;
     m_sio2_pad0_cross_pressed_polls = 0u;
     m_sio2_pad0_cross_bytes_pio_read = 0u;
@@ -175,6 +176,17 @@ void c_hw::configure_sio2_pad0_cross_pulse(
     m_sio2_pad0_cross_bytes_fifo_discarded = 0u;
 }
 
+bool c_hw::pad_trace_window() const
+{
+    const uint64_t poll = m_sio2_pad0_poll_count;
+    const uint64_t begin = m_sio2_pad0_cross_first_poll;
+    const uint64_t end = begin + m_sio2_pad0_cross_poll_count;
+    // Include one preceding poll and two release polls. Limit output
+    // during intentionally long holds to the press and release edges.
+    return begin != 0u && poll != 0u && poll + 1u >= begin &&
+        poll < end + 2u && (poll < begin + 8u || poll + 1u >= end);
+}
+
 // SIO2 controller exchange from ps2-web-recomp/SDBZ's sio2.cpp:
 // SEND3 supplies the input and output sizes; the guest's actual TX bytes
 // select the device command. Never make a response to a write-only setup.
@@ -288,6 +300,15 @@ bool c_hw::process_sio2_packet()
                     put(4u, 0xbfu);
                     cross_reply = true;
                     ++m_sio2_pad0_cross_pressed_polls;
+                }
+                if (pad_trace_window() && reply.size() >= 5u)
+                {
+                    std::fprintf(stderr,
+                        "PAD poll=%u ee_completed=%llu iop_cpu_cycle=%llu "
+                        "wire=%02x %02x %02x %02x %02x\n",
+                        pad0_polls(), static_cast<unsigned long long>(m_pad_trace_dispatch),
+                        static_cast<unsigned long long>(m_dma_cpu->cycles()),
+                        reply[0], reply[1], reply[2], reply[3], reply[4]);
                 }
             }
             break;
@@ -856,6 +877,15 @@ bool c_hw::read(
         else
         {
             *value = m_sio2_rx.front();
+            if (m_sio2_rx_cross_tags.front() != 0u && pad_trace_window() &&
+                m_dma_cpu != nullptr)
+            {
+                std::fprintf(stderr,
+                    "PAD PIO ee_completed=%llu iop_cpu_cycle=%llu pc=%08x ra=%08x byte=%02x\n",
+                    static_cast<unsigned long long>(m_pad_trace_dispatch),
+                    static_cast<unsigned long long>(m_dma_cpu->cycles()),
+                    m_dma_cpu->state().m_pc, m_dma_cpu->state().m_gpr[31], *value);
+            }
             m_sio2_rx.pop_front();
             m_sio2_pad0_cross_bytes_pio_read +=
                 m_sio2_rx_cross_tags.front();

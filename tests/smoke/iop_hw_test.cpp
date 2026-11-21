@@ -720,7 +720,7 @@ bool test_guest_sio2_controller()
     {
         return false;
     }
-    for (uint32_t pad_poll = 1u; pad_poll <= 5u; ++pad_poll)
+    for (uint32_t pad_poll = 1u; pad_poll <= 7u; ++pad_poll)
     {
         if (!input_probe.write(ctrl, 4u, 0x0cu) ||
             !input_probe.write(send3, 4u, (5u << 8u) | (5u << 18u)))
@@ -746,7 +746,9 @@ bool test_guest_sio2_controller()
                 return false;
             }
         }
-        if (input_probe.sio2_completed_transfers() != pad_poll - 1u ||
+        if (input_probe.pad_trace_window() != (pad_poll >= 2u && pad_poll <= 6u) ||
+            input_probe.pad0_polls() != pad_poll ||
+            input_probe.sio2_completed_transfers() != pad_poll - 1u ||
             !input_probe.write(ctrl, 4u, 0x03bdu) ||
             input_probe.sio2_completed_transfers() != pad_poll ||
             !input_probe.write(intr, 4u, 1u) ||
@@ -757,16 +759,16 @@ bool test_guest_sio2_controller()
     }
     const iop::c_hw::s_sio2_diagnostics input_result =
         input_probe.sio2_diagnostics();
-    if (input_result.m_pad0_polls != 5u ||
+    if (input_result.m_pad0_polls != 7u ||
         input_result.m_pad0_cross_pressed_polls != 2u ||
         input_result.m_pad0_cross_first_poll != 3u ||
         input_result.m_pad0_cross_poll_count != 2u ||
         input_result.m_pad0_cross_bytes_pio_read != 2u ||
         input_result.m_pad0_cross_bytes_dma_written != 0u ||
         input_result.m_pad0_cross_bytes_fifo_discarded != 0u ||
-        input_probe.sio2_packets() != 5u ||
-        input_probe.sio2_ctrl_starts() != 5u ||
-        input_probe.sio2_completed_transfers() != 5u ||
+        input_probe.sio2_packets() != 7u ||
+        input_probe.sio2_ctrl_starts() != 7u ||
+        input_probe.sio2_completed_transfers() != 7u ||
         input_result.m_rx_bytes != 0u)
     {
         return false;
@@ -806,7 +808,7 @@ bool test_guest_sio2_controller()
         discarded.m_pad0_cross_bytes_dma_written != 0u ||
         discarded.m_pad0_cross_bytes_fifo_discarded != 1u ||
         discarded.m_rx_bytes != 0u ||
-        input_probe.sio2_completed_transfers() != 5u)
+        input_probe.sio2_completed_transfers() != 7u)
     {
         return false;
     }

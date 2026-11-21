@@ -80,7 +80,10 @@ public:
         if (sample.m_return_value >= 4u && sample.m_bytes[0u] == 0u)
         {
             ++m_caller_candidate_samples;
-            if ((sample.m_pressed_mask & 0x4000u) != 0u)
+            // SIO2 sends Cross in bit 6 of the second button byte.
+            // PADMAN preserves byte order. SLUS_214.42 shifts the
+            // first byte left eight, so Cross is 0x0040 in its word.
+            if ((sample.m_pressed_mask & 0x0040u) != 0u)
             {
                 ++m_cross_bit_low_candidates;
                 if (!m_first_cross.m_valid)
@@ -97,6 +100,11 @@ public:
         return true;
     }
 
+    const s_sample& last_sample() const
+    {
+        return m_last;
+    }
+
     void write_json(FILE* output) const
     {
         if (output == nullptr)
@@ -104,7 +112,7 @@ public:
             return;
         }
         std::fprintf(output,
-            "{\"schema\":\"ee-sdbz-pad-return-observation-v1\","
+            "{\"schema\":\"ee-sdbz-pad-return-observation-v2\","
             "\"site_pc\":%u,\"return_entries\":%llu,"
             "\"ram_samples\":%llu,\"caller_candidate_samples\":%llu,"
             "\"cross_bit_low_candidates\":%llu,"

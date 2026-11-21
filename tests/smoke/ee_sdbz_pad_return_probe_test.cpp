@@ -28,8 +28,7 @@ int main()
         return 1;
     }
 
-    // A genuine Cross candidate: raw active-low 0xbfff,
-    // inverted to PS2 bit 14 (0x4000).
+    // The swapped pattern must not be identified as Cross.
     memory.write8(result + 2u, 0xbfu);
     if (!probe.observe(
             ee::c_ee_sdbz_pad_return_probe::k_return_pc,
@@ -38,18 +37,34 @@ int main()
         return 1;
     }
 
+    memory.write8(result + 2u, 0xffu);
+    memory.write8(result + 3u, 0xbfu);
+    if (!probe.observe(probe.k_return_pc, 4u, stack, 32u, &memory) ||
+        probe.last_sample().m_pressed_mask != 0x0040u)
+    {
+        return 1;
+    }
+
     // A failed guest helper status cannot be claimed as an input.
     memory.write8(result + 0u, 1u);
     if (!probe.observe(
             ee::c_ee_sdbz_pad_return_probe::k_return_pc,
-            4u, stack, 4u, &memory) ||
+            5u, stack, 4u, &memory) ||
         probe.observe(
             ee::c_ee_sdbz_pad_return_probe::k_return_pc,
-            5u, 0x02000000u, 4u, &memory) ||
+            6u, 0x02000000u, 4u, &memory) ||
         memory.read8(result + 0u) != 1u ||
         memory.read8(result + 1u) != 0x41u ||
-        memory.read8(result + 2u) != 0xbfu ||
-        memory.read8(result + 3u) != 0xffu)
+        memory.read8(result + 2u) != 0xffu ||
+        memory.read8(result + 3u) != 0xbfu)
+    {
+        return 1;
+    }
+
+    memory.write8(result, 0u);
+    memory.write8(result + 3u, 0xffu);
+    if (!probe.observe(probe.k_return_pc, 7u, stack, 32u, &memory) ||
+        probe.last_sample().m_raw_buttons != 0xffffu)
     {
         return 1;
     }
@@ -67,13 +82,13 @@ int main()
         data, 1u, sizeof(data) - 1u, output);
     const bool closed = std::fclose(output) == 0;
     if (count == 0u || !closed ||
-        std::strstr(data, "\"return_entries\":4") == nullptr ||
-        std::strstr(data, "\"ram_samples\":3") == nullptr ||
-        std::strstr(data, "\"caller_candidate_samples\":2") == nullptr ||
+        std::strstr(data, "\"return_entries\":6") == nullptr ||
+        std::strstr(data, "\"ram_samples\":5") == nullptr ||
+        std::strstr(data, "\"caller_candidate_samples\":4") == nullptr ||
         std::strstr(data, "\"cross_bit_low_candidates\":1") == nullptr ||
-        std::strstr(data, "\"first_cross_candidate\":{") == nullptr ||
-        std::strstr(data, "\"raw_buttons\":49151") == nullptr ||
-        std::strstr(data, "\"pressed_mask\":16384") == nullptr)
+        std::strstr(data, "\"first_cross_candidate\":{\"dispatch\":4,") == nullptr ||
+        std::strstr(data, "\"raw_buttons\":65471") == nullptr ||
+        std::strstr(data, "\"pressed_mask\":64") == nullptr)
     {
         std::fputs("SDBZ original EE pad return probe regression\n", stderr);
         return 1;

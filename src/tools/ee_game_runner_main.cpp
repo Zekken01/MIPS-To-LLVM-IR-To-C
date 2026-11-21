@@ -2587,6 +2587,10 @@ int main(int argc, char** argv)
     uint32_t slowest_native_pc = 0u;
     while (remaining != 0)
     {
+        if (pad0_cross_poll_count != 0u && iop_kernel != nullptr)
+        {
+            iop_kernel->hardware().set_pad_trace_dispatch(dispatched);
+        }
         // This catches HLE handoffs and interpreter observations that
         // returned via a host continuation rather than native dispatch.
         if (runtime.m_timing_observer_failed != 0u)
@@ -2893,10 +2897,21 @@ int main(int argc, char** argv)
         const uint32_t from_pc = cpu.m_pc;
         if (report_path != nullptr)
         {
-            (void)pad_return_probe.observe(
+            const bool sampled = pad_return_probe.observe(
                 from_pc, dispatched + 1u,
                 cpu.m_gpr[29u].m_lo, cpu.m_gpr[2u].m_lo,
                 memory.get());
+            if (sampled && iop_kernel != nullptr &&
+                iop_kernel->hardware().pad_trace_window())
+            {
+                const auto& sample = pad_return_probe.last_sample();
+                std::fprintf(stderr,
+                    "PAD EE dispatch=%llu poll=%u buffer=%08x return=%u bytes=%02x %02x %02x %02x\n",
+                    static_cast<unsigned long long>(sample.m_dispatch),
+                    iop_kernel->hardware().pad0_polls(), sample.m_buffer_address,
+                    sample.m_return_value, sample.m_bytes[0], sample.m_bytes[1],
+                    sample.m_bytes[2], sample.m_bytes[3]);
+            }
         }
         if (report_path != nullptr &&
             dma_wait_probe.observe(
