@@ -1064,6 +1064,9 @@ bool write_report(
             "\"pad0_polls\":%u,\"pad0_cross_pressed_polls\":%u,"
             "\"pad0_cross_first_poll\":%u,"
             "\"pad0_cross_poll_count\":%u,"
+            "\"pad0_cross_bytes_pio_read\":%u,"
+            "\"pad0_cross_bytes_dma_written\":%u,"
+            "\"pad0_cross_bytes_fifo_discarded\":%u,"
             "\"packet_index\":%u,\"ctrl_word\":%u,\"stat_word\":%u,"
             "\"intr_word\":%u,"
             "\"last_rejection\":\"%s\",\"last_rejection_code\":%u,"
@@ -1077,6 +1080,9 @@ bool write_report(
             detail.m_empty_rx_reads,
             detail.m_pad0_polls, detail.m_pad0_cross_pressed_polls,
             detail.m_pad0_cross_first_poll, detail.m_pad0_cross_poll_count,
+            detail.m_pad0_cross_bytes_pio_read,
+            detail.m_pad0_cross_bytes_dma_written,
+            detail.m_pad0_cross_bytes_fifo_discarded,
             detail.m_packet_index, detail.m_ctrl, detail.m_stat,
             detail.m_intr, sio2.sio2_rejection_name(),
             static_cast<uint32_t>(detail.m_last_rejection),
