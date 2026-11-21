@@ -53,8 +53,18 @@ def read_manifest(path):
     hashes = data.get("ir_hashes")
     if not isinstance(hashes, dict) or not hashes:
         raise ValueError("manifest contains no IR hashes")
+    order = data.get("known_entries")
+    if order is None:
+        # Older translation-cache.json records preserve metadata order
+        # through JSON object insertion order.
+        order = list(hashes)
+    elif (not isinstance(order, list) or len(order) != len(hashes) or
+          any(not isinstance(name, str) for name in order) or
+          len(set(order)) != len(order) or set(order) != set(hashes)):
+        raise ValueError("known-function order does not match IR inventory")
     entries = []
-    for name, digest in hashes.items():
+    for name in order:
+        digest = hashes[name]
         match = IR_NAME.fullmatch(name)
         if not match or match.group(1).lower() != match.group(2).lower():
             raise ValueError(f"unsafe/unsupported IR module name: {name}")
