@@ -1000,7 +1000,13 @@ bool c_hw::read(
         *value = m_cache_control;
         return true;
     case k_sio2_ctrl:
-        *value = m_sio2_ctrl;
+        // Match ps2-web-recomp/SDBZ: CTRL reads return zero rather
+        // than echoing the last write. Original SIO2MAN performs
+        // reset (CTRL | 0x0c), sends PIO data, then START (CTRL | 1).
+        // Echoing the reset write turns that START into 0x3bd,
+        // discarding the real pad replies immediately before recv_td.
+        // Keep m_sio2_ctrl for host-only last-write diagnostics.
+        *value = 0u;
         return true;
     case k_sio2_stat:
         *value = m_sio2_stat;
