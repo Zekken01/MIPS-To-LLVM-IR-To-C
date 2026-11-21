@@ -1092,9 +1092,16 @@ bool write_report(
         }
         std::fprintf(output,
             "],\"last_start_guest_pc\":%u,"
-            "\"last_start_guest_ra\":%u,\"first_packets\":[",
+            "\"last_start_guest_ra\":%u,"
+            "\"packets_at_last_start\":%u,"
+            "\"tx_bytes_at_last_start\":%zu,"
+            "\"rx_bytes_at_last_start\":%zu,"
+            "\"first_packets\":[",
             detail.m_last_start_guest_pc,
-            detail.m_last_start_guest_ra);
+            detail.m_last_start_guest_ra,
+            detail.m_packets_at_last_start,
+            detail.m_tx_bytes_at_last_start,
+            detail.m_rx_bytes_at_last_start);
         for (uint32_t index = 0u;
              index < detail.m_first_packet_count; ++index)
         {
