@@ -5,6 +5,7 @@
 #include "ee_hw_bus.h"
 #include "ee_host_timers.h"
 #include "ee_hot_loop_diagnostics.h"
+#include "ee_host_loop_yield_budget.h"
 #include "ee_reached_isa_inventory.h"
 #include "ee_vsync_flags.h"
 #include "ee_sdbz_dma_wait_probe.h"
@@ -2402,6 +2403,9 @@ int main(int argc, char** argv)
     uint32_t status = 0;
     uint32_t reason = cpu.m_exit_reason;
     uint32_t completed_loop_yields = 0u;
+    // A total-session cap was wrong: genuine VBlank, GIF and IOP RPC
+    // progress must reopen a finite set of native watchdog resumes.
+    ee::c_host_loop_yield_budget loop_yield_budget{};
     uint64_t last_snapshot_dispatch = 0;
     uint64_t last_progress_dispatch = 0;
     bool last_snapshot_callback_active = false;
@@ -3074,16 +3078,21 @@ int main(int argc, char** argv)
                         out_pc, exit_name(reason), reason, status);
         }
 
-        // A translated-loop yield has already committed the preceding
-        // branch, delay slot, and architectural register writes. Resume
-        // only within this explicitly bounded host option. Do not turn
-        // yield counts or instruction attempts into EE cycles; neither
-        // GS/INTC VBlank nor DMA readiness is manufactured here.
+        // Each HOST_YIELD has committed its original guest branch,
+        // delay slot and register writes. Bound subsequent native
+        // watchdog resumes until a *real* GS field, GIF write, or IOP
+        // RPC completion is observed. Guest instruction attempts and
+        // dispatch count alone are not a progress signal. The host
+        // never manufactures cycles, IRQs, DMA, responses, or frames.
         if (reason == static_cast<uint32_t>(
                 ee::e_ee_exit_reason::EE_EXIT_HOST_YIELD))
         {
             if (count == 0u || status == 2u ||
-                completed_loop_yields >= loop_yield_resumes)
+                !loop_yield_budget.try_resume(
+                    loop_yield_resumes,
+                    hardware.scanout().fields_started(),
+                    last_iop_rpc_sequence,
+                    hardware.dmac().gif_trace_count()))
             {
                 break;
             }
@@ -3091,10 +3100,22 @@ int main(int argc, char** argv)
             runtime.m_ee_cycle_scheduler.record_scheduler_yield();
             if (trace)
             {
-                std::printf("EE host loop resume: count=%u/%u pc=0x%08x "
-                            "(guest EE cycles unchanged)\n",
-                            completed_loop_yields,
-                            loop_yield_resumes, cpu.m_pc);
+                std::printf(
+                    "EE host loop resume: count=%u/%u total=%u "
+                    "progress_resets=%llu pc=0x%08x fields=%llu "
+                    "rpc=%llu gif_writes=%llu "
+                    "(guest EE cycles unchanged)\n",
+                    loop_yield_budget.without_progress(),
+                    loop_yield_resumes, completed_loop_yields,
+                    static_cast<unsigned long long>(
+                        loop_yield_budget.progress_resets()),
+                    cpu.m_pc,
+                    static_cast<unsigned long long>(
+                        hardware.scanout().fields_started()),
+                    static_cast<unsigned long long>(
+                        last_iop_rpc_sequence),
+                    static_cast<unsigned long long>(
+                        hardware.dmac().gif_trace_count()));
             }
             cpu.m_exit_reason = static_cast<uint32_t>(
                 ee::e_ee_exit_reason::EE_EXIT_DISPATCH);
@@ -6216,8 +6237,19 @@ int main(int argc, char** argv)
     {
         std::fprintf(stderr,
             "guest host loop yield cap reached: pc=0x%08x "
-            "resumes=%u cap=%u (clock=%s)\n",
-            cpu.m_pc, completed_loop_yields, loop_yield_resumes,
+            "resumes_without_progress=%u cap=%u total_resumes=%u "
+            "progress_resets=%llu fields=%llu rpc=%llu gif_writes=%llu "
+            "(clock=%s)\n",
+            cpu.m_pc, loop_yield_budget.without_progress(),
+            loop_yield_resumes, completed_loop_yields,
+            static_cast<unsigned long long>(
+                loop_yield_budget.progress_resets()),
+            static_cast<unsigned long long>(
+                hardware.scanout().fields_started()),
+            static_cast<unsigned long long>(
+                last_iop_rpc_sequence),
+            static_cast<unsigned long long>(
+                hardware.dmac().gif_trace_count()),
             ee_cycle_source_name(runtime.m_ee_cycle_scheduler.source()));
         // A repeated guest loop may be waiting for DMA, an IOP response,
         // an MMIO bit, or an ordinary RAM flag. More time or extra VBlank
