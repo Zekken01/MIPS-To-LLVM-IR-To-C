@@ -39,6 +39,7 @@ void c_hw::reset()
     m_ssbus_spu2_delay1 = 0u;
     m_sio2_ctrl = 0u;
     m_sio2_stat = 0u;
+    m_sio2_intr = 0u;
     m_sio2_index = 0u;
     std::fill(m_sio2_send3, m_sio2_send3 + 16u, 0u);
     std::fill(m_sio2_port, m_sio2_port + 8u, 0u);
@@ -517,6 +518,10 @@ bool c_hw::run_sio2_transfer()
     }
     m_sio2_transfer_requested = false;
     ++m_sio2_transfer_count;
+    // The SIO2 device's own completion latch is separate from the IOP
+    // interrupt controller. The SIO2MAN callback at 0xbf808280 reads
+    // this bit and writes the same value to clear it (W1C).
+    m_sio2_intr |= 0x1u;
     (void)raise_interrupt(17u);
     return true;
 }
@@ -946,6 +951,9 @@ bool c_hw::read(
     case k_sio2_aux_status:
         *value = 0u;
         return true;
+    case k_sio2_intr:
+        *value = m_sio2_intr;
+        return true;
     default:
         return false;
     }
@@ -1252,6 +1260,12 @@ bool c_hw::write(
         return true;
     case k_cache_control:
         m_cache_control = value;
+        return true;
+    case k_sio2_intr:
+        // SIO2 interrupt status bits 0/1 are write-one-to-clear.
+        // Do not clear the independent IOP INTC I_STAT bit here:
+        // INTRMAN acknowledges that interrupt separately.
+        m_sio2_intr &= ~(value & 0x3u);
         return true;
     case k_sio2_ctrl:
         m_sio2_ctrl = value;
