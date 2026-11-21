@@ -1,0 +1,114 @@
+# SDBZ known-function CPU-only matched replay
+
+This is the fast, **zero-auto-expansion** alternative to a full Windows
+SDBZ graphics boot. It is for testing host HLE, PADMAN, GS, and other
+runtime changes against an already-known set of EE functions.
+
+**It does not discover or add guest functions during either test run.**
+A 6,000,000-dispatch replay is still real guest execution; the speedup
+comes from eliminating hundreds of replay/relink cycles and disabling the
+Windows WebGPU presentation path.
+
+## Use the existing verified Windows cache (recommended)
+
+In the Visual Studio Developer Command Prompt, from the repo root:
+
+    git pull --ff-only
+    run_ps2_game.bat --matched
+
+The launcher still builds the host tools, validates existing guest
+translation provenance, and attempts **verified host-only relink** when
+required. It **will not** prompt for a guest LLVM IR rebuild or delete
+cached functions in this mode. It runs one neutral and one eight-poll
+Cross replay against the same translated library.
+
+A successful pair writes separate reports, bounded branch traces and
+\`comparison.json\` under:
+
+    build\ps2-game-hle\known-replays\YYYYMMDD-HHMMSS-ffffff\
+
+The JSON contains both dispatch counts and the original game's
+instruction execution count at \`0x00109D50\`. It is not an input
+observer proxy: these are instructions executed by the native guest.
+
+If the existing cache cannot be validated or safely relinked, this
+mode stops without regenerating any guest code.
+
+## Reconstruct known IR from the archived manifest
+
+The diagnostic ZIP contains **function entry names and SHA-256 values**,
+not the actual LLVM IR source. It is sufficient to seed a fresh,
+isolated reconstruction using the local original game ELF.
+
+For example:
+
+    cmake --build build --config Release --target ee_recomp ee_game_runner
+    python tools\run_known_replays.py --disc-root PS2_GAME --build-dir build --config Release --manifest sdbz-graphics-pr148-20261121-203021.zip --reconstruct --work-dir build\sdbz-known-1275
+
+This uses the cached ordered list of 1,275 addresses. It calls
+\`ee_recomp\` for the first entry and for subsequent **128-entry batches**,
+reusing the compiled discovery index and the regular ownership checks.
+It checks that every expected function exists, verifies its on-disk
+SHA-256, then emits objects and links **once**. There is no guest replay
+during reconstruction.
+
+The reconstructed IR can differ from the archived IR when generated
+with different code inputs or function boundary batches; the earlier
+Linux experiment reported **1,273 / 1,275 identical hashes**. This tool
+does not assume it can reproduce exact bytes. If any hashes differ, the
+strict default stops before linking. For an intentional, isolated
+experiment that permits named SHA mismatches, explicitly supply:
+
+    --allow-ir-mismatches
+
+The exact mismatched names are included in
+\`ir-comparison.json\` when the rebuild proceeds and the result is never
+described as byte-identical. Never use this option to overwrite or
+invalidate an existing production guest cache.
+
+**If the isolated reconstruction fails, inspect that directory rather
+than pointing \`--reconstruct\` at the original cache.** The option
+requires an unused work directory and refuses to overwrite artifacts.
+
+## Cross experiment and output
+
+Each pair uses \`run_game.py --no-recompile --auto-expand=0\`, the
+authentic extracted-disc HLE startup, \`--kseg-ram\`, a
+1,000,000-instruction loop watchdog, 16 real-progress resumptions and
+a 2,048-poll SIF limit. Default limits are:
+
+- 6,000,000 dispatches per run
+- 600-second wall-clock timeout per run
+- Cross injection at real SIO2 port-0 polls 200 through 207
+- An original-EE-PC instruction trace filtered to \`0x00109D50\`
+
+Neutral explicitly clears inherited Cross environment variables for
+its subprocess. Cross uses the same library but installs its own
+controlled input environment. The Windows launcher runs both without
+WebGPU, raylib or PPM capture.
+
+The experiment reports the total original branch executions, including
+in the matched input-path reference: **neutral 0, Cross 8**. Those
+values are an observed result from the prior run, not a hardcoded
+test expectation. The script fails if an expected trace is truncated,
+if a replay does not reach the requested dispatch budget, if a report
+is missing, if the guest exits unexpectedly, or if translation-cache
+metadata changes during the pair.
+
+The script accepts \`--max-dispatches\`, \`--timeout-seconds\`,
+\`--emit-jobs\`, and \`--output-dir\` overrides.
+
+## Validation and scope
+
+The \`ee_known_function_replays\` CTest validates the manifest parser,
+hash mismatch detection, 128-entry batching, single link, safety on
+existing caches, controlled two-profile invocation, full dispatch
+requirement and original branch trace interpretation.
+
+**The CTest uses synthetic fixtures.** It is not a substitute for a
+real matched game replay. The game ELF and PS2_GAME disc files remain
+local to the developer, so end-to-end replay must be performed in the
+environment where those assets exist.
+
+The separate \`--full\` path retains normal auto-expansion and GS
+graphics diagnostics for when new code needs to be discovered.
