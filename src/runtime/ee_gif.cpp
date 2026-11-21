@@ -208,9 +208,30 @@ bool c_ee_gif_path3::consume(const uint8_t* data, uint32_t qwc)
             ++m_counters.m_reglist_events;
             break;
         case e_ee_gif_event_type::image:
+        {
+            // Count the actual, GS-accepted IMAGE/IMAGE2 source bytes.
+            // Do not count rejected or partially staged guest DMA input.
+            // This does not imply the bytes were sampled as textures,
+            // transformed into pixels, or selected by scanout.
+            if (m_counters.m_image_events == 0u)
+            {
+                m_counters.m_image_payload_fnv1a64 =
+                    0xcbf29ce484222325ull;
+            }
             ++m_counters.m_image_events;
             m_counters.m_image_qwc += item.m_qwc;
+            const size_t begin = static_cast<size_t>(item.m_byte_offset);
+            const size_t end = begin + static_cast<size_t>(item.m_qwc) * 16u;
+            for (size_t byte = begin; byte < end; ++byte)
+            {
+                const uint8_t value = data[byte];
+                m_counters.m_image_nonzero_bytes += value != 0u ? 1u : 0u;
+                m_counters.m_image_payload_fnv1a64 ^= value;
+                m_counters.m_image_payload_fnv1a64 *=
+                    0x100000001b3ull;
+            }
             break;
+        }
         }
     }
     return true;
