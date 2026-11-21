@@ -225,7 +225,9 @@ if /I "%REQUESTED_SESSION_MODE%"=="matched" (
         --emit-jobs=%EMIT_JOBS% ^
         --max-dispatches=%MAX_DISPATCHES% ^
         --timeout-seconds=%BOOT_TIMEOUT_SECONDS%
-    exit /b %ERRORLEVEL%
+    rem EXIT /B without a number preserves Python's actual ERRORLEVEL.
+    rem Percent-expanded %%ERRORLEVEL%% inside this block would be stale.
+    exit /b
 )
 
 rem This is the only fallback that can wipe and regenerate old guest IR.
