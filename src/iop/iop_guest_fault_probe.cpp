@@ -168,6 +168,27 @@ void c_iop_guest_fault_probe::write_text(FILE* output) const
         return;
     }
     const s_cpu_state& cpu = m_thread.m_cpu;
+    const s_guest_callback_origin& origin = m_thread.m_callback_origin;
+    std::fprintf(output,
+        "IOP fault callback registration: source=%u "
+        "thread=%u syscall_pc=0x%08x ra=0x%08x gp=0x%08x "
+        "a0=0x%08x a1=0x%08x a2=0x%08x a3=0x%08x "
+        "recent_count=%u\n",
+        static_cast<uint32_t>(origin.m_source),
+        origin.m_registration_thread_id, origin.m_registration_pc,
+        origin.m_registration_ra, origin.m_registration_gp,
+        origin.m_registration_a0, origin.m_registration_a1,
+        origin.m_registration_a2, origin.m_registration_a3,
+        origin.m_registration_recent_count);
+    for (uint32_t index = 0u;
+         index < origin.m_registration_recent_count; ++index)
+    {
+        std::fprintf(output,
+            "IOP fault registration history: index=%u "
+            "pc=0x%08x opcode=0x%08x\n",
+            index, origin.m_registration_recent_pc[index],
+            origin.m_registration_recent_opcode[index]);
+    }
     std::fprintf(output,
         "IOP fault provenance: thread=%u stop=%u pc=0x%08x "
         "opcode=0x%08x entry=0x%08x status=%u priority=%u "
@@ -249,6 +270,7 @@ void c_iop_guest_fault_probe::write_json(FILE* output) const
         return;
     }
     const s_cpu_state& cpu = m_thread.m_cpu;
+    const s_guest_callback_origin& origin = m_thread.m_callback_origin;
     std::fprintf(output,
         "{\n    \"schema\": \"iop-guest-fault-provenance-v1\","
         "\n    \"thread\": %u, \"stop_reason\": %u,"
@@ -302,7 +324,30 @@ void c_iop_guest_fault_probe::write_json(FILE* output) const
         std::fprintf(output, "%s\"0x%08x\"",
             index == 0u ? "" : ", ", cpu.m_gpr[index]);
     }
-    std::fputs("],\n    \"recent_executed\": [", output);
+    std::fprintf(output,
+        "],\n    \"callback_registration\": {"
+        "\"source\": %u, \"thread\": %u,"
+        "\"syscall_pc\": \"0x%08x\","
+        "\"ra\": \"0x%08x\", \"gp\": \"0x%08x\","
+        "\"a0\": \"0x%08x\", \"a1\": \"0x%08x\","
+        "\"a2\": \"0x%08x\", \"a3\": \"0x%08x\","
+        "\"recent_executed\": [",
+        static_cast<uint32_t>(origin.m_source),
+        origin.m_registration_thread_id,
+        origin.m_registration_pc, origin.m_registration_ra,
+        origin.m_registration_gp,
+        origin.m_registration_a0, origin.m_registration_a1,
+        origin.m_registration_a2, origin.m_registration_a3);
+    for (uint32_t index = 0u;
+         index < origin.m_registration_recent_count; ++index)
+    {
+        std::fprintf(output,
+            "%s{\"pc\": \"0x%08x\", \"opcode\": \"0x%08x\"}",
+            index != 0u ? ", " : "",
+            origin.m_registration_recent_pc[index],
+            origin.m_registration_recent_opcode[index]);
+    }
+    std::fputs("]},\n    \"recent_executed\": [", output);
     const uint32_t count = cpu.m_recent_count;
     const uint32_t capacity = s_cpu_state::k_recent_pc_capacity;
     const uint32_t first = (cpu.m_recent_next + capacity - count) % capacity;
