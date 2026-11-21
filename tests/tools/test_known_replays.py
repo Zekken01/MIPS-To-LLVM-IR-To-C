@@ -261,7 +261,29 @@ def test_existing_cache_uses_only_safe_relink():
         assert all("--functions=all" not in cmd for cmd in calls)
 
 
+def test_matched_launcher_never_falls_back_to_guest_rebuild():
+    launcher = (ROOT / "run_ps2_game.bat").read_text(encoding="utf-8")
+    assert 'if /I "%~1"=="--matched" (' in launcher
+    assert 'if /I "%REQUESTED_SESSION_MODE%"=="matched" (' in launcher
+    assert 'python tools\\run_known_replays.py ^' in launcher
+    # Mode must branch BEFORE the existing interactive rebuild fallback.
+    matched = launcher.index(
+        'rem A paired experiment MUST use the existing guest IR'
+    )
+    confirm = launcher.index('call :confirm_guest_cache_rebuild')
+    assert matched < confirm
+    section = launcher[matched:confirm]
+    assert 'if not defined CACHE_FLAG (' in section
+    assert 'exit /b 1' in section
+    assert 'exit /b %ERRORLEVEL%' in section
+    assert '--max-dispatches=%MAX_DISPATCHES%' in section
+    assert '--timeout-seconds=%BOOT_TIMEOUT_SECONDS%' in section
+    assert '--auto-expand' not in section
+    assert 'run_boot_session.py' not in section
+
+
 def main():
+    test_matched_launcher_never_falls_back_to_guest_rebuild()
     test_read_manifest()
     test_hash_comparison()
     test_reconstruction_is_batched_and_linked_once()
