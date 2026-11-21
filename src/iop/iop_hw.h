@@ -196,11 +196,25 @@ public:
         dma12_block_too_small,
         dma12_write
     };
+    struct s_sio2_packet_observation
+    {
+        uint32_t m_port = 0u;
+        uint32_t m_send3 = 0u;
+        uint32_t m_input_size = 0u;
+        uint32_t m_output_size = 0u;
+        uint32_t m_first_tx_byte = 0u;
+        uint32_t m_command = 0u;
+        bool m_pad_present = false;
+    };
     struct s_sio2_diagnostics
     {
         uint32_t m_ctrl = 0u;
         uint32_t m_stat = 0u;
         uint32_t m_packet_index = 0u;
+        uint32_t m_last_start_guest_pc = 0u;
+        uint32_t m_last_start_guest_ra = 0u;
+        uint32_t m_first_packet_count = 0u;
+        s_sio2_packet_observation m_first_packets[4]{};
         uint32_t m_send3[4]{};
         uint32_t m_dma11[3]{};
         uint32_t m_dma12[3]{};
@@ -266,6 +280,9 @@ private:
     uint32_t m_sio2_ctrl_start_count = 0u;
     uint32_t m_sio2_packet_count = 0u;
     uint32_t m_sio2_transfer_count = 0u;
+    uint32_t m_sio2_last_start_guest_pc = 0u;
+    uint32_t m_sio2_last_start_guest_ra = 0u;
+    s_sio2_packet_observation m_sio2_first_packets[4]{};
     e_sio2_rejection m_sio2_last_rejection = e_sio2_rejection::none;
     uint32_t m_sio2_rejected_start_count = 0u;
     uint32_t m_timer5_count = 0u;
