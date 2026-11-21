@@ -1061,6 +1061,7 @@ bool write_report(
             "\"pending_tx_bytes\":%zu,"
             "\"queued_rx_bytes\":%zu,"
             "\"packet_index\":%u,\"ctrl_word\":%u,\"stat_word\":%u,"
+            "\"intr_word\":%u,"
             "\"last_rejection\":\"%s\",\"last_rejection_code\":%u,"
             "\"rejected_starts\":%u,"
             "\"send3\":[",
@@ -1070,7 +1071,7 @@ bool write_report(
             sio2.sio2_transfer_requested() ? "true" : "false",
             detail.m_tx_bytes, detail.m_rx_bytes,
             detail.m_packet_index, detail.m_ctrl, detail.m_stat,
-            sio2.sio2_rejection_name(),
+            detail.m_intr, sio2.sio2_rejection_name(),
             static_cast<uint32_t>(detail.m_last_rejection),
             detail.m_rejected_starts);
         for (uint32_t index = 0u; index < 4u; ++index)
