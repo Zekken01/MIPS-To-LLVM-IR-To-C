@@ -943,6 +943,13 @@ void write_vif1_producer_json(FILE* output, const ee::c_ee_vif1& vif1)
         " \"flusha\": %llu,"
         "\n    \"direct\": %llu,"
         " \"directhl\": %llu,"
+        "\n    \"vu_start_attempts\": %llu,"
+        " \"vu_start_rejections\": %llu,"
+        " \"last_vu_start_command\": %u,"
+        " \"last_rejected_vu_start_command\": %u,"
+        " \"last_rejected_vu_pc\": %u,"
+        " \"last_rejected_vu_lower\": %u,"
+        " \"last_rejected_vu_upper\": %u,"
         "\n    \"rejected_dma_attempts\": %llu,"
         " \"first_rejection\": %u,"
         " \"first_rejected_command\": %u,"
@@ -962,6 +969,11 @@ void write_vif1_producer_json(FILE* output, const ee::c_ee_vif1& vif1)
         static_cast<unsigned long long>(commands[0x13u]),
         static_cast<unsigned long long>(commands[0x50u]),
         static_cast<unsigned long long>(commands[0x51u]),
+        static_cast<unsigned long long>(detail.m_vu_start_attempts),
+        static_cast<unsigned long long>(detail.m_vu_start_rejections),
+        detail.m_last_vu_start_code, detail.m_last_rejected_vu_start_code,
+        detail.m_last_rejected_vu_pc, detail.m_last_rejected_vu_lower,
+        detail.m_last_rejected_vu_upper,
         static_cast<unsigned long long>(detail.m_rejected_batches),
         static_cast<uint32_t>(detail.m_first_rejection),
         detail.m_first_rejected_code,
