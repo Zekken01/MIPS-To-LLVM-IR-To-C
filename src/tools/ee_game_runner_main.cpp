@@ -917,6 +917,58 @@ void write_gif_paths_json(
         output);
 }
 
+void write_vif1_producer_json(FILE* output, const ee::c_ee_vif1& vif1)
+{
+    const ee::c_ee_vif1::s_diagnostic& detail = vif1.diagnostic();
+    const auto& commands = detail.m_committed_opcodes;
+    const unsigned long long vu_starts =
+        static_cast<unsigned long long>(
+            commands[0x14u] + commands[0x15u] + commands[0x17u]);
+    // Counts only fully committed VIF1 commands. Rejected DMA attempts
+    // may include repeated retries of the very same guest packet.
+    std::fprintf(output,
+        "{\n    \"schema\": \"ee-vif1-graphics-producer-v1\","
+        "\n    \"scope\": \"committed_vif_commands_and_attempted_rejections\","
+        "\n    \"committed_commands\": %u,"
+        " \"pending_words\": %u,"
+        "\n    \"mpg_uploads\": %u,"
+        " \"unpack_commands\": %u,"
+        " \"direct_qwc\": %u,"
+        "\n    \"mscal\": %llu,"
+        " \"mscalf\": %llu,"
+        " \"mscnt\": %llu,"
+        " \"vu_program_starts\": %llu,"
+        "\n    \"flushe\": %llu,"
+        " \"flush\": %llu,"
+        " \"flusha\": %llu,"
+        "\n    \"direct\": %llu,"
+        " \"directhl\": %llu,"
+        "\n    \"rejected_dma_attempts\": %llu,"
+        " \"first_rejection\": %u,"
+        " \"first_rejected_command\": %u,"
+        " \"last_rejection\": %u,"
+        " \"last_rejected_command\": %u,"
+        " \"last_vu_pc\": %u,"
+        " \"last_vu_lower\": %u,"
+        " \"last_vu_upper\": %u"
+        "\n  }",
+        detail.m_commands, detail.m_pending_words,
+        detail.m_mpg_uploads, detail.m_unpack_commands, detail.m_direct_qwc,
+        static_cast<unsigned long long>(commands[0x14u]),
+        static_cast<unsigned long long>(commands[0x15u]),
+        static_cast<unsigned long long>(commands[0x17u]), vu_starts,
+        static_cast<unsigned long long>(commands[0x10u]),
+        static_cast<unsigned long long>(commands[0x11u]),
+        static_cast<unsigned long long>(commands[0x13u]),
+        static_cast<unsigned long long>(commands[0x50u]),
+        static_cast<unsigned long long>(commands[0x51u]),
+        static_cast<unsigned long long>(detail.m_rejected_batches),
+        static_cast<uint32_t>(detail.m_first_rejection),
+        detail.m_first_rejected_code,
+        static_cast<uint32_t>(detail.m_reason), detail.m_code,
+        detail.m_vu_pc, detail.m_vu_lower, detail.m_vu_upper);
+}
+
 bool write_report(
     const char* path,
     const ee::elf_loader& image,
@@ -935,6 +987,7 @@ bool write_report(
     const ee::c_ee_gif_path3& gif_path1,
     const ee::c_ee_gif_path3& gif_path2,
     const ee::c_ee_gif_path3& gif_path3,
+    const ee::c_ee_vif1& vif1,
     const ee::c_ee_gs_presentation_probe& graphics_probe,
     const iop::c_iop_guest_fault_probe& iop_fault_probe,
     const iop::c_kernel* guest_iop_kernel,
@@ -1039,6 +1092,8 @@ bool write_report(
     write_gs_diagnostics_json(output, gs);
     std::fputs(",\n  \"m2_gif_paths\": ", output);
     write_gif_paths_json(output, gif_path1, gif_path2, gif_path3);
+    std::fputs(",\n  \"m2_vif1_producer\": ", output);
+    write_vif1_producer_json(output, vif1);
     std::fputs(",\n  \"m2_gs_presentation\": ", output);
     graphics_probe.write_json(output, hardware.scanout().fields_started());
     std::fputs(",\n  \"m2_iop_guest_fault\": ", output);
@@ -2819,7 +2874,7 @@ int main(int argc, char** argv)
                 runtime.m_guest_instruction_attempts,
                 runtime, hardware, vsync_flags,
                 reason, status, history, syscall_history, gs_state.state(),
-                gif_path1, gif_path2, gif_path3,
+                gif_path1, gif_path2, gif_path3, vif1,
                 graphics_probe, iop_fault_probe, iop_kernel.get(),
                 dma_wait_probe, pad_return_probe, hotspots, true
             );
@@ -6311,7 +6366,7 @@ int main(int argc, char** argv)
                       runtime.m_guest_instruction_attempts,
                       runtime, hardware, vsync_flags,
                       reason, status, history, syscall_history, gs_state.state(),
-                      gif_path1, gif_path2, gif_path3,
+                      gif_path1, gif_path2, gif_path3, vif1,
                       graphics_probe, iop_fault_probe, iop_kernel.get(),
                       dma_wait_probe, pad_return_probe, hotspots, false))
     {
