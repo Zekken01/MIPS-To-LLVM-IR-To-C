@@ -1263,3 +1263,147 @@ reacts to the button. Do not claim an EE input branch or a
 nonblack frame until the new original-game archive proves it.
 No new translation or 1,285-module cache invalidation is needed.
 Keep draft PR #148 open and unmerged.
+
+
+## Fourteenth matched archive: authentic Cross bytes read; original EE pad code newly reached
+
+Archive: `sdbz-graphics-pr148(20261121-171353).zip`, SHA-256
+`714b40311bc1af73f9a345fe50f97d2de325115732b4095fb6dcd3b67e84242d`.
+The eight archive members have coherent 17:07–17:13 UTC provenance:
+the old cache was loaded, expansion generated eleven missing functions,
+then the stopped first-boot report/boot log and three PPMs were written.
+The archive does not independently record local Git HEAD. The actual
+USA retail ELF's SHA-256 is
+`1b213a85a2c305dc0f893c007a502c93e0851d1bb7db6164f9e0b72adb074a16`.
+
+### Accepted genuine SIO2 data path
+
+The retail original guest now completes both controller packets per
+one original SIO2 START, no longer issuing combined FIFO reset/start
+`CTRL=0x3BD`. Final `m2_iop_sio2` records:
+
+| Measurement | Previous discarded-Cross replay | 17:13 replay |
+| --- | ---: | ---: |
+| Original connected port-0 0x42 polls | 1,807 | 1,712 |
+| Opt-in Cross responses generated | 8 | **8** |
+| Cross bytes consumed by original IOP PIO reader | 0 | **8** |
+| Cross bytes delivered via DMA12 | 0 | 0 |
+| Cross bytes discarded by CTRL FIFO reset | 8 | **0** |
+| Empty RX FIFO reads | 18,070 | **0** |
+| Total decoded controller packets | 3,614 | 3,520 |
+| CTRL START/completed transfers | 3,613/3,613 | **1,760/1,760** |
+| Rejected START / IOP guest fault | 0 / null | **0 / null** |
+
+The first decoded controller commands additionally include genuine
+port-0 command 0x43 after the first port-0 0x42 poll, confirming
+post-initialization controller-command traffic. The final START
+had **26 real reply bytes queued before START**, and `CTRL=1`
+retained them until the guest read them. No new response,
+IRQ17, MCSERV action, or emulated key event is being fabricated.
+
+This is authentic original IOP RX delivery only. The
+`pad0_cross_bytes_pio_read=8` counter cannot alone establish that
+PADMAN placed those specific bytes in its RPC buffer or that
+the original EE application took a Cross-triggered branch.
+
+### Original EE code reachability and cache append
+
+The initial expansion replay reached a previously untranslated
+EE function at `0x00188970` after approximately 3.67m native
+dispatch boundaries. Sequential auto-expansion discovered
+**eleven** real executable function entries:
+
+- `0x00188970`, `0x00188AA8`, `0x001885F8`
+- `0x00175598`, `0x001754F0`
+- `0x001886B0`, `0x00188E60`, `0x00188D00`
+- `0x00188EC0`, `0x00188DB0`, `0x001884D0`
+
+All eleven emitted functions have **zero unsupported instructions**
+per their function-scoped lift summaries. The expansion log records
+one **outer** pass, `replay=11 new_functions=11`, followed by an
+authoritative full final run; the first eleven intermediate
+`guest left compiled code` observations are cache-expansion gates,
+not final runtime IOP faults. The 1,285 old IR hashes are
+**all unchanged**; 11 new hashes are appended for **1,296** total.
+The source/ELF fingerprint inputs match the previous cache;
+manifest metadata/library digests changed because its inventory
+expanded. No existing game IR modules were regenerated or replaced.
+
+The recovered original USA executable (verified SHA above)
+supplies direct JAL evidence for those functions in the
+**original EE controller state machine** at 0x001099xx.
+At original 0x00109B98, JAL invokes function 0x001884D0
+with its destination at the caller's `sp+0x40`;
+return continuation 0x00109BA0 checks the status and
+returned bytes. At 0x00109BC8/0x00109BD0 the original
+caller reads bytes `sp+0x42` and `sp+0x43`,
+combines them with the former as high byte, and
+inverts the raw active-low word at 0x00109BE4.
+The nearby original 0x00109BF4/0x00109BF8
+tests it against the game's stored mask table.
+This is a **verified static original ELF input-processing
+path**, not proof of a particular executed branch or a new
+visible native frame.
+
+### Matched final guest outcome
+
+The stopped final `first-boot.json` is authoritative:
+6,000,000 EE dispatches, RETURN on the configured budget
+at original EE continuation PC `0x001BA584`,
+12,431,808,881 guest instruction attempts, 1,760
+HOST_YIELD resumes, **no IOP guest fault**.
+The previous Cross/neutral pre-fix replay used
+12,779,550,806 guest attempts and ended at 0x002F401C;
+the comparison does **not** isolate Cross because the
+reference-compatible CTRL readback repair also changed.
+These are genuine different guest execution paths.
+
+The new run has 2,526 GS fields, 1,786 successful WebGPU
+presents, 1,759 untextured **black** GPU sprite kicks/draws,
+zero nonblack RGB/textured sprites, no committed VU1 PATH1
+XGKICK packets, 1,760 VIF1 PATH2 batches and 1,793 GIF
+PATH3 batches. All three real capture files are **pixel-black**
+and the CPU/GPU 512x448 outputs agree byte-for-byte; the
+1024x64 upload image also remains black.
+
+Actual IOP HLE RPC commit count is 1,798, with 1,752
+genuine ARKD_DVD server 0x503 method 2 commits, and
+PADMAN 0x80000100 method 1 commits increased from
+the previous 4 to **6**. No 0x80000400/0x80000480
+MCSERV service RPC was committed, and merely loading
+MCMAN/MCSERV does not prove card I/O.
+The original-game PCSX2 memory-card-warning screenshot
+is still only an external reference.
+
+### Evidence-gated next step: EE-side passive sample and matched neutral control
+
+The current log does not record the original EE
+return-state bytes at 0x00109BA0. The branch now includes a
+narrow **host-only, read-only** observer at that exact
+ELF-verified return continuation. It samples four backed
+EE RAM bytes at original `sp+0x40` and calculates the same
+16-bit active-low button candidate that the guest later uses.
+The report key `m2_sdbz_ee_pad_return` includes bounded
+first/last sample, candidate Cross sample, a reached-site
+counter and read-only status/length context. It does not
+override the guest return value, controller data, input
+processing, branch, memory, IRQ, DMA, RPC, or GS state.
+A synthetic CTest checks byte order, neutral and Cross
+candidate, rejecting unsuccessful status and preserving
+all guest RAM bytes.
+
+**Only a neutral replay at this same post-fix branch HEAD**
+can isolate the effect of the opt-in Cross stimulus from
+the CTRL readback repair. A new opt-in replay with the
+EE-side return probe can then establish whether the
+Cross word reaches the original EE caller; the probe
+does not itself establish that the game took the button
+branch. Compare both replays' cache, IOP pads,
+PADMAN/MCSERV/ARKD RPC, translated PC paths, GS
+and real PPMs before changing game or graphics code.
+Use the existing 1,296-module append-only translation cache.
+
+No new game-visible code change is justified by the
+fully black GS evidence. Keep PR #148 draft/open
+and unmerged; eventual merge remains squash-only after
+explicit authorization.
