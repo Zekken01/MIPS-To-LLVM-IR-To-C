@@ -178,6 +178,40 @@ public:
     uint32_t sio2_packets() const;
     uint32_t sio2_completed_transfers() const;
 
+    // Host-only rejection attribution. The guest's real SIO2 CTRL.start
+    // may fail preflight without IRQ17; do not infer a button press from
+    // merely receiving SEND3 packets.
+    enum class e_sio2_rejection : uint32_t
+    {
+        none = 0,
+        cpu_unavailable,
+        dma11_geometry,
+        dma11_source,
+        dma12_geometry,
+        dma12_destination,
+        packet_incomplete,
+        no_processed_packet,
+        dma12_packet_count,
+        dma12_reply_underflow,
+        dma12_block_too_small,
+        dma12_write
+    };
+    struct s_sio2_diagnostics
+    {
+        uint32_t m_ctrl = 0u;
+        uint32_t m_stat = 0u;
+        uint32_t m_packet_index = 0u;
+        uint32_t m_send3[4]{};
+        uint32_t m_dma11[3]{};
+        uint32_t m_dma12[3]{};
+        size_t m_tx_bytes = 0u;
+        size_t m_rx_bytes = 0u;
+        e_sio2_rejection m_last_rejection = e_sio2_rejection::none;
+        uint32_t m_rejected_starts = 0u;
+    };
+    s_sio2_diagnostics sio2_diagnostics() const;
+    const char* sio2_rejection_name() const;
+
 private:
     bool scratchpad_range(uint32_t address, uint32_t width) const;
     bool sif_dma_register(uint32_t address, uint32_t* channel,
@@ -232,6 +266,8 @@ private:
     uint32_t m_sio2_ctrl_start_count = 0u;
     uint32_t m_sio2_packet_count = 0u;
     uint32_t m_sio2_transfer_count = 0u;
+    e_sio2_rejection m_sio2_last_rejection = e_sio2_rejection::none;
+    uint32_t m_sio2_rejected_start_count = 0u;
     uint32_t m_timer5_count = 0u;
     uint32_t m_timer5_mode = 0u;
     uint32_t m_timer5_target = 0u;
