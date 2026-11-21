@@ -119,7 +119,8 @@ rem Only the final traced replay opens a window; expansion is headless.
 if /I "%REQUESTED_SESSION_MODE%"=="quick" (
     set "EE_WEBGPU_SNAPSHOT=0"
     set "EE_WEBGPU_WINDOW=0"
-) else (
+)
+if /I "%REQUESTED_SESSION_MODE%"=="full" (
     if not defined EE_WEBGPU_SNAPSHOT set "EE_WEBGPU_SNAPSHOT=1"
     if not defined EE_WEBGPU_WINDOW set "EE_WEBGPU_WINDOW=1"
 )
