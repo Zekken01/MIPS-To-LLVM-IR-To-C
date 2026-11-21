@@ -55,6 +55,9 @@ void c_hw::reset()
     m_sio2_transfer_count = 0u;
     m_sio2_last_start_guest_pc = 0u;
     m_sio2_last_start_guest_ra = 0u;
+    m_sio2_packets_at_last_start = 0u;
+    m_sio2_tx_bytes_at_last_start = 0u;
+    m_sio2_rx_bytes_at_last_start = 0u;
     for (auto& packet : m_sio2_first_packets)
     {
         packet = s_sio2_packet_observation{};
@@ -1251,6 +1254,12 @@ bool c_hw::write(
                 ? m_dma_cpu->state().m_pc : 0u;
             m_sio2_last_start_guest_ra = m_dma_cpu != nullptr
                 ? m_dma_cpu->state().m_gpr[31u] : 0u;
+            // Capture packet order *at* the guest's CTRL.start. Final
+            // packet counts alone cannot show whether an incomplete
+            // PIO packet was transmitted after its first START.
+            m_sio2_packets_at_last_start = m_sio2_packet_count;
+            m_sio2_tx_bytes_at_last_start = m_sio2_pending_tx.size();
+            m_sio2_rx_bytes_at_last_start = m_sio2_rx.size();
             (void)run_sio2_transfer();
         }
         return true;
@@ -1611,6 +1620,9 @@ c_hw::s_sio2_diagnostics c_hw::sio2_diagnostics() const
     result.m_packet_index = m_sio2_index;
     result.m_last_start_guest_pc = m_sio2_last_start_guest_pc;
     result.m_last_start_guest_ra = m_sio2_last_start_guest_ra;
+    result.m_packets_at_last_start = m_sio2_packets_at_last_start;
+    result.m_tx_bytes_at_last_start = m_sio2_tx_bytes_at_last_start;
+    result.m_rx_bytes_at_last_start = m_sio2_rx_bytes_at_last_start;
     result.m_first_packet_count = m_sio2_packet_count < 4u
         ? m_sio2_packet_count : 4u;
     for (uint32_t index = 0u; index < 4u; ++index)
