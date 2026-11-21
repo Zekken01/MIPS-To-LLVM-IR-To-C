@@ -1841,9 +1841,12 @@ int main()
         return fail("could not schedule HLE guest SIO2 MMIO fixture");
     }
     const iop::s_kernel_run_result hle_run = hle_kernel.run(32u, 8u);
+    // The authentic R3000 KSEG1 LW sees the reference-compatible
+    // zero CTRL readback; the guest SW remains in host diagnostics.
     if (hle_run.m_stop != iop::e_kernel_stop::breakpoint ||
         hle_run.m_executed != 5u ||
-        hle_kernel.cpu().state().m_gpr[10] != 0x34u ||
+        hle_kernel.cpu().state().m_gpr[10] != 0u ||
+        hle_kernel.hardware().sio2_diagnostics().m_ctrl != 0x34u ||
         hle_kernel.cpu().last_memory_fault().m_valid ||
         hle_kernel.hardware().pending_interrupts() != 0u)
     {
