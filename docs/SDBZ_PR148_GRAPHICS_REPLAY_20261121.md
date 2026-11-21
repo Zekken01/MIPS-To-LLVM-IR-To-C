@@ -372,3 +372,96 @@ unchanged.
 branch head to determine whether later boot traffic and
 nonblack graphics appear. Neither a visible first frame
 nor an EE/IOP timing-parity result is yet established.
+
+## Sixth matched archive: test the memory-card/controller hypothesis
+
+The screenshot provided with `sdbz-graphics-pr148(5).zip` shows
+**PCSX2 running SDBZ USA** at the original startup warning:
+
+> No memory card (PS2) inserted in MEMORY CARD slot 1 or MEMORY
+> CARD slot 2. A memory card (PS2) with at least 110KB of free
+> space is required to create a Super Dragon Ball Z save data.
+
+The screenshot is a **reference presentation**, not an image of
+the native LLVM-IR runner. It makes a controller-confirmation or
+memory-card-init gate a worthwhile hypothesis, **not yet proof** of
+which path the native guest is executing. The native runner does
+not have a persistent virtual memory card, and its SIO2
+controller starts with a neutral, unpressed virtual pad in port 0.
+
+### Exact evidence in sixth matched replay
+
+All eight members are from the current batch. The authoritative
+final `first-boot.json` reaches the full configured 6,000,000
+native dispatches, **12,737,447,273 EE guest instruction
+attempts**, 2,588 GS fields, 1,826 successful native WebGPU
+presents, 1,803 committed GPU draws and 1,804 progress-aware
+HOST_YIELD resumes. **Exit `RETURN(0)` at the dispatch budget**
+is not a fatal IOP/EE opcode. The final IOP fault object remains
+`null`. The existing translation cache retains **1,285
+guest IR modules**; the new outer expansion pass did not add any
+functions.
+
+GPU/CPU captures of 512x448 and the 1024x64 upload remain all
+black. Both display captures match. All 1,803 committed sprite
+kicks are untextured with zero nonblack RGBA/RGB provenance,
+and VU1 PATH1 has zero accepted XGKICK batches. This is not a
+verified rendered memory-card warning or main menu.
+
+Crucially, the actual RPC timeline separates controller, memory
+card and Arika file-service work:
+
+- `SIO2MAN.IRX` loads at RPC sequence 13;
+  `MCMAN.IRX` at 14; `MCSERV.IRX` at 15;
+  `PADMAN.IRX` at 33. Loaded modules are evidence of module
+  thread creation, not actual controller or memory-card bus I/O.
+- PADMAN RPC client binds `0x80000100` and `0x80000101`
+  and issues **four method-1 calls to server `0x80000100`**
+  at sequences 36-39. The original PADMAN service runs via
+  native guest IOP threads, and no invalid callback recurs.
+- The main recurring operation is **1,796 RPC calls to server
+  `0x503`, method 2**. This server belongs to the
+  ARKD_DVD / Arika guest IOP RPC family `0x500..0x503`,
+  as proven by repo's prior HLE parity audit and the server
+  registration/guest handler. It is **not** a controller or
+  memory-card server. Do not interpret its repeated calls as
+  waiting for a user's X press without guest-code evidence.
+- No `0x80000400` or `0x80000480` MCSERV RPC appears
+  among the final 1,840 committed SIFRPC observations; the
+  memory-card driver has not been proved to service a request.
+- The current log has SIO2 hardware snapshots only through
+  2,000,000 EE dispatches; all seven report **zero CTRL.start
+  events, zero successfully processed SIO2 packets, and zero
+  completed SIO2 transfers**. There is no final SIO2 counter
+  in this archive, so we cannot assert no controller poll
+  happened later in the 6-million-dispatch session.
+
+### Read-only diagnostic added
+
+`first-boot.json` now includes optional
+`m2_iop_sio2` containing an actual `ctrl_starts`,
+`packets`, `completed_transfers`,
+`transfer_requested` and `pending_tx_bytes`
+snapshot, or `null` when the guest IOP is absent.
+This is written at both periodic and final reports, using
+the existing IOP hardware's *actual observed transactions*.
+It does not create a controller read, supply a fake
+button press, simulate a virtual memory card, claim a
+successful SIO2 transfer, or change any guest cycles.
+
+**Next acceptance gate:** determine whether SIO2 ever
+transfers a real controller packet in a post-change
+six-million-dispatch replay. If counters remain zero,
+investigate original PADMAN/SIO2MAN guest scheduling,
+input task state and why no controller poll is produced;
+adding host input cannot influence a guest that never
+reads the device. If transfers are present but neutral,
+implement a deliberate, testable host gamepad/input mapping
+against the genuine SIO2 protocol and check whether an
+actual button edge advances the native guest. Separately
+compare MCSERV RPC traffic and rendered GS primitives;
+do not assume a UI prompt is running when captures
+remain black.
+
+Everything is a host-only reporting change. The existing
+1,285 cached LLVM modules must be preserved.
