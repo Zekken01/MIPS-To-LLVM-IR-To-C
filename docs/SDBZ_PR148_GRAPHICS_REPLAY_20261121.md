@@ -1087,3 +1087,80 @@ The control and report changes only touch
 host-side IOP hardware and runner,
 synthetic-IOP tests and docs. They do
 not fingerprint guest retranslation.
+
+
+## Twelfth matched archive: eight authentic Cross replies, no GS change
+
+Archive: `sdbz-graphics-pr148(20261121-163925).zip`, SHA-256
+`e561b474ff83447ab693ecc05c521dc655e78c186d10464b0ba426872dd2cc49`.
+All eight members are coherent with one 16:31–16:34 UTC Windows
+full replay; the pre-existing translation cache was last written
+at 14:13 UTC. The USA retail ELF catalogue has SHA-256
+`1b213a85a2c305dc0f893c007a502c93e0851d1bb7db6164f9e0b72adb074a16`.
+The boot log records the explicit 200/8 Cross configuration,
+but **does not record the local Git commit SHA**.
+
+### Original IOP input and replay comparison
+
+`m2_iop_sio2` confirms 1,807 genuine connected port-0 0x42
+polls and exactly **eight Cross-marked responses on polls
+200–207**. There were 3,614 decoded port-0/1 packets,
+3,613 completed transfers from 3,613 CTRL starts,
+18,070 empty RX FIFO reads, zero rejected starts,
+zero outstanding request, and final SIO2 interrupt
+status zero. There is no IOP guest fault.
+
+At the full 6,000,000 EE dispatch limit, the report gives
+12,779,550,806 attempted instructions, final PC 0x002F401C,
+2,597 GS fields, 1,830 successful WebGPU presents and 1,809
+committed GPU sprite draws: **all of these match the supplied
+neutral 16:16 replay**. The accepted paths are 1,810 VIF1
+DIRECT/PATH2 batches, 1,843 GIF DMA/PATH3 batches, and
+zero accepted PATH1 XGKICK. No textured or nonblack RGB
+sprite was recorded. All actual PPMs are black: 229,376
+black pixels each in the 512x448 CPU/WebGPU displays and
+65,536 black pixels in the 1024x64 upload capture. The
+display digests match. No visible image is proven.
+
+The original IOP log contains 1,846 committed RPC events,
+including 1,802 ARKD_DVD 0x503 method-2 calls and **no
+MCSERV 0x80000400/0x80000480 RPC calls**. The previous
+neutral replay also recorded 1,802 ARKD method-2 calls.
+The expansion footer reports `new_functions=0` in its
+one outer pass; there are still 1,285 cached guest IR
+modules. Preserve the cache.
+
+**Conclusion:** eight authentic emulated button responses
+were produced; no original-game branch, memory-card request,
+coloured/textured draw or visible scene change was established.
+In particular, `pad0_cross_pressed_polls` previously proved
+SIO2 *reply generation*, not that the guest had consumed
+the fifth byte. The PCSX2 memory-card warning remains an
+external reference, not native output.
+
+### Narrow host-only FIFO provenance added after this archive
+
+The next diagnostic tags only the active-low Cross byte
+from each authentic port-0 0x42 reply and tracks it through
+the pre-existing RX FIFO. The JSON adds:
+
+- `pad0_cross_bytes_pio_read`: genuine IOP CPU reads of that byte;
+- `pad0_cross_bytes_dma_written`: successful original DMA12
+  writes of that byte;
+- `pad0_cross_bytes_fifo_discarded`: original CTRL FIFO resets
+  discarding that byte before consumption.
+
+All tags are host-only, enqueued and dequeued alongside the
+original RX bytes. No button state, packet, interrupt, DMA
+completion, RPC result or GS command changes. The focused
+test reads exactly two Cross bytes through the PIO port;
+a separate pulse leaves its fifth reply byte unread and
+proves that CTRL FIFO reset discards it rather than counting
+it as received. Kernel reset clears these counters.
+
+**Next evidence gate:** a new matched 200/8 Cross replay
+after rebuilding the host runtime should identify whether
+the original SIO2MAN worker *read* the generated button
+byte or the guest discarded it. Even a positive FIFO-read
+count does not prove the PADMAN-to-EE application handoff
+or a native UI screen. PR #148 remains draft/unmerged.
