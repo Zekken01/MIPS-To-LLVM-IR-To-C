@@ -936,6 +936,7 @@ bool write_report(
     const ee::c_ee_gif_path3& gif_path3,
     const ee::c_ee_gs_presentation_probe& graphics_probe,
     const iop::c_iop_guest_fault_probe& iop_fault_probe,
+    const iop::c_kernel* guest_iop_kernel,
     const ee::c_ee_sdbz_dma_wait_probe& dma_wait_probe,
     const ee::c_ee_dispatch_hotspots& hotspots,
     bool in_progress
@@ -1040,6 +1041,32 @@ bool write_report(
     graphics_probe.write_json(output, hardware.scanout().fields_started());
     std::fputs(",\n  \"m2_iop_guest_fault\": ", output);
     iop_fault_probe.write_json(output);
+    // Observe actual IOP SIO2 transactions, not module-load success.
+    // A virtual neutral pad does not imply the game has polled a button.
+    std::fputs(",\n  \"m2_iop_sio2\": ", output);
+    if (guest_iop_kernel == nullptr)
+    {
+        std::fputs("null", output);
+    }
+    else
+    {
+        const iop::c_hw& sio2 = guest_iop_kernel->hardware();
+        std::fprintf(output,
+            "{\"schema\":\"ee-iop-sio2-input-observation-v1\","
+            "\"ctrl_starts\":%u,\"packets\":%u,"
+            "\"completed_transfers\":%u,"
+            "\"transfer_requested\":%s,"
+            "\"pending_tx_bytes\":%zu,"
+            "\"limitations\":["
+            "\"hardware_counters_not_pad_button_state\","
+            "\"module_load_does_not_prove_controller_poll\","
+            "\"no_virtual_memory_card_attached\"]}",
+            sio2.sio2_ctrl_starts(),
+            sio2.sio2_packets(),
+            sio2.sio2_completed_transfers(),
+            sio2.sio2_transfer_requested() ? "true" : "false",
+            sio2.sio2_pending_tx_bytes());
+    }
     std::fputs(",\n  \"m2_sdbz_dma_wait\": ", output);
     dma_wait_probe.write_json(output);
     std::fputs("\n}\n", output);
@@ -2675,7 +2702,7 @@ int main(int argc, char** argv)
                 runtime, hardware, vsync_flags,
                 reason, status, history, syscall_history, gs_state.state(),
                 gif_path1, gif_path2, gif_path3,
-                graphics_probe, iop_fault_probe,
+                graphics_probe, iop_fault_probe, iop_kernel.get(),
                 dma_wait_probe, hotspots, true
             );
             report_time_ms += std::chrono::duration<double, std::milli>(
@@ -6139,7 +6166,7 @@ int main(int argc, char** argv)
                       runtime, hardware, vsync_flags,
                       reason, status, history, syscall_history, gs_state.state(),
                       gif_path1, gif_path2, gif_path3,
-                      graphics_probe, iop_fault_probe,
+                      graphics_probe, iop_fault_probe, iop_kernel.get(),
                       dma_wait_probe, hotspots, false))
     {
         return 1;
