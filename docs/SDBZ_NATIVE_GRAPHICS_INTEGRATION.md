@@ -113,15 +113,16 @@ set "MAX_DISPATCHES=4000000"
 set "BOOT_TIMEOUT_SECONDS=300"
 set "EE_WEBGPU_SNAPSHOT=1"
 set "EE_WEBGPU_WINDOW=1"
-run_ps2_game.bat --quick
+run_ps2_game.bat --full
 ```
 
-The optional graphics flags should be retained only where supported by
-the existing local launcher. Do not delete/rebuild the cache wholesale;
+The launcher forcibly disables both optional graphics flags for --quick;
+use --full for native WebGPU snapshots and window presentation.
+Do not delete/rebuild the cache wholesale;
 let translation provenance invalidate affected IR.
 
-**Evidence rule:** Treat a ZIP of matched quick-probe logs, JSON and
-translation cache as authorization to investigate. Identify replay
+**Evidence rule:** Treat a ZIP of matched full/quick boot logs, JSON,
+translation cache and any available PPMs as authorization to investigate. Identify replay
 boundaries and never sum final-JSON counters across replays. Prioritize
 causal graphics findings without regressing authentic EE/IOP execution.
 
@@ -154,5 +155,9 @@ JSON. Its checks run in Release builds as well.
 
 This instrumentation neither creates a GS draw nor changes guest DMA,
 interrupts, VBlank, RPC, or scheduling. It does **not** prove that
-the game has rendered its first visible frame. No post-fix local retail
-replay beyond VU0 `VRSQRT`/`VMULq` has been supplied.
+the game has rendered its first visible frame. A matched full Windows
+replay was supplied on 21 November and is analysed in
+`docs/SDBZ_PR148_GRAPHICS_REPLAY_20261121.md`: code progressed
+beyond the previous VU0 blocker, native GS presentation succeeded,
+but the actual stopping failure is guest IOP thread 81 executing
+unsupported text-like opcode `0x6e736168` at `0x001cdf78`.
