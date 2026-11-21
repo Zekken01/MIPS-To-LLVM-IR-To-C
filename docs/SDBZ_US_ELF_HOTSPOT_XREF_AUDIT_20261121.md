@@ -125,3 +125,101 @@ and SIO2 registers before changing emulator logic.
 The PCSX2 memory-card-warning screenshot is an
 original-game reference, not verified native output;
 do not inject an unsolicited button press.
+
+
+## Exact original USA ELF inspection (verified SHA-256)
+
+The original SLUS_214.42 was subsequently recovered from the
+user's saved file library, **without committing the original
+game file**. Its SHA-256 matches the retail US digest above.
+The earlier "ELF unavailable" note applies only to the
+matched replay ZIP, not to this later direct executable audit.
+
+### Dominant SIF RPC status polling loop
+
+At original PC 0x00178DE8 the executable performs:
+
+| Original PC | MIPS access or condition |
+| --- | --- |
+| 0x00178DE8 | LW a1,0(a0): client-linked server pointer |
+| 0x00178DEC | BEQZ a1: return zero when unbound |
+| 0x00178DF4 | LW v1,4(a0): client correlation field |
+| 0x00178DF8 | LW v0,0x18(a1): server correlation field |
+| 0x00178DFC | BNE v1,v0: return zero on mismatch |
+| 0x00178E04 | LW v0,0x10(a1): server status |
+| 0x00178E08 | ANDI v0,v0,1: check status bit 0 |
+| 0x00178E0C | BNEZ v0: return one if set |
+| 0x00178E14 | Return zero |
+| 0x00178E1C | Return one |
+
+Thus this is an original guest SIF RPC client/status
+checker, **not** a controller or memory-card read.
+
+Full file-backed executable scan of 1,048,992 32-bit
+words finds **160 encoded JAL callsites** to
+0x00178DE8. Precisely 156 use a locally adjacent
+LUI plus delayed ADDIU to select one of four
+client structures:
+
+| Client RAM address | Static callsites |
+| --- | ---: |
+| 0x005A9330 | 39 |
+| 0x005A9358 | 39 |
+| 0x005A9380 | 39 |
+| 0x005A93A8 | 39 |
+
+Four further calls use other or nonlocal client
+values. Static encoded callsites do not, by themselves,
+establish that every site was executed.
+
+The dominant original caller is at 0x001BD580:
+
+- 0x001BD578: JAL to 0x00178BE8 (SIF RPC call
+  routine), with client 0x005A9330, method 1,
+  mode 3, send buffer around 0x005A93D0 and
+  receive buffer around 0x005AA3D0.
+- 0x001BD584: JAL to 0x00178DE8, delay slot
+  establishing a0=0x005A9330.
+- 0x001BD58C: the *return address* after that JAL,
+  not an independent guest function entry.
+- 0x001BD594: BNEZ v0 back to 0x001BD580,
+  polling while the original bit-test returns one.
+- Subsequent code repeats the same check for
+  0x005A9358, 0x005A9380 and 0x005A93A8.
+
+This directly explains the repeated runtime dispatch
+edge 0x00178DE8 -> 0x001BD58C. The exact producer
+that clears the server bit should be correlated with
+real IOP RPC returns, not manufactured.
+
+### Why the final EE PC is not controller polling
+
+- 0x001094D4 calls 0x00108220 with JAL.
+- 0x001094D8 sets the delay-slot vector/matrix
+  argument to RAM in the 0x00508Fxx region.
+- 0x001094DC is the **return continuation**, beginning
+  with LUI v0,0x0051, not a faulting input read.
+- Nearby original code copies and transforms
+  vector/matrix buffers in the
+  0x00508ED0..0x005090D0 region, including
+  real COP2 VU0 macro operations.
+- 83 encoded J/JAL target 0x00108220.
+
+Other frequent native return-site pairs have
+similarly identifiable original guest instructions:
+0x001BA57C JAL 0x001BAA10 returns at
+0x001BA584; 0x002CA080 JAL 0x002CA270
+returns at 0x002CA088 and checks object field
++0x220; 0x002F4014 JAL 0x002F44D0
+returns at 0x002F401C and checks object field
++0x54.
+
+These PCs demonstrate significant original
+non-input guest work is running. The original
+PCSX2 memory-card warning remains a useful
+reference, but the native black screen is not
+proof that an input dialog is active.
+
+No guest executable, generated IR, HLE runtime
+behaviour or translation cache was changed by
+this audit.
