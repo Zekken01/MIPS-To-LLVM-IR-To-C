@@ -53,6 +53,12 @@ void c_hw::reset()
     m_sio2_ctrl_start_count = 0u;
     m_sio2_packet_count = 0u;
     m_sio2_transfer_count = 0u;
+    m_sio2_last_start_guest_pc = 0u;
+    m_sio2_last_start_guest_ra = 0u;
+    for (auto& packet : m_sio2_first_packets)
+    {
+        packet = s_sio2_packet_observation{};
+    }
     m_sio2_last_rejection = e_sio2_rejection::none;
     m_sio2_rejected_start_count = 0u;
     m_timer5_count = 0u;
@@ -318,6 +324,21 @@ bool c_hw::process_sio2_packet()
             neutral_data();
             break;
         }
+    }
+    // A mere packet count cannot distinguish controller port 0/1
+    // from memory-card port 2. Preserve the first four *real* decoded
+    // requests without changing any guest-visible SIO2 response bytes.
+    if (m_sio2_packet_count < 4u)
+    {
+        s_sio2_packet_observation& packet =
+            m_sio2_first_packets[m_sio2_packet_count];
+        packet.m_port = port;
+        packet.m_send3 = send;
+        packet.m_input_size = in_size;
+        packet.m_output_size = out_size;
+        packet.m_first_tx_byte = m_sio2_pending_tx[0u];
+        packet.m_command = in_size >= 2u ? m_sio2_pending_tx[1u] : 0u;
+        packet.m_pad_present = pad_present;
     }
     for (const uint8_t byte : reply)
     {
@@ -1226,6 +1247,10 @@ bool c_hw::write(
         {
             ++m_sio2_ctrl_start_count;
             m_sio2_transfer_requested = true;
+            m_sio2_last_start_guest_pc = m_dma_cpu != nullptr
+                ? m_dma_cpu->state().m_pc : 0u;
+            m_sio2_last_start_guest_ra = m_dma_cpu != nullptr
+                ? m_dma_cpu->state().m_gpr[31u] : 0u;
             (void)run_sio2_transfer();
         }
         return true;
@@ -1584,8 +1609,13 @@ c_hw::s_sio2_diagnostics c_hw::sio2_diagnostics() const
     result.m_ctrl = m_sio2_ctrl;
     result.m_stat = m_sio2_stat;
     result.m_packet_index = m_sio2_index;
+    result.m_last_start_guest_pc = m_sio2_last_start_guest_pc;
+    result.m_last_start_guest_ra = m_sio2_last_start_guest_ra;
+    result.m_first_packet_count = m_sio2_packet_count < 4u
+        ? m_sio2_packet_count : 4u;
     for (uint32_t index = 0u; index < 4u; ++index)
     {
+        result.m_first_packets[index] = m_sio2_first_packets[index];
         result.m_send3[index] = m_sio2_send3[index];
     }
     for (uint32_t index = 0u; index < 3u; ++index)
