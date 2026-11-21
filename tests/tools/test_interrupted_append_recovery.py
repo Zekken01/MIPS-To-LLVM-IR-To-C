@@ -110,6 +110,40 @@ def exercise():
         assert len(suffix) == 1 and not objects_complete
         assert suffix[0]["vaddr"] == "0x00100010"
 
+        # The SDBZ user is on Windows: Path.write_text() translates
+        # LF to CRLF, so the saved metadata_sha256 authenticates CRLF
+        # bytes. The old recovery checker reconstructed LF-only bytes
+        # and ALWAYS rejected an otherwise-valid Windows append.
+        original_crlf = (
+            json.dumps(original, indent=2) + "\n"
+        ).replace("\n", "\r\n").encode("utf-8")
+        updated_crlf = (
+            json.dumps(updated, indent=2) + "\n"
+        ).replace("\n", "\r\n").encode("utf-8")
+        windows_snapshot = dict(snapshot)
+        windows_snapshot["metadata_sha256"] = hashlib.sha256(
+            original_crlf
+        ).hexdigest()
+        write_json(cache, windows_snapshot)
+        metadata_path.write_bytes(updated_crlf)
+        suffix, objects_complete = verify()
+        assert len(suffix) == 1 and not objects_complete
+        assert suffix[0]["vaddr"] == "0x00100010"
+        # Assert both Windows + POSIX cases remain byte-exact; never
+        # accept a modified prefix merely by normalizing JSON.
+        changed_windows = dict(updated)
+        changed_windows["functions"] = [
+            {**first, "block_pcs": ["0x00100008"]}, appended
+        ]
+        metadata_path.write_bytes(
+            (json.dumps(changed_windows, indent=2) + "\n"
+             ).replace("\n", "\r\n").encode("utf-8")
+        )
+        expect_failure(verify, "not a verified append-only extension")
+        # Restore the original POSIX scenario for subsequent tests.
+        write_json(cache, snapshot)
+        write_json(metadata_path, updated)
+
         # A fresh retranslation must prove the saved appended IR and
         # ownership match the original guest ELF before object emission.
         fake_recomp_calls = []
