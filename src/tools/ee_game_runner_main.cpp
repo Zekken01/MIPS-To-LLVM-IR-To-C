@@ -3028,7 +3028,10 @@ int main(int argc, char** argv)
             ? static_cast<uint32_t>(cpu.m_gpr[30].m_lo) : 0u;
         uint32_t count = 0;
         uint32_t out_pc = from_pc;
-        const uint32_t slice = (trace || report_path != nullptr) ? 1u : remaining;
+        // HLE services the IOP and pending callbacks between EE dispatches.
+        // Batching across this boundary changes guest timing in a quiet run.
+        const uint32_t slice =
+            (hle_startup || trace || report_path != nullptr) ? 1u : remaining;
         const auto native_start = std::chrono::steady_clock::now();
         // A given native function can branch internally forever without
         // returning to the dispatcher. Reset a per-invocation loop-header
