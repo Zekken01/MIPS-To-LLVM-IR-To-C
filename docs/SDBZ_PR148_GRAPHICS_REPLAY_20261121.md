@@ -1164,3 +1164,102 @@ the original SIO2MAN worker *read* the generated button
 byte or the guest discarded it. Even a positive FIFO-read
 count does not prove the PADMAN-to-EE application handoff
 or a native UI screen. PR #148 remains draft/unmerged.
+
+
+## Thirteenth matched archive: Cross bytes discarded by SIO2 CTRL readback mismatch
+
+Archive: `sdbz-graphics-pr148(20261121-165442).zip`, SHA-256
+`e877433368632f3855464302c2e06551ba59a60521f3b7a70e4884ebc5f3c68f`.
+The eight ZIP members are coherent with the final 16:54:26 replay:
+stopped `first-boot.json`, `boot.log`, one outer `expansion.log`
+pass, static IOP catalogue, old retained translation cache, and all
+three PPM captures. The game ELF SHA-256 remains
+`1b213a85a2c305dc0f893c007a502c93e0851d1bb7db6164f9e0b72adb074a16`.
+The log explicitly records the opt-in 200/8 Cross experiment. It does
+not prove the exact local Git commit SHA; new JSON keys prove the
+read-through diagnostic was built.
+
+### Definitive response consumption diagnosis
+
+`m2_iop_sio2` gives:
+
+| Counter | Result |
+| --- | ---: |
+| Original port-0 0x42 polls | 1,807 |
+| Cross-marked port-0 replies generated | **8** |
+| Cross bytes read by IOP CPU | **0** |
+| Cross bytes delivered by DMA12 | **0** |
+| Cross bytes discarded by original CTRL FIFO reset | **8** |
+| SIO2 packets/CTRL starts/completed | 3,614 / 3,613 / 3,613 |
+| Empty FIFO reads | **18,070** |
+| Failed starts / outstanding transfer | 0 / false |
+| IOP guest faults | 0 |
+
+For comparison, 3,614 five-byte reply packets nominally contain
+18,070 response bytes, matching the observed empty RX reads. The
+per-byte Cross provenance proves that the actual Cross bytes were
+discarded by the guest's CTRL reset before SIO2MAN read them; they
+were not presented to EE game input. Do not misdescribe the input
+experiment as a failed original-game button-gate test: the actual
+button value never reached the guest's SIO2 RX reader.
+
+All control/graphics milestones match the previous Cross and neutral
+replays: 6,000,000 EE dispatches; 12,779,550,806 instruction attempts;
+EE final PC 0x002F401C and budget exit RETURN; 2,597 GS fields,
+1,830 successful WebGPU presents and 1,809 untextured black sprite
+draws. PATH1 XGKICK still commits zero, PATH2 commits 1,810 batches,
+PATH3 commits 1,843 batches, and all three PPMs are genuinely black.
+1,802 ARKD_DVD 0x503:2 RPC commits; no MCSERV 0x80000400/0x80000480
+commit, and no IOP guest fault. The one expansion pass reports
+new_functions=0; the same 1,285-module translation cache is retained.
+
+### Original read-modify-write sequence and reference divergence
+
+The original SIO2MAN interface uses separate control operations:
+read CTRL, OR 0x0c, write/reset FIFO; transmit SEND3-described
+PIO bytes; read CTRL, OR bit 0x01, write/START; wait IRQ17;
+then read the actual RX response bytes. This is also visible in
+PS2SDK's `sio2_set_ctrl_c` and `sio2_set_ctrl_1` helpers.
+
+The primary `ps2-web-recomp/SDBZ/runtime/src/iop/sio2.cpp`
+implements CTRL read (`0x1F808268`) as **0**, while write preserves
+a write-side FIFO reset/start action. Native `iop::c_hw::read()`
+previously echoed `m_sio2_ctrl`. After the guest reset to
+`0x3BC`, the next read therefore returned `0x3BC`; its START
+OR 1 became **0x3BD**, which contains reset bits 2 and 3.
+Native `c_hw::write(k_sio2_ctrl)` consequently cleared the
+already-queued PIO replies and their Cross bytes immediately
+before completion/IRQ17. The empty reads then returned
+the intentionally supported 0xFF default. This accounts for
+all eight provenance discards and the repeated empty reads.
+
+**Causal native-host correction:** CTRL read returns zero as in
+`ps2-web-recomp`; the last written value remains separately
+stored for diagnostics. Guest reset now writes 0x0c, transmits
+the two authentic controller polls, then writes 0x01 for START.
+The reply is preserved for the original SIO2MAN FIFO reader,
+rather than mistakenly reset at START. An explicit direct
+write of 0x3BD still retains the existing combined reset/start
+behaviour; no FIFO semantics, IRQ/DMA, guest instruction, or
+peripheral byte is faked.
+
+The focused `iop_hw` regression executes this exact
+read-modify-write/reset/send/two-pad/START flow and reads all ten
+bytes through the **original R3000 KSEG1 address 0xBF808264**.
+It asserts the connected port-0 Cross reply appears as fifth
+byte 0xBF, the disconnected port-1 reply remains all 0xFF,
+one real completed transfer, zero discarded Cross bytes,
+zero empty RX reads and zero rejected starts. Previous tests
+for explicit 0x3BD reset/start and incomplete-packet
+failure remain intact.
+
+**Next acceptance gate:** CI for the host-only readback fix,
+then a matched original USA retail replay with the optional
+200/8 Cross experiment. Verify that
+`pad0_cross_bytes_pio_read` is positive, discard count
+is zero, and original guest RPC/GS execution is compared
+with neutral baseline before concluding whether it
+reacts to the button. Do not claim an EE input branch or a
+nonblack frame until the new original-game archive proves it.
+No new translation or 1,285-module cache invalidation is needed.
+Keep draft PR #148 open and unmerged.
