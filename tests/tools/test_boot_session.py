@@ -326,8 +326,13 @@ def test_windows_launcher_preserves_guest_cache():
     # require entering a dozen SET commands before every full run.
     # Existing caller-set overrides are respected; --quick stays headless
     # with its original 100k/120s default budget.
+    assert 'if /I "%REQUESTED_SESSION_MODE%"=="full" (\n' in launcher
     assert 'if not defined EE_WEBGPU_SNAPSHOT set "EE_WEBGPU_SNAPSHOT=1"' in launcher
     assert 'if not defined EE_WEBGPU_WINDOW set "EE_WEBGPU_WINDOW=1"' in launcher
+    assert launcher.index('if /I "%REQUESTED_SESSION_MODE%"=="full" (') < (
+        launcher.index('if not defined EE_WEBGPU_SNAPSHOT')
+    )
+    assert 'if /I "%REQUESTED_SESSION_MODE%"=="quick" (\n' in launcher
     assert 'if not defined SDBZ_REPORT_SNAPSHOT_MS set "SDBZ_REPORT_SNAPSHOT_MS=2000"' in launcher
     assert 'if not defined SDBZ_DISPATCH_TRACE_EVERY set "SDBZ_DISPATCH_TRACE_EVERY=1024"' in launcher
     assert 'if not defined LOOP_YIELD_RESUMES set "LOOP_YIELD_RESUMES=16"' in launcher
