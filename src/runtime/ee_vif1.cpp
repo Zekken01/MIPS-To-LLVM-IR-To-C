@@ -422,6 +422,12 @@ bool c_ee_vif1::consume(const uint8_t* data, uint32_t qwc)
         {
             break; // Legitimate command continuation into the next DMA.
         }
+        const uint32_t opcode = (code >> 24u) & 0x7fu;
+        if (opcode == 0x14u || opcode == 0x15u || opcode == 0x17u)
+        {
+            ++m_diagnostic.m_vu_start_attempts;
+            m_diagnostic.m_last_vu_start_code = code;
+        }
         if (!execute(next, code, next.m_pending.data() + index + 1u,
                      path2_bytes, path1_bytes, &vu_issue, &rejection))
         {
@@ -467,6 +473,18 @@ bool c_ee_vif1::consume(const uint8_t* data, uint32_t qwc)
     if (rejection != e_reject::none)
     {
         reject_packet(rejection, rejected_code);
+        if (rejection == e_reject::unsupported_vu_execution ||
+            rejection == e_reject::path1_rejected ||
+            rejection == e_reject::missing_path1)
+        {
+            ++m_diagnostic.m_vu_start_rejections;
+            m_diagnostic.m_last_rejected_vu_start_code =
+                rejected_code != 0u ? rejected_code :
+                m_diagnostic.m_last_vu_start_code;
+            m_diagnostic.m_last_rejected_vu_pc = vu_issue.m_pc;
+            m_diagnostic.m_last_rejected_vu_lower = vu_issue.m_lower;
+            m_diagnostic.m_last_rejected_vu_upper = vu_issue.m_upper;
+        }
         m_diagnostic.m_pending_words =
             static_cast<uint32_t>(next.m_pending.size());
         m_diagnostic.m_vu_pc = vu_issue.m_pc;
