@@ -878,8 +878,37 @@ bool c_kernel::schedule_hle_event(
     return true;
 }
 
+s_guest_callback_origin c_kernel::make_guest_callback_origin(
+    e_guest_callback_source source) const
+{
+    s_guest_callback_origin origin{};
+    const s_cpu_state& state = m_cpu.state();
+    origin.m_source = source;
+    origin.m_registration_thread_id = m_current_thread_id;
+    origin.m_registration_pc = state.m_pc;
+    origin.m_registration_ra = state.m_gpr[31];
+    origin.m_registration_gp = state.m_gpr[28];
+    origin.m_registration_a0 = state.m_gpr[4];
+    origin.m_registration_a1 = state.m_gpr[5];
+    origin.m_registration_a2 = state.m_gpr[6];
+    origin.m_registration_a3 = state.m_gpr[7];
+    origin.m_registration_recent_count = state.m_recent_count;
+    const uint32_t cap = s_cpu_state::k_recent_pc_capacity;
+    const uint32_t first =
+        (state.m_recent_next + cap - state.m_recent_count) % cap;
+    for (uint32_t index = 0u; index < state.m_recent_count; ++index)
+    {
+        const uint32_t slot = (first + index) % cap;
+        origin.m_registration_recent_pc[index] = state.m_recent_pc[slot];
+        origin.m_registration_recent_opcode[index] =
+            state.m_recent_opcode[slot];
+    }
+    return origin;
+}
+
 bool c_kernel::start_guest_callback(
-    uint32_t callback, uint32_t gp, uint32_t argument
+    uint32_t callback, uint32_t gp, uint32_t argument,
+    const s_guest_callback_origin& origin
 )
 {
     const uint32_t region = callback & 0xe0000000u;
@@ -903,6 +932,7 @@ bool c_kernel::start_guest_callback(
     }
     s_kernel_thread& thread = m_threads.at(id);
     thread.m_hle_guest_callback = true;
+    thread.m_callback_origin = origin;
     thread.m_cpu.m_gpr[31] = k_hle_callback_return_pc;
     return start_thread(id);
 }
