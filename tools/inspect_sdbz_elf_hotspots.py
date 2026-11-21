@@ -15,8 +15,13 @@ DEFAULT_PCS = (
     0x001751ec, 0x00175204, 0x00175210,
     0x00178de8, 0x001bd58c, 0x001ba584, 0x001baa10,
     0x00108220, 0x001094dc,
+    0x001024d0, 0x00102560, 0x00102670,
 )
-DEFAULT_DATA = (0x1000f000, 0x1000f010, 0x01ffeeb0, 0x01ffeeb8)
+DEFAULT_DATA = (
+    0x1000f000, 0x1000f010, 0x10000000,
+    0x01ffeeb0, 0x01ffeeb8,
+    0x00502368, 0x0050236c, 0x005030ac,
+)
 GPR = (
     "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3",
     "t0", "t1", "t2", "t3", "t4", "t5", "t6", "t7",
@@ -277,7 +282,7 @@ def analyze(elf, pcs, data_targets, functions=(), jalr_sites=()):
         else:
             lines.append("Containing function: not established by supplied metadata")
         sources = incoming.get(target, [])
-        lines.append("Direct incoming branch/jump/call xrefs (%d):" % len(sources))
+        lines.append("Incoming direct and metadata-resolved xrefs (%d):" % len(sources))
         for pc, kind in sources[:64]:
             lines.append("  %08x %-15s %s" % (pc, kind, decode(elf.read32(pc), pc)))
         if len(sources) > 64:
@@ -310,7 +315,7 @@ def analyze(elf, pcs, data_targets, functions=(), jalr_sites=()):
         lines.append("")
     lines += ["=" * 76, "CANDIDATE STATIC DATA ACCESSES (local constants only)"]
     for address, refs in sorted(memory_refs(elf, data_targets).items()):
-        lines.append("0x%08x: %d proven-local references" % (address, len(refs)))
+        lines.append("0x%08x: %d local-constant candidate references" % (address, len(refs)))
         for pc, mnemonic, decoded, base in refs[:200]:
             lines.append("  0x%08x [%s] %s ; base=%s" % (
                 pc, "write" if mnemonic in MEM_WRITES else "read", decoded, base
