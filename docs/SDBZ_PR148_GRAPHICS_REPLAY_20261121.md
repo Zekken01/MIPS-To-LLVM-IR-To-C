@@ -150,3 +150,56 @@ IRX relocations, import ordinals, guest scheduling, DMA, VBLANK,
 register values, or fabricate work. The next matched replay can
 identify the original registration call, after which an evidence-backed
 fix can be selected.
+
+## Third matched archive: definitive stub collision and fix
+
+The third uploaded full replay, `sdbz-graphics-pr148(2).zip`, reproduces
+the **same authoritative stopped counters** (3,656,670 EE dispatches,
+94,621,123 reached attempts, 18 GS fields, 16 successful native
+presents, six black untextured sprite draws, and black CPU/GPU/upload
+captures). The new callback registration evidence is decisive:
+
+- `m2_iop_guest_fault.callback_registration.source = 3`:
+  `cdvdman` `sceCdCallback`, registered by thread 54 at the guest
+  service syscall PC `0x000187a8`, RA `0x001cd888`, A0
+  `0x001cdf70` (ASCII `"yet sif hasn't..."`).
+- The boot log has an **earlier** registration by PADMAN thread 53,
+  using the **same** string address and the same HLE import stub,
+  with RA `0x001cd7c4`. No guest fault occurred until the host
+  subsequently completed a genuine disc read and dispatched this
+  mistakenly registered address.
+- The static `iop-disc-catalog.json` lists PADMAN's actual imports:
+  **`sifman` #5 is present; `cdvdman` is absent**.
+  The guest's real call went through a resolved SIFMAN import stub.
+- Inspecting the HLE sources shows an exact memory collision:
+  `sifman` #5 = `0x18700 + 5 * 0x20 = 0x187a0`, while
+  old `cdvdman` #37 = `0x18300 + 37 * 0x20 = 0x187a0`.
+  Similarly `sifman` #6 and `cdvdman` #38 both used `0x187c0`.
+  CDVDMAN installation overwrote the actual R3000 `sceSifInit`
+  service stub with a `sceCdCallback` syscall stub. As a result,
+  PADMAN's legitimate SIF initialization was routed to CDVDMAN,
+  with its ordinary diagnostic-string pointer in A0 being mistaken
+  for a callable guest address.
+
+**Causal fix:** relocate every CDVDMAN ordinal except the explicitly
+fixed `sceCdSearchFile` #10 to the disjoint low IOP reserved range
+`0x19000 + ordinal * 0x20`. The highest currently exported
+CDVDMAN stub (#75) ends below `0x19980`, outside the existing
+SIFMAN `0x18700` range, SIFCMD `0x18b00` range and the
+`0x18f80` RPC-return trampoline; the guest module allocator
+starts at `0x20000`. The old `sceCdSearchFile` #10
+address remains `0x18200`.
+
+**Regression:** compose KERNEL HLE + SIFMAN + SIFCMD + CDVDMAN in
+both orders, check uniqueness and actual five-word R3000 service
+selectors for all currently exported stubs, and execute a synthetic
+non-copyrighted IRX whose original imported `sifman` #5 function
+must initialize real IOP SIF DMA register state rather than invoke
+CDVDMAN. This covers both the original `0x187a0` bug and the
+previously latent `0x187c0` collision.
+
+This fix is neither an exception bypass nor a fabricated interrupt,
+RPC reply, DMA event, or graphical frame. It restores existing guest
+SIFMAN service dispatch to the previously linked correct function.
+A fresh **post-fix** retail replay is required before claiming
+progress beyond thread 81 or a visible image.
