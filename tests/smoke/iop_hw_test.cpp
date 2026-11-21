@@ -374,9 +374,18 @@ bool test_guest_sio2_controller()
     {
         return false;
     }
+    const iop::c_hw::s_sio2_diagnostics first_packet =
+        hw.sio2_diagnostics();
     if (hw.sio2_ctrl_starts() != 2u ||
         hw.sio2_packets() != 1u ||
-        hw.sio2_completed_transfers() != 1u)
+        hw.sio2_completed_transfers() != 1u ||
+        first_packet.m_first_packet_count != 1u ||
+        first_packet.m_first_packets[0u].m_port != 0u ||
+        first_packet.m_first_packets[0u].m_input_size != 5u ||
+        first_packet.m_first_packets[0u].m_output_size != 5u ||
+        first_packet.m_first_packets[0u].m_first_tx_byte != 0x01u ||
+        first_packet.m_first_packets[0u].m_command != 0x42u ||
+        !first_packet.m_first_packets[0u].m_pad_present)
     {
         return false;
     }
@@ -447,12 +456,20 @@ bool test_guest_sio2_controller()
         return false;
     }
 
+    const iop::c_hw::s_sio2_diagnostics second_packet =
+        hw.sio2_diagnostics();
     if (hw.sio2_ctrl_starts() != 4u ||
         hw.sio2_packets() != 2u ||
         hw.sio2_completed_transfers() != 2u ||
-        hw.sio2_diagnostics().m_last_rejection !=
+        second_packet.m_last_rejection !=
             iop::c_hw::e_sio2_rejection::none ||
-        hw.sio2_diagnostics().m_rejected_starts != 2u)
+        second_packet.m_rejected_starts != 2u ||
+        second_packet.m_first_packet_count != 2u ||
+        second_packet.m_first_packets[1u].m_port != 0u ||
+        second_packet.m_first_packets[1u].m_input_size != 8u ||
+        second_packet.m_first_packets[1u].m_output_size != 8u ||
+        second_packet.m_first_packets[1u].m_command != 0x42u ||
+        !second_packet.m_first_packets[1u].m_pad_present)
     {
         return false;
     }
