@@ -214,6 +214,7 @@ public:
     {
         uint32_t m_ctrl = 0u;
         uint32_t m_stat = 0u;
+        uint32_t m_intr = 0u;
         uint32_t m_packet_index = 0u;
         uint32_t m_last_start_guest_pc = 0u;
         uint32_t m_last_start_guest_ra = 0u;
