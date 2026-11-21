@@ -118,8 +118,9 @@ graphics diagnostics for when new code needs to be discovered.
 
 Verified translation caches now create **content-addressed known-function
 manifest snapshots** under `build/ee-known-manifests/`. Snapshots contain
-the original ELF digest, IR module entry names and digests, lowering source
-fingerprints, and other cache provenance. They do **not** contain copyrighted
+the original ELF digest, IR module entry names and digests, their original
+ordered discovery/batch sequence, lowering source fingerprints, and other cache
+provenance. They do **not** contain copyrighted
 game code or the actual IR. Validation of a preexisting cache also creates
 a snapshot, so an existing Windows cache is migrated on its first successful
 check without triggering translation.
