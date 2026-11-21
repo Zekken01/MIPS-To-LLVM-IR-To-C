@@ -143,7 +143,7 @@ target_link_libraries(iop_cdvd_test PRIVATE iop_cpu)
 add_executable(iop_folder_sector_source_test tests/smoke/iop_folder_sector_source_test.cpp)
 target_link_libraries(iop_folder_sector_source_test PRIVATE iop_cpu)
 add_executable(iop_cdvdman_bridge_test tests/smoke/iop_cdvdman_bridge_test.cpp)
-target_link_libraries(iop_cdvdman_bridge_test PRIVATE iop_cpu)
+target_link_libraries(iop_cdvdman_bridge_test PRIVATE iop_cpu ee_core)
 add_executable(iop_sif_rpc_bridge_test tests/smoke/iop_sif_rpc_bridge_test.cpp)
 target_link_libraries(iop_sif_rpc_bridge_test PRIVATE iop_cpu ee_core)
 
