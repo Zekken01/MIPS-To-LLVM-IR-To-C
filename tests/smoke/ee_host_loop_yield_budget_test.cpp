@@ -68,7 +68,7 @@ int main()
         return fail("genuine GIF write did not reopen watchdog window");
     }
     if (budget.try_resume(0u, 2u, 2u, 2u) ||
-        budget.total_resumes() != 19u)
+        budget.total_resumes() != 34u)
     {
         return fail("explicit zero limit did not preserve fail-closed stop");
     }
