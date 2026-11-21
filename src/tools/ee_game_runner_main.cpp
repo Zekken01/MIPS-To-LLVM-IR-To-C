@@ -1573,11 +1573,36 @@ int main(int argc, char** argv)
         }
     }
 
+    // A full cached replay can execute millions of dispatches while
+    // reporting every one of them verbatim. An opt-in host-only cadence
+    // reduces trace I/O without affecting guest dispatch cadence, IRQ
+    // sampling, RPC scheduling, report snapshots or saved histories.
+    uint32_t dispatch_trace_every = 1u;
+    std::string dispatch_trace_environment;
+    const char* dispatch_trace_setting = read_host_environment(
+        "SDBZ_DISPATCH_TRACE_EVERY", &dispatch_trace_environment);
+    if (dispatch_trace_setting != nullptr &&
+        (!parse_u32(dispatch_trace_setting, &dispatch_trace_every) ||
+         dispatch_trace_every == 0u))
+    {
+        std::fprintf(stderr,
+            "invalid SDBZ_DISPATCH_TRACE_EVERY "
+            "(expected a positive integer)\n");
+        return 2;
+    }
     if (trace)
     {
         // Preserve recent trace lines when the Python host kills a timed-out
         // process: redirected stdout is normally fully buffered on Windows.
         std::setvbuf(stdout, nullptr, _IONBF, 0);
+        if (dispatch_trace_every > 1u)
+        {
+            std::printf(
+                "EE dispatch trace cadence: first 64, every %u, "
+                "and every non-DISPATCH/non-RETURN or failing transition "
+                "(host-only; full hotspots/history retained)\n",
+                dispatch_trace_every);
+        }
     }
 
     ee::elf_loader image;
@@ -3031,7 +3056,18 @@ int main(int argc, char** argv)
             last_progress_dispatch = dispatched;
         }
 
-        if (trace)
+        // The complete dispatch statistics and last-64 transition
+        // history above remain unsampled. Only the verbose text stream
+        // is thinned during long-running, non-failing host loops.
+        const bool ordinary_transition =
+            reason == static_cast<uint32_t>(
+                ee::e_ee_exit_reason::EE_EXIT_DISPATCH) ||
+            reason == static_cast<uint32_t>(
+                ee::e_ee_exit_reason::EE_EXIT_RETURN);
+        if (trace && (dispatch_trace_every == 1u ||
+            dispatched <= 64u ||
+            dispatched % dispatch_trace_every == 0u ||
+            !ordinary_transition || status != 1u))
         {
             std::printf("dispatch=%llu pc=0x%08x -> 0x%08x reason=%s(%u) status=%u\n",
                         static_cast<unsigned long long>(dispatched), from_pc,
