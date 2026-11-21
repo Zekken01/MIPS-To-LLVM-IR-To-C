@@ -53,6 +53,12 @@ public:
         uint32_t m_vu_pc = 0u;
         uint32_t m_vu_lower = 0u;
         uint32_t m_vu_upper = 0u;
+        // Lifetime records survive later successful VIF packets. This
+        // distinguishes an unreached VU1 from a rejected VU1 command.
+        uint64_t m_rejected_batches = 0u;
+        e_reject m_first_rejection = e_reject::none;
+        uint32_t m_first_rejected_code = 0u;
+        std::array<uint64_t, 128u> m_committed_opcodes{};
     };
 
     void bind_path2(c_ee_gif_path3* path2);
@@ -101,6 +107,7 @@ private:
         uint32_t m_mpg_uploads = 0u;
         uint32_t m_unpack_commands = 0u;
         uint32_t m_direct_qwc = 0u;
+        std::array<uint64_t, 128u> m_committed_opcodes{};
     };
 
     static uint32_t command_data_words(const s_machine& machine,
