@@ -347,6 +347,44 @@ def validate_preserved_translation(path, inputs, ir_sources,
     return [], True
 
 
+def archive_known_function_manifest(path, snapshot):
+    """Save verified entry/hash snapshots outside the disposable guest cache.
+
+    Immutable content-addressed manifests allow reconstruction without
+    replaying function-discovery passes. No game assets or IR source are stored.
+    """
+    hashes = snapshot.get("ir_hashes")
+    inputs = snapshot.get("inputs")
+    if (not isinstance(hashes, dict) or not hashes or
+            not isinstance(inputs, dict) or
+            not isinstance(inputs.get("ELF"), str) or
+            snapshot.get("emit_opt") != 0):
+        return
+    serialized = json.dumps(snapshot, sort_keys=True, indent=2) + "\n"
+    digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    folder = path.parent.parent / "ee-known-manifests"
+    folder.mkdir(parents=True, exist_ok=True)
+    destination = folder / (
+        f"ee-{inputs['ELF'][:12]}-{len(hashes):06d}-{digest[:16]}.json"
+    )
+    if destination.exists():
+        if destination.read_text(encoding="utf-8") != serialized:
+            raise ValueError("known-function manifest digest collision")
+        return
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", newline="\n",
+        dir=folder, prefix=".snapshot-", suffix=".tmp", delete=False
+    ) as output:
+        temporary = Path(output.name)
+        output.write(serialized)
+    try:
+        if destination.exists() and destination.read_text(encoding="utf-8") != serialized:
+            raise ValueError("known-function manifest digest collision")
+        temporary.replace(destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def write_translation_cache(path, inputs, emit_opt, metadata_path, library,
                             ir_sources=None):
     """Commit provenance only after the complete translated library is linked."""
@@ -365,6 +403,7 @@ def write_translation_cache(path, inputs, emit_opt, metadata_path, library,
         temporary.write_text(json.dumps(snapshot, indent=2) + "\n",
                              encoding="utf-8")
         temporary.replace(path)
+        archive_known_function_manifest(path, snapshot)
     finally:
         if temporary.exists():
             temporary.unlink()
@@ -409,6 +448,9 @@ def validate_translation_cache(path, inputs, emit_opt, metadata_path, library):
                 f"cached translation {file_path.name} changed; "
                 "rerun without --no-recompile"
             )
+    # A valid cache created before snapshot support is also preserved.
+    archive_known_function_manifest(path, snapshot)
+
 
 
 def elf_entry(path):
