@@ -1061,6 +1061,9 @@ bool write_report(
             "\"pending_tx_bytes\":%zu,"
             "\"queued_rx_bytes\":%zu,"
             "\"empty_rx_reads\":%u,"
+            "\"pad0_polls\":%u,\"pad0_cross_pressed_polls\":%u,"
+            "\"pad0_cross_first_poll\":%u,"
+            "\"pad0_cross_poll_count\":%u,"
             "\"packet_index\":%u,\"ctrl_word\":%u,\"stat_word\":%u,"
             "\"intr_word\":%u,"
             "\"last_rejection\":\"%s\",\"last_rejection_code\":%u,"
@@ -1072,6 +1075,8 @@ bool write_report(
             sio2.sio2_transfer_requested() ? "true" : "false",
             detail.m_tx_bytes, detail.m_rx_bytes,
             detail.m_empty_rx_reads,
+            detail.m_pad0_polls, detail.m_pad0_cross_pressed_polls,
+            detail.m_pad0_cross_first_poll, detail.m_pad0_cross_poll_count,
             detail.m_packet_index, detail.m_ctrl, detail.m_stat,
             detail.m_intr, sio2.sio2_rejection_name(),
             static_cast<uint32_t>(detail.m_last_rejection),
@@ -1680,6 +1685,30 @@ int main(int argc, char** argv)
             "(expected a positive integer)\n");
         return 2;
     }
+    // Reproducible, explicitly requested controller response to a real
+    // guest SIO2 pad poll. Never press Cross by default.
+    uint32_t pad0_cross_first_poll = 0u;
+    uint32_t pad0_cross_poll_count = 0u;
+    std::string pad0_cross_first_environment;
+    std::string pad0_cross_count_environment;
+    const char* pad0_first = read_host_environment(
+        "SDBZ_PAD0_CROSS_FIRST_POLL", &pad0_cross_first_environment);
+    const char* pad0_count = read_host_environment(
+        "SDBZ_PAD0_CROSS_POLL_COUNT", &pad0_cross_count_environment);
+    if ((pad0_first == nullptr) != (pad0_count == nullptr) ||
+        (pad0_first != nullptr &&
+         (!parse_u32(pad0_first, &pad0_cross_first_poll) ||
+          !parse_u32(pad0_count, &pad0_cross_poll_count) ||
+          pad0_cross_first_poll == 0u ||
+          pad0_cross_poll_count == 0u ||
+          pad0_cross_poll_count > 120u)))
+    {
+        std::fprintf(stderr,
+            "SDBZ_PAD0_CROSS_FIRST_POLL and "
+            "SDBZ_PAD0_CROSS_POLL_COUNT must both be set; "
+            "expected positive first poll and 1..120 held polls\n");
+        return 2;
+    }
     if (trace)
     {
         // Preserve recent trace lines when the Python host kills a timed-out
@@ -1962,6 +1991,15 @@ int main(int argc, char** argv)
             {
                 std::fprintf(stderr, "IOP HLE MMIO attachment failed\n");
                 return 1;
+            }
+            if (pad0_cross_poll_count != 0u)
+            {
+                iop_kernel->hardware().configure_sio2_pad0_cross_pulse(
+                    pad0_cross_first_poll, pad0_cross_poll_count);
+                std::printf(
+                    "IOP SIO2 opt-in pad0 Cross pulse: first_poll=%u "
+                    "hold_polls=%u (only real port0 0x42 replies)\n",
+                    pad0_cross_first_poll, pad0_cross_poll_count);
             }
             iop_hle = std::make_unique<iop::c_kernel_hle_bridge>(
                 *iop_kernel);
@@ -5082,6 +5120,13 @@ int main(int argc, char** argv)
                                 std::fprintf(stderr,
                                     "[iop] HLE MMIO reattachment failed\n");
                                 break;
+                            }
+                            if (pad0_cross_poll_count != 0u)
+                            {
+                                iop_kernel->hardware()
+                                    .configure_sio2_pad0_cross_pulse(
+                                        pad0_cross_first_poll,
+                                        pad0_cross_poll_count);
                             }
                             if (cdvd != nullptr && cdvd->m_source != nullptr)
                             {
