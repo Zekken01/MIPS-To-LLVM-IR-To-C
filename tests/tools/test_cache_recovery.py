@@ -1,0 +1,211 @@
+#!/usr/bin/env python3
+"""Synthetic safety tests for no-replay SDBZ cache recovery."""
+import hashlib
+import json
+from pathlib import Path
+import sys
+import tempfile
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools"))
+import recover_translation_cache as recovery
+import run_game
+
+
+def digest(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def manifest_for(elf, entries, ir_sources):
+    return {
+        "schema": run_game.CACHE_SCHEMA,
+        "inputs": {"ELF": run_game.sha256_path(elf)},
+        "emit_opt": 0,
+        "ir_sources": ir_sources,
+        "ir_hashes": {
+            f"sub_0x{entry:x}_0x{entry:x}.ll": digest(str(entry).encode())
+            for entry in entries
+        },
+    }
+
+
+def test_snapshots_are_content_addressed_and_reusable():
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        elf = root / "SLUS_214.42"
+        elf.write_bytes(b"fixture-elf")
+        base = root / "build" / "ps2-game-hle"
+        base.mkdir(parents=True)
+        source = {"ELF": run_game.sha256_path(elf), "src/lift/test.cpp": "1" * 64}
+        early = manifest_for(elf, [0x100008, 0x100010], source)
+        later = manifest_for(elf, [0x100008, 0x100010, 0x100020], source)
+        cache = base / "translation-cache.json"
+        run_game.archive_known_function_manifest(cache, early)
+        run_game.archive_known_function_manifest(cache, later)
+        run_game.archive_known_function_manifest(cache, later)
+        assert len(list(recovery.history_dir(base).glob("*.json"))) == 2
+        chosen, selected, entries, same = recovery.select_manifest(
+            base, elf, source
+        )
+        assert chosen.exists() and entries == [0x100008, 0x100010, 0x100020]
+        assert selected["ir_hashes"] == later["ir_hashes"] and same
+
+        # Altering a content-addressed historical snapshot invalidates it.
+        chosen.write_text(chosen.read_text() + " ", encoding="utf-8")
+        _, _, entries, same = recovery.select_manifest(base, elf, source)
+        assert entries == [0x100008, 0x100010] and same
+
+        # A different ELF cannot consume the saved entry set.
+        elf.write_bytes(b"changed-elf")
+        try:
+            recovery.select_manifest(base, elf, source, True)
+        except ValueError as exc:
+            assert "no known-function manifest" in str(exc)
+        else:
+            raise AssertionError("accepted a manifest for a changed game ELF")
+
+
+def test_changed_lowering_requires_explicit_opt_in():
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        elf = root / "SLUS_214.42"
+        elf.write_bytes(b"fixture-elf")
+        base = root / "build" / "ps2-game-hle"
+        base.mkdir(parents=True)
+        old = {"ELF": run_game.sha256_path(elf), "src/llvm/module_builder.cpp": "a" * 64}
+        new = {**old, "src/llvm/module_builder.cpp": "b" * 64}
+        run_game.archive_known_function_manifest(
+            base / "translation-cache.json",
+            manifest_for(elf, [0x100008], old),
+        )
+        try:
+            recovery.select_manifest(base, elf, new)
+        except ValueError as exc:
+            assert "--allow-ir-changes" in str(exc)
+        else:
+            raise AssertionError("silently accepted changed lowering inputs")
+        _, _, entries, same = recovery.select_manifest(base, elf, new, True)
+        assert entries == [0x100008] and not same
+
+
+def test_pointer_rejects_unsafe_paths_and_rollback():
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        base = root / "build" / "ps2-game-hle"
+        base.mkdir(parents=True)
+        sibling = root / "build" / "ps2-game-hle-recovery-123"
+        sibling.mkdir()
+        unrelated = root / "unrelated"
+        unrelated.mkdir()
+        pointer = recovery.pointer_path(base)
+
+        pointer.write_text(str(unrelated) + "\n", encoding="utf-8")
+        assert recovery.active_work(base) == base
+        pointer.write_text(str(base) + "\n", encoding="utf-8")
+        assert recovery.active_work(base) == base
+        recovery.promote_pointer(base, sibling)
+        assert recovery.active_work(base) == sibling
+        try:
+            recovery.promote_pointer(base, unrelated)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("promoted an external cache")
+        assert recovery.active_work(base) == sibling
+        pointer.unlink()
+        assert recovery.active_work(base) == base
+
+
+def test_link_or_validation_failure_does_not_activate():
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        build = root / "build"
+        build.mkdir()
+        base = build / "ps2-game-hle"
+        base.mkdir()
+        saved = base / "sentinel.ll"
+        saved.write_bytes(b"original guest code")
+        elf = root / "SLUS_214.42"
+        elf.write_bytes(b"fixture-elf")
+        sources = {"ELF": run_game.sha256_path(elf)}
+        run_game.archive_known_function_manifest(
+            base / "translation-cache.json",
+            manifest_for(elf, [0x100008, 0x100010], sources),
+        )
+        comparison = {
+            "missing": [], "extra": [], "mismatched_sha256": [],
+            "matching": 2, "expected": 2, "observed": 2,
+        }
+        builds = []
+
+        def fake_reconstruct(manifest, entries, elf_path, build_dir, config,
+                             work, jobs, allow_mismatches):
+            assert entries == [0x100008, 0x100010]
+            assert not allow_mismatches
+            assert saved.read_bytes() == b"original guest code"
+            assert not recovery.pointer_path(base).exists()
+            work.mkdir(parents=True)
+            builds.append(work)
+            return comparison
+
+        with patch.object(recovery.run_game, "native_executable", return_value=build / "ee_recomp"), \
+             patch.object(recovery.run_game, "ir_generation_inputs", return_value=sources), \
+             patch.object(recovery.run_known_replays, "reconstruct", side_effect=fake_reconstruct), \
+             patch.object(recovery.run_game, "translation_inputs", return_value={}), \
+             patch.object(recovery.run_game, "validate_translation_cache", side_effect=ValueError("bad linked library")):
+            try:
+                recovery.recover(elf, build, "Release", base, 8)
+            except ValueError as exc:
+                assert "bad linked library" in str(exc)
+            else:
+                raise AssertionError("activated a failed reconstruction")
+        assert saved.read_bytes() == b"original guest code"
+        assert not recovery.pointer_path(base).exists()
+        assert len(builds) == 1 and builds[0].is_dir()
+        assert not (builds[0] / "translation-cache.json").exists()
+
+        with patch.object(recovery.run_game, "native_executable", return_value=build / "ee_recomp"), \
+             patch.object(recovery.run_game, "ir_generation_inputs", return_value=sources), \
+             patch.object(recovery.run_known_replays, "reconstruct", side_effect=fake_reconstruct), \
+             patch.object(recovery.run_game, "translation_inputs", return_value={}), \
+             patch.object(recovery.run_game, "validate_translation_cache"):
+            promoted = recovery.recover(elf, build, "Release", base, 8)
+        assert recovery.active_work(base) == promoted
+        assert saved.read_bytes() == b"original guest code"
+        assert (promoted / "ir-comparison.json").is_file()
+        assert len(builds) == 2
+
+
+def test_launcher_recovers_before_destructive_confirmation():
+    batch = (ROOT / "run_ps2_game.bat").read_text(encoding="utf-8")
+    assert 'if /I "%~1"=="--recover-cache" (' in batch
+    assert 'if /I "%~1"=="--accept-new-ir" (' in batch
+    assert "--print-active" in batch
+    assert 'set "BASE_WORK_DIR=build\\ps2-game-hle"' in batch
+    strict = batch.index("rem Strict unattended recovery")
+    confirm = batch.index("call :confirm_guest_cache_rebuild")
+    assert strict < confirm
+    section = batch[strict:confirm]
+    assert "recover_translation_cache.py --elf" in section
+    assert "if not errorlevel 1 (" in section
+    assert "set \"CACHE_FLAG=--no-recompile\"" in section
+    assert "--accept-new-ir" not in section
+    assert "--allow-ir-changes" not in section
+    recover = batch.index('if /I "%REQUESTED_SESSION_MODE%"=="recover" (\n    if defined CACHE_FLAG')
+    assert recover < strict
+    assert "exit /b\n)" in batch[recover:strict]
+    assert "run_boot_session.py" not in batch[recover:strict]
+
+
+def main():
+    test_snapshots_are_content_addressed_and_reusable()
+    test_changed_lowering_requires_explicit_opt_in()
+    test_pointer_rejects_unsafe_paths_and_rollback()
+    test_link_or_validation_failure_does_not_activate()
+    test_launcher_recovers_before_destructive_confirmation()
+    print("safe known-function cache recovery: PASS")
+
+
+if __name__ == "__main__":
+    main()
