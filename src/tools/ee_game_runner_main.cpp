@@ -1051,21 +1051,52 @@ bool write_report(
     else
     {
         const iop::c_hw& sio2 = guest_iop_kernel->hardware();
+        const iop::c_hw::s_sio2_diagnostics detail =
+            sio2.sio2_diagnostics();
         std::fprintf(output,
             "{\"schema\":\"ee-iop-sio2-input-observation-v1\","
             "\"ctrl_starts\":%u,\"packets\":%u,"
             "\"completed_transfers\":%u,"
             "\"transfer_requested\":%s,"
             "\"pending_tx_bytes\":%zu,"
-            "\"limitations\":["
-            "\"hardware_counters_not_pad_button_state\","
-            "\"module_load_does_not_prove_controller_poll\","
-            "\"no_virtual_memory_card_attached\"]}",
+            "\"queued_rx_bytes\":%zu,"
+            "\"packet_index\":%u,\"ctrl_word\":%u,\"stat_word\":%u,"
+            "\"last_rejection\":\"%s\",\"last_rejection_code\":%u,"
+            "\"rejected_starts\":%u,"
+            "\"send3\":[",
             sio2.sio2_ctrl_starts(),
             sio2.sio2_packets(),
             sio2.sio2_completed_transfers(),
             sio2.sio2_transfer_requested() ? "true" : "false",
-            sio2.sio2_pending_tx_bytes());
+            detail.m_tx_bytes, detail.m_rx_bytes,
+            detail.m_packet_index, detail.m_ctrl, detail.m_stat,
+            sio2.sio2_rejection_name(),
+            static_cast<uint32_t>(detail.m_last_rejection),
+            detail.m_rejected_starts);
+        for (uint32_t index = 0u; index < 4u; ++index)
+        {
+            std::fprintf(output, "%s%u",
+                index != 0u ? "," : "", detail.m_send3[index]);
+        }
+        std::fputs("],\"dma11\":[", output);
+        for (uint32_t index = 0u; index < 3u; ++index)
+        {
+            std::fprintf(output, "%s%u",
+                index != 0u ? "," : "", detail.m_dma11[index]);
+        }
+        std::fputs("],\"dma12\":[", output);
+        for (uint32_t index = 0u; index < 3u; ++index)
+        {
+            std::fprintf(output, "%s%u",
+                index != 0u ? "," : "", detail.m_dma12[index]);
+        }
+        std::fputs(
+            "],\"limitations\":["
+            "\"hardware_counters_not_pad_button_state\","
+            "\"module_load_does_not_prove_controller_poll\","
+            "\"no_virtual_memory_card_attached\","
+            "\"rejected_ctrl_start_does_not_raise_irq17\"]}",
+            output);
     }
     std::fputs(",\n  \"m2_sdbz_dma_wait\": ", output);
     dma_wait_probe.write_json(output);
