@@ -144,8 +144,10 @@ rem This is the only fallback that can wipe and regenerate old guest IR.
 rem A failed exact-cache validation AND failed safe relink are not permission
 rem to delete saved translations. Require an explicit affirmative response
 rem if ANY previously generated guest translation artifact still exists.
-if not defined CACHE_FLAG call :confirm_guest_cache_rebuild
-if errorlevel 1 exit /b 1
+if not defined CACHE_FLAG (
+    call :confirm_guest_cache_rebuild
+    if errorlevel 1 exit /b 1
+)
 
 echo === Starting extracted-disc HLE boot session ===
 set "SESSION_ARGS=--quick-probe --no-iop-catalog"
@@ -225,6 +227,7 @@ if exist "%WORK_DIR%\translation-cache.json" set "SAVED_GUEST_TRANSLATION=1"
 if exist "%WORK_DIR%\ir\ee_functions.json" set "SAVED_GUEST_TRANSLATION=1"
 if exist "%WORK_DIR%\ir\*.ll" set "SAVED_GUEST_TRANSLATION=1"
 if exist "%WORK_DIR%\objects\objects.json" set "SAVED_GUEST_TRANSLATION=1"
+if exist "%WORK_DIR%\objects\*.o" set "SAVED_GUEST_TRANSLATION=1"
 if exist "%WORK_DIR%\game-translated.dll" set "SAVED_GUEST_TRANSLATION=1"
 if not defined SAVED_GUEST_TRANSLATION exit /b 0
 
