@@ -7,11 +7,13 @@ must not throw away previously compiled guest functions.
 """
 import argparse
 import json
+import locale
 from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -113,24 +115,40 @@ def run_session(command, log_path, append=False, progress=None):
         )
         worker.start()
     try:
-        try:
-            result = subprocess.run(
-                [str(item) for item in command],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                errors="replace",
-                check=False,
+        # A temporary binary spool survives Ctrl+C while subprocess.run()
+        # waits on the child. PIPE/communicate loses the child's buffered
+        # output if Windows raises KeyboardInterrupt during text decoding.
+        # Read and transcode once after the child exits (or is killed).
+        with tempfile.TemporaryFile(mode="w+b") as capture:
+            result = None
+            interrupted = False
+            try:
+                result = subprocess.run(
+                    [str(item) for item in command],
+                    stdout=capture,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    errors="replace",
+                    check=False,
+                )
+            except KeyboardInterrupt:
+                # subprocess.run() terminates/reaps its direct child on
+                # cancellation; no further guest expansion should start.
+                interrupted = True
+            capture.flush()
+            capture.seek(0)
+            output = capture.read().decode(
+                locale.getpreferredencoding(False), errors="replace"
             )
-            code = result.returncode
-            output = result.stdout or ""
-        except KeyboardInterrupt:
-            # subprocess.run() kills/reaps its direct child when interrupted.
-            # Treat Ctrl+C as a user cancellation, not an EE guest failure.
-            # It may discard unflushed pipe output; keep a durable marker
-            # and retain any already-written progress/report artifacts.
-            code = 130
-            output = "\n# Native boot cancelled by user (Ctrl+C).\n"
+            if interrupted:
+                code = 130
+                output += "\n# Native boot cancelled by user (Ctrl+C).\n"
+            else:
+                code = result.returncode
+                # Preserve the previous mock/fallback semantics as well as
+                # the production file-backed stdout capture.
+                if result.stdout is not None:
+                    output = result.stdout
     finally:
         if worker is not None:
             stopped.set()
