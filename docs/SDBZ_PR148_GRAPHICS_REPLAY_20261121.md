@@ -680,3 +680,134 @@ Preserve the existing **1,285-module translation cache**.
 A **new post-fix retail replay** is required before
 claiming improved PADMAN behaviour, new game graphics
 or a visible memory-card warning.
+
+## Ninth matched archive: SIO2 IRQ17 reaches missing interrupt-status register
+
+The uploaded `sdbz-graphics-pr148(9).zip` contains the normal
+eight matched replay members. It is the first post-`CTRL=0x3BD`
+empty-PIO completion fix retail run; it **predates the new
+SIO2 interrupt-status MMIO fix** below.
+
+### Exact verified changes versus the eighth replay
+
+The SIO2 fix is effective:
+
+| Actual SIO2 observation | Previous (8) | Ninth (9) |
+| --- | ---: | ---: |
+| CTRL.start writes | 1 | 1 |
+| Decoded controller polls | 2 | 2 |
+| Successful SIO2 completions | **0** | **1** |
+| Rejected starts | 1 | 0 |
+| Transfer still requested | true | false |
+
+Both real PIO packets still target controller ports 0 and 1,
+using command `0x42`; port 0's pad is connected and neutral,
+port 1 disconnected. The combined `CTRL=0x3BD` start at
+original IOP PC `0x00020008` now completes and raises the
+original IOP **IRQ17**, without inventing a controller button
+or DMA operation.
+
+The ninth full attempt stops earlier than the 6m budget:
+**3,657,851 EE dispatches**, 101,646,685 guest
+instruction attempts, **20 GS fields**, 17 successful
+WebGPU presents, seven GPU draws, and no nonblack pixels.
+All 512x448 CPU/GPU display captures and the 1024x64
+upload capture are black. The existing translation cache
+still records 1,285 guest LLVM modules and the expansion
+pass appended **zero** new functions.
+
+The final stopped report calls the EE exit `UNSUPPORTED`,
+but this is a **propagated IOP guest MMIO fault**,
+not a new R5900 opcode. The provenance object proves:
+
+| Fault field | Original guest event |
+| --- | --- |
+| IOP thread | 90 |
+| Original IRX | **SIO2MAN.IRX** (loaded module 1) |
+| Callback | genuine SIO2 **IRQ17** |
+| Callback entry | `0x00020584` |
+| Faulting PC | `0x00020180` |
+| Faulting word | `0x8C420000` = `LW v0,0(v0)` |
+| Read address | **`0xBF808280`**, physical `0x1F808280` |
+| Read width | 4 bytes |
+| Return address | `0x00020598` |
+| Guest instructions executed in handler | 7 |
+
+The original callback calls a three-word address-load/read
+helper at `0x00020178..0x00020180` and then returns to
+an adjacent helper call at `0x00020598` which writes the
+same value back. This exactly matches the authentic
+SIO2MAN interrupt-status acknowledgement pattern.
+
+### Register identity and primary-reference cross-check
+
+The original PS2SDK SIO2 register definitions
+(`ps2dev/ps2sdk/iop/sio/mx4sio_bd/src/sio2regs.h`)
+name `0x1F808280` `SIO2_A_INTR_STAT`. Its documented
+bits are:
+
+- bit 0: transfer complete
+- bit 1: transfer error
+- **write-one-to-clear** for the interrupt status
+
+The actual `ps2dev/ps2sdk/iop/sio/sio2man/src/sio2man.c`
+interrupt handler does
+`sio2_stat_set(sio2_stat_get())`, followed by
+`iSignalSema`, and returns 1. PCSX2 also labels
+this hardware word `SIO2_INTR` and treats it
+as a distinct device register from the IOP INTC.
+
+These sources supplement the project's **primary**
+`twist84/ps2-web-recomp:SDBZ` reference. The
+reference's `sio2.cpp` models genuine PIO/DMA
+transfers and raises IRQ17 on completion; the
+additional register is the next original IRX access
+newly exposed by our previous fix.
+
+Source reference links:
+- https://ps2dev.github.io/ps2sdk/sio2regs_8h_source.html
+- https://github.com/ps2dev/ps2sdk/blob/master/iop/sio/sio2man/src/sio2man.c
+- https://github.com/twist84/ps2-web-recomp/blob/SDBZ/runtime/src/iop/sio2.cpp
+
+### Minimal host IOP correction and regression
+
+`iop::c_hw` now implements **only the proven**
+32-bit physical MMIO word `k_sio2_intr=0x1F808280`:
+
+- Device interrupt status resets to zero on IOP reset.
+- A **genuine completed SIO2 transfer** latches
+  bit 0 **before** raising the existing IRQ17.
+- Original guest KSEG1 `LW` at `0xBF808280`
+  reads the device status.
+- Original guest `SW` write-one-to-clear
+  acknowledges bits 0/1; writing bit 1 does
+  not clear an existing transfer-complete bit.
+- Clearing the device status does **not**
+  acknowledge the independent IOP `I_STAT`
+  interrupt-controller bit. INTRMAN still owns
+  that acknowledgement.
+- The stopped and periodic `m2_iop_sio2`
+  report adds `intr_word` to observe whether
+  original SIO2MAN completed its acknowledgement.
+
+`iop_hw_test` now verifies the KSEG1 read/write
+through the actual R3000 memory interface,
+a real PIO transfer, the already fixed
+`CTRL=0x3BD` two-pad case, write-one-to-clear,
+interrupt-controller independence, failed-transfer
+non-completion, and reset behaviour.
+
+The implementation does **not** add a memory card,
+press a pad button, change the DMA completion
+rules, or fabricate additional IRQ17 events.
+No guest ELF, LLVM IR generation inputs,
+cached translated objects or cache fingerprint
+were changed. Preserve the **1,285** existing
+guest translation modules.
+
+The next evidence gate is a **post-fix retail replay**:
+verify that the SIO2MAN IRQ17 callback executes the
+`0xBF808280` read/acknowledgement successfully,
+then assess original pad/memory-card traffic,
+IOP RPC completions and native GS rendering.
+No original visible frame is yet established.
