@@ -50,9 +50,13 @@ void c_hw::reset()
     m_sio2_pad[0].m_connected = true;
     m_sio2_pending_tx.clear();
     m_sio2_rx.clear();
+    m_sio2_rx_cross_tags.clear();
     m_sio2_empty_rx_read_count = 0u;
     m_sio2_pad0_poll_count = 0u;
     m_sio2_pad0_cross_pressed_polls = 0u;
+    m_sio2_pad0_cross_bytes_pio_read = 0u;
+    m_sio2_pad0_cross_bytes_dma_written = 0u;
+    m_sio2_pad0_cross_bytes_fifo_discarded = 0u;
     m_sio2_pad0_cross_first_poll = 0u;
     m_sio2_pad0_cross_poll_count = 0u;
     m_sio2_transfer_requested = false;
@@ -166,6 +170,9 @@ void c_hw::configure_sio2_pad0_cross_pulse(
         m_sio2_pad0_cross_first_poll != 0u ? poll_count : 0u;
     m_sio2_pad0_poll_count = 0u;
     m_sio2_pad0_cross_pressed_polls = 0u;
+    m_sio2_pad0_cross_bytes_pio_read = 0u;
+    m_sio2_pad0_cross_bytes_dma_written = 0u;
+    m_sio2_pad0_cross_bytes_fifo_discarded = 0u;
 }
 
 // SIO2 controller exchange from ps2-web-recomp/SDBZ's sio2.cpp:
@@ -208,6 +215,7 @@ bool c_hw::process_sio2_packet()
         m_sio2_port[port * 2u + 1u] != 0x5ffffu &&
         m_sio2_port[port * 2u + 1u] != 0x00030064u &&
         m_sio2_pending_tx[0u] == 0x01u;
+    bool cross_reply = false;
     if (!pad_present)
     {
         m_sio2_stat |= 0xc000u |
@@ -278,6 +286,7 @@ bool c_hw::process_sio2_packet()
                         m_sio2_pad0_cross_poll_count)
                 {
                     put(4u, 0xbfu);
+                    cross_reply = true;
                     ++m_sio2_pad0_cross_pressed_polls;
                 }
             }
@@ -379,9 +388,11 @@ bool c_hw::process_sio2_packet()
         packet.m_command = in_size >= 2u ? m_sio2_pending_tx[1u] : 0u;
         packet.m_pad_present = pad_present;
     }
-    for (const uint8_t byte : reply)
+    for (size_t index = 0u; index < reply.size(); ++index)
     {
-        m_sio2_rx.push_back(byte);
+        m_sio2_rx.push_back(reply[index]);
+        m_sio2_rx_cross_tags.push_back(
+            cross_reply && index == 4u ? 1u : 0u);
     }
     m_sio2_pending_tx.clear();
     ++m_sio2_index;
@@ -524,10 +535,13 @@ bool c_hw::run_sio2_transfer()
             const uint32_t count =
                 (m_sio2_send3[block] >> 18u) & 0x1ffu;
             std::vector<uint8_t> bytes(count);
+            uint32_t cross_bytes = 0u;
             for (uint32_t index = 0u; index < count; ++index)
             {
                 bytes[index] = m_sio2_rx.front();
                 m_sio2_rx.pop_front();
+                cross_bytes += m_sio2_rx_cross_tags.front();
+                m_sio2_rx_cross_tags.pop_front();
             }
             if (count > block_bytes)
             {
@@ -539,6 +553,7 @@ bool c_hw::run_sio2_transfer()
             {
                 return reject(e_sio2_rejection::dma12_write);
             }
+            m_sio2_pad0_cross_bytes_dma_written += cross_bytes;
         }
     }
     if (input_dma)
@@ -842,6 +857,9 @@ bool c_hw::read(
         {
             *value = m_sio2_rx.front();
             m_sio2_rx.pop_front();
+            m_sio2_pad0_cross_bytes_pio_read +=
+                m_sio2_rx_cross_tags.front();
+            m_sio2_rx_cross_tags.pop_front();
         }
         return true;
     }
@@ -1315,7 +1333,12 @@ bool c_hw::write(
         {
             m_sio2_index = 0u;
             m_sio2_pending_tx.clear();
+            m_sio2_pad0_cross_bytes_fifo_discarded +=
+                static_cast<uint32_t>(std::count(
+                    m_sio2_rx_cross_tags.begin(),
+                    m_sio2_rx_cross_tags.end(), uint8_t{1u}));
             m_sio2_rx.clear();
+            m_sio2_rx_cross_tags.clear();
             m_sio2_transfer_requested = false;
         }
         if ((value & 1u) != 0u)
@@ -1718,6 +1741,12 @@ c_hw::s_sio2_diagnostics c_hw::sio2_diagnostics() const
         m_sio2_pad0_cross_first_poll;
     result.m_pad0_cross_poll_count =
         m_sio2_pad0_cross_poll_count;
+    result.m_pad0_cross_bytes_pio_read =
+        m_sio2_pad0_cross_bytes_pio_read;
+    result.m_pad0_cross_bytes_dma_written =
+        m_sio2_pad0_cross_bytes_dma_written;
+    result.m_pad0_cross_bytes_fifo_discarded =
+        m_sio2_pad0_cross_bytes_fifo_discarded;
     result.m_last_rejection = m_sio2_last_rejection;
     result.m_rejected_starts = m_sio2_rejected_start_count;
     return result;
