@@ -342,6 +342,23 @@ bool test_guest_sio2_controller()
     {
         return false;
     }
+    // An actual CTRL.start with a short guest PIO packet must refuse
+    // completion without clearing any DMA/IRQ state. Attribute the
+    // exact rejected preflight and preserve the guest packet bytes.
+    const iop::c_hw::s_sio2_diagnostics first_rejection =
+        hw.sio2_diagnostics();
+    if (first_rejection.m_last_rejection !=
+            iop::c_hw::e_sio2_rejection::packet_incomplete ||
+        first_rejection.m_rejected_starts != 1u ||
+        first_rejection.m_tx_bytes != 1u ||
+        first_rejection.m_rx_bytes != 0u ||
+        first_rejection.m_packet_index != 0u ||
+        first_rejection.m_send3[0u] !=
+            ((5u << 8u) | (5u << 18u)) ||
+        !hw.sio2_transfer_requested())
+    {
+        return false;
+    }
     for (uint32_t index = 1u; index < 5u; ++index)
     {
         if (!hw.write(tx, 1u, poll[index]))
@@ -374,6 +391,22 @@ bool test_guest_sio2_controller()
     if (hw.read(rx, 1u, &status) ||
         !hw.write(iop::c_hw::k_i_stat, 4u, ~irq) ||
         hw.pending_interrupts() != 0u)
+    {
+        return false;
+    }
+    // The primary reference unconditionally raises IRQ17 on CTRL.start.
+    // This HLE implementation intentionally rejects an empty new request,
+    // but must expose that difference instead of a silent false return.
+    if (!hw.write(ctrl, 4u, 1u) ||
+        hw.sio2_rejection_name() == nullptr ||
+        hw.sio2_diagnostics().m_last_rejection !=
+            iop::c_hw::e_sio2_rejection::no_processed_packet ||
+        hw.sio2_diagnostics().m_rejected_starts != 2u ||
+        hw.sio2_diagnostics().m_packet_index != 1u ||
+        hw.sio2_diagnostics().m_rx_bytes != 0u ||
+        !hw.sio2_transfer_requested() ||
+        !hw.read(iop::c_hw::k_i_stat, 4u, &status) ||
+        (status & irq) != 0u)
     {
         return false;
     }
@@ -416,7 +449,10 @@ bool test_guest_sio2_controller()
 
     if (hw.sio2_ctrl_starts() != 3u ||
         hw.sio2_packets() != 2u ||
-        hw.sio2_completed_transfers() != 2u)
+        hw.sio2_completed_transfers() != 2u ||
+        hw.sio2_diagnostics().m_last_rejection !=
+            iop::c_hw::e_sio2_rejection::none ||
+        hw.sio2_diagnostics().m_rejected_starts != 2u)
     {
         return false;
     }
@@ -434,9 +470,14 @@ bool test_guest_sio2_controller()
         (status & 0x01000000u) == 0u ||
         !hw.read(iop::c_hw::k_i_stat, 4u, &status) ||
         (status & irq) != 0u ||
-        hw.sio2_ctrl_starts() != 4u ||
+        hw.sio2_ctrl_starts() != 5u ||
         hw.sio2_packets() != 2u ||
-        hw.sio2_completed_transfers() != 2u)
+        hw.sio2_completed_transfers() != 2u ||
+        hw.sio2_diagnostics().m_last_rejection !=
+            iop::c_hw::e_sio2_rejection::dma11_source ||
+        hw.sio2_diagnostics().m_rejected_starts != 3u ||
+        hw.sio2_diagnostics().m_dma11[0u] !=
+            iop::c_cpu::k_ram_size - 4u)
     {
         return false;
     }
