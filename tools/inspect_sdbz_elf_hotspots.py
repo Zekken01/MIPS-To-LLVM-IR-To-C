@@ -335,9 +335,15 @@ def main():
                    help="Existing ir/ee_functions.json; read only")
     p.add_argument("--runtime-json", type=Path, default=None,
                    help="Existing first-boot.json; add current hot and final PCs")
+    p.add_argument("--expected-sha256", default=None,
+                   help="Optional retail executable digest guard")
     p.add_argument("--out", type=Path, default=None)
     args = p.parse_args()
     elf = Elf(args.elf)
+    if args.expected_sha256 is not None:
+        actual = hashlib.sha256(elf.data).hexdigest()
+        if actual.lower() != args.expected_sha256.lower():
+            p.error("ELF digest differs from requested game/region: %s" % actual)
     pcs = list(DEFAULT_PCS) + args.pc
     if args.runtime_json is not None:
         runtime = json.loads(args.runtime_json.read_text(encoding="utf-8"))
