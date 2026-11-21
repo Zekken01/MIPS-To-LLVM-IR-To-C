@@ -682,6 +682,9 @@ bool test_guest_sio2_controller()
         input_result.m_pad0_cross_pressed_polls != 2u ||
         input_result.m_pad0_cross_first_poll != 3u ||
         input_result.m_pad0_cross_poll_count != 2u ||
+        input_result.m_pad0_cross_bytes_pio_read != 2u ||
+        input_result.m_pad0_cross_bytes_dma_written != 0u ||
+        input_result.m_pad0_cross_bytes_fifo_discarded != 0u ||
         input_probe.sio2_packets() != 5u ||
         input_probe.sio2_ctrl_starts() != 5u ||
         input_probe.sio2_completed_transfers() != 5u ||
@@ -689,9 +692,51 @@ bool test_guest_sio2_controller()
     {
         return false;
     }
+    // A reply that is generated but never consumed must not count as
+    // delivered. The guest can reset the FIFO via CTRL=0x0c; retain
+    // host-only provenance for the discarded Cross button byte.
+    input_probe.configure_sio2_pad0_cross_pulse(1u, 1u);
+    if (!input_probe.write(ctrl, 4u, 0x0cu) ||
+        !input_probe.write(send3, 4u, (5u << 8u) | (5u << 18u)))
+    {
+        return false;
+    }
+    for (const uint8_t byte : poll)
+    {
+        if (!input_probe.write(tx, 1u, byte))
+        {
+            return false;
+        }
+    }
+    for (uint32_t index = 0u; index < 4u; ++index)
+    {
+        if (!input_probe.read(rx, 1u, &status) ||
+            status != neutral_reply[index])
+        {
+            return false;
+        }
+    }
+    if (!input_probe.write(ctrl, 4u, 0x0cu))
+    {
+        return false;
+    }
+    const iop::c_hw::s_sio2_diagnostics discarded =
+        input_probe.sio2_diagnostics();
+    if (discarded.m_pad0_cross_pressed_polls != 1u ||
+        discarded.m_pad0_cross_bytes_pio_read != 0u ||
+        discarded.m_pad0_cross_bytes_dma_written != 0u ||
+        discarded.m_pad0_cross_bytes_fifo_discarded != 1u ||
+        discarded.m_rx_bytes != 0u ||
+        input_probe.sio2_completed_transfers() != 5u)
+    {
+        return false;
+    }
+
     input_probe_kernel.reset();
     if (input_probe_kernel.hardware().sio2_diagnostics()
-            .m_pad0_cross_poll_count != 0u)
+            .m_pad0_cross_poll_count != 0u ||
+        input_probe_kernel.hardware().sio2_diagnostics()
+            .m_pad0_cross_bytes_fifo_discarded != 0u)
     {
         return false;
     }
