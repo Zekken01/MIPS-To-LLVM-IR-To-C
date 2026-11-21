@@ -142,7 +142,10 @@ int main()
                    ee::c_ee_vif1::e_reject::unsupported_vu_execution &&
                vif1.diagnostic().m_first_rejected_code == 0x14000002u &&
                vif1.diagnostic().m_committed_opcodes[0x14u] == 0u &&
-               vif1.diagnostic().m_committed_opcodes[0x4au] == 0u,
+               vif1.diagnostic().m_committed_opcodes[0x4au] == 0u &&
+               vif1.diagnostic().m_vu_start_attempts == 1u &&
+               vif1.diagnostic().m_vu_start_rejections == 1u &&
+               vif1.diagnostic().m_last_rejected_vu_start_code == 0x14000002u,
                "MSCAL rejection provenance and no partial command commit") ||
         !check(vif1.read_register(0x40u) == before &&
                vif1.vu1_code()[16u] == 0u,
@@ -329,7 +332,9 @@ int main()
                capture.m_events.back().m_type ==
                    ee::e_ee_gif_event_type::packed &&
                vif1.diagnostic().m_committed_opcodes[0x14u] == 1u &&
-               vif1.diagnostic().m_committed_opcodes[0x4au] == 1u,
+               vif1.diagnostic().m_committed_opcodes[0x4au] == 1u &&
+               vif1.diagnostic().m_vu_start_attempts == 1u &&
+               vif1.diagnostic().m_vu_start_rejections == 0u,
                "real XGKICK and committed MSCAL did not reach GIF PATH1"))
     {
         return 1;
@@ -354,7 +359,11 @@ int main()
                capture.m_calls == after_kick &&
                vif1.diagnostic().m_committed_opcodes[0x14u] == 1u &&
                vif1.diagnostic().m_rejected_batches == 1u &&
-               vif1.diagnostic().m_first_rejected_code == 0x14000000u,
+               vif1.diagnostic().m_first_rejected_code == 0x14000000u &&
+               vif1.diagnostic().m_vu_start_attempts == 2u &&
+               vif1.diagnostic().m_vu_start_rejections == 1u &&
+               vif1.diagnostic().m_last_rejected_vu_pc == 0u &&
+               vif1.diagnostic().m_last_rejected_vu_upper == 0x01e00031u,
                "unsupported VU opcode fabricated DMA/GIF completion"))
     {
         return 1;
@@ -373,6 +382,8 @@ int main()
                vif1.diagnostic().m_vu_upper == 0x00000030u &&
                capture.m_calls == after_kick &&
                vif1.diagnostic().m_rejected_batches == 2u &&
+               vif1.diagnostic().m_vu_start_attempts == 3u &&
+               vif1.diagnostic().m_vu_start_rejections == 2u &&
                vif1.diagnostic().m_committed_opcodes[0x14u] == 1u,
                "masked unknown VU opcode silently executed"))
     {
