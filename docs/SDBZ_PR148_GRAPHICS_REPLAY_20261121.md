@@ -465,3 +465,106 @@ remain black.
 
 Everything is a host-only reporting change. The existing
 1,285 cached LLVM modules must be preserved.
+
+## Seventh matched archive: first final SIO2 input-bus evidence
+
+The resent `sdbz-graphics-pr148(7).zip` contains the eight
+normal replay artifacts and is byte-for-byte identical to
+`sdbz-graphics-pr148(6).zip`. It is the **earlier
+post-initial-SIO2-telemetry replay**, not a replay of the
+new original-USA-ELF xref analysis.
+
+The stopped `first-boot.json.m2_iop_sio2` confirms:
+
+| Observed original IOP bus event | Actual count / state |
+| --- | --- |
+| SIO2 CTRL.start writes | **1** |
+| SEND3 protocol packets processed | **2** |
+| Completed SIO2 transfers | **0** |
+| Host SIO2 request still outstanding | **true** |
+| Queued unprocessed TX bytes | **0** |
+
+All SIO2 checkpoints through 2,000,000 EE dispatches were
+zero. This **final** capture proves later genuine IOP
+SIO2 traffic. It does **not** establish that the caller
+has already received pad button states or that a
+memory-card warning is displayed. The virtual pad starts
+connected but neutral; no virtual memory card is present.
+
+No further game progress is established relative to the
+sixth replay: exactly 6,000,000 EE dispatches,
+12,737,447,273 attempted guest instructions,
+2,588 GS fields, 1,826 successful native WebGPU
+presents, 1,803 untextured **black** sprite draws,
+zero PATH1 XGKICK, no IOP guest fault and all three
+PPM captures still black. `translation-cache.json`
+is identical, with 1,285 IR modules. The run terminates
+at the configured dispatch limit, not at a new IOP fault.
+
+### Source audit: the exact incomplete SIO2 event
+
+`src/iop/iop_hw.cpp` processes SEND3 packets through the
+actual IOP TX FIFO or DMA11. The packet handler can
+queue replies and advance `m_sio2_index` even before
+a subsequent `CTRL.start`. However
+`run_sio2_transfer()` returns false on several
+distinct hardware conditions, including:
+
+- No actual new packet and no buffered reply.
+- Invalid or unbacked DMA11 source, or DMA12
+  destination/geometry.
+- A required packet or reply still missing.
+- Too few DMA12 output words or failed guest RAM write.
+
+On such a rejection it leaves request pending, does
+not clear DMA11/12 STR, and does not raise IRQ17.
+That is consistent with the observed counters,
+but the **specific failing predicate cannot be
+recovered** from the old five SIO2 report fields.
+Two processed packets plus no pending TX bytes
+do not prove that the RX queue was empty.
+
+Compared with primary reference
+`twist84/ps2-web-recomp:SDBZ/runtime/src/iop/sio2.cpp`,
+the reference `run_transfer()` raises IRQ17 at
+`CTRL.start`, including empty-PIO cases, whereas
+the current stricter native HLE rejects empty or
+incomplete requests. This is a specific parity
+difference to examine; do not equate that alone
+with permission to fabricate an interrupt or
+make a false DMA completion.
+
+### Read-only rejection snapshot added after this replay
+
+- The genuine SIO2 preflight now records
+  `last_rejection` and `rejected_starts` for
+  exact failed CTRL.start conditions without
+  changing guest state.
+- The stopped and periodic `m2_iop_sio2`
+  objects additionally include the actual
+  `queued_rx_bytes`, `packet_index`,
+  `ctrl_word`, `stat_word`,
+  first four `send3` descriptors and
+  DMA11/DMA12 MADR-BCR-CHCR triplets.
+- The original no-completion/no-IRQ invariant
+  remains intact until sufficient authentic
+  guest evidence identifies the actual mismatch.
+- `iop_hw_test` extends the synthetic PIO/DMA
+  fixtures to verify incomplete packets,
+  empty-CTRL request, and invalid DMA11 source
+  are correctly diagnosed, are fail-closed,
+  and successful transactions reset the
+  last rejection.
+
+The next completed replay will distinguish whether
+the original guest exhausted the PIO RX FIFO
+before CTRL.start or attempted a genuinely
+incomplete DMA11/12 transfer. Then make a
+targeted parity correction with an exact guest
+transaction regression if warranted.
+
+Only host IOP hardware diagnostics, runner JSON,
+smoke tests and this document are changed. No
+original executable, guest LLVM IR, function
+discovery metadata, translation cache or guest
+input is modified.
