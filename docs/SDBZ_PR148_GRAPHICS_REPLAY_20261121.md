@@ -811,3 +811,114 @@ verify that the SIO2MAN IRQ17 callback executes the
 then assess original pad/memory-card traffic,
 IOP RPC completions and native GS rendering.
 No original visible frame is yet established.
+
+## Tenth matched replay: SIO2MAN IRQ17 acknowledged; RX FIFO empty read fault
+
+Uploaded `sdbz-graphics-pr148(10).zip` contains eight matched
+artifacts, written around 15:56 UTC 2026-11-21. It is the first
+retail replay **after** the SIO2 interrupt-status register
+`0x1F808280` was implemented, and it **predates** the empty
+RX FIFO correction below.
+
+### Verified hardware progress
+
+| Observation | Ninth replay | Tenth replay |
+| --- | --- | --- |
+| SIO2 CTRL.start writes | 1 | 1 |
+| Original controller PIO packets | 2 | 2 |
+| SIO2 completed transfers | 1 | 1 |
+| Transfer rejected | 0 | 0 |
+| SIO2 interrupt status at final report | unsupported read | **0** |
+| IOP faulting guest PC | `0x00020180` | **`0x00020158`** |
+| Faulting guest IOP thread | 90 IRQ17 callback | **2 SIO2MAN worker** |
+| Failing MMIO | `0xBF808280` status LW | **`0xBF808264` RX FIFO LBU** |
+
+The original IRQ17 handler now executes the previously unsupported
+`0xBF808280` read and write-one-to-clear acknowledgement.
+`first-boot.json.m2_iop_sio2.intr_word=0` confirms its device
+status is clear at the final checkpoint. The next fault occurs
+in the original SIO2MAN worker thread 2, not in an interrupt
+callback:
+
+- PC `0x00020154`: `LUI v0,0xBF81`
+- PC `0x00020158`: opcode `0x90428264` =
+  `LBU v0,0x8264(v0)`, targeting physical
+  **SIO2 RX FIFO `0x1F808264`** through KSEG1
+  **`0xBF808264`**, width one byte.
+- Caller at `0x0002035C` invokes the RX-byte helper
+  (return `0x00020364`); SIO2MAN worker entry
+  `0x0002039C`, original module 1.
+- `m2_iop_sio2.queued_rx_bytes=0`,
+  `pending_tx_bytes=0`, two genuine controller
+  `0x42` polls already processed (connected port 0,
+  disconnected port 1), and DMA11/12 all inactive.
+
+The original `CTRL=0x3BD` both reset the PIO
+queues and started the completed transfer. The
+worker subsequently attempts an ordinary **empty RX
+FIFO read**, which the native implementation had
+classified as an unsupported MMIO operation. This
+is **not** an R5900 unsupported opcode, input-button
+wait, invalid SIF RPC response, or new IRQ17
+delivery failure.
+
+The sixth-to-tenth replay's visual baseline remains
+unproven. This attempt stops because of the IOP
+fault at **3,657,851 EE dispatches**,
+**101,646,685 attempted guest instructions**,
+20 genuine GS fields, 17 successful native WebGPU
+presents and seven black GPU draws. CPU/GPU
+display captures match and are black; the upload
+capture is black. The matched translation cache
+still contains **1,285** original game IR modules;
+the expansion pass appended **zero** functions.
+
+### Primary-reference implementation: register-specific 0xFF
+
+The project's primary reference, original
+`twist84/ps2-web-recomp:SDBZ/runtime/src/iop/sio2.cpp`,
+implements `read(0x1F808264)` as follows:
+
+- When a reply byte is queued, return and consume
+  that **actual device** byte.
+- When the RX deque is empty, return
+  **`0xFF`**, *not* a MMIO fault, without
+  allocating a pad response, starting DMA or
+  raising an interrupt.
+
+The native `iop::c_hw::read()` previously
+returned `false` in the second case. Its exact
+register-specific correction now returns `0xFF`
+for supported 8- and 32-bit reads, matching
+the reference. A diagnostic
+`m2_iop_sio2.empty_rx_reads` counts genuine
+empty RX reads and resets with IOP reset. It is
+observation only.
+
+### Test and cache acceptance
+
+The `iop_hw` smoke test now executes an original-style
+guest KSEG1 `read8(0xBF808264)` against an empty
+FIFO and asserts `0xFF` with no fabricated
+controller packet, transfer, DMA completion or IRQ17.
+The existing tests retain correct FIFO consumption
+for a genuine neutral controller reply. Further tests
+verify empty byte and word reads return `0xFF`
+even with a nonempty TX queue, and that an emptied
+reply FIFO subsequently reads `0xFF`.
+The original IRQ17 W1C and dual-pad `0x3BD`
+regressions remain in place.
+
+The fix only touches host IOP hardware, host
+diagnostics, tests and this document. No game ELF,
+guest LLVM IR source, translated object, cache
+fingerprint or function map changed. The 1,285
+cached guest IR modules must be **reused**.
+
+**Next gate:** a new post-fix retail replay confirming
+original SIO2MAN worker continues past
+`0x00020158`, no fresh original IOP MMIO fault
+appears, and actual PADMAN/IOP RPC/GS behaviour
+is recorded. Do not claim the memory-card warning
+or visible scene is reproduced while captures remain
+black.
