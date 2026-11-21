@@ -228,6 +228,7 @@ public:
         uint32_t m_dma12[3]{};
         size_t m_tx_bytes = 0u;
         size_t m_rx_bytes = 0u;
+        uint32_t m_empty_rx_reads = 0u;
         e_sio2_rejection m_last_rejection = e_sio2_rejection::none;
         uint32_t m_rejected_starts = 0u;
     };
@@ -285,6 +286,9 @@ private:
     s_sio2_pad m_sio2_pad[2]{};
     std::vector<uint8_t> m_sio2_pending_tx;
     std::deque<uint8_t> m_sio2_rx;
+    // Host-only count of genuine reads while the SIO2 output FIFO is empty.
+    // Original SDBZ SIO2 register semantics return 0xff for such a read.
+    uint32_t m_sio2_empty_rx_read_count = 0u;
     bool m_sio2_transfer_requested = false;
     uint32_t m_sio2_ctrl_start_count = 0u;
     uint32_t m_sio2_packet_count = 0u;
