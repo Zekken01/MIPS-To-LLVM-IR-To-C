@@ -53,6 +53,8 @@ void c_hw::reset()
     m_sio2_ctrl_start_count = 0u;
     m_sio2_packet_count = 0u;
     m_sio2_transfer_count = 0u;
+    m_sio2_last_rejection = e_sio2_rejection::none;
+    m_sio2_rejected_start_count = 0u;
     m_timer5_count = 0u;
     m_timer5_mode = 0u;
     m_timer5_target = 0u;
@@ -333,9 +335,18 @@ bool c_hw::process_sio2_packet()
 // IRQ; setup writes alone never generate successful completion.
 bool c_hw::run_sio2_transfer()
 {
+    // Record why a genuine guest CTRL.start was not completed. Rejection
+    // attribution is host-only and never acknowledges DMA11/12 or IRQ17.
+    m_sio2_last_rejection = e_sio2_rejection::none;
+    const auto reject = [this](e_sio2_rejection reason)
+    {
+        m_sio2_last_rejection = reason;
+        ++m_sio2_rejected_start_count;
+        return false;
+    };
     if (m_dma_cpu == nullptr)
     {
-        return false;
+        return reject(e_sio2_rejection::cpu_unavailable);
     }
     const bool input_dma =
         (m_sio2_dma[0u][2u] & k_spu2_dma_str_bit) != 0u;
@@ -357,14 +368,14 @@ bool c_hw::run_sio2_transfer()
             input_blocks > 16u || total > k_sio2_tx_limit ||
             m_sio2_index + input_blocks > 16u)
         {
-            return false;
+            return reject(e_sio2_rejection::dma11_geometry);
         }
         inbound.resize(static_cast<size_t>(total));
         if (!m_dma_cpu->dma_read(
                 m_sio2_dma[0u][0u], inbound.data(),
                 static_cast<uint32_t>(total)))
         {
-            return false;
+            return reject(e_sio2_rejection::dma11_source);
         }
     }
     if (output_dma)
@@ -377,7 +388,7 @@ bool c_hw::run_sio2_transfer()
         if (output_words == 0u || output_blocks == 0u ||
             output_blocks > 16u || total > k_sio2_tx_limit)
         {
-            return false;
+            return reject(e_sio2_rejection::dma12_geometry);
         }
         // Validate the write range before processing the device command.
         // A failed target must never perform partial peripheral writes.
@@ -387,7 +398,7 @@ bool c_hw::run_sio2_transfer()
                 m_sio2_dma[1u][0u] +
                     static_cast<uint32_t>(total) - 1u, &check, 1u))
         {
-            return false;
+            return reject(e_sio2_rejection::dma12_destination);
         }
     }
     bool processed = false;
@@ -401,7 +412,7 @@ bool c_hw::run_sio2_transfer()
                 m_sio2_pending_tx.end(), begin, begin + block_bytes);
             if (!process_sio2_packet())
             {
-                return false;
+                return reject(e_sio2_rejection::packet_incomplete);
             }
             processed = true;
         }
@@ -416,18 +427,23 @@ bool c_hw::run_sio2_transfer()
     }
     if (!processed)
     {
-        return false;
+        return reject(m_sio2_pending_tx.empty()
+            ? e_sio2_rejection::no_processed_packet
+            : e_sio2_rejection::packet_incomplete);
     }
     if (output_dma)
     {
         const uint32_t block_bytes = output_words * 4u;
         for (uint32_t block = 0u; block < output_blocks; ++block)
         {
-            if (m_sio2_index < output_blocks ||
-                m_sio2_rx.size() <
-                    ((m_sio2_send3[block] >> 18u) & 0x1ffu))
+            if (m_sio2_index < output_blocks)
             {
-                return false;
+                return reject(e_sio2_rejection::dma12_packet_count);
+            }
+            if (m_sio2_rx.size() <
+                ((m_sio2_send3[block] >> 18u) & 0x1ffu))
+            {
+                return reject(e_sio2_rejection::dma12_reply_underflow);
             }
             const uint32_t count =
                 (m_sio2_send3[block] >> 18u) & 0x1ffu;
@@ -437,12 +453,15 @@ bool c_hw::run_sio2_transfer()
                 bytes[index] = m_sio2_rx.front();
                 m_sio2_rx.pop_front();
             }
-            if (count > block_bytes ||
-                !m_dma_cpu->dma_write(
+            if (count > block_bytes)
+            {
+                return reject(e_sio2_rejection::dma12_block_too_small);
+            }
+            if (!m_dma_cpu->dma_write(
                     m_sio2_dma[1u][0u] + block * block_bytes,
                     bytes.data(), count))
             {
-                return false;
+                return reject(e_sio2_rejection::dma12_write);
             }
         }
     }
@@ -1557,6 +1576,48 @@ uint32_t c_hw::sio2_packets() const
 uint32_t c_hw::sio2_completed_transfers() const
 {
     return m_sio2_transfer_count;
+}
+
+c_hw::s_sio2_diagnostics c_hw::sio2_diagnostics() const
+{
+    s_sio2_diagnostics result{};
+    result.m_ctrl = m_sio2_ctrl;
+    result.m_stat = m_sio2_stat;
+    result.m_packet_index = m_sio2_index;
+    for (uint32_t index = 0u; index < 4u; ++index)
+    {
+        result.m_send3[index] = m_sio2_send3[index];
+    }
+    for (uint32_t index = 0u; index < 3u; ++index)
+    {
+        result.m_dma11[index] = m_sio2_dma[0u][index];
+        result.m_dma12[index] = m_sio2_dma[1u][index];
+    }
+    result.m_tx_bytes = m_sio2_pending_tx.size();
+    result.m_rx_bytes = m_sio2_rx.size();
+    result.m_last_rejection = m_sio2_last_rejection;
+    result.m_rejected_starts = m_sio2_rejected_start_count;
+    return result;
+}
+
+const char* c_hw::sio2_rejection_name() const
+{
+    switch (m_sio2_last_rejection)
+    {
+    case e_sio2_rejection::none: return "none";
+    case e_sio2_rejection::cpu_unavailable: return "cpu_unavailable";
+    case e_sio2_rejection::dma11_geometry: return "dma11_geometry";
+    case e_sio2_rejection::dma11_source: return "dma11_source";
+    case e_sio2_rejection::dma12_geometry: return "dma12_geometry";
+    case e_sio2_rejection::dma12_destination: return "dma12_destination";
+    case e_sio2_rejection::packet_incomplete: return "packet_incomplete";
+    case e_sio2_rejection::no_processed_packet: return "no_processed_packet";
+    case e_sio2_rejection::dma12_packet_count: return "dma12_packet_count";
+    case e_sio2_rejection::dma12_reply_underflow: return "dma12_reply_underflow";
+    case e_sio2_rejection::dma12_block_too_small: return "dma12_block_too_small";
+    case e_sio2_rejection::dma12_write: return "dma12_write";
+    default: return "unknown";
+    }
 }
 
 bool c_hw::complete_cdvd_read(uint8_t interrupt_reason)
