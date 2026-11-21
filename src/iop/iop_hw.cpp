@@ -50,6 +50,7 @@ void c_hw::reset()
     m_sio2_pad[0].m_connected = true;
     m_sio2_pending_tx.clear();
     m_sio2_rx.clear();
+    m_sio2_empty_rx_read_count = 0u;
     m_sio2_transfer_requested = false;
     m_sio2_ctrl_start_count = 0u;
     m_sio2_packet_count = 0u;
@@ -794,13 +795,20 @@ bool c_hw::read(
     if (address == k_sio2_rx_fifo &&
         (width == 1u || width == 4u))
     {
-        // Never invent a response to an unexecuted guest transaction.
+        // Match ps2-web-recomp/SDBZ SIO2 read(0x1f808264):
+        // an empty RX FIFO reads as 0xff, not an unsupported MMIO
+        // operation. This is open-bus/empty-FIFO data, not a controller
+        // response: no bytes are queued and no IRQ/DMA is triggered.
         if (m_sio2_rx.empty())
         {
-            return false;
+            ++m_sio2_empty_rx_read_count;
+            *value = 0xffu;
         }
-        *value = m_sio2_rx.front();
-        m_sio2_rx.pop_front();
+        else
+        {
+            *value = m_sio2_rx.front();
+            m_sio2_rx.pop_front();
+        }
         return true;
     }
 
@@ -1668,6 +1676,7 @@ c_hw::s_sio2_diagnostics c_hw::sio2_diagnostics() const
     }
     result.m_tx_bytes = m_sio2_pending_tx.size();
     result.m_rx_bytes = m_sio2_rx.size();
+    result.m_empty_rx_reads = m_sio2_empty_rx_read_count;
     result.m_last_rejection = m_sio2_last_rejection;
     result.m_rejected_starts = m_sio2_rejected_start_count;
     return result;
