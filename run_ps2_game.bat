@@ -7,7 +7,9 @@ rem Never switch branches, fetch ROM0, or require an ISO.
 cd /d "%~dp0"
 if errorlevel 1 exit /b 1
 
-rem Usage: run_ps2_game.bat [--full^|--quick] [--cross^|--neutral]
+rem Usage: run_ps2_game.bat [--full^|--quick^|--matched] [--cross^|--neutral]
+rem --matched executes a CPU-only neutral/Cross pair with known cached IR,
+rem never running guest function discovery or auto-expansion.
 rem Full retail diagnostics use the usual local replay settings below.
 rem --cross injects eight Cross polls starting at poll 200; --neutral
 rem clears any pad injection left in the caller's environment.
@@ -26,6 +28,11 @@ if /I "%~1"=="--quick" (
     shift
     goto :parse_launcher_options
 )
+if /I "%~1"=="--matched" (
+    set "REQUESTED_SESSION_MODE=matched"
+    shift
+    goto :parse_launcher_options
+)
 if /I "%~1"=="--cross" (
     set "REQUESTED_PAD_PROFILE=cross"
     shift
@@ -37,10 +44,14 @@ if /I "%~1"=="--neutral" (
     goto :parse_launcher_options
 )
 echo ERROR: Unknown launcher option "%~1".
-echo Usage: run_ps2_game.bat [--full or --quick] [--cross or --neutral]
+echo Usage: run_ps2_game.bat [--full or --quick or --matched] [--cross or --neutral]
 exit /b 2
 
 :launcher_options_ready
+if /I "%REQUESTED_SESSION_MODE%"=="matched" if defined REQUESTED_PAD_PROFILE (
+    echo ERROR: --matched runs both profiles; omit --cross and --neutral.
+    exit /b 2
+)
 if /I "%REQUESTED_PAD_PROFILE%"=="cross" (
     set "SDBZ_PAD0_CROSS_FIRST_POLL=200"
     set "SDBZ_PAD0_CROSS_POLL_COUNT=8"
@@ -120,6 +131,11 @@ if /I "%REQUESTED_SESSION_MODE%"=="quick" (
     set "EE_WEBGPU_SNAPSHOT=0"
     set "EE_WEBGPU_WINDOW=0"
 )
+if /I "%REQUESTED_SESSION_MODE%"=="matched" (
+    rem Force CPU-only; do not download/configure WebGPU for paired replays.
+    set "EE_WEBGPU_SNAPSHOT=0"
+    set "EE_WEBGPU_WINDOW=0"
+)
 if /I "%REQUESTED_SESSION_MODE%"=="full" (
     if not defined EE_WEBGPU_SNAPSHOT set "EE_WEBGPU_SNAPSHOT=1"
     if not defined EE_WEBGPU_WINDOW set "EE_WEBGPU_WINDOW=1"
@@ -188,6 +204,28 @@ if exist "%WORK_DIR%\translation-cache.json" (
             echo Guest translation provenance changed; full IR rebuild required.
         )
     )
+)
+
+rem A paired experiment MUST use the existing guest IR, never prompt for
+rem a destructive rebuild or replay to discover additional functions.
+if /I "%REQUESTED_SESSION_MODE%"=="matched" (
+    if not defined CACHE_FLAG (
+        echo ERROR: Known-function replay requires a valid guest translation cache.
+        echo Preserve existing IR; use --reconstruct with tools\run_known_replays.py
+        echo in a separate work directory if you need to rebuild from a manifest.
+        exit /b 1
+    )
+    if not defined MAX_DISPATCHES set "MAX_DISPATCHES=6000000"
+    if not defined BOOT_TIMEOUT_SECONDS set "BOOT_TIMEOUT_SECONDS=600"
+    echo === Running matched CPU-only known-IR neutral/Cross replays ===
+    python tools\run_known_replays.py ^
+        --disc-root "%DISC_ROOT%" ^
+        --build-dir build --config Release ^
+        --work-dir "%WORK_DIR%" ^
+        --emit-jobs=%EMIT_JOBS% ^
+        --max-dispatches=%MAX_DISPATCHES% ^
+        --timeout-seconds=%BOOT_TIMEOUT_SECONDS%
+    exit /b %ERRORLEVEL%
 )
 
 rem This is the only fallback that can wipe and regenerate old guest IR.
