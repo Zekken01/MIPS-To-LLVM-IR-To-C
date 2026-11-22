@@ -31,7 +31,7 @@ NUMERIC_SETTINGS = {
     "Max dispatches": ("MAX_DISPATCHES", 1, None),
     "Timeout (seconds)": ("BOOT_TIMEOUT_SECONDS", 1, None),
     "Expansion passes": ("EXPANSION_PASSES", 1, 64),
-    "Functions per expansion": ("EXPANSION_PER_PASS", 1, 128),
+    "Functions per expansion": ("EXPANSION_PER_PASS", 1, 1024),
     "Compile jobs": ("EMIT_JOBS", 1, None),
     "SIF poll limit": ("SIF_POLL_LIMIT", 1, 0xFFFFFFFF),
     "Loop watchdog resumes": ("LOOP_YIELD_RESUMES", 0, 0xFFFFFFFF),
@@ -54,13 +54,22 @@ OPTION_HELP = {
     ),
     "WebGPU window": "Open the raylib game window with live controller input. Available for Full replay and Automatic.",
     "WebGPU snapshot": "Save a WebGPU-rendered display snapshot. Available for Full replay and Automatic.",
+    "Resume after cache miss": (
+        "Keep the current game process and guest state alive while an absent EE function "
+        "is compiled and hot-loaded. Available during Automatic, Full replay and Quick probe. "
+        "This is not a persistent savestate: closing the process loses its state. "
+        "Uncheck to restart each replay after compiling a missing function."
+    ),
     "Accept changed IR hashes": "Allow cache recovery to accept IR hashes that differ from the saved manifest.",
     "Cross first poll": "The first port 1 controller poll that receives scripted Cross. Select the Custom profile to use it.",
     "Cross poll count": "How many consecutive polls hold Cross. Select the Custom profile to use it.",
     "Max dispatches": "Maximum translated EE dispatches per pass.",
     "Timeout (seconds)": "Wall-clock timeout for a replay or probe, in seconds.",
     "Expansion passes": "Maximum auto-expansion passes. Range 1–64.",
-    "Functions per expansion": "Maximum newly emitted functions per expansion pass. Range 1–128.",
+    "Functions per expansion": (
+        "Maximum newly compiled EE functions per pass (1–1024). With live resume, "
+        "the guest keeps running until this limit is reached or another stop occurs."
+    ),
     "Compile jobs": "Number of parallel jobs used to compile translated guest code.",
     "SIF poll limit": "Maximum polling iterations allowed at a SIF wait boundary.",
     "Loop watchdog resumes": "How many times to resume the native loop watchdog between progress events. Zero stops on the first watchdog hit.",
@@ -135,6 +144,7 @@ def default_settings():
         "accept_ir": False,
         "window": True,
         "snapshot": True,
+        "cache_miss_resume": True,
         "tool": COMMAND_TOOLS[0],
         "executable": str(runner),
         "arguments": "",
@@ -193,9 +203,15 @@ def batch_tool_defaults(disc):
             "--disc-root": str(disc),
             "--expansion-passes": numeric["EXPANSION_PASSES"],
             "--expansion-per-pass": numeric["EXPANSION_PER_PASS"],
+            "--replay-after-expand": False,
             "--ll-progress": True,
         },
-        "Game runner (Python)": {**python_defaults, "--trace": True},
+        "Game runner (Python)": {
+            **python_defaults,
+            "--auto-expand": numeric["EXPANSION_PER_PASS"],
+            "--replay-after-expand": False,
+            "--trace": True,
+        },
         "Native runner": {
             **common,
             "library": str(work / "game-translated.dll"),
@@ -269,13 +285,17 @@ def save_settings(path, settings):
             temporary.unlink(missing_ok=True)
 
 
-def launcher_options(mode, pad, accept_new_ir, window, snapshot, values):
+def launcher_options(mode, pad, accept_new_ir, window, snapshot, values,
+                     resume_on_cache_miss=True):
     args = []
     mode_flag = SESSION_MODES[mode]
     if mode_flag:
         args.append(mode_flag)
     if mode == "Recover translation cache" and accept_new_ir:
         args.append("--accept-new-ir")
+    if not resume_on_cache_miss and mode not in (
+            "Matched neutral/Cross", "Recover translation cache"):
+        args.append("--replay-after-expand")
     env = {}
     if mode in ("Automatic", "Full replay"):
         env["EE_WEBGPU_WINDOW"] = str(int(window))
@@ -336,6 +356,7 @@ class Launcher(ttk.Frame):
         self.accept_ir = self.fields["accept_ir"]
         self.window = self.fields["window"]
         self.snapshot = self.fields["snapshot"]
+        self.cache_miss_resume = self.fields["cache_miss_resume"]
         self.tool = self.fields["tool"]
         self.executable = self.fields["executable"]
         self.status = tk.StringVar(value=warning)
@@ -367,8 +388,17 @@ class Launcher(ttk.Frame):
         self.snapshot_picker = ttk.Checkbutton(self.setup, text="WebGPU snapshot", variable=self.snapshot)
         self.snapshot_picker.grid(row=5, column=1, sticky="w")
         Tooltip(self.snapshot_picker, OPTION_HELP["WebGPU snapshot"])
+        self.cache_miss_picker = ttk.Checkbutton(
+            self.setup, text="Resume after cache miss", variable=self.cache_miss_resume
+        )
+        self.cache_miss_picker.grid(row=6, column=1, sticky="w")
+        Tooltip(self.cache_miss_picker, OPTION_HELP["Resume after cache miss"])
+        ttk.Label(
+            self.setup, text="Preserves live state during compilation; not a disk savestate.",
+            foreground="gray"
+        ).grid(row=7, column=1, columnspan=2, sticky="w", pady=(0, 5))
         self.ir_picker = ttk.Checkbutton(self.setup, text="Accept changed IR hashes", variable=self.accept_ir)
-        self.ir_picker.grid(row=6, column=1, sticky="w")
+        self.ir_picker.grid(row=8, column=1, sticky="w")
         Tooltip(self.ir_picker, OPTION_HELP["Accept changed IR hashes"])
         self.cross_entries = []
         for row, (label, variable) in enumerate(self.numeric.items()):
@@ -536,6 +566,9 @@ class Launcher(ttk.Frame):
         self.window_picker.state(graphics_state)
         self.snapshot_picker.state(graphics_state)
         self.ir_picker.state(["!disabled"] if mode == "Recover translation cache" else ["disabled"])
+        self.cache_miss_picker.state(
+            ["disabled"] if special else ["!disabled"]
+        )
         cross_state = ["!disabled"] if not special and self.pad.get() == "Custom" else ["disabled"]
         for entry in self.cross_entries:
             entry.state(cross_state)
@@ -572,6 +605,7 @@ class Launcher(ttk.Frame):
         args, overrides = launcher_options(
             self.mode.get(), self.pad.get(), self.accept_ir.get(), self.window.get(),
             self.snapshot.get(), {label: value.get() for label, value in self.numeric.items()},
+            resume_on_cache_miss=self.cache_miss_resume.get(),
         )
         for key, _, _ in NUMERIC_SETTINGS.values():
             env.pop(key, None)
@@ -632,6 +666,10 @@ class Launcher(ttk.Frame):
     def read_output(self):
         chunk = self.log.read(32768)
         if chunk:
+            if "live cache-miss: PC=" in chunk:
+                self.status.set("Compiling missing EE code; game state paused")
+            if "EE hot-expand: resumed guest pc=" in chunk:
+                self.status.set("Guest execution resumed after live IR expansion")
             self.output.configure(state="normal")
             self.output.insert(tk.END, chunk)
             lines = int(self.output.index("end-1c").split(".")[0])
