@@ -242,8 +242,8 @@ def main(argv=None):
     args, forwarded = parser.parse_known_args(argv)
     if not 1 <= args.expansion_passes <= 64:
         parser.error("--expansion-passes must be between 1 and 64")
-    if not 1 <= args.expansion_per_pass <= 128:
-        parser.error("--expansion-per-pass must be between 1 and 128")
+    if not 1 <= args.expansion_per_pass <= 1024:
+        parser.error("--expansion-per-pass must be between 1 and 1024")
     if args.quick_probe and (args.gs_snapshot or args.gs_upload_snapshot or
                              args.gs_webgpu_snapshot or args.gs_webgpu_window):
         parser.error("GS snapshots and the WebGPU window require a full boot session")
@@ -462,8 +462,9 @@ def main(argv=None):
     if graphics_replay:
         print(
             f"Graphics replay can cache up to {final_expansion} new functions. "
-            "After a cache miss, the replay restarts with the updated cache. "
-            "Memory card writes stay in memory during these replays.",
+            "A missing function pauses and relinks within the same live guest "
+            "process; a replay is needed only if the expansion budget is exhausted. "
+            "Memory card writes remain in memory during expansion.",
             flush=True,
         )
     final_command = [
