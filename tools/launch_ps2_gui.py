@@ -54,6 +54,11 @@ OPTION_HELP = {
     ),
     "WebGPU window": "Open the raylib game window with live controller input. Available for Full replay and Automatic.",
     "WebGPU snapshot": "Save a WebGPU-rendered display snapshot. Available for Full replay and Automatic.",
+    "Show game in launcher tab": (
+        "Embed the native raylib/WebGPU window in the Game window tab rather than "
+        "opening it separately. The Game tab's WebGPU window option must also be enabled. "
+        "Windows only; this does not emulate a video stream or restart the game."
+    ),
     "Resume after cache miss": (
         "Keep the current game process and guest state alive while an absent EE function "
         "is compiled and hot-loaded. Available during Automatic, Full replay and Quick probe. "
@@ -143,6 +148,7 @@ def default_settings():
         "pad": "Neutral",
         "accept_ir": False,
         "window": True,
+        "embed_game_window": True,
         "snapshot": True,
         "cache_miss_resume": True,
         "tool": COMMAND_TOOLS[0],
@@ -323,6 +329,19 @@ def launcher_options(mode, pad, accept_new_ir, window, snapshot, values,
     return args, env
 
 
+def configure_game_window_environment(env, parent_handle=None):
+    """Pass an optional live Tk Win32 parent HWND to the native game runner.
+
+    Batch/Python boot layers inherit the environment and do not need an
+    additional CLI argument. Never inherit a stale handle from a prior run.
+    """
+    env.pop("SDBZ_GS_PARENT_HWND", None)
+    if parent_handle is not None:
+        if isinstance(parent_handle, bool) or not isinstance(parent_handle, int) or parent_handle <= 0:
+            raise ValueError("Game window parent must be a valid Win32 HWND.")
+        env["SDBZ_GS_PARENT_HWND"] = str(parent_handle)
+
+
 def direct_command(tool, executable, arguments, help_only=False):
     if tool == "Native runner":
         path = Path(executable).expanduser().resolve()
@@ -343,6 +362,7 @@ class Launcher(ttk.Frame):
         super().__init__(window, padding=18)
         self.grid(sticky="nsew")
         self.columnconfigure(1, weight=1)
+        self.rowconfigure(0, weight=2)
         self.rowconfigure(4, weight=1)
         settings, warning = load_settings(SETTINGS_PATH)
         self.fields = {
@@ -355,6 +375,7 @@ class Launcher(ttk.Frame):
         self.pad = self.fields["pad"]
         self.accept_ir = self.fields["accept_ir"]
         self.window = self.fields["window"]
+        self.embed_game_window = self.fields["embed_game_window"]
         self.snapshot = self.fields["snapshot"]
         self.cache_miss_resume = self.fields["cache_miss_resume"]
         self.tool = self.fields["tool"]
@@ -362,22 +383,41 @@ class Launcher(ttk.Frame):
         self.status = tk.StringVar(value=warning)
         self.process = None
         self.log = None
+        self.embedded_running = False
         self.previous_mode = self.mode.get()
         self.numeric = {
             label: tk.StringVar(value=settings["numeric"][key])
             for label, (key, _, _) in NUMERIC_SETTINGS.items()
         }
         self.tabs = ttk.Notebook(self)
-        self.tabs.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 10))
+        self.tabs.grid(row=0, column=0, columnspan=3, sticky="nsew", pady=(0, 10))
         self.setup = ttk.Frame(self.tabs, padding=10)
+        self.game_view = ttk.Frame(self.tabs, padding=6)
         self.limits = ttk.Frame(self.tabs, padding=10)
         self.direct = ttk.Frame(self.tabs, padding=10)
         for tab, title in (
-            (self.setup, "Game"), (self.limits, "Limits and diagnostics"),
+            (self.setup, "Game"), (self.game_view, "Game window"),
+            (self.limits, "Limits and diagnostics"),
             (self.direct, "Direct command"),
         ):
             tab.columnconfigure(1, weight=1)
             self.tabs.add(tab, text=title)
+        self.game_view.columnconfigure(0, weight=1)
+        self.game_view.rowconfigure(0, weight=1)
+        # A real Win32 child HWND is parented to this black Tk viewport.
+        # tk.Frame, rather than a canvas image, keeps controller input and
+        # native WebGPU presentation in the game's own process.
+        self.game_host = tk.Frame(
+            self.game_view, background="black", width=800, height=450,
+            highlightthickness=0, borderwidth=0,
+        )
+        self.game_host.grid(row=0, column=0, sticky="nsew")
+        ttk.Label(
+            self.game_view,
+            text="The native game will appear here after Launch. "
+                 "The log remains visible below.",
+        ).grid(row=1, column=0, sticky="w", pady=(6, 0))
+
         self.path_row(self.setup, 0, "Extracted disc", self.disc, filedialog.askdirectory)
         self.path_row(self.setup, 1, "Memory card", self.card, filedialog.askopenfilename)
         self.choice_row(self.setup, 2, "Session mode", self.mode, SESSION_MODES)
@@ -385,20 +425,25 @@ class Launcher(ttk.Frame):
         self.window_picker = ttk.Checkbutton(self.setup, text="WebGPU window", variable=self.window)
         self.window_picker.grid(row=4, column=1, sticky="w")
         Tooltip(self.window_picker, OPTION_HELP["WebGPU window"])
+        self.embed_picker = ttk.Checkbutton(
+            self.setup, text="Show game in launcher tab", variable=self.embed_game_window
+        )
+        self.embed_picker.grid(row=5, column=1, sticky="w")
+        Tooltip(self.embed_picker, OPTION_HELP["Show game in launcher tab"])
         self.snapshot_picker = ttk.Checkbutton(self.setup, text="WebGPU snapshot", variable=self.snapshot)
-        self.snapshot_picker.grid(row=5, column=1, sticky="w")
+        self.snapshot_picker.grid(row=6, column=1, sticky="w")
         Tooltip(self.snapshot_picker, OPTION_HELP["WebGPU snapshot"])
         self.cache_miss_picker = ttk.Checkbutton(
             self.setup, text="Resume after cache miss", variable=self.cache_miss_resume
         )
-        self.cache_miss_picker.grid(row=6, column=1, sticky="w")
+        self.cache_miss_picker.grid(row=7, column=1, sticky="w")
         Tooltip(self.cache_miss_picker, OPTION_HELP["Resume after cache miss"])
         ttk.Label(
             self.setup, text="Preserves live state during compilation; not a disk savestate.",
             foreground="gray"
-        ).grid(row=7, column=1, columnspan=2, sticky="w", pady=(0, 5))
+        ).grid(row=8, column=1, columnspan=2, sticky="w", pady=(0, 5))
         self.ir_picker = ttk.Checkbutton(self.setup, text="Accept changed IR hashes", variable=self.accept_ir)
-        self.ir_picker.grid(row=8, column=1, sticky="w")
+        self.ir_picker.grid(row=9, column=1, sticky="w")
         Tooltip(self.ir_picker, OPTION_HELP["Accept changed IR hashes"])
         self.cross_entries = []
         for row, (label, variable) in enumerate(self.numeric.items()):
@@ -448,6 +493,7 @@ class Launcher(ttk.Frame):
         defaults_button.grid(row=3, column=2, sticky="e", pady=(6, 0))
         Tooltip(defaults_button, "Apply the full-replay defaults from run_ps2_game.bat to this tool.")
         self.mode.trace_add("write", self.change_mode)
+        self.window.trace_add("write", self.update_fields)
         window.protocol("WM_DELETE_WINDOW", self.close)
         self.pad.trace_add("write", self.update_fields)
         self.update_fields()
@@ -552,6 +598,14 @@ class Launcher(ttk.Frame):
         save_settings(SETTINGS_PATH, settings)
 
     def close(self):
+        if self.process is not None and self.embedded_running:
+            if not messagebox.askokcancel(
+                "Close embedded game?",
+                "Closing the launcher also closes the embedded game window. "
+                "Unsaved game state may be lost. Close anyway?",
+                parent=self,
+            ):
+                return
         try:
             self.persist_settings()
         except OSError as error:
@@ -564,6 +618,10 @@ class Launcher(ttk.Frame):
         self.pad_picker.configure(state="disabled" if special else "readonly")
         graphics_state = ["!disabled"] if mode in ("Automatic", "Full replay") else ["disabled"]
         self.window_picker.state(graphics_state)
+        self.embed_picker.state(
+            ["!disabled"] if os.name == "nt" and self.window.get() and
+            mode in ("Automatic", "Full replay") else ["disabled"]
+        )
         self.snapshot_picker.state(graphics_state)
         self.ir_picker.state(["!disabled"] if mode == "Recover translation cache" else ["disabled"])
         self.cache_miss_picker.state(
@@ -630,6 +688,22 @@ class Launcher(ttk.Frame):
                 command = direct_command(tool, self.executable.get(), arguments, help_only)
             else:
                 command = self.game_command(env)
+            embed_game = (
+                not help_only and os.name == "nt" and
+                self.embed_game_window.get() and
+                (
+                    (not is_direct and self.window.get() and
+                     self.mode.get() in ("Automatic", "Full replay"))
+                    or (is_direct and "--gs-webgpu-window" in command)
+                )
+            )
+            if embed_game:
+                # The parent HWND must exist before the child starts.
+                self.tabs.select(self.game_view)
+                self.game_host.update_idletasks()
+                configure_game_window_environment(env, self.game_host.winfo_id())
+            else:
+                configure_game_window_environment(env)
             if not help_only:
                 card_text = self.card.get().strip()
                 env.pop("SDBZ_MEMCARD", None)
@@ -651,6 +725,7 @@ class Launcher(ttk.Frame):
                     creationflags=subprocess.CREATE_NO_WINDOW,
                 )
             self.log = LOG_PATH.open(encoding="utf-8", errors="replace")
+            self.embedded_running = embed_game
         except (OSError, ValueError) as error:
             self.status.set(str(error))
             return
@@ -685,6 +760,7 @@ class Launcher(ttk.Frame):
             self.log.close()
             self.log = None
             self.process = None
+            self.embedded_running = False
             self.play.state(["!disabled"])
             self.help_button.state(["!disabled"])
             self.status.set(f"Launcher exited ({result}). Log: {LOG_PATH.name}")
@@ -693,7 +769,8 @@ class Launcher(ttk.Frame):
 def main():
     window = tk.Tk()
     window.title("Native PS2 Launcher")
-    window.geometry("780x760")
+    window.geometry("1080x920")
+    window.minsize(800, 650)
     window.columnconfigure(0, weight=1)
     window.rowconfigure(0, weight=1)
     Launcher(window)

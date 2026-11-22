@@ -57,6 +57,7 @@ def gui_values(settings):
 def test_defaults_and_compatibility():
     defaults = GUI.default_settings()
     assert defaults["cache_miss_resume"] is True
+    assert defaults["embed_game_window"] is True
     assert GUI.NUMERIC_SETTINGS["Functions per expansion"][2] == 1024
     with tempfile.TemporaryDirectory() as temporary:
         settings_path = Path(temporary) / "launcher-settings.json"
@@ -143,6 +144,23 @@ def test_game_tab_command_and_environment():
         assert "--replay-after-expand" not in command
 
 
+def test_game_window_environment():
+    env = {"SDBZ_GS_PARENT_HWND": "123", "UNRELATED": "retained"}
+    GUI.configure_game_window_environment(env, 987654)
+    assert env == {
+        "SDBZ_GS_PARENT_HWND": "987654", "UNRELATED": "retained"
+    }
+    GUI.configure_game_window_environment(env)
+    assert env == {"UNRELATED": "retained"}
+    for invalid in (0, -5, True, "bogus"):
+        try:
+            GUI.configure_game_window_environment(env, invalid)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"accepted invalid parent HWND {invalid!r}")
+
+
 def test_direct_commands():
     direct = GUI.batch_tool_defaults("/nonexistent/PS2_GAME")
     assert direct["Boot session"]["--replay-after-expand"] is False
@@ -184,6 +202,7 @@ def main():
     test_defaults_and_compatibility()
     test_launcher_flags_and_bounds()
     test_game_tab_command_and_environment()
+    test_game_window_environment()
     test_direct_commands()
     test_batch_route()
     print("launcher live cache-miss controls: PASS")

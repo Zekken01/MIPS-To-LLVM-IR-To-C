@@ -12,6 +12,10 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdint>
+#include <cerrno>
+#include <cstdlib>
+#include <limits>
+#include <windows.h>
 
 extern "C" void* ee_win32_window_instance(void* window_handle);
 
@@ -81,8 +85,44 @@ bool c_ee_raylib_window::initialize()
         return true;
     }
 
+    // The launcher may provide a live Tk Win32 viewport. A missing
+    // environment variable retains the original standalone raylib window.
+    HWND parent_handle = nullptr;
+    int initial_width = 960;
+    int initial_height = 720;
+    const char* parent_string = std::getenv("SDBZ_GS_PARENT_HWND");
+    if (parent_string != nullptr && parent_string[0] != '\0')
+    {
+        errno = 0;
+        char* end = nullptr;
+        const unsigned long long parsed = std::strtoull(
+            parent_string, &end, 10);
+        if (errno != 0 || end == parent_string || *end != '\0' ||
+            parsed == 0u ||
+            parsed > std::numeric_limits<uintptr_t>::max())
+        {
+            std::fprintf(stderr, "raylib: invalid embedded parent HWND\n");
+            return false;
+        }
+        parent_handle = reinterpret_cast<HWND>(
+            static_cast<uintptr_t>(parsed));
+        RECT parent_rect{};
+        if (!IsWindow(parent_handle) ||
+            !GetClientRect(parent_handle, &parent_rect) ||
+            parent_rect.right <= parent_rect.left ||
+            parent_rect.bottom <= parent_rect.top)
+        {
+            std::fprintf(stderr,
+                "raylib: embedded parent HWND is not a live viewport\n");
+            return false;
+        }
+        initial_width = parent_rect.right - parent_rect.left;
+        initial_height = parent_rect.bottom - parent_rect.top;
+    }
+
     SetConfigFlags(FLAG_WINDOW_RESIZABLE);
-    InitWindow(960, 720, "Super Dragon Ball Z - native WebGPU");
+    InitWindow(initial_width, initial_height,
+        "Super Dragon Ball Z - native WebGPU");
     if (!IsWindowReady())
     {
         std::fprintf(stderr, "raylib: failed to initialize window\n");
@@ -97,6 +137,43 @@ bool c_ee_raylib_window::initialize()
         std::fprintf(stderr, "raylib: invalid Win32 window or framebuffer\n");
         CloseWindow();
         return false;
+    }
+
+    if (parent_handle != nullptr)
+    {
+        HWND child_handle = static_cast<HWND>(hwnd);
+        const LONG_PTR style = GetWindowLongPtrW(
+            child_handle, GWL_STYLE);
+        SetWindowLongPtrW(
+            child_handle, GWL_STYLE,
+            (style & ~(static_cast<LONG_PTR>(
+                WS_POPUP | WS_CAPTION | WS_THICKFRAME |
+                WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU))) |
+                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS);
+        SetLastError(ERROR_SUCCESS);
+        const HWND old_parent = SetParent(child_handle, parent_handle);
+        if (old_parent == nullptr && GetLastError() != ERROR_SUCCESS)
+        {
+            std::fprintf(stderr, "raylib: SetParent failed error=%lu\n",
+                static_cast<unsigned long>(GetLastError()));
+            CloseWindow();
+            return false;
+        }
+        RECT parent_rect{};
+        if (!GetClientRect(parent_handle, &parent_rect) ||
+            !SetWindowPos(
+                child_handle, nullptr, 0, 0,
+                parent_rect.right - parent_rect.left,
+                parent_rect.bottom - parent_rect.top,
+                SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED |
+                    SWP_SHOWWINDOW))
+        {
+            std::fprintf(stderr, "raylib: could not size embedded viewport\n");
+            CloseWindow();
+            return false;
+        }
+        m_parent_window_handle = parent_handle;
+        m_native_window_handle = child_handle;
     }
 
     ps2::gs::gpu::SurfaceTarget target{};
@@ -115,7 +192,9 @@ bool c_ee_raylib_window::initialize()
     m_ready = true;
     m_closed = false;
     m_last_host_poll = GetTime();
-    std::printf("GS WebGPU window: raylib HWND, wgpu-native DX12 surface\n");
+    std::printf(
+        "GS WebGPU window: raylib HWND, wgpu-native DX12 surface%s\n",
+        m_parent_window_handle != nullptr ? " (embedded in launcher)" : "");
     return true;
 }
 
@@ -138,6 +217,33 @@ void c_ee_raylib_window::pump(c_ee_webgpu_bridge& bridge,
     }
 
     m_last_host_poll = now;
+    if (m_parent_window_handle != nullptr)
+    {
+        HWND parent_handle = static_cast<HWND>(m_parent_window_handle);
+        HWND child_handle = static_cast<HWND>(m_native_window_handle);
+        if (!IsWindow(parent_handle) || !IsWindow(child_handle))
+        {
+            m_closed = true;
+            CloseWindow();
+            m_ready = false;
+            return;
+        }
+        RECT parent_rect{};
+        RECT child_rect{};
+        if (GetClientRect(parent_handle, &parent_rect) &&
+            GetClientRect(child_handle, &child_rect))
+        {
+            const int width = parent_rect.right - parent_rect.left;
+            const int height = parent_rect.bottom - parent_rect.top;
+            if (width > 0 && height > 0 &&
+                (width != child_rect.right - child_rect.left ||
+                 height != child_rect.bottom - child_rect.top))
+            {
+                SetWindowPos(child_handle, nullptr, 0, 0, width, height,
+                    SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+        }
+    }
     PollInputEvents();
     if (WindowShouldClose())
     {

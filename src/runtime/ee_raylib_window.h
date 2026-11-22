@@ -33,5 +33,7 @@ private:
     bool m_closed = false;
     uint64_t m_last_fields = 0u;
     double m_last_host_poll = 0.0;
+    void* m_parent_window_handle = nullptr;
+    void* m_native_window_handle = nullptr;
 };
 }
