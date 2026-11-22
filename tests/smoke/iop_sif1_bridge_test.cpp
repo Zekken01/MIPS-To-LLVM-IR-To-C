@@ -35,7 +35,7 @@ int main()
 
     iop::c_cpu iop_cpu;
     iop::c_sif1_bridge bridge(ee_ram, iop_cpu, dmac);
-    constexpr uint32_t k_list = 0x11000u;
+    constexpr uint32_t k_list = 0x11004u;
     constexpr uint32_t k_source0 = 0x12000u;
     constexpr uint32_t k_source1 = 0x13000u;
     constexpr uint32_t k_destination0 = 0x14000u;
@@ -110,6 +110,7 @@ int main()
     );
 
     if (bridge.set_dma(k_list, 0u, &id) ||
+        bridge.set_dma(k_list + 1u, 1u, &id) ||
         bridge.set_dma(0xffffff00u, 2u, &id))
     {
         return fail("invalid descriptor list was accepted");

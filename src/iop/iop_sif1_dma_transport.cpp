@@ -286,7 +286,7 @@ bool c_sif1_dma_transport::set_dma(
     const uint32_t list_address = m_ee_ram.translate_direct_address(list);
     if (dma_id == nullptr || m_next_dma_id == 0u ||
         count == 0u || count > 64u ||
-        (list & 15u) != 0u ||
+        (list & 3u) != 0u ||
         list_address >= 0x02000000u ||
         !m_ee_ram.contains(list_address, static_cast<size_t>(count) * 16u) ||
         !m_ee_ram.contains(k_stage, k_stage_capacity) ||
@@ -329,7 +329,7 @@ bool c_sif1_dma_transport::set_dma(
              destination_region != 0x80000000u &&
              destination_region != 0xa0000000u) ||
             source_address >= 0x02000000u ||
-            !m_ee_ram.contains(source_address, size) ||
+            !m_ee_ram.contains(source_address, static_cast<size_t>(padded)) ||
             destination_address == 0u ||
             destination_address >= c_cpu::k_ram_size ||
             static_cast<uint64_t>(destination_address) + padded >
@@ -356,7 +356,8 @@ bool c_sif1_dma_transport::set_dma(
             packet[tag_offset + 4u + lane] =
                 static_cast<uint8_t>(padded >> (lane * 8u));
         }
-        for (uint32_t offset = 0u; offset < size; ++offset)
+        // SIF transfers the entire final quadword, including its guest bytes.
+        for (uint32_t offset = 0u; offset < padded; ++offset)
         {
             packet[tag_offset + 16u + offset] =
                 m_ee_ram.read8(source_address + offset);
@@ -365,8 +366,7 @@ bool c_sif1_dma_transport::set_dma(
     }
 
     // One genuine DMA6 END source tag carries all IOP DMA10
-    // destination tags. Packets are word- and quadword-aligned,
-    // with zeros only in the transfer padding.
+    // destination tags and their complete quadword payloads.
     const uint32_t qwc =
         static_cast<uint32_t>((packet.size() - 16u) / 16u);
     const uint32_t source_tag = 0x70000000u | qwc;

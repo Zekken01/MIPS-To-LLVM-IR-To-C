@@ -250,7 +250,7 @@ int run_case(uint32_t size, bool sender_first)
 int run_syscall_case(uint32_t size, uint32_t count,
                      uint32_t final_attributes)
 {
-    constexpr uint32_t k_descriptor = 0x00110000u;
+    constexpr uint32_t k_descriptor = 0x00110004u;
     constexpr uint32_t k_data = 0x00120000u;
     constexpr uint32_t k_borrowed_stage = 0x01c00000u;
     ee::ee_memory memory(32u * 1024u * 1024u);
@@ -351,6 +351,12 @@ int run_syscall_case(uint32_t size, uint32_t count,
         memory.write32(k_descriptor + 12u, 0u);
     }
 
+    if (transport.set_dma(k_descriptor + 1u, count, &id) ||
+        id != 0xdeadbeefu || dmac.status() != 0u)
+    {
+        return fail("non-word-aligned descriptor list accepted", size);
+    }
+
     if (!transport.set_dma(k_descriptor, count, &id) || id != 1u)
     {
         return fail("real syscall DMA6->DMA10 failed", size);
@@ -405,7 +411,7 @@ int run_syscall_case(uint32_t size, uint32_t count,
                 read_word >> ((index & 3u) * 8u));
             const uint8_t expected = index < size
                 ? pattern(index + n, size)
-                : index < padded ? 0u : 0xcdu;
+                : index < padded ? 0xa5u : 0xcdu;
             if (actual != expected ||
                 memory.read8(src + index) !=
                     (index < size ? pattern(index + n, size) : 0xa5u))

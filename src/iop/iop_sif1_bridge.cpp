@@ -124,11 +124,12 @@ bool c_sif1_bridge::set_dma(
         return false;
     };
 
+    // The syscall list contains four 32-bit fields per descriptor.
     uint32_t list_physical = 0u;
     if (dma_id == nullptr ||
         m_next_dma_id == 0u ||
         count == 0u || count > 64u ||
-        (list & 0x0fu) != 0u ||
+        (list & 3u) != 0u ||
         !normalize_ee_address(list, &list_physical) ||
         !m_ee_ram.contains(list_physical, count * 16u))
     {
