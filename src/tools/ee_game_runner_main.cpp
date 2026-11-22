@@ -1348,7 +1348,7 @@ bool write_report(
         runtime.m_timing_observer_failed != 0u ? "true" : "false",
         static_cast<unsigned long long>(runtime.m_ee_cycle_scheduler.scheduler_yields()),
         static_cast<unsigned long long>(hardware.scanout().next_field_cycle()),
-        static_cast<unsigned long long>(hardware.scanout().fields_started()),
+        static_cast<unsigned long long>(hardware.scanout().total_fields_started()),
         static_cast<unsigned long long>(hardware.scanout().csr()),
         hardware.intc().status(), hardware.intc().mask(),
         vsync_flags.flag_address(), vsync_flags.csr_address());
@@ -1393,7 +1393,7 @@ bool write_report(
     std::fputs(",\n  \"m2_vif1_producer\": ", output);
     write_vif1_producer_json(output, vif1);
     std::fputs(",\n  \"m2_gs_presentation\": ", output);
-    graphics_probe.write_json(output, hardware.scanout().fields_started());
+    graphics_probe.write_json(output, hardware.scanout().total_fields_started());
     std::fputs(",\n  \"m2_iop_guest_fault\": ", output);
     iop_fault_probe.write_json(output);
     // Observe actual IOP SIO2 transactions, not module-load success.
@@ -3124,7 +3124,7 @@ int main(int argc, char** argv)
         // at the checkpoint that delivered the latest field.
         const auto display = hardware.gs_display_registers();
         const uint32_t crt_mode = hardware.gs_crt_mode();
-        const uint64_t field = hardware.scanout().fields_started();
+        const uint64_t field = hardware.scanout().total_fields_started();
 #endif
 #ifdef EE_ENABLE_RAYLIB_WINDOW
         if (gs_webgpu_window)
@@ -4037,7 +4037,7 @@ int main(int argc, char** argv)
                 gif_channel.m_qwc, gif_channel.m_tadr,
                 hardware.dmac().gif_trace_count(),
                 static_cast<uint32_t>(hardware.dmac().gif_last_reject()),
-                hardware.scanout().fields_started(), hardware.scanout().csr(),
+                hardware.scanout().total_fields_started(), hardware.scanout().csr(),
                 last_iop_rpc_sequence
             };
             hotspots.record(dispatched, from_pc, out_pc, state);
@@ -4092,7 +4092,7 @@ int main(int argc, char** argv)
             if (count == 0u || status == 2u ||
                 !loop_yield_budget.try_resume(
                     loop_yield_resumes,
-                    hardware.scanout().fields_started(),
+                    hardware.scanout().total_fields_started(),
                     last_iop_rpc_sequence,
                     hardware.dmac().gif_trace_count()))
             {
@@ -4113,7 +4113,7 @@ int main(int argc, char** argv)
                         loop_yield_budget.progress_resets()),
                     cpu.m_pc,
                     static_cast<unsigned long long>(
-                        hardware.scanout().fields_started()),
+                        hardware.scanout().total_fields_started()),
                     static_cast<unsigned long long>(
                         last_iop_rpc_sequence),
                     static_cast<unsigned long long>(
@@ -7389,7 +7389,7 @@ int main(int argc, char** argv)
         static_cast<unsigned long long>(runtime.m_ee_cycle_scheduler.current_cycle()),
         static_cast<unsigned long long>(runtime.m_ee_cycle_scheduler.scheduler_yields()),
         static_cast<unsigned long long>(hardware.scanout().next_field_cycle()),
-        static_cast<unsigned long long>(hardware.scanout().fields_started()));
+        static_cast<unsigned long long>(hardware.scanout().total_fields_started()));
     std::printf(
         "EE reference-interpreter instruction slots: %llu "
         "(not R5900 cycles)\n",
@@ -7569,7 +7569,7 @@ int main(int argc, char** argv)
             static_cast<unsigned long long>(
                 loop_yield_budget.progress_resets()),
             static_cast<unsigned long long>(
-                hardware.scanout().fields_started()),
+                hardware.scanout().total_fields_started()),
             static_cast<unsigned long long>(
                 last_iop_rpc_sequence),
             static_cast<unsigned long long>(
@@ -7588,7 +7588,7 @@ int main(int argc, char** argv)
             cpu.m_pc, cpu.m_cop0[13], cpu.m_cop0[12],
             cpu.m_cop0[14], hardware.intc().status(),
             hardware.intc().mask(),
-            static_cast<unsigned long long>(hardware.scanout().fields_started()),
+            static_cast<unsigned long long>(hardware.scanout().total_fields_started()),
             static_cast<unsigned long long>(
                 runtime.m_ee_cycle_scheduler.current_cycle()));
         // Capture the genuine DMA2 channel state at a host-yield stop.
@@ -7808,7 +7808,7 @@ int main(int argc, char** argv)
                 static_cast<unsigned long long>(hardware.scanout().csr()),
                 hardware.scanout().enabled() ? 1u : 0u,
                 static_cast<unsigned long long>(
-                    hardware.scanout().fields_started()),
+                    hardware.scanout().total_fields_started()),
                 ee_cycle_source_name(runtime.m_ee_cycle_scheduler.source()));
         }
         std::fprintf(

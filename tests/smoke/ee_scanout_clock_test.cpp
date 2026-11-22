@@ -143,13 +143,17 @@ int main()
           memory.read64(0x108u) == clock.csr(),
           "backed guest event retries without losing registration");
 
+    const uint64_t last_ntsc_field = clock.total_fields_started();
     check(clock.configure(1u, 3u, 0u, 0u) &&
+          clock.total_fields_started() == last_ntsc_field &&
           clock.next_field_cycle() == 5898240ull &&
           clock.advance_to(5898239ull, &intc, &flags, &memory) &&
           clock.fields_started() == 0u &&
           clock.advance_to(5898240ull, &intc, &flags, &memory) &&
           clock.fields_started() == 1u,
           "PAL CRT mode 3 schedules a real 50 Hz field boundary");
+    check(clock.total_fields_started() == last_ntsc_field + 1u,
+          "first PAL field follows the final NTSC field in the presentation sequence");
     // The HLE EE bus now exposes privileged GS_CSR/GS_IMR through
     // the same scanout state used for real VBlank callbacks. No manual
     // CSR store can generate VBlank or set an interrupt.

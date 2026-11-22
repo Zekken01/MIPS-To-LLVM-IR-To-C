@@ -43,6 +43,8 @@ public:
     uint64_t last_ee_cycle() const;
     uint64_t csr() const;
     uint64_t fields_started() const;
+    // Field sequence for presentation survives SetGsCrt reconfiguration.
+    uint64_t total_fields_started() const;
     uint64_t fields_ended() const;
     // Ordered edges since the most recent guest-cycle advance.
     // 1 = start, 0 = end; the caller emits only these real events.
@@ -59,6 +61,7 @@ private:
     uint32_t m_fraction = 0u;
     uint64_t m_csr = 0u;
     uint64_t m_fields_started = 0u;
+    uint64_t m_total_fields_started = 0u;
     uint64_t m_fields_ended = 0u;
     uint64_t m_next_end_cycle = 0u;
     uint64_t m_vblank_duration = 0u;

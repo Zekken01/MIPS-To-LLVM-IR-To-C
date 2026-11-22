@@ -119,6 +119,7 @@ bool c_ee_scanout_clock::advance_to(
         }
         m_csr = next_csr;
         ++m_fields_started;
+        ++m_total_fields_started;
         m_last_field_cycle = field_boundary;
         m_next_end_cycle = field_boundary + m_vblank_duration;
         m_delivered_edges.push_back(1u);
@@ -167,6 +168,11 @@ uint64_t c_ee_scanout_clock::csr() const
 uint64_t c_ee_scanout_clock::fields_started() const
 {
     return m_fields_started;
+}
+
+uint64_t c_ee_scanout_clock::total_fields_started() const
+{
+    return m_total_fields_started;
 }
 
 uint64_t c_ee_scanout_clock::fields_ended() const
