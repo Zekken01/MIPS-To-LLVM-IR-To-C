@@ -144,7 +144,7 @@ def make_deci2_kputs_elf(path, invalid_argument=False, invalid_string=False):
         "<I", image, 0x300,
         0x7ffffffc if invalid_string else 0x00100220,
     )
-    image[0x320:0x333] = b"DECI2 KPUTS SUCCESS\x00"
+    image[0x320:0x334] = b"DECI2 KPUTS SUCCESS\x00"
     path.write_bytes(image)
 
 
@@ -2769,7 +2769,7 @@ def main():
                     assert state["cop0_epc"] == 0x00100024, state
                     assert (
                         'HLE Deci2Call KPUTS: text="DECI2 KPUTS SUCCESS" '
-                        "bytes=18 result=1"
+                        "bytes=19 result=1"
                     ) in result.stdout, combined
                     assert state["gpr_lo"][8] == 1, state
                     assert state["gpr_lo"][9] == 0, state
