@@ -78,6 +78,8 @@ timeouts, custom Cross pulses and trace settings. **Direct command**
 shows separate tabbed forms for `run_boot_session.py`, `run_game.py`, and
 `ee_game_runner.exe`. Each tool retains its own inputs. Hover over a
 field for help or use **Show --help** for the selected tool’s CLI help.
+New forms start with the full-replay defaults from `run_ps2_game.bat`.
+Use **Apply batch defaults** to reload those values for the selected tool.
 For repeatable IRX options and extra arguments, enter one item per line
 and leave paths with spaces unquoted.
 

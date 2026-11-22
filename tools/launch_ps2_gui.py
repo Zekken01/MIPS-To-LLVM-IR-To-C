@@ -10,6 +10,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from ps2_direct_options import TOOL_OPTIONS, tool_arguments
+from resolve_ps2_boot import resolve_boot_elf
 
 ROOT = Path(__file__).resolve().parents[1]
 LOG_PATH = ROOT / "build" / "ps2-launcher.log"
@@ -154,6 +155,55 @@ def default_settings():
     }
 
 
+def batch_tool_defaults(disc):
+    """Map the batch launcher's full-replay defaults to each tool's CLI."""
+    numeric = default_settings()["numeric"]
+    work = Path("build") / "ps2-game-hle"
+    disc = Path(disc).expanduser()
+    common = {
+        "--disc-folder": str(disc),
+        "--report": str(work / "first-boot.json"),
+        "--gs-snapshot": str(work / "gs-display.ppm"),
+        "--gs-upload-snapshot": str(work / "gs-upload.ppm"),
+        "--gs-webgpu-snapshot": str(work / "gs-webgpu.ppm"),
+        "--gs-webgpu-window": True,
+        "--max-dispatches": numeric["MAX_DISPATCHES"],
+        "--loop-budget": "1000000",
+        "--loop-yield-resumes": numeric["LOOP_YIELD_RESUMES"],
+        "--sif-poll-limit": numeric["SIF_POLL_LIMIT"],
+        "--hle-startup": True,
+        "--kseg-ram": True,
+    }
+    try:
+        common["elf"] = str(resolve_boot_elf(disc))
+    except (OSError, ValueError):
+        pass
+    python_defaults = {
+        **common,
+        "--build-dir": "build",
+        "--config": "Release",
+        "--work-dir": str(work),
+        "--emit-jobs": numeric["EMIT_JOBS"],
+        "--emit-opt": "0",
+        "--timeout-seconds": numeric["BOOT_TIMEOUT_SECONDS"],
+    }
+    return {
+        "Boot session": {
+            **python_defaults,
+            "--disc-root": str(disc),
+            "--expansion-passes": numeric["EXPANSION_PASSES"],
+            "--expansion-per-pass": numeric["EXPANSION_PER_PASS"],
+            "--ll-progress": True,
+        },
+        "Game runner (Python)": {**python_defaults, "--trace": True},
+        "Native runner": {
+            **common,
+            "library": str(work / "game-translated.dll"),
+            "--trace": True,
+        },
+    }
+
+
 def load_settings(path):
     settings = default_settings()
     try:
@@ -198,8 +248,7 @@ def load_settings(path):
         # Old manual argv already contains its own positionals and flags.
         for options in TOOL_OPTIONS[settings["tool"]].values():
             for option in options:
-                if option.kind != "flag":
-                    selected_options.setdefault(option.name, "")
+                selected_options.setdefault(option.name, False if option.kind == "flag" else "")
         settings["arguments"] = ""
     return settings, ""
 
@@ -339,10 +388,11 @@ class Launcher(ttk.Frame):
         self.tool_forms = {}
         self.tool_values = {}
         self.tool_extra = {}
+        tool_defaults = batch_tool_defaults(self.disc.get())
         for tool, groups in TOOL_OPTIONS.items():
             form = ttk.Notebook(self.direct)
             self.tool_forms[tool] = form
-            saved = settings["tool_options"].get(tool, {})
+            saved = {**tool_defaults[tool], **settings["tool_options"].get(tool, {})}
             values = self.tool_values[tool] = {}
             for group, options in groups.items():
                 page = ttk.Frame(form, padding=8)
@@ -364,6 +414,9 @@ class Launcher(ttk.Frame):
         self.help_button = ttk.Button(self.direct, text="Show --help", command=lambda: self.launch(True))
         self.help_button.grid(row=3, column=1, sticky="w", pady=(6, 0))
         Tooltip(self.help_button, OPTION_HELP["Show --help"])
+        defaults_button = ttk.Button(self.direct, text="Apply batch defaults", command=self.apply_batch_defaults)
+        defaults_button.grid(row=3, column=2, sticky="e", pady=(6, 0))
+        Tooltip(defaults_button, "Apply the full-replay defaults from run_ps2_game.bat to this tool.")
         self.mode.trace_add("write", self.change_mode)
         window.protocol("WM_DELETE_WINDOW", self.close)
         self.pad.trace_add("write", self.update_fields)
@@ -391,6 +444,11 @@ class Launcher(ttk.Frame):
                 form.grid(row=2, column=0, columnspan=3, sticky="ew")
             else:
                 form.grid_remove()
+
+    def apply_batch_defaults(self):
+        tool = self.tool.get()
+        for key, default in batch_tool_defaults(self.disc.get())[tool].items():
+            self.tool_values[tool][key].set(default)
 
     def option_row(self, parent, row, option, saved, values):
         label = option.name + (" *" if option.required else "")
@@ -527,6 +585,9 @@ class Launcher(ttk.Frame):
             env = os.environ.copy()
             is_direct = self.tabs.select() == str(self.direct)
             if is_direct:
+                numeric = default_settings()["numeric"]
+                for key in ("SDBZ_DISPATCH_TRACE_EVERY", "SDBZ_REPORT_SNAPSHOT_MS"):
+                    env.setdefault(key, numeric[key])
                 tool = self.tool.get()
                 arguments = [] if help_only else tool_arguments(
                     tool, self.direct_values(tool), self.tool_extra[tool].get("1.0", "end-1c")
