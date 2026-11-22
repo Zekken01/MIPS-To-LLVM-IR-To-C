@@ -22,6 +22,9 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#ifndef NOGDI
+#define NOGDI
+#endif
 #define CloseWindow Win32CloseWindow
 #define ShowCursor Win32ShowCursor
 #include <windows.h>
