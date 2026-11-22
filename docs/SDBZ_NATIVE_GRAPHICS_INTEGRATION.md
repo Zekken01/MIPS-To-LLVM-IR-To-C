@@ -241,3 +241,66 @@ Interpretation:
 
 This is a **diagnostic milestone**, not a claim of a visible frame.
 No synthetic first frame or fabricated game GS writes are introduced.
+
+## PR #148: bounded GPU framebuffer and display-field provenance (22 November)
+
+The later USA retail replay at commit `1cf23fe` has **47,217 guest textured
+sprite kicks**, **20,262,313 nonzero committed PATH2 IMAGE bytes** and no VIF1
+DMA rejections at 6,000,000 EE dispatches. The selected display readback
+was black, while sampled draws targeted FRAME base 0 and the selected DISPFB
+used base 112. Do not treat the older TEXFLUSH PATH2 rejection as the current
+blocker or force a guest-visible buffer swap to make the image appear.
+
+The native runner now provides an **opt-in field-start probe** independent of
+the raylib window. Windows CMD, after pulling PR #148:
+
+~~~bat
+set "SDBZ_GS_FIELD_PROBE=build\gs-field-probe.jsonl"
+set "EE_WEBGPU_SNAPSHOT=1"
+run_ps2_game.bat --full --neutral
+set "SDBZ_GS_FIELD_PROBE="
+~~~
+
+The direct native runner also accepts `--gs-field-probe=FILE`; the CLI
+argument overrides the environment variable. WebGPU is initialized for
+this probe even when no window or final-snapshot option is requested.
+The JSONL path's parent directory must already exist. The existing
+translation cache is not touched by the probe; normal launcher translation
+provenance rules still apply. The diagnostic is **opt-in** because a GPU
+readback can stall and materially slow the run.
+
+The JSONL file begins with a configuration record, then contains **at most
+64** `field_started` records. Each is captured after the actual guest
+scanout scheduler advances, and includes:
+
+- Guest field count and skipped/coalesced fields; native dispatch count,
+  compatibility EE cycle, guest EE PC, sprite and GPU draw totals.
+- Original PMODE, SMODE2, DISPFB1/2, DISPLAY1/2 and CRT mode; both GS
+  FRAME_1/2 register values and whether each was written by guest GIF.
+- Three **separate GPU-side** target readbacks: the *selected display*
+  source, FRAME_1 and FRAME_2. FRAME targets use their original FBP, FBW
+  and PSM but a common crop and width/height derived from the currently
+  selected guest DISPLAY; unlike DISPFB, FRAME FBP uses bits 0..8 and FBW
+  uses bits 16..21. Report each target's 64-byte-block base, stride, format,
+  success, dimensions, RGB nonblack-pixel count and FNV-1a RGBA digest.
+- One diagnostic PPM for the **first successful** sample of each target,
+  plus one for its **first nonblack** sample if different. Files are named
+  `<jsonl-path>.field<N>.<display|frame1|frame2>.ppm`. The JSONL
+  `ppm_written` flag refers only to that field's write, not to earlier
+  images.
+
+These captures use the GPU's own GS VRAM and **do not** write back into the
+CPU GS VRAM, change FRAME/DISPFB, create guest fields, commit GIF/DMA,
+schedule interrupts, or perform a presentation. The readback moment is
+the host's first checkpoint after `fields_started` advances; it is not a
+guarantee that the entire newly started field has been drawn, and missed
+field boundaries are reported rather than synthesized. A readback can
+also fail if the selected crop or FRAME pixel format is unsupported.
+
+Interpret evidence in order: if a FRAME target becomes nonblack while
+DISPFB stays black, investigate legitimate guest buffer switching and
+copy/scanout order. If all GPU targets stay black, inspect rasterization,
+clip/test/blend/texture state. If the display GPU target becomes nonblack
+but the actual window does not, investigate surface presentation. Nonblack
+sprites, nonzero upload bytes and valid GPU readbacks do not alone prove
+the first rendered and presented game frame.
