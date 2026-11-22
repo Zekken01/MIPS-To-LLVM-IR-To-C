@@ -15,7 +15,18 @@
 #include <cerrno>
 #include <cstdlib>
 #include <limits>
+
+// Win32 and raylib both declare CloseWindow/ShowCursor. Rename those
+// unused Win32 declarations while reading windows.h and prevent its
+// min/max macros from corrupting standard C++ numeric_limits.
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#define CloseWindow Win32CloseWindow
+#define ShowCursor Win32ShowCursor
 #include <windows.h>
+#undef CloseWindow
+#undef ShowCursor
 
 extern "C" void* ee_win32_window_instance(void* window_handle);
 
