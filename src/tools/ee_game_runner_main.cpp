@@ -765,6 +765,7 @@ void usage(const char* program)
         "                        Also accepts SDBZ_GS_FIELD_PROBE (WebGPU build)\n"
         "  --trace              Print guest PC, reason and dispatch count per step\n"
         "  --trace-entry=0xPC   Print arguments and pointed-to words at a guest entry\n"
+        "  --memcard-discard-writes Keep card writes in memory for this replay\n"
         "  --watch-word=0xADDR  Report guest word changes between native dispatches\n"
         "  --trace-store=0xADDR Trace individual guest stores overlapping this word (64 max)\n"
         "  --trace-v0=0xSTART:0xEND Trace low-64 V0 changes by guest PC (64 max)\n"
@@ -1492,6 +1493,7 @@ int main(int argc, char** argv)
     const char* library_path = nullptr;
     bool trace = false;
     bool hle_startup = false;
+    bool discard_memory_card_writes = false;
     bool compatibility_clock = true;
     bool kseg_ram = false;
     const char* kernel_ram_path = nullptr;
@@ -1666,6 +1668,11 @@ int main(int argc, char** argv)
         if (argument == "--kseg-ram")
         {
             kseg_ram = true;
+            continue;
+        }
+        if (argument == "--memcard-discard-writes")
+        {
+            discard_memory_card_writes = true;
             continue;
         }
         if (argument == "--hle-startup")
@@ -6426,7 +6433,7 @@ int main(int argc, char** argv)
         std::printf("[mc] slot 1 completed SIO2 exchanges: %llu\n",
             static_cast<unsigned long long>(memory_card.completed_exchanges()));
     }
-    if (!memory_card.save())
+    if (!discard_memory_card_writes && !memory_card.save())
     {
         std::fprintf(stderr, "[mc] failed to save card image: %s\n",
                      memory_card_path);
