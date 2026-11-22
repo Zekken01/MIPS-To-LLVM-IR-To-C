@@ -402,6 +402,9 @@ class Launcher(ttk.Frame):
         ):
             tab.columnconfigure(1, weight=1)
             self.tabs.add(tab, text=title)
+        # Other form tabs use a second column, but the game viewport
+        # occupies the full width of this tab.
+        self.game_view.columnconfigure(1, weight=0)
         self.game_view.columnconfigure(0, weight=1)
         self.game_view.rowconfigure(0, weight=1)
         # A real Win32 child HWND is parented to this black Tk viewport.
