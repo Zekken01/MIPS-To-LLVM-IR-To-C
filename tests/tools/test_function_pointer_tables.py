@@ -52,6 +52,23 @@ class PointerTableTests(unittest.TestCase):
             limit,
         )
 
+    def test_direct_callees_skip_delay_slots_and_stop_at_branches(self):
+        image = bytearray(self.image.read_bytes())
+        first, second, delay, after_branch = self.entries[:4]
+
+        def jal(pc):
+            return 0x0c000000 | (pc >> 2)
+
+        struct.pack_into("<8I", image, 0x100,
+                         jal(first), jal(delay), jal(second), 0,
+                         jal(first), 0, 0x10000000, jal(after_branch))
+        self.image.write_bytes(image)
+        discover = run_game.direct_call_prefix
+        self.assertEqual(discover(self.image, 0x100000, set(), 8), [first, second])
+        self.assertEqual(discover(self.image, 0x100000, {first}, 8), [second])
+        self.assertEqual(discover(self.image, 0x100000, set(), 1), [first])
+        self.assertEqual(discover(self.image, 0x100000, set(), 0), [])
+
     def test_guest_anchor_discovers_real_siblings(self):
         candidates = self.discover(self.entries[4])
         self.assertEqual(len(candidates), 7)

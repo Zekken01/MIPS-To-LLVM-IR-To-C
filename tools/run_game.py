@@ -490,6 +490,56 @@ def executable_segments(path):
     return ranges
 
 
+def direct_call_prefix(elf_path, target, excluded, limit):
+    """Read direct JAL targets from the reached entry's straight-line prefix."""
+    if limit <= 0 or target & 3:
+        return []
+
+    image = elf_path.read_bytes()
+    header_offset, = struct.unpack_from("<I", image, 28)
+    header_size, header_count = struct.unpack_from("<HH", image, 42)
+    segments = []
+    for index in range(header_count):
+        header = header_offset + header_size * index
+        kind, offset, vaddr, _, file_size, _, flags, _ = struct.unpack_from(
+            "<IIIIIIII", image, header
+        )
+        if kind == 1 and flags & 1 and file_size >= 4:
+            if offset + file_size > len(image):
+                raise ValueError("ELF PT_LOAD exceeds file bounds")
+            segments.append((vaddr, vaddr + file_size, offset))
+
+    for start, end, offset in segments:
+        if not start <= target <= end - 4:
+            continue
+        callees = []
+        pc = target
+        stop = min(end - 3, target + 64 * 4)
+        while pc < stop and len(callees) < limit:
+            word, = struct.unpack_from("<I", image, offset + pc - start)
+            opcode = word >> 26
+            function = word & 63
+            if opcode == 3:  # JAL, skipping its delay slot.
+                callee = ((pc + 4) & 0xf0000000) | ((word & 0x03ffffff) << 2)
+                if (callee and not target <= callee <= pc + 8 and
+                        callee not in excluded and callee not in callees and
+                        any(lo <= callee <= hi - 4 for lo, hi, _ in segments)):
+                    callees.append(callee)
+                pc += 8
+                continue
+
+            # Stop at transfers with ambiguous continuation, traps and
+            # coprocessor branches. Never scan their delay slots.
+            if (opcode in (1, 2, 4, 5, 6, 7, 0x14, 0x15, 0x16, 0x17) or
+                    (opcode == 0 and function in (8, 9, 12, 13, 0x30, 0x31,
+                                                  0x32, 0x33, 0x34, 0x36)) or
+                    (0x10 <= opcode <= 0x13 and ((word >> 21) & 31) >= 8)):
+                break
+            pc += 4
+        return callees
+    return []
+
+
 def pointer_table_siblings(elf_path, target, executable_ranges, limit):
     """Prefetch code pointers from a table containing a guest-reached PC.
 
@@ -797,7 +847,7 @@ def batch_append_functions(recomp, elf, work, metadata_path, addresses):
         raise ValueError("batched expansion contains unaligned/zero PC")
 
     # Only guest-proven first entries are mandatory. Later speculative
-    # table siblings may be rejected, but must never block the first.
+    # entries may be rejected, but must never block the first.
     output_dir = work / "extra" / ("batch_" + f"{targets[0]:08x}")
     command = [
         recomp, elf, output_dir,
@@ -830,7 +880,7 @@ def batch_append_functions(recomp, elf, work, metadata_path, addresses):
             message = f"no unique translation for 0x{address:08x}"
             if address == targets[0]:
                 raise ValueError(message)
-            print(f"auto-expand: ignoring speculative table sibling "
+            print(f"auto-expand: ignoring speculative entry "
                   f"0x{address:08x}: {message}", file=sys.stderr)
             continue
         blocks = function.get("block_pcs")
@@ -841,7 +891,7 @@ def batch_append_functions(recomp, elf, work, metadata_path, addresses):
             message = f"translation does not uniquely cover 0x{address:08x}"
             if address == targets[0]:
                 raise ValueError(message)
-            print(f"auto-expand: ignoring speculative table sibling "
+            print(f"auto-expand: ignoring speculative entry "
                   f"0x{address:08x}: {message}", file=sys.stderr)
             continue
         overlap = set(new_pcs) & published_owners
@@ -850,7 +900,7 @@ def batch_append_functions(recomp, elf, work, metadata_path, addresses):
             message = f"entry 0x{address:08x} already owned by another function"
             if address == targets[0]:
                 raise ValueError(message)
-            print(f"auto-expand: ignoring speculative table sibling "
+            print(f"auto-expand: ignoring speculative entry "
                   f"0x{address:08x}: {message}", file=sys.stderr)
             continue
         if overlap:
@@ -1456,26 +1506,33 @@ def main(argv=None):
                         raise ValueError(
                             f"guest cache miss 0x{address:08x} is already compiled"
                         )
-                    available = args.auto_expand - expanded_count
+                    available = min(args.auto_expand - expanded_count, 128)
+                    callees = direct_call_prefix(
+                        elf, address, existing, min(8, available - 1)
+                    )
+                    table_limit = min(
+                        args.auto_expand_table, available - 1 - len(callees)
+                    )
                     siblings = branch_anchored_jump_table_siblings(
-                        elf, address, ranges,
-                        min(args.auto_expand_table, available - 1),
+                        elf, address, ranges, table_limit
                     )
                     if not siblings:
                         siblings = pointer_table_siblings(
-                            elf, address, ranges,
-                            min(args.auto_expand_table, available - 1),
+                            elf, address, ranges, table_limit
                         )
-                    targets = [address] + [
+                    siblings = [
                         candidate for candidate in siblings
                         if candidate not in existing and candidate != address
+                        and candidate not in callees
                     ]
-                    targets = targets[:available]
+                    targets = [address, *callees, *siblings]
                     print(f"auto-expand: compiling reachable PC 0x{address:08x} "
                           "(live cache-miss)", flush=True)
-                    for candidate in targets[1:]:
-                        print(f"auto-expand: compiling table sibling PC "
-                              f"0x{candidate:08x}", flush=True)
+                    for label, candidates in (("direct callee", callees),
+                                              ("table sibling", siblings)):
+                        for candidate in candidates:
+                            print(f"auto-expand: compiling {label} PC "
+                                  f"0x{candidate:08x}", flush=True)
                     new_modules = batch_append_functions(
                         recomp, elf, work, metadata_path, targets
                     )
