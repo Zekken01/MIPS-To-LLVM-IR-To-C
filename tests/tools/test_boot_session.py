@@ -194,6 +194,12 @@ def test_ll_counter():
         quiet.finish_line()
         assert piped.getvalue() == ""
 
+        gui = SESSION.c_ll_file_progress(temp, stream=piped, gui=True)
+        gui.refresh()
+        gui.refresh()
+        gui.finish_line()
+        assert piped.getvalue() == "LLVM IR [2/7550] 0.0%\n"
+
         # If an old discovery marker is absent, use actual persisted
         # function-count metadata (cached --no-recompile sessions).
         (ir_dir / "ee_expected_ll_count.txt").unlink()

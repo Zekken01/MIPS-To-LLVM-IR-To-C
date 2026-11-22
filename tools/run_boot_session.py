@@ -44,12 +44,13 @@ def read_report(path):
 
 
 class c_ll_file_progress:
-    """One in-place console counter; never emits progress into boot logs."""
+    """Show IR file counts in a terminal or the GUI launch log."""
 
-    def __init__(self, work, stream=None):
+    def __init__(self, work, stream=None, gui=False):
         self.m_ir = Path(work) / "ir"
         self.m_stream = sys.stdout if stream is None else stream
-        self.m_enabled = bool(getattr(self.m_stream, "isatty", lambda: False)())
+        self.m_gui = gui
+        self.m_enabled = gui or bool(getattr(self.m_stream, "isatty", lambda: False)())
         self.m_last = None
         self.m_visible = False
         self.m_line_width = 0
@@ -83,11 +84,14 @@ class c_ll_file_progress:
             return
         percentage = current * 100.0 / total
         line = f"LLVM IR [{current}/{total}] {percentage:.1f}%"
-        self.m_stream.write("\r" + line +
-                            " " * max(0, self.m_line_width - len(line)))
+        if self.m_gui:
+            self.m_stream.write(line + "\n")
+        else:
+            self.m_stream.write("\r" + line +
+                                " " * max(0, self.m_line_width - len(line)))
+            self.m_line_width = len(line)
+            self.m_visible = True
         self.m_stream.flush()
-        self.m_line_width = len(line)
-        self.m_visible = True
         self.m_last = status
 
     def finish_line(self):
@@ -320,12 +324,13 @@ def main(argv=None):
             flush=True,
         )
 
-    progress = c_ll_file_progress(work) if args.ll_progress else None
+    gui_progress = os.environ.get("SDBZ_LAUNCHER_LIVE_PROGRESS") == "1"
+    progress = c_ll_file_progress(work, gui=gui_progress) if args.ll_progress or gui_progress else None
     # Keep legacy run_session calls unchanged unless the console progress
     # feature was explicitly requested. Diagnostic tools and tests use the
     # existing three-argument interface without a progress keyword.
     progress_kwargs = {"progress": progress} if progress is not None else {}
-    if os.environ.get("SDBZ_LAUNCHER_LIVE_PROGRESS") == "1":
+    if gui_progress:
         progress_kwargs["live_report"] = report
     snapshots = [
         ("--gs-snapshot", args.gs_snapshot),
