@@ -909,7 +909,7 @@ def batch_append_functions(recomp, elf, work, metadata_path, addresses):
 
 def build_linked_library(source_root, work, metadata_path, object_dir, library,
                          emit_opt, pdb=False, reuse_objects=False, emit_jobs=2,
-                         appended_ir=None):
+                         appended_ir=None, cache_base=None):
     if not reuse_objects:
         # Full verification is mandatory on the initial build. An append
         # pass has already validated the existing provenance and only new
@@ -937,6 +937,8 @@ def build_linked_library(source_root, work, metadata_path, object_dir, library,
     ]
     if pdb:
         command.append("--pdb")
+    if cache_base is not None:
+        command.append(f"--cache-base={cache_base}")
     run(command)
 
 
@@ -1484,7 +1486,8 @@ def main(argv=None):
                     build_linked_library(
                         source_root, work, metadata_path, object_dir,
                         replacement, args.emit_opt, pdb=args.pdb,
-                        emit_jobs=args.emit_jobs, appended_ir=new_modules
+                        emit_jobs=args.emit_jobs, appended_ir=new_modules,
+                        cache_base=library
                     )
                     expanded_count += len(new_modules)
                     last_library = replacement
@@ -1503,6 +1506,17 @@ def main(argv=None):
                         staged.replace(library)
                     finally:
                         staged.unlink(missing_ok=True)
+                    if args.pdb:
+                        hot_pdb = last_library.with_suffix(".pdb")
+                        if not hot_pdb.is_file():
+                            raise ValueError("live link did not produce requested PDB")
+                        pdb_destination = library.with_suffix(".pdb")
+                        pdb_staged = pdb_destination.with_suffix(".pdb.hot-new")
+                        try:
+                            shutil.copy2(hot_pdb, pdb_staged)
+                            pdb_staged.replace(pdb_destination)
+                        finally:
+                            pdb_staged.unlink(missing_ok=True)
                     write_translation_cache(
                         cache_path, inputs, args.emit_opt,
                         metadata_path, library, ir_sources
