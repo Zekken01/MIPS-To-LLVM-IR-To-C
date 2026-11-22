@@ -574,6 +574,8 @@ def main():
     parser.add_argument("functions_json", type=Path, help="ee_functions.json from ee_recomp")
     parser.add_argument("object_dir", type=Path, help="directory containing .o files and objects.json")
     parser.add_argument("output", type=Path, help="output shared library path")
+    parser.add_argument("--cache-base", type=Path,
+                        help="Stable output pathname used only for dispatcher/runtime object caches")
     parser.add_argument("--source-root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--cxx", default=None,
                         help="native C++ compiler (Windows requires clang++.exe)")
@@ -635,8 +637,9 @@ def main():
             compile_flags.append("-fPIC")
         if args.pdb:
             compile_flags += ["-g", "-gcodeview"]
+        cache_base = args.cache_base.resolve() if args.cache_base else args.output
         dispatch_objects = cached_dispatch_objects(
-            args.output, metadata, functions, args.cxx, source_root,
+            cache_base, metadata, functions, args.cxx, source_root,
             include_args, compile_flags
         )
 
@@ -649,7 +652,7 @@ def main():
         if args.pdb:
             runtime_flags += ["-g", "-gcodeview"]
         runtime_objects = cached_runtime_objects(
-            args.output, required_sources, source_root, args.cxx,
+            cache_base, required_sources, source_root, args.cxx,
             include_args, runtime_flags
         )
 
