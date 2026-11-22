@@ -80,6 +80,11 @@ with one argument per line. Use **Show --help** to list the selected
 tool's options. Enter a path containing spaces on a single line without
 surrounding quotes.
 
+The launcher prefills the boot script’s defaults and restores choices
+from `build/ps2-launcher-settings.json`. It saves on launch and when
+you close the window. Clear a numeric field to use the script’s
+automatic value.
+
 Place the original, extracted game disc files under `PS2_GAME/` at the
 repository root, including `SYSTEM.CNF`. Run:
 

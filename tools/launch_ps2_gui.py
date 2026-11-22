@@ -1,14 +1,17 @@
 """Configure and run the Windows native PS2 launcher."""
 
+import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+from tempfile import NamedTemporaryFile
 import tkinter as tk
-from tkinter import filedialog, ttk
+from tkinter import filedialog, messagebox, ttk
 
 ROOT = Path(__file__).resolve().parents[1]
 LOG_PATH = ROOT / "build" / "ps2-launcher.log"
+SETTINGS_PATH = ROOT / "build" / "ps2-launcher-settings.json"
 
 
 SESSION_MODES = {
@@ -33,6 +36,90 @@ NUMERIC_SETTINGS = {
     "Report snapshot interval (ms)": ("SDBZ_REPORT_SNAPSHOT_MS", 0, 60000),
 }
 COMMAND_TOOLS = ("Boot session", "Game runner (Python)", "Native runner")
+
+
+def replay_limits(mode):
+    if mode == "Quick probe":
+        return "100000", "120"
+    if mode in ("Full replay", "Matched neutral/Cross"):
+        return "6000000", "600"
+    return "", ""
+
+
+def default_settings():
+    dispatches, timeout = replay_limits("Full replay")
+    runner = ROOT / "build" / "ee_game_runner.exe"
+    release_runner = runner.parent / "Release" / runner.name
+    if not runner.is_file() and release_runner.is_file():
+        runner = release_runner
+    return {
+        "disc": str(ROOT / "PS2_GAME"),
+        "card": "",
+        "mode": "Full replay",
+        "pad": "Neutral",
+        "accept_ir": False,
+        "window": True,
+        "snapshot": True,
+        "tool": COMMAND_TOOLS[0],
+        "executable": str(runner),
+        "arguments": "",
+        "numeric": {
+            "SDBZ_PAD0_CROSS_FIRST_POLL": "200",
+            "SDBZ_PAD0_CROSS_POLL_COUNT": "8",
+            "MAX_DISPATCHES": dispatches,
+            "BOOT_TIMEOUT_SECONDS": timeout,
+            "EXPANSION_PASSES": "8",
+            "EXPANSION_PER_PASS": "128",
+            "EMIT_JOBS": "8",
+            "SIF_POLL_LIMIT": "2048",
+            "LOOP_YIELD_RESUMES": "16",
+            "SDBZ_DISPATCH_TRACE_EVERY": "1024",
+            "SDBZ_REPORT_SNAPSHOT_MS": "2000",
+        },
+    }
+
+
+def load_settings(path):
+    settings = default_settings()
+    try:
+        saved = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return settings, ""
+    except (OSError, ValueError):
+        return settings, f"Could not read {path.name}. Loaded defaults."
+    if not isinstance(saved, dict):
+        return settings, f"Invalid {path.name}. Loaded defaults."
+    for key, default in settings.items():
+        value = saved.get(key)
+        if type(value) is type(default) and key != "numeric":
+            settings[key] = value
+    for key, choices in (("mode", SESSION_MODES), ("pad", PAD_PROFILES), ("tool", COMMAND_TOOLS)):
+        if settings[key] not in choices:
+            settings[key] = default_settings()[key]
+    saved_numeric = saved.get("numeric")
+    numeric = settings["numeric"]
+    numeric["MAX_DISPATCHES"], numeric["BOOT_TIMEOUT_SECONDS"] = replay_limits(settings["mode"])
+    if isinstance(saved_numeric, dict):
+        for key in numeric:
+            if isinstance(saved_numeric.get(key), str):
+                numeric[key] = saved_numeric[key]
+    return settings, ""
+
+
+def save_settings(path, settings):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, delete=False
+        ) as output:
+            temporary = Path(output.name)
+            json.dump(settings, output, indent=2, ensure_ascii=False)
+            output.write("\n")
+        temporary.replace(path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def launcher_options(mode, pad, accept_new_ir, window, snapshot, values):
@@ -90,20 +177,28 @@ class Launcher(ttk.Frame):
         self.grid(sticky="nsew")
         self.columnconfigure(1, weight=1)
         self.rowconfigure(4, weight=1)
-        self.disc = tk.StringVar(value=str(ROOT / "PS2_GAME"))
-        self.card = tk.StringVar()
-        self.status = tk.StringVar()
+        settings, warning = load_settings(SETTINGS_PATH)
+        self.fields = {
+            key: (tk.BooleanVar if isinstance(value, bool) else tk.StringVar)(value=value)
+            for key, value in settings.items() if key not in ("numeric", "arguments")
+        }
+        self.disc = self.fields["disc"]
+        self.card = self.fields["card"]
+        self.mode = self.fields["mode"]
+        self.pad = self.fields["pad"]
+        self.accept_ir = self.fields["accept_ir"]
+        self.window = self.fields["window"]
+        self.snapshot = self.fields["snapshot"]
+        self.tool = self.fields["tool"]
+        self.executable = self.fields["executable"]
+        self.status = tk.StringVar(value=warning)
         self.process = None
         self.log = None
-
-        self.mode = tk.StringVar(value="Full replay")
-        self.pad = tk.StringVar(value="Neutral")
-        self.accept_ir = tk.BooleanVar()
-        self.window = tk.BooleanVar(value=True)
-        self.snapshot = tk.BooleanVar(value=True)
-        self.numeric = {label: tk.StringVar() for label in NUMERIC_SETTINGS}
-        self.tool = tk.StringVar(value=COMMAND_TOOLS[0])
-        self.executable = tk.StringVar()
+        self.previous_mode = self.mode.get()
+        self.numeric = {
+            label: tk.StringVar(value=settings["numeric"][key])
+            for label, (key, _, _) in NUMERIC_SETTINGS.items()
+        }
         self.tabs = ttk.Notebook(self)
         self.tabs.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 10))
         self.setup = ttk.Frame(self.tabs, padding=10)
@@ -140,9 +235,11 @@ class Launcher(ttk.Frame):
         ttk.Label(self.direct, text="Arguments (one per line)").grid(row=2, column=0, sticky="nw")
         self.arguments = tk.Text(self.direct, height=7, width=48, wrap="none")
         self.arguments.grid(row=2, column=1, columnspan=2, sticky="ew")
+        self.arguments.insert("1.0", settings["arguments"])
         self.help_button = ttk.Button(self.direct, text="Show --help", command=lambda: self.launch(True))
         self.help_button.grid(row=3, column=1, sticky="w", pady=(6, 0))
-        self.mode.trace_add("write", self.update_fields)
+        self.mode.trace_add("write", self.change_mode)
+        window.protocol("WM_DELETE_WINDOW", self.close)
         self.pad.trace_add("write", self.update_fields)
         self.update_fields()
         self.play = ttk.Button(self, text="Launch", command=self.launch)
@@ -158,7 +255,34 @@ class Launcher(ttk.Frame):
         if os.name != "nt":
             self.play.state(["disabled"])
             self.help_button.state(["disabled"])
-            self.status.set("The native raylib window is available on Windows.")
+            if not warning:
+                self.status.set("The native raylib window is available on Windows.")
+
+    def change_mode(self, *_):
+        mode = self.mode.get()
+        for label, previous, current in zip(
+            ("Max dispatches", "Timeout (seconds)"),
+            replay_limits(self.previous_mode), replay_limits(mode),
+        ):
+            if self.numeric[label].get() == previous:
+                self.numeric[label].set(current)
+        self.previous_mode = mode
+        self.update_fields()
+
+    def persist_settings(self):
+        settings = {key: variable.get() for key, variable in self.fields.items()}
+        settings["numeric"] = {
+            key: self.numeric[label].get() for label, (key, _, _) in NUMERIC_SETTINGS.items()
+        }
+        settings["arguments"] = self.arguments.get("1.0", "end-1c")
+        save_settings(SETTINGS_PATH, settings)
+
+    def close(self):
+        try:
+            self.persist_settings()
+        except OSError as error:
+            messagebox.showerror("Could not save settings", str(error), parent=self)
+        self.winfo_toplevel().destroy()
 
     def update_fields(self, *_):
         mode = self.mode.get()
@@ -226,6 +350,7 @@ class Launcher(ttk.Frame):
                     if not card.is_file() or card.stat().st_size != 8_650_752:
                         raise ValueError("Choose an 8,650,752-byte raw PS2 memory card image.")
                     env["SDBZ_MEMCARD"] = str(card)
+                self.persist_settings()
             LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
             with LOG_PATH.open("wb") as output:
                 self.process = subprocess.Popen(
