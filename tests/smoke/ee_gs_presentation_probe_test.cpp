@@ -72,6 +72,33 @@ int main()
     CHECK(probe.record_capture(gpu, pixels, 2u, 2u, &display, 2u));
     CHECK(probe.captures_have_same_source());
 
+    // A DRAW FRAME uses 2 KiB page units, while GPU DisplaySource
+    // expects 64-byte blocks. Different FRAME and DISPFB bases must
+    // never be silently treated as identical.
+    const uint64_t frame_value = 112ull | (10ull << 16u) |
+        (2ull << 24u);
+    const auto frame = ee::decode_gs_frame_target(frame_value);
+    CHECK(frame.m_supported);
+    CHECK(frame.m_base == 112u * 32u);
+    CHECK(frame.m_fbw == 10u);
+    CHECK(frame.m_psm == 2u);
+    CHECK(!ee::decode_gs_frame_target(0x13ull << 24u).m_supported);
+    CHECK(ee::decode_gs_frame_target(0ull).m_supported);
+
+    // Field-target RGB/digest calculations match the regular provenance
+    // metrics and reject incomplete or malformed readbacks.
+    uint64_t field_nonblack = 123u;
+    uint64_t field_digest = 456u;
+    CHECK(!ee::summarize_gs_field_pixels(
+        pixels, 3u, 2u, &field_nonblack, &field_digest));
+    CHECK(field_nonblack == 123u && field_digest == 456u);
+    CHECK(!ee::summarize_gs_field_pixels(
+        pixels, 2u, 2u, nullptr, &field_digest));
+    CHECK(ee::summarize_gs_field_pixels(
+        pixels, 2u, 2u, &field_nonblack, &field_digest));
+    CHECK(field_nonblack == 2u);
+    CHECK(field_digest == probe.metrics(cpu).m_checksum);
+
     FILE* file = std::tmpfile();
     CHECK(file != nullptr);
     probe.set_gpu_progress(true, 11u);
