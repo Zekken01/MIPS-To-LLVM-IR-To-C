@@ -56,4 +56,20 @@ inline s_status_transition resume(
     return result;
 }
 
+inline s_status_transition release_wait(uint32_t current_status)
+{
+    s_status_transition result{current_status, false};
+    if (current_status == k_wait)
+    {
+        result.m_status = k_ready;
+        result.m_changed = true;
+    }
+    else if (current_status == k_wait_suspend)
+    {
+        result.m_status = k_suspend;
+        result.m_changed = true;
+    }
+    return result;
+}
+
 } // namespace ee_kernel_thread

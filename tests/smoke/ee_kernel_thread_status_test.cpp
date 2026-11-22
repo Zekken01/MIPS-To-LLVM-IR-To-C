@@ -52,6 +52,19 @@ int main()
     passed = check("resume non-suspended wait", resume(k_wait, false),
                    k_wait, false) && passed;
 
+    passed = check("release wait", release_wait(k_wait),
+                   k_ready, true) && passed;
+    passed = check("release suspended wait", release_wait(k_wait_suspend),
+                   k_suspend, true) && passed;
+    passed = check("release ready", release_wait(k_ready),
+                   k_ready, false) && passed;
+    passed = check("release running", release_wait(k_run),
+                   k_run, false) && passed;
+    passed = check("release dormant", release_wait(k_dormant),
+                   k_dormant, false) && passed;
+    passed = check("release suspended", release_wait(k_suspend),
+                   k_suspend, false) && passed;
+
     if (passed)
     {
         std::puts("ee_kernel_thread_status: PASS");

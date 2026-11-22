@@ -625,6 +625,68 @@ def make_thread_sleep_wakeup_elf(path):
     path.write_bytes(image)
 
 
+
+def make_thread_release_wait_elf(path):
+    """Release a blocked guest twice, including WAITSUSPEND and i variant."""
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    image.extend(bytes(max(0, 0x400 - len(image))))
+    struct.pack_into("<I", image, 52 + 16, 0x300)
+    struct.pack_into("<I", image, 52 + 20, 0x300)
+
+    entry = (
+        0x3c040010,  # a0 = 0x00100200 descriptor
+        0x34840200,
+        0x24030020,  # CreateThread
+        0x0000000c,
+        0x00408021,  # s0 = worker ID 2
+        0x24040002,
+        0x24030022,  # StartThread(2): lower priority worker READY
+        0x0000000c,
+        0x24030032,  # SleepThread(): WAIT, switch to worker
+        0x0000000c,
+        0x00408821,  # s1 = 1, resumed after ReleaseWaitThread
+        0x24030032,  # SleepThread() again
+        0x0000000c,
+        0x00409021,  # s2 = 1, resumed after Suspend/Release/Resume
+        0x24040002,
+        0x2403002d,  # ReleaseWaitThread(2) while READY: return -1
+        0x0000000c,
+        0x00409821,  # s3 = -1
+        0x00000008,  # jr zero
+        0x00000000,
+    )
+    worker = (
+        0x24040001,
+        0x2403002d,  # ReleaseWaitThread(1): WAIT -> READY, preempt
+        0x0000000c,
+        0x0040a021,  # s4 = returned ID 1
+        0x24040001,
+        0x24030037,  # SuspendThread(1): WAIT -> WAITSUSPEND
+        0x0000000c,
+        0x24040001,
+        0x2403002e,  # iReleaseWaitThread(1): WAITSUSPEND -> SUSPEND
+        0x0000000c,
+        0x0040a821,  # s5 = returned ID 1
+        0x24040001,
+        0x24030039,  # ResumeThread(1): SUSPEND -> READY, preempt
+        0x0000000c,
+        0x24030023,  # ExitThread if worker is rescheduled later
+        0x0000000c,
+        0x00000008,
+        0x00000000,
+    )
+    for index, opcode in enumerate(entry):
+        struct.pack_into("<I", image, 0x108 + index * 4, opcode)
+    for index, opcode in enumerate(worker):
+        struct.pack_into("<I", image, 0x1f0 + index * 4, opcode)
+    struct.pack_into(
+        "<9I", image, 0x300,
+        0, 0x001000f0, 0x00102000, 0x800,
+        0x0010f000, 1, 0, 0, 0,
+    )
+    path.write_bytes(image)
+
 def make_thread_suspend_resume_elf(path):
     """Create, start, suspend, resume a real guest EE thread via syscalls."""
     make_elf(path)
@@ -2880,6 +2942,44 @@ def main():
             assert registers[20] == 0, state  # no leftover wakeup credit
             assert registers[21] == 0xffffffffffffffff, state # invalid ID
             assert state["final_pc"] != 0x001000f0, state # no worker escape
+
+        with tempfile.TemporaryDirectory(prefix="ee-native-release-wait-") as tmp:
+            root = Path(tmp)
+            elf = root / "kernel-release-wait.elf"
+            make_thread_release_wait_elf(elf)
+            report_path = root / "release-wait.json"
+            command = [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf),
+                "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--max-dispatches=160",
+                "--auto-expand=4",
+                "--trace",
+                "--report", str(report_path),
+                "--hle-startup",
+            ]
+            result = subprocess.run(
+                command, capture_output=True, text=True, check=False,
+            )
+            combined = result.stdout + result.stderr
+            assert result.returncode == 0, combined
+            for expected_line in (
+                "HLE SleepThread: id=1 status=4",
+                "HLE ReleaseWaitThread: id=1 old_status=4 new_status=2",
+                "HLE SuspendThread: id=1 old_status=4 new_status=12",
+                "HLE iReleaseWaitThread: id=1 old_status=12 new_status=8",
+                "HLE ResumeThread: id=1 old_status=8 new_status=2",
+                "HLE ReleaseWaitThread: id=2 not waiting, result=-1",
+            ):
+                assert expected_line in combined, (expected_line, combined)
+            state = json.loads(report_path.read_text(encoding="utf-8"))
+            registers = state["gpr_lo"]
+            assert registers[16] == 2, state
+            assert registers[17] == 1, state
+            assert registers[18] == 1, state
+            assert registers[19] == 0xffffffffffffffff, state
+            assert state["final_pc"] == 0, state
 
         with tempfile.TemporaryDirectory(prefix="ee-native-suspend-resume-") as tmp:
             root = Path(tmp)

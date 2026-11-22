@@ -4071,12 +4071,15 @@ int main(int argc, char** argv)
             // iSignalSema; SDBZ's VBlank callback also calls iFlushCache.
             const bool interrupt_thread_wakeup_service = irq_callback_active &&
                 (signed_service == -0x34 || signed_service == -0x36);
+            const bool interrupt_wait_release_service =
+                irq_callback_active && signed_service == -0x2e;
             const bool interrupt_semaphore_service = irq_callback_active &&
                 signed_service == -0x43;
             const bool interrupt_cache_service = irq_callback_active &&
                 signed_service == -0x68;
             const bool interrupt_safe_service = interrupt_sif_service ||
                 interrupt_thread_wakeup_service ||
+                interrupt_wait_release_service ||
                 interrupt_semaphore_service || interrupt_cache_service;
             const uint32_t service = interrupt_safe_service
                 ? static_cast<uint32_t>(-signed_service)
@@ -4153,6 +4156,7 @@ int main(int argc, char** argv)
                 (service >= 0x1au && service <= 0x1du) ||
                 (service >= 0x20u && service <= 0x24u) ||
                 service == 0x29u || service == 0x2au || service == 0x2bu ||
+                service == 0x2du || service == 0x2eu ||
                 service == 0x2fu || service == 0x30u || service == 0x31u ||
                 (service >= 0x32u && service <= 0x37u) ||
                 service == 0x39u ||
@@ -4654,6 +4658,98 @@ int main(int argc, char** argv)
                             "HLE RotateThreadReadyQueue: priority=%u "
                             "result=%u\n", priority, priority
                         );
+                    }
+                }
+
+                else if (service == 0x2du || service == 0x2eu)
+                {
+                    // ReleaseWaitThread / iReleaseWaitThread. Only an
+                    // existing guest wait can be released. A waiting
+                    // semaphore thread must be removed from its queue so
+                    // a subsequent SignalSema cannot wake it twice.
+                    const uint32_t id =
+                        static_cast<uint32_t>(cpu.m_gpr[4].m_lo);
+                    s_kernel_thread* target = id > 0u && id < 256u &&
+                        threads[id].m_used ? &threads[id] : nullptr;
+                    const ee_kernel_thread::s_status_transition next =
+                        target != nullptr
+                        ? ee_kernel_thread::release_wait(target->m_status)
+                        : ee_kernel_thread::s_status_transition{};
+                    if (target == nullptr || !next.m_changed)
+                    {
+                        cpu.m_gpr[2].m_lo =
+                            static_cast<uint64_t>(-1ll);
+                        cpu.m_gpr[2].m_hi = 0u;
+                        if (trace)
+                        {
+                            std::printf(
+                                "HLE %sReleaseWaitThread: id=%u "
+                                "not waiting, result=-1\n",
+                                service == 0x2eu ? "i" : "", id);
+                        }
+                    }
+                    else
+                    {
+                        const uint32_t previous = target->m_status;
+                        if (target->m_wait_type == 2u)
+                        {
+                            const uint32_t semaphore_id =
+                                target->m_wait_semaphore;
+                            if (semaphore_id == 0u ||
+                                semaphore_id >= 64u ||
+                                !semaphores[semaphore_id].m_used)
+                            {
+                                std::fprintf(stderr,
+                                    "ReleaseWaitThread HLE refused "
+                                    "missing guest semaphore id=%u\n",
+                                    semaphore_id);
+                                break;
+                            }
+                            auto& waiters =
+                                semaphores[semaphore_id].m_waiters;
+                            const auto waiter =
+                                std::find(waiters.begin(), waiters.end(), id);
+                            if (waiter == waiters.end())
+                            {
+                                std::fprintf(stderr,
+                                    "ReleaseWaitThread HLE refused "
+                                    "untracked waiter id=%u sema=%u\n",
+                                    id, semaphore_id);
+                                break;
+                            }
+                            waiters.erase(waiter);
+                        }
+                        else if (target->m_wait_type != 1u)
+                        {
+                            std::fprintf(stderr,
+                                "ReleaseWaitThread HLE refused "
+                                "unknown guest wait type id=%u type=%u\n",
+                                id, target->m_wait_type);
+                            break;
+                        }
+                        target->m_status = next.m_status;
+                        target->m_wait_type = 0u;
+                        target->m_wait_semaphore = 0u;
+                        if (next.m_status == ee_kernel_thread::k_ready)
+                        {
+                            target->m_order = ++next_thread_order;
+                        }
+                        // The interrupt-safe service only makes the thread
+                        // runnable; the ordinary form may switch immediately.
+                        if (service == 0x2du)
+                        {
+                            reschedule_requested = true;
+                        }
+                        cpu.m_gpr[2].m_lo = id;
+                        cpu.m_gpr[2].m_hi = 0u;
+                        if (trace)
+                        {
+                            std::printf(
+                                "HLE %sReleaseWaitThread: id=%u "
+                                "old_status=%u new_status=%u result=%u\n",
+                                service == 0x2eu ? "i" : "",
+                                id, previous, next.m_status, id);
+                        }
                     }
                 }
 
