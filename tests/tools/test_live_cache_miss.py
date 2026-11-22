@@ -37,6 +37,10 @@ for seq in range(1, count + 1):
         time.sleep(0.02)
     if not response.is_file():
         sys.exit(7)
+    # The native runner reads a binary file. The Python supervisor must
+    # publish LF on Windows as well as Linux (no automatic CRLF conversion).
+    if b"\r" in response.read_bytes():
+        sys.exit(11)
     lines = response.read_text(encoding="utf-8").splitlines()
     if lines[0] != str(seq):
         sys.exit(8)
