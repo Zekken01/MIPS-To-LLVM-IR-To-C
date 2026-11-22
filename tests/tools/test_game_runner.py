@@ -786,6 +786,28 @@ def make_thread_semaphore_release_wait_elf(path):
     struct.pack_into("<6I", image, 0x340, 0, 1, 0, 0, 0, 0)
     path.write_bytes(image)
 
+
+def make_interrupt_status_encoding_elf(path):
+    """Negative EE iReferThreadStatus must fail without IRQ callback."""
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    instructions = (
+        0x24040001,  # a0 = main thread 1
+        0x00002821,  # a1 = null output pointer
+        0x24030031,  # positive iReferThreadStatus is permitted
+        0x0000000c,
+        0x00408021,  # s0 = RUN status (1)
+        0x2403ffcf,  # v1 = signed -0x31
+        0x0000000c,  # rejected outside a registered IRQ callback
+        0x00408821,  # unreachable s1
+        0x00000008,
+        0x00000000,
+    )
+    for index, opcode in enumerate(instructions):
+        struct.pack_into("<I", image, 0x108 + index * 4, opcode)
+    path.write_bytes(image)
+
+
 def make_thread_suspend_resume_elf(path):
     """Create, start, suspend, resume a real guest EE thread via syscalls."""
     make_elf(path)
@@ -3179,6 +3201,29 @@ def main():
             assert registers[19] == 0, state  # no stale waiters
             assert registers[20] == 1, state  # PollSema consumed new signal
             assert state["final_pc"] == 0, state
+
+        with tempfile.TemporaryDirectory(prefix="ee-native-irq-status-") as tmp:
+            root = Path(tmp)
+            elf = root / "kernel-irq-status.elf"
+            make_interrupt_status_encoding_elf(elf)
+            report_path = root / "irq-status.json"
+            result = subprocess.run(
+                [
+                    sys.executable, str(source / "tools" / "run_game.py"),
+                    str(elf), "--build-dir", str(build),
+                    "--work-dir", str(root / "out"),
+                    "--max-dispatches=32", "--hle-startup", "--trace",
+                    "--report", str(report_path),
+                ],
+                capture_output=True, text=True, check=False,
+            )
+            combined = result.stdout + result.stderr
+            state = json.loads(report_path.read_text(encoding="utf-8"))
+            assert state["exit_name"] == "EXCEPTION", state
+            assert state["cop0_epc"] == 0x00100020, state
+            assert state["gpr_lo"][16] == 1, state
+            assert state["gpr_lo"][17] == 0, state
+            assert "HLE iReferThreadStatus: id=1 address=0x00000000 status=1" in combined, combined
 
         with tempfile.TemporaryDirectory(prefix="ee-native-suspend-resume-") as tmp:
             root = Path(tmp)

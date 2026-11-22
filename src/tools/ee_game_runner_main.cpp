@@ -6,6 +6,7 @@
 #include "ee_host_timers.h"
 #include "ee_hot_expand_protocol.h"
 #include "ee_kernel_thread_status.h"
+#include "ee_irq_syscall_services.h"
 #include "ee_hot_loop_diagnostics.h"
 #include "ee_host_loop_yield_budget.h"
 #include "ee_reached_isa_inventory.h"
@@ -4059,31 +4060,17 @@ int main(int argc, char** argv)
         {
             const int32_t signed_service =
                 static_cast<int32_t>(cpu.m_gpr[3].m_lo);
-            // ps2-web-recomp's kernel maps negative EE syscall numbers
-            // to their interrupt-safe variants. In our HLE-first runner,
-            // allow only explicitly modeled variants while a registered
-            // guest INTC/DMAC callback owns the kernel interrupt context.
-            // Never turn an unknown negative service into a successful HLE.
-            const bool interrupt_sif_service = irq_callback_active &&
-                (signed_service == -0x76 || signed_service == -0x77 ||
-                 signed_service == -0x78);
-            // Genuine guest interrupt handlers signal semaphores through
-            // iSignalSema; SDBZ's VBlank callback also calls iFlushCache.
-            const bool interrupt_thread_wakeup_service = irq_callback_active &&
-                (signed_service == -0x34 || signed_service == -0x36);
-            const bool interrupt_wait_release_service =
-                irq_callback_active && signed_service == -0x2e;
-            const bool interrupt_semaphore_service = irq_callback_active &&
-                signed_service == -0x43;
-            const bool interrupt_cache_service = irq_callback_active &&
-                signed_service == -0x68;
-            const bool interrupt_safe_service = interrupt_sif_service ||
-                interrupt_thread_wakeup_service ||
-                interrupt_wait_release_service ||
-                interrupt_semaphore_service || interrupt_cache_service;
-            const uint32_t service = interrupt_safe_service
-                ? static_cast<uint32_t>(-signed_service)
-                : static_cast<uint32_t>(signed_service);
+            // Reject all unknown negative syscall encodings. An
+            // interrupt-safe service is accepted only while a real
+            // INTC/DMAC callback owns the saved EE interrupt context.
+            // The retail 17:45 Cross replay reaches -0x31 from a genuine
+            // VBlank callback at guest PC 0x00174bb4.
+            const ee_irq_syscall::s_decoded_service decoded =
+                ee_irq_syscall::decode(signed_service, irq_callback_active);
+            const uint32_t service = decoded.m_number;
+            const bool interrupt_safe_service = decoded.m_interrupt_safe;
+            const bool interrupt_sif_service = interrupt_safe_service &&
+                (service == 0x76u || service == 0x77u || service == 0x78u);
             if (!callback_active && !interrupt_safe_service &&
                 service < 256u &&
                 installed_syscall_handlers[service] != 0u)

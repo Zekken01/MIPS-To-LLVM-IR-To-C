@@ -283,6 +283,12 @@ target_include_directories(ee_kernel_thread_status_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/tools)
 add_test(NAME ee_kernel_thread_status COMMAND ee_kernel_thread_status_test)
 
+add_executable(ee_irq_syscall_services_test
+    tests/smoke/ee_irq_syscall_services_test.cpp)
+target_include_directories(ee_irq_syscall_services_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/tools)
+add_test(NAME ee_irq_syscall_services COMMAND ee_irq_syscall_services_test)
+
 add_executable(ee_isa_inventory_test tests/smoke/ee_isa_inventory_test.cpp)
 target_link_libraries(ee_isa_inventory_test PRIVATE ee_core)
 add_test(NAME ee_isa_inventory COMMAND ee_isa_inventory_test)
