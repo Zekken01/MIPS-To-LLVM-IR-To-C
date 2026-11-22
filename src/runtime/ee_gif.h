@@ -27,6 +27,25 @@ struct s_ee_gif_event
     uint64_t m_word1 = 0;
 };
 
+// Per-parser input provenance. Counters advance only after the GS sink
+// accepts a full batch; rejected input never contributes committed events.
+struct s_ee_gif_path_counters
+{
+    uint64_t m_accepted_batches = 0u;
+    uint64_t m_rejected_batches = 0u;
+    uint64_t m_input_qwc = 0u;
+    uint64_t m_tags = 0u;
+    uint64_t m_primitive_events = 0u;
+    uint64_t m_packed_events = 0u;
+    uint64_t m_reglist_events = 0u;
+    uint64_t m_image_events = 0u;
+    uint64_t m_image_qwc = 0u;
+    // Read-only provenance of accepted GIF IMAGE/IMAGE2 payload bytes.
+    // These bytes are not necessarily visible texture/framebuffer pixels.
+    uint64_t m_image_nonzero_bytes = 0u;
+    uint64_t m_image_payload_fnv1a64 = 0u;
+};
+
 struct s_ee_gif_path3_state
 {
     uint32_t m_nloop = 0;
@@ -54,6 +73,7 @@ public:
     void bind_event_sink(void* user, t_event_callback callback);
     void reset();
     const s_ee_gif_path3_state& state() const;
+    const s_ee_gif_path_counters& counters() const;
 
     bool consume(const uint8_t* data, uint32_t qwc);
 
@@ -65,6 +85,7 @@ public:
 
 private:
     s_ee_gif_path3_state m_state{};
+    s_ee_gif_path_counters m_counters{};
     void* m_sink_user = nullptr;
     t_event_callback m_sink = nullptr;
 };

@@ -94,6 +94,7 @@ private:
     // Most R5900 integer ALU / load / link ops write UD[0] only and leave UD[1] intact.
     void    set_gpr_lo64(uint8_t reg, const std::string& lo);
     // 32-bit result sign-extended into the low 64, upper 64 preserved (ADDU/ADDIU/etc).
+    std::string trunc32_sext64(const std::string& val);
     void    set_gpr_lo32_sext(uint8_t reg, const std::string& lo32_or_lo64);
     void    store_dirty_regs(const std::set<uint8_t>& live_out); // write back dirty+live-out regs
     void    reset_tracking();                                  // clear per-block state

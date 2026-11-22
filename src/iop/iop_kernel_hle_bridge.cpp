@@ -346,7 +346,8 @@ void c_kernel_hle_bridge::signal_vblank_edge(bool start)
         if ((handler.m_edge == 0u) == start)
         {
             (void)m_kernel.start_guest_callback(
-                handler.m_handler, handler.m_gp, handler.m_argument);
+                handler.m_handler, handler.m_gp, handler.m_argument,
+                handler.m_origin);
         }
     }
 }
@@ -2726,12 +2727,19 @@ bool c_kernel_hle_bridge::handle_secrman(uint32_t ordinal)
     {
         return false;
     }
-    // A software HLE must never acknowledge a card challenge or KELF
-    // authentication as successful without a verified security backend.
-    // Return false for SecrAuthCard, and an explicit failed result for
-    // the two opaque device-specific entrypoints.
-    m_kernel.cpu().state().m_gpr[2] =
-        ordinal == 6u ? 0u : static_cast<uint32_t>(-1);
+    auto& state = m_kernel.cpu().state();
+    // The virtual file-backed PS2 card has no MagicGate processor.
+    // Complete the guest driver's handshake only for its mounted
+    // SIO2 port and slot after the card has received reset-auth.
+    if (ordinal == 6u)
+    {
+        state.m_gpr[2] = m_kernel.hardware().complete_memory_card_auth_reset(
+            state.m_gpr[4], state.m_gpr[5]) ? 1u : 0u;
+    }
+    else
+    {
+        state.m_gpr[2] = static_cast<uint32_t>(-1);
+    }
     return true;
 }
 
@@ -2760,8 +2768,25 @@ bool c_kernel_hle_bridge::handle_vblank(uint32_t ordinal)
             state.m_gpr[2] = static_cast<uint32_t>(-1);
             return true;
         }
+        const e_guest_callback_source source =
+            edge == 0u ? e_guest_callback_source::vblank_start :
+                         e_guest_callback_source::vblank_end;
+        const s_guest_callback_origin origin =
+            m_kernel.make_guest_callback_origin(source);
         m_vblank_handlers.push_back({
-            edge, callback, argument, state.m_gpr[28]});
+            edge, callback, argument, state.m_gpr[28], origin});
+        // At most 64 live registrations can be retained. Report the
+        // guest arguments before a later field schedules this pointer.
+        std::fprintf(stderr,
+            "IOP VBLANK handler registered: edge=%u priority=%u "
+            "callback=0x%08x first_word=0x%08x arg=0x%08x "
+            "thread=%u syscall_pc=0x%08x ra=0x%08x gp=0x%08x "
+            "a0=0x%08x a1=0x%08x a2=0x%08x a3=0x%08x\n",
+            edge, state.m_gpr[5], callback, opcode, argument,
+            origin.m_registration_thread_id, origin.m_registration_pc,
+            origin.m_registration_ra, origin.m_registration_gp,
+            origin.m_registration_a0, origin.m_registration_a1,
+            origin.m_registration_a2, origin.m_registration_a3);
         state.m_gpr[2] = 0u;
         return true;
     }

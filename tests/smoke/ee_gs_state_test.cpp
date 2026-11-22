@@ -281,14 +281,13 @@ int main()
         return fail("unsupported SIGNAL committed partial state or DMA");
     }
 
-    // Retry the same packet after changing the unsupported GS write.
-    ad(&runtime, 0x520u, 0x4du, 0x11221122ull);
+    // Retry with TEXFLUSH. It must commit the batch without latching data.
+    ad(&runtime, 0x520u, 0x3fu, 0x11221122ull);
     ee::ee_mem_write32(&runtime, k_gif, 0u);
     dma(&runtime, 0x500u, 3u);
     if (!gs.was_written(0x4cu) ||
-        !gs.was_written(0x4du) ||
         gs.register_value(0x4cu) != 0x55aa55aaull ||
-        gs.register_value(0x4du) != 0x11221122ull ||
+        gs.was_written(0x3fu) ||
         gs.state().m_tag_count != 1u ||
         (hardware.dmac().status() & k_gif_bit) == 0u)
     {

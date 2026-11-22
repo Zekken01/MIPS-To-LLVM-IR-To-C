@@ -486,16 +486,23 @@ void module_builder::set_gpr_lo64(uint8_t reg, const std::string& lo)
 
 // Sign-extend a 32-bit (or low-32-of-64) result into the full low 64 bits,
 // then preserve the upper 64. Used by ADDU/ADDIU/SUBU/LW/LUI/etc.
-void module_builder::set_gpr_lo32_sext(uint8_t reg, const std::string& val)
+std::string module_builder::trunc32_sext64(const std::string& val)
 {
-    if (reg == 0) return;
     // trunc to i32 then sext to i64 so the high 32 of the low doubleword
     // become a proper sign extension of the 32-bit result.
     std::string t32 = newtemp();
     std::string t64 = newtemp();
     m_out += "  " + t32 + " = trunc i64 " + val + " to i32\n";
     m_out += "  " + t64 + " = sext i32 " + t32 + " to i64\n";
-    set_gpr_lo64(reg, t64);
+    return t64;
+}
+
+void module_builder::set_gpr_lo32_sext(uint8_t reg, const std::string& val)
+{
+    if (reg != 0)
+    {
+        set_gpr_lo64(reg, trunc32_sext64(val));
+    }
 }
 
 void module_builder::store_dirty_regs(const std::set<uint8_t>& live_out)
@@ -713,6 +720,26 @@ static std::set<uint8_t> block_read_before_write(const std::vector<ee::s_ee_inst
             case e_ee_opcode::FUNCT_JALR:
                 consider_read(ins.rs);
                 if (ins.rd != 0) written_so_far.insert(ins.rd);
+                break;
+            case e_ee_opcode::FUNCT_DSLLV:
+            case e_ee_opcode::FUNCT_DSRLV:
+            case e_ee_opcode::FUNCT_DSRAV:
+                consider_read(ins.rs);
+                [[fallthrough]];
+            case e_ee_opcode::FUNCT_DSLL:
+            case e_ee_opcode::FUNCT_DSRL:
+            case e_ee_opcode::FUNCT_DSRA:
+            case e_ee_opcode::FUNCT_DSLL32:
+            case e_ee_opcode::FUNCT_DSRL32:
+            case e_ee_opcode::FUNCT_DSRA32:
+                // Doubleword shifts read rt and preserve the upper half of rd.
+                consider_read(ins.rt);
+                break;
+            case e_ee_opcode::FUNCT_DADDU:
+            case e_ee_opcode::FUNCT_DSUBU:
+                // Scalar doubleword results preserve the upper 64 bits of rd.
+                consider_read(ins.rs);
+                consider_read(ins.rt);
                 break;
             case e_ee_opcode::FUNCT_ADD:
             case e_ee_opcode::FUNCT_ADDU:
@@ -1670,6 +1697,32 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
             m_out += "  ret i32 1\n";
             m_out += "trap_cont_" + std::string(pcbuf) + ":\n";
         }
+        else if (funct == e_ee_opcode::FUNCT_ADD || funct == e_ee_opcode::FUNCT_SUB)
+        {
+            // Widen the signed low words before arithmetic. The exact sum or
+            // difference fits in i64, including both signed-overflow cases.
+            const std::string lhs = trunc32_sext64(src_lo(ins.rs));
+            const std::string rhs = trunc32_sext64(src_lo(ins.rt));
+            const std::string wide = newtemp();
+            const char* operation = funct == e_ee_opcode::FUNCT_ADD ? "add" : "sub";
+            m_out += "  " + wide + " = " + operation + " i64 " + lhs + ", " + rhs + "\n";
+            const std::string result = trunc32_sext64(wide);
+            const std::string overflow = newtemp();
+            const std::string suffix = std::to_string(m_temp_counter++);
+            m_out += "  " + overflow + " = icmp ne i64 " + result + ", " + wide + "\n";
+            const std::set<uint8_t> dirty(m_dirty_regs.begin(), m_dirty_regs.end());
+            store_dirty_regs(dirty);
+            reset_tracking();
+            m_out += "  br i1 " + overflow + ", label %word_overflow_" + suffix +
+                     ", label %word_result_" + suffix + "\n";
+            m_out += "word_overflow_" + suffix + ":\n";
+            m_out += "  call i32 @ee_raise_exception(ptr %cpu, ptr %rt, i32 12, i32 " +
+                     std::to_string(ins.pc) + ", i32 " +
+                     std::to_string(in_delay_slot ? 1u : 0u) + ", i32 0)\n";
+            m_out += "  ret i32 1\n";
+            m_out += "word_result_" + suffix + ":\n";
+            set_gpr_lo64(ins.rd, result);
+        }
         else if (ins.funct == 0x14 || ins.funct == 0x16 || ins.funct == 0x17)
         {
             // DSLLV / DSRLV / DSRAV: 64-bit variable shift, amount = rs & 63.
@@ -1698,10 +1751,8 @@ void module_builder::emit_insn(const ee::s_ee_instruction& ins,
             bool known = true;
             switch (funct)
             {
-            case e_ee_opcode::FUNCT_ADD:
             case e_ee_opcode::FUNCT_ADDU:
                 op = "add"; is_32bit_arith = true; break;
-            case e_ee_opcode::FUNCT_SUB:
             case e_ee_opcode::FUNCT_SUBU:
                 op = "sub"; is_32bit_arith = true; break;
             case e_ee_opcode::FUNCT_DADD:
@@ -3899,6 +3950,17 @@ void module_builder::emit_function_cfg(const ee::s_ee_function& fn,
             if (ins.valid != ee::e_ee_valid::VALID)
             {
                 continue;
+            }
+            // An overflow handler can observe every incoming register,
+            // including the faulting destination before its normal write.
+            if (ins.opcode == e_ee_opcode::OP_SPECIAL &&
+                (ins.funct == static_cast<uint8_t>(e_ee_opcode::FUNCT_ADD) ||
+                 ins.funct == static_cast<uint8_t>(e_ee_opcode::FUNCT_SUB)))
+            {
+                for (uint8_t reg = 1; reg < 32; ++reg)
+                {
+                    rbw.insert(reg);
+                }
             }
             switch (ins.opcode)
             {

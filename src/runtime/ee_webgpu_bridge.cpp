@@ -1,4 +1,5 @@
 #include "ee_webgpu_bridge.h"
+#include "ee_gs_presentation_probe.h"
 
 #include "ps2_webgpu/gs/gpu/gpu.hpp"
 
@@ -412,6 +413,13 @@ void c_ee_webgpu_bridge::committed_gif_events(
     }
 }
 
+bool c_ee_webgpu_bridge::supports_display(
+    const s_ee_gs_display_registers& registers, uint32_t crt_mode) const
+{
+    ps2::gs::gpu::DisplaySource src{};
+    return m_ready && make_display_source(registers, crt_mode, src);
+}
+
 bool c_ee_webgpu_bridge::present(
     const s_ee_gs_display_registers& registers, uint32_t crt_mode)
 {
@@ -427,5 +435,23 @@ bool c_ee_webgpu_bridge::readback(
     ps2::gs::gpu::DisplaySource src{};
     return m_ready && make_display_source(registers, crt_mode, src)
         && ps2::gs::gpu::display(src, pixels, width, height);
+}
+
+bool c_ee_webgpu_bridge::readback_frame(
+    uint64_t frame, const s_ee_gs_display_registers& registers,
+    uint32_t crt_mode, std::vector<uint32_t>& pixels,
+    uint32_t& width, uint32_t& height)
+{
+    ps2::gs::gpu::DisplaySource src{};
+    const s_ee_gs_frame_target target = decode_gs_frame_target(frame);
+    if (!m_ready || !target.m_supported ||
+        !make_display_source(registers, crt_mode, src))
+    {
+        return false;
+    }
+    src.fbp = target.m_base;
+    src.fbw = target.m_fbw;
+    src.psm = target.m_psm;
+    return ps2::gs::gpu::display(src, pixels, width, height);
 }
 } // namespace ee

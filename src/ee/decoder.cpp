@@ -217,6 +217,9 @@ s_ee_instruction decode(uint32_t pc, uint32_t word)
             break;
         case e_ee_opcode::FUNCT_ADD:
         case e_ee_opcode::FUNCT_SUB:
+            insn.valid = insn.sa == 0 ? e_ee_valid::VALID : e_ee_valid::UNSUPPORTED;
+            set_mnemonic(insn, "signed_arith");
+            break;
         case e_ee_opcode::FUNCT_DADD:
         case e_ee_opcode::FUNCT_DSUB:
             // Signed arithmetic must raise the guest overflow exception.

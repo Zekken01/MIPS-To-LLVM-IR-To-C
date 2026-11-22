@@ -113,6 +113,13 @@ class PointerTableTests(unittest.TestCase):
         self.assertEqual(self.discover_branch(0x10001c), [])
         self.assertEqual(self.discover_branch(0x100161), [])
 
+    def test_branch_delay_slot_saves_argument(self):
+        target, siblings = self.make_guarded_switch()
+        image = bytearray(self.image.read_bytes())
+        struct.pack_into("<I", image, 0x208, 0x0080802d)  # daddu s0,a0,zero
+        self.image.write_bytes(image)
+        self.assertEqual(self.discover_branch(target), list(siblings))
+
     def test_branch_anchored_switch_rejects_malformed_provenance(self):
         target, _ = self.make_guarded_switch()
         original = self.image.read_bytes()
@@ -120,6 +127,8 @@ class PointerTableTests(unittest.TestCase):
             (0x200, 0x2c610081),  # guard bounds larger than 128
             (0x200, 0x2c810006),  # guard bounds a different index
             (0x204, 0x00000000),  # missing bounds-check branch
+            (0x208, 0x0080182d),  # delay slot overwrites checked index
+            (0x208, 0xac800000),  # delay slot store could change table data
             (0x20c, 0x3c030020),  # base overwrites index
             (0x210, 0x00031840),  # shift by one, not pointer width
             (0x214, 0x24a50101),  # misaligned table base
@@ -132,6 +141,13 @@ class PointerTableTests(unittest.TestCase):
                 struct.pack_into("<I", image, offset, invalid)
                 self.image.write_bytes(image)
                 self.assertEqual(self.discover_branch(target), [])
+
+    def test_guard_result_must_preserve_index(self):
+        target, _ = self.make_guarded_switch()
+        image = bytearray(self.image.read_bytes())
+        struct.pack_into("<II", image, 0x200, 0x2c630006, 0x10600010)
+        self.image.write_bytes(image)
+        self.assertEqual(self.discover_branch(target), [])
 
     def test_branch_anchored_switch_requires_file_backed_table(self):
         target, _ = self.make_guarded_switch()

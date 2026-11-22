@@ -1,12 +1,23 @@
 #include "ee_gif.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <vector>
 
 namespace ee
 {
 namespace
 {
+void trace_rejection(const char* function, int line)
+{
+    const char* dump_path = std::getenv("EE_REJECTED_PATH2_DUMP");
+    if (dump_path != nullptr && *dump_path != '\0')
+    {
+        std::fprintf(stderr, "GIF rejection in %s:%d\n", function, line);
+    }
+}
+
 uint64_t read_le64(const uint8_t* data)
 {
     uint64_t word = 0;
@@ -42,11 +53,17 @@ void c_ee_gif_path3::bind_event_sink(
 void c_ee_gif_path3::reset()
 {
     m_state = {};
+    m_counters = {};
 }
 
 const s_ee_gif_path3_state& c_ee_gif_path3::state() const
 {
     return m_state;
+}
+
+const s_ee_gif_path_counters& c_ee_gif_path3::counters() const
+{
+    return m_counters;
 }
 
 bool c_ee_gif_path3::consume(const uint8_t* data, uint32_t qwc)
@@ -59,6 +76,8 @@ bool c_ee_gif_path3::consume(const uint8_t* data, uint32_t qwc)
     }
     if (data == nullptr || m_sink == nullptr || qwc > 0xffffu)
     {
+        ++m_counters.m_rejected_batches;
+        trace_rejection(__func__, __LINE__);
         return false;
     }
 
@@ -160,6 +179,8 @@ bool c_ee_gif_path3::consume(const uint8_t* data, uint32_t qwc)
         const uint32_t run = std::min(remaining, qwc - i);
         if (run == 0u)
         {
+            ++m_counters.m_rejected_batches;
+            trace_rejection(__func__, __LINE__);
             return false;
         }
         events.push_back(event(
@@ -177,9 +198,56 @@ bool c_ee_gif_path3::consume(const uint8_t* data, uint32_t qwc)
     // Failure does NOT advance state or consume GIF/DMA input.
     if (!m_sink(m_sink_user, events.data(), events.size(), data, qwc))
     {
+        ++m_counters.m_rejected_batches;
+        trace_rejection(__func__, __LINE__);
         return false;
     }
     m_state = next;
+    ++m_counters.m_accepted_batches;
+    m_counters.m_input_qwc += qwc;
+    for (const s_ee_gif_event& item : events)
+    {
+        switch (item.m_type)
+        {
+        case e_ee_gif_event_type::tag:
+            ++m_counters.m_tags;
+            break;
+        case e_ee_gif_event_type::primitive:
+            ++m_counters.m_primitive_events;
+            break;
+        case e_ee_gif_event_type::packed:
+            ++m_counters.m_packed_events;
+            break;
+        case e_ee_gif_event_type::reglist:
+            ++m_counters.m_reglist_events;
+            break;
+        case e_ee_gif_event_type::image:
+        {
+            // Count the actual, GS-accepted IMAGE/IMAGE2 source bytes.
+            // Do not count rejected or partially staged guest DMA input.
+            // This does not imply the bytes were sampled as textures,
+            // transformed into pixels, or selected by scanout.
+            if (m_counters.m_image_events == 0u)
+            {
+                m_counters.m_image_payload_fnv1a64 =
+                    0xcbf29ce484222325ull;
+            }
+            ++m_counters.m_image_events;
+            m_counters.m_image_qwc += item.m_qwc;
+            const size_t begin = static_cast<size_t>(item.m_byte_offset);
+            const size_t end = begin + static_cast<size_t>(item.m_qwc) * 16u;
+            for (size_t byte = begin; byte < end; ++byte)
+            {
+                const uint8_t value = data[byte];
+                m_counters.m_image_nonzero_bytes += value != 0u ? 1u : 0u;
+                m_counters.m_image_payload_fnv1a64 ^= value;
+                m_counters.m_image_payload_fnv1a64 *=
+                    0x100000001b3ull;
+            }
+            break;
+        }
+        }
+    }
     return true;
 }
 
@@ -188,6 +256,7 @@ bool c_ee_gif_path3::dma_transfer(
 {
     if (user == nullptr || channel != 2u)
     {
+        trace_rejection(__func__, __LINE__);
         return false;
     }
     return static_cast<c_ee_gif_path3*>(user)->consume(data, qwc);
