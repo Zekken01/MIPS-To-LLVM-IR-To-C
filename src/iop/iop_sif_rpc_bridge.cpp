@@ -1225,7 +1225,6 @@ void c_sif_rpc_bridge::reset_for_reboot()
     m_next_guest_token = 1u;
     m_load_requests = 0u;
     m_last_observation = {};
-    m_reply_in_flight = false;
 }
 
 bool c_sif_rpc_bridge::can_queue_replies(size_t count) const
@@ -1248,6 +1247,11 @@ void c_sif_rpc_bridge::queue_init_sreg_reply()
     reply.m_words[4] = 0u;          // SREG index
     reply.m_words[5] = 1u;          // initialized
     m_replies.push_back(reply);
+}
+
+void c_sif_rpc_bridge::set_ee_receive_busy(bool busy)
+{
+    m_ee_receive_busy = busy;
 }
 
 bool c_sif_rpc_bridge::pump()
@@ -1290,15 +1294,11 @@ bool c_sif_rpc_bridge::pump()
         m_replies.push_back(std::move(it->m_reply));
         it = m_pending_module_starts.erase(it);
     }
-    if (m_reply_in_flight)
+    // DMA5 may belong to another transport, and an acknowledged
+    // interrupt can still have a guest handler reading the receiver.
+    if (m_ee_receive_busy || (m_dmac.status() & (1u << 5u)) != 0u)
     {
-        // The prior SIF0 interrupt must have been acknowledged before
-        // overwriting the EE command receiver with another reply.
-        if ((m_dmac.status() & (1u << 5u)) != 0u)
-        {
-            return false;
-        }
-        m_reply_in_flight = false;
+        return false;
     }
     if (m_replies.empty() || !m_sifcmd.initialized())
     {
@@ -1348,7 +1348,6 @@ bool c_sif_rpc_bridge::pump()
             reply.m_module_start_id);
     }
     m_replies.pop_front();
-    m_reply_in_flight = true;
     return true;
 }
 

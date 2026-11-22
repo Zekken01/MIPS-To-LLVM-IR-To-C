@@ -171,6 +171,8 @@ public:
 
     // Deliver at most one queued real service reply if SIF0 is armed.
     // Pending replies remain queued if the EE cannot accept them yet.
+    // The EE can acknowledge DMA5 before the guest has copied its packet.
+    void set_ee_receive_busy(bool busy);
     bool pump();
     size_t pending_replies() const;
     // Calls pending a real R3000 SIFCMD finish trampoline.
@@ -238,6 +240,6 @@ private:
     uint32_t m_load_requests = 0u;
     uint64_t m_total_rpc_requests = 0u;
     s_rpc_observation m_last_observation{};
-    bool m_reply_in_flight = false;
+    bool m_ee_receive_busy = false;
 };
 } // namespace iop

@@ -3118,6 +3118,10 @@ int main(int argc, char** argv)
             irq_interrupted_vu0 = vu0;
             irq_callback_is_intc = false;
             irq_callback_cause = channel;
+            if (channel == 5u && iop_rpc != nullptr)
+            {
+                iop_rpc->set_ee_receive_busy(true);
+            }
             irq_callback_index = 0u;
             irq_callback_active = true;
             enter_irq_callback(irq_callback_handlers[irq_callback_index++]);
@@ -3651,6 +3655,12 @@ int main(int argc, char** argv)
             hardware.dmac().bind_cpu(&cpu);
             irq_callback_active = false;
             irq_callback_handlers.clear();
+            if (!irq_callback_is_intc && irq_callback_cause == 5u &&
+                iop_rpc != nullptr)
+            {
+                iop_rpc->set_ee_receive_busy(false);
+                (void)iop_rpc->pump();
+            }
             if (!irq_callback_is_intc && iop_semaphore_wait_turns != 0u)
             {
                 // The interrupted EE context is a WaitSema syscall trap,
