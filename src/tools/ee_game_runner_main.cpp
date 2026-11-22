@@ -3491,50 +3491,56 @@ int main(int argc, char** argv)
         const uint32_t slice =
             (hot_expand_dir != nullptr || hle_startup || trace ||
              report_path != nullptr) ? 1u : remaining;
-        const auto native_start = std::chrono::steady_clock::now();
-        // A given native function can branch internally forever without
-        // returning to the dispatcher. Reset a per-invocation loop-header
-        // budget before execution; instrumented CFG blocks exit precisely
-        // with LOOP_BUDGET if this count is exhausted.
-        runtime.m_loop_safepoint_remaining = runtime.m_loop_safepoint_limit;
+        // Retrying here (rather than restarting the outer guest loop)
+        // preserves the exact scheduler boundary: no second IOP quantum,
+        // controller poll, VBlank, DMA, or GS presentation is delivered.
         const ee::s_ee_cpu_state cpu_before_dispatch = cpu;
         const uint64_t instructions_before_dispatch =
             runtime.m_guest_instruction_attempts;
-        reason = native_run(&cpu, &runtime, slice, &count, &out_pc, &status);
-        if (runtime.m_timing_observer_failed != 0u)
+        bool hot_expand_budget_reached = false;
+        for (;;)
         {
-            std::fprintf(stderr,
-                "EE timing observation producer rejected native instruction "
-                "(no hardware event published)\n");
-            return 1;
-        }
-        if (report_path != nullptr)
-        {
-            const double duration_ms = std::chrono::duration<double, std::milli>(
-                std::chrono::steady_clock::now() - native_start
-            ).count();
-            native_time_ms += duration_ms;
-            if (duration_ms > slowest_native_ms)
+            // One translated function invocation per native guest boundary.
+            runtime.m_loop_safepoint_remaining =
+                runtime.m_loop_safepoint_limit;
+            const auto native_start = std::chrono::steady_clock::now();
+            reason = native_run(&cpu, &runtime, slice, &count, &out_pc, &status);
+            if (runtime.m_timing_observer_failed != 0u)
             {
-                slowest_native_ms = duration_ms;
-                slowest_native_pc = from_pc;
+                std::fprintf(stderr,
+                    "EE timing observation producer rejected native instruction "
+                    "(no hardware event published)\n");
+                return 1;
             }
-        }
-
-        if (count > slice)
-        {
-            std::fprintf(stderr, "invalid native dispatcher count %u > %u\n", count, slice);
-            return 1;
-        }
-
-        // Misses are observed only after a zero-count native dispatch.  No
-        // guest instruction, hardware clock, input poll, or IRQ may advance
-        // while the compiler updates the host code.  This is an in-process
-        // live checkpoint, not a disk savestate.
-        if (hot_expand_dir != nullptr && count == 0u && status == 0u &&
-            reason == static_cast<uint32_t>(
-                ee::e_ee_exit_reason::EE_EXIT_DISPATCH))
-        {
+            if (report_path != nullptr)
+            {
+                const double duration_ms =
+                    std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - native_start
+                    ).count();
+                native_time_ms += duration_ms;
+                if (duration_ms > slowest_native_ms)
+                {
+                    slowest_native_ms = duration_ms;
+                    slowest_native_pc = from_pc;
+                }
+            }
+            if (count > slice)
+            {
+                std::fprintf(stderr,
+                    "invalid native dispatcher count %u > %u\n", count, slice);
+                return 1;
+            }
+            const bool missing_guest_code =
+                hot_expand_dir != nullptr && count == 0u && status == 0u &&
+                (reason == static_cast<uint32_t>(
+                    ee::e_ee_exit_reason::EE_EXIT_DISPATCH) ||
+                 reason == static_cast<uint32_t>(
+                    ee::e_ee_exit_reason::EE_EXIT_RETURN));
+            if (!missing_guest_code)
+            {
+                break;
+            }
             if (out_pc != from_pc ||
                 runtime.m_guest_instruction_attempts !=
                     instructions_before_dispatch)
@@ -3546,8 +3552,9 @@ int main(int argc, char** argv)
             }
             std::filesystem::path replacement;
             std::string failure;
-            if (!request_hot_expand(hot_expand_dir, ++hot_expand_sequence,
-                                    from_pc, &replacement, &failure))
+            if (!request_hot_expand(
+                    hot_expand_dir, ++hot_expand_sequence, from_pc,
+                    &replacement, &failure))
             {
                 std::fprintf(stderr, "EE hot-expand failed: %s\n",
                              failure.c_str());
@@ -3555,8 +3562,10 @@ int main(int argc, char** argv)
             }
             if (replacement.empty())
             {
-                std::printf("EE hot-expand: expansion budget reached at pc=0x%08x\n",
-                            from_pc);
+                std::printf(
+                    "EE hot-expand: expansion budget reached at pc=0x%08x\n",
+                    from_pc);
+                hot_expand_budget_reached = true;
                 break;
             }
             c_native_module candidate;
@@ -3577,11 +3586,15 @@ int main(int argc, char** argv)
             cpu = cpu_before_dispatch;
             cpu.m_exit_reason = static_cast<uint32_t>(
                 ee::e_ee_exit_reason::EE_EXIT_DISPATCH);
-            std::printf("EE hot-expand: resumed guest pc=0x%08x "
-                        "with replacement=%s (no replay)\n",
-                        from_pc, replacement.string().c_str());
+            std::printf(
+                "EE hot-expand: resumed guest pc=0x%08x "
+                "with replacement=%s (no replay)\n",
+                from_pc, replacement.string().c_str());
             std::fflush(stdout);
-            continue;
+        }
+        if (hot_expand_budget_reached)
+        {
+            break;
         }
 
         dispatched += count;
