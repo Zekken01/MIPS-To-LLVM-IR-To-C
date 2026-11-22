@@ -687,6 +687,72 @@ def make_thread_release_wait_elf(path):
     )
     path.write_bytes(image)
 
+
+def make_thread_semaphore_release_wait_elf(path):
+    """Release a real WaitSema waiter; no stale semaphore queue entry."""
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    image.extend(bytes(max(0, 0x400 - len(image))))
+    struct.pack_into("<I", image, 52 + 16, 0x300)
+    struct.pack_into("<I", image, 52 + 20, 0x300)
+
+    entry = (
+        0x3c040010,  # a0 = 0x00100200 thread descriptor
+        0x34840200,
+        0x24030020,  # CreateThread
+        0x0000000c,
+        0x00408021,  # s0 = ID 2
+        0x3c040010,
+        0x34840240,  # a0 = 0x00100240 sema descriptor
+        0x24030040,  # CreateSema: initial count 0, maximum 1
+        0x0000000c,
+        0x00408821,  # s1 = sema ID 1
+        0x24040002,
+        0x24030022,  # StartThread(2)
+        0x0000000c,
+        0x24040001,
+        0x24030044,  # WaitSema(1), blocks main
+        0x0000000c,
+        0x00409021,  # s2 = returned sema ID 1
+        0x24040001,
+        0x3c050010,
+        0x34a50280,  # a1 = guest ee_sema_t output
+        0x24030047,  # ReferSemaStatus(1)
+        0x0000000c,
+        0x3c080010,
+        0x3508028c,
+        0x8d130000,  # lw s3, wait_threads: must be zero
+        0x24040001,
+        0x24030042,  # SignalSema(1) must increment count, not wake old waiter
+        0x0000000c,
+        0x24040001,
+        0x24030045,  # PollSema(1) succeeds and consumes new count
+        0x0000000c,
+        0x0040a021,  # s4 = semaphore ID 1
+        0x00000008,
+        0x00000000,
+    )
+    worker = (
+        0x24040001,
+        0x2403002d,  # ReleaseWaitThread(1): removes sema queue entry
+        0x0000000c,
+        0x24030023,  # ExitThread if ever resumed
+        0x0000000c,
+        0x00000008,
+        0x00000000,
+    )
+    for index, opcode in enumerate(entry):
+        struct.pack_into("<I", image, 0x108 + index * 4, opcode)
+    for index, opcode in enumerate(worker):
+        struct.pack_into("<I", image, 0x1f0 + index * 4, opcode)
+    struct.pack_into(
+        "<9I", image, 0x300,
+        0, 0x001000f0, 0x00102000, 0x800,
+        0x0010f000, 1, 0, 0, 0,
+    )
+    struct.pack_into("<6I", image, 0x340, 0, 1, 0, 0, 0, 0)
+    path.write_bytes(image)
+
 def make_thread_suspend_resume_elf(path):
     """Create, start, suspend, resume a real guest EE thread via syscalls."""
     make_elf(path)
@@ -2979,6 +3045,38 @@ def main():
             assert registers[17] == 1, state
             assert registers[18] == 1, state
             assert registers[19] == 0xffffffffffffffff, state
+            assert state["final_pc"] == 0, state
+
+        with tempfile.TemporaryDirectory(prefix="ee-native-semaphore-release-") as tmp:
+            root = Path(tmp)
+            elf = root / "kernel-semaphore-release.elf"
+            make_thread_semaphore_release_wait_elf(elf)
+            report_path = root / "semaphore-release.json"
+            command = [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf),
+                "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--max-dispatches=160",
+                "--auto-expand=4",
+                "--trace",
+                "--report", str(report_path),
+                "--hle-startup",
+            ]
+            result = subprocess.run(
+                command, capture_output=True, text=True, check=False,
+            )
+            combined = result.stdout + result.stderr
+            assert result.returncode == 0, combined
+            assert "HLE CreateSema: id=1 init=0 max=1" in combined, combined
+            assert "HLE ReleaseWaitThread: id=1 old_status=4 new_status=2" in combined, combined
+            state = json.loads(report_path.read_text(encoding="utf-8"))
+            registers = state["gpr_lo"]
+            assert registers[16] == 2, state  # worker created
+            assert registers[17] == 1, state  # semaphore created
+            assert registers[18] == 1, state  # WaitSema completed
+            assert registers[19] == 0, state  # no stale waiters
+            assert registers[20] == 1, state  # PollSema consumed new signal
             assert state["final_pc"] == 0, state
 
         with tempfile.TemporaryDirectory(prefix="ee-native-suspend-resume-") as tmp:

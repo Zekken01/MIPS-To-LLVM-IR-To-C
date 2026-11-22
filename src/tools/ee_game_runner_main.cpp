@@ -4696,8 +4696,8 @@ int main(int argc, char** argv)
                             const uint32_t semaphore_id =
                                 target->m_wait_semaphore;
                             if (semaphore_id == 0u ||
-                                semaphore_id >= 64u ||
-                                !semaphores[semaphore_id].m_used)
+                                semaphore_id > 64u ||
+                                !semaphores[semaphore_id - 1u].m_used)
                             {
                                 std::fprintf(stderr,
                                     "ReleaseWaitThread HLE refused "
@@ -4706,7 +4706,7 @@ int main(int argc, char** argv)
                                 break;
                             }
                             auto& waiters =
-                                semaphores[semaphore_id].m_waiters;
+                                semaphores[semaphore_id - 1u].m_waiters;
                             const auto waiter =
                                 std::find(waiters.begin(), waiters.end(), id);
                             if (waiter == waiters.end())
