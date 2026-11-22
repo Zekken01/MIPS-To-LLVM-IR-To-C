@@ -1258,11 +1258,13 @@ bool c_ee_gs_state::write_register(
             }
         }
         break;
+    case 0x3fu: // TEXFLUSH invalidates the renderer cache on GIF commit.
+        return true;
     case 0x0eu: // GS ignores direct writes to these unmapped registers
     case 0x0fu:
         return true;
     default:
-        // Reject SIGNAL, FINISH, LABEL, TEXFLUSH and unknown
+        // Reject SIGNAL, FINISH, LABEL and unknown
         // hardware operations; HWREG executes inside consume().
         trace_rejection(__func__, __LINE__);
         return false;
