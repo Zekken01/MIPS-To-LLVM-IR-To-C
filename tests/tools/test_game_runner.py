@@ -566,6 +566,61 @@ def make_osd_config_elf(path, invalid_set=False):
     path.write_bytes(image)
 
 
+def make_thread_suspend_resume_elf(path):
+    """Create, start, suspend, resume a real guest EE thread via syscalls."""
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    image.extend(bytes(max(0, 0x400 - len(image))))
+    struct.pack_into("<I", image, 52 + 16, 0x300)
+    struct.pack_into("<I", image, 52 + 20, 0x300)
+
+    instructions = (
+        0x3c040010,  # lui a0,0x0010
+        0x34840200,  # ori a0,a0,0x0200: thread descriptor
+        0x24030020,  # CreateThread
+        0x0000000c,
+        0x00408021,  # s0 = new thread ID 2
+        0x24040002,  # a0 = 2
+        0x24030022,  # StartThread, leaving child READY at priority 64
+        0x0000000c,
+        0x24040002,  # ReferThreadStatus(2, nullptr)
+        0x00002821,  # a1 = 0
+        0x24030030,
+        0x0000000c,
+        0x00408821,  # s1 = READY (2)
+        0x24040002,
+        0x24030037,  # SuspendThread(2) -- retail SDBZ failure
+        0x0000000c,
+        0x00409021,  # s2 = returned ID 2
+        0x24040002,
+        0x24030030,  # ReferThreadStatus(2) after suspension
+        0x0000000c,
+        0x00409821,  # s3 = SUSPEND (8)
+        0x24040002,
+        0x24030039,  # ResumeThread(2)
+        0x0000000c,
+        0x0040a021,  # s4 = returned ID 2
+        0x24040002,
+        0x24030030,  # ReferThreadStatus(2) after resume
+        0x0000000c,
+        0x0040a821,  # s5 = READY (2)
+        0x24040063,
+        0x24030037,  # SuspendThread(99): invalid ID, no mutation
+        0x0000000c,
+        0x0040b021,  # s6 = -1
+        0x00000008,  # jr zero to end the synthetic game
+        0x00000000,
+    )
+    for index, opcode in enumerate(instructions):
+        struct.pack_into("<I", image, 0x108 + index * 4, opcode)
+    struct.pack_into(
+        "<9I", image, 0x300,
+        0, 0x001000f0, 0x00102000, 0x800,
+        0x0010f000, 64, 0, 0, 0
+    )
+    path.write_bytes(image)
+
+
 def make_thread_priority_elf(path):
     """Exercise EE thread-priority return values and per-thread state."""
     make_elf(path)
@@ -2726,6 +2781,42 @@ def main():
             assert regs[12] == 0x00642000, state # SetupHeap(size) result
             assert regs[13] == 0x00642000, state # EndOfHeap updated
             assert regs[14] == 0x00642000, state # EndOfHeap ignores A0
+
+        with tempfile.TemporaryDirectory(prefix="ee-native-suspend-resume-") as tmp:
+            root = Path(tmp)
+            elf = root / "kernel-suspend-resume.elf"
+            make_thread_suspend_resume_elf(elf)
+            report_path = root / "suspend-resume.json"
+            command = [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf),
+                "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--max-dispatches=100",
+                "--trace",
+                "--report", str(report_path),
+                "--hle-startup",
+            ]
+            result = subprocess.run(
+                command, capture_output=True, text=True, check=False,
+            )
+            combined = result.stdout + result.stderr
+            assert "HLE CreateThread: id=2" in combined, combined
+            assert "HLE StartThread: id=2" in combined, combined
+            assert "HLE SuspendThread: id=2 old_status=2 new_status=8" in combined, combined
+            assert "HLE ResumeThread: id=2 old_status=8 new_status=2" in combined, combined
+            assert "HLE SuspendThread: id=99 not found, result=-1" in combined, combined
+            state = json.loads(report_path.read_text(encoding="utf-8"))
+            regs = state["gpr_lo"]
+            assert regs[16] == 2, state  # created ID
+            assert regs[17] == 2, state  # initially READY
+            assert regs[18] == 2, state  # SuspendThread return
+            assert regs[19] == 8, state  # state genuinely suspended
+            assert regs[20] == 2, state  # ResumeThread return
+            assert regs[21] == 2, state  # state restored READY
+            assert regs[22] == 0xffffffffffffffff, state # invalid ID
+            assert "HLE EE thread switch: id=2" not in combined, combined
+            assert state["final_pc"] != 0x001000f0, state
 
         with tempfile.TemporaryDirectory(prefix="ee-native-thread-priority-") as tmp:
             root = Path(tmp)
