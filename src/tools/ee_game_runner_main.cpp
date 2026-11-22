@@ -5,6 +5,7 @@
 #include "ee_hw_bus.h"
 #include "ee_host_timers.h"
 #include "ee_hot_expand_protocol.h"
+#include "ee_kernel_thread_status.h"
 #include "ee_hot_loop_diagnostics.h"
 #include "ee_host_loop_yield_budget.h"
 #include "ee_reached_isa_inventory.h"
@@ -2789,7 +2790,7 @@ int main(int argc, char** argv)
     struct s_kernel_thread
     {
         bool m_used = false;
-        uint32_t m_status = 16u; // dormant; 1=run, 2=ready, 4=wait
+        uint32_t m_status = 16u; // dormant; 1=run, 2=ready, 4=wait, 8=suspend, 12=wait+suspend
         uint64_t m_order = 0u;
         bool m_has_context = false;
         uint32_t m_wait_semaphore = 0u;
@@ -4148,6 +4149,7 @@ int main(int argc, char** argv)
                 (service >= 0x20u && service <= 0x24u) ||
                 service == 0x29u || service == 0x2au || service == 0x2bu ||
                 service == 0x2fu || service == 0x30u || service == 0x31u ||
+                service == 0x37u || service == 0x39u ||
                 service == 0x3cu || service == 0x3du || service == 0x3eu ||
                 (service >= 0x40u && service <= 0x48u) ||
                 service == 0x4au || service == 0x4bu ||
@@ -4716,6 +4718,63 @@ int main(int argc, char** argv)
                             "address=0x%08x status=%d\n",
                             service == 0x31u ? "i" : "",
                             requested_id, address, return_code);
+                    }
+                }
+
+                else if (service == 0x37u || service == 0x39u)
+                {
+                    // SuspendThread (0x37) and ResumeThread (0x39).
+                    // Read the actual EE kernel thread ID from A0; zero
+                    // addresses the currently executing guest thread.
+                    // An unknown ID returns -1 and changes no state.
+                    const uint32_t requested_id =
+                        static_cast<uint32_t>(cpu.m_gpr[4].m_lo);
+                    const uint32_t thread_id = requested_id == 0u
+                        ? current_thread_id : requested_id;
+                    const bool found = thread_id > 0u &&
+                        thread_id < 256u && threads[thread_id].m_used;
+                    if (!found)
+                    {
+                        cpu.m_gpr[2].m_lo =
+                            static_cast<uint64_t>(-1ll);
+                        cpu.m_gpr[2].m_hi = 0u;
+                        if (trace)
+                        {
+                            std::printf(
+                                "HLE %sThread: id=%u not found, result=-1\n",
+                                service == 0x37u ? "Suspend" : "Resume",
+                                requested_id);
+                        }
+                    }
+                    else
+                    {
+                        s_kernel_thread& thread = threads[thread_id];
+                        const uint32_t old_status = thread.m_status;
+                        const ee_kernel_thread::s_status_transition next =
+                            service == 0x37u
+                            ? ee_kernel_thread::suspend(old_status)
+                            : ee_kernel_thread::resume(
+                                old_status, thread_id == current_thread_id);
+                        thread.m_status = next.m_status;
+                        cpu.m_gpr[2].m_lo = thread_id;
+                        cpu.m_gpr[2].m_hi = 0u;
+                        if (service == 0x39u && next.m_changed)
+                        {
+                            // ResumeThread may make a suspended guest
+                            // runnable. SuspendThread does NOT force a
+                            // reschedule on the original PS2 EE kernel.
+                            thread.m_order = ++next_thread_order;
+                            reschedule_requested = true;
+                        }
+                        if (trace)
+                        {
+                            std::printf(
+                                "HLE %sThread: id=%u old_status=%u "
+                                "new_status=%u changed=%u result=%u\n",
+                                service == 0x37u ? "Suspend" : "Resume",
+                                thread_id, old_status, thread.m_status,
+                                next.m_changed ? 1u : 0u, thread_id);
+                        }
                     }
                 }
 
