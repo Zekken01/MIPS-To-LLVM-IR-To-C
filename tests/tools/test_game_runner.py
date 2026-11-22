@@ -1952,6 +1952,37 @@ def main():
             assert entry in quiet.stdout, quiet.stdout + quiet.stderr
             assert quiet.returncode == reported.returncode
 
+        # The display setup shifts a width computed in the delay slot,
+        # then overwrites the width register in the successor block.
+        with tempfile.TemporaryDirectory(prefix="ee-native-shift-arguments-") as tmp:
+            root = Path(tmp)
+            elf = root / "shift-arguments.elf"
+            make_elf(elf)
+            image = bytearray(elf.read_bytes())
+            words = (
+                0x24060200,  # addiu a2,zero,512
+                0x04c10002,  # bgez a2,0x100018
+                0x00062983,  # delay slot: sra a1,a2,6
+                0,
+                0x0005303c,  # dsll32 a2,a1,0
+                0x3c050050,  # lui a1,0x50
+                0x0006303f,  # dsra32 a2,a2,0
+                0x00064278,  # dsll t0,a2,9
+                0x00000008, 0,  # jr zero; nop
+            )
+            struct.pack_into("<10I", image, 0x108, *words)
+            elf.write_bytes(image)
+            report = root / "shift.json"
+            result = subprocess.run([
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf), "--build-dir", str(build), "--work-dir",
+                str(root / "out"), "--functions=entry", "--max-dispatches=8",
+                "--report", str(report),
+            ], capture_output=True, text=True)
+            assert report.is_file(), result.stdout + result.stderr
+            state = json.loads(report.read_text())
+            assert state["gpr_lo"][8] == 8 << 9, state
+
         # Batch two related explicit function entries from one cache reload,
         # then publish one merged metadata file. Existing IR stays untouched.
         with tempfile.TemporaryDirectory(prefix="ee-native-batch-append-") as tmp:
