@@ -190,6 +190,34 @@ int main()
         return fail("folder-backed CDVD DMA did not copy authentic file bytes");
     }
 
+    {
+        const fs::path card = temporary.m_path / "Mcd001.ps2";
+        if (!write_file(card, {'M', 'C'}))
+        {
+            return fail("cannot create a host card fixture");
+        }
+        const iop::c_folder_sector_source with_card(temporary.m_path, card);
+        iop::s_folder_file_info card_info{};
+        if (!with_card.valid() || with_card.sector_count() != source.sector_count() ||
+            with_card.find_file("cdrom0:/MCD001.PS2", &card_info) ||
+            !with_card.find_file("cdrom0:/SYSTEM.CNF", &card_info))
+        {
+            return fail("mounted card affected guest disc layout");
+        }
+        const fs::path invalid = temporary.m_path / "other invalid filename.bin";
+        if (!write_file(invalid, {'X'}))
+        {
+            return fail("cannot create an invalid disc entry");
+        }
+        const iop::c_folder_sector_source with_invalid(temporary.m_path, card);
+        if (with_invalid.valid() || with_invalid.error().find(invalid.filename().string()) == std::string::npos)
+        {
+            return fail("unrelated invalid disc filename was not reported");
+        }
+        fs::remove(invalid);
+        fs::remove(card);
+    }
+
 #ifndef _WIN32
     {
         const fs::path duplicate_root = temporary.m_path / "COLLISION";

@@ -2368,7 +2368,10 @@ int main(int argc, char** argv)
             if (disc_folder_path != nullptr)
             {
                 auto folder_source =
-                    std::make_unique<iop::c_folder_sector_source>(disc_root);
+                    std::make_unique<iop::c_folder_sector_source>(
+                        disc_root, memory_card.mounted()
+                            ? std::filesystem::u8path(memory_card_path)
+                            : std::filesystem::path{});
                 if (!folder_source->valid())
                 {
                     std::fprintf(

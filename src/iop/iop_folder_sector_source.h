@@ -23,7 +23,8 @@ struct s_folder_file_info
 class c_folder_sector_source final : public c_sector_source
 {
 public:
-    explicit c_folder_sector_source(const std::filesystem::path& root);
+    explicit c_folder_sector_source(const std::filesystem::path& root,
+        const std::filesystem::path& mounted_card = {});
 
     bool valid() const;
     const std::string& error() const;
@@ -57,7 +58,8 @@ private:
         std::vector<uint8_t> m_memory;
     };
 
-    bool build(const std::filesystem::path& root);
+    bool build(const std::filesystem::path& root,
+        const std::filesystem::path& mounted_card);
     bool fail(const std::string& reason);
     void add_memory(uint32_t lba, std::vector<uint8_t> bytes);
     std::vector<uint8_t> make_directory(const std::string& key) const;
