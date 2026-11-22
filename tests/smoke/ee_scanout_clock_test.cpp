@@ -82,6 +82,9 @@ int main()
     memory.write64(0x108u, 0x3333333333333333ull);
     const uint64_t first_end =
         first_field + (4920115ull * 44u / 525u);
+    check(clock.last_field_cycle() == first_field &&
+          clock.next_edge_cycle() == first_end,
+          "idle deadline selects VBlank end before the next field");
     check(clock.advance_to(first_end - 1u, &intc, &flags, &memory) &&
           clock.fields_ended() == 0u &&
           clock.delivered_vblank_edges().empty(),
@@ -93,6 +96,8 @@ int main()
           clock.fields_started() == 1u,
           "VBlank end fires from the actual field-start clock");
     const uint64_t second_field = clock.next_field_cycle();
+    check(clock.next_edge_cycle() == second_field,
+          "the next field becomes the deadline after VBlank end");
     clock.acknowledge_csr(ee::c_ee_scanout_clock::k_csr_vsint);
     check((clock.csr() & ee::c_ee_scanout_clock::k_csr_vsint) == 0u &&
           (clock.csr() & ee::c_ee_scanout_clock::k_csr_field) != 0u,

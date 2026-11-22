@@ -50,6 +50,7 @@ bool c_ee_scanout_clock::configure(
     m_fields_started = 0u;
     m_fields_ended = 0u;
     m_next_end_cycle = 0u;
+    m_last_field_cycle = 0u;
     // Reference timing: VBlank end 22 scanlines after field start.
     // NTSC/PAL each have 525/625 scanlines per two fields.
     const uint64_t field_cycles = numerator / denominator;
@@ -118,6 +119,7 @@ bool c_ee_scanout_clock::advance_to(
         }
         m_csr = next_csr;
         ++m_fields_started;
+        m_last_field_cycle = field_boundary;
         m_next_end_cycle = field_boundary + m_vblank_duration;
         m_delivered_edges.push_back(1u);
         queue_next_field();
@@ -139,6 +141,17 @@ bool c_ee_scanout_clock::enabled() const
 uint64_t c_ee_scanout_clock::next_field_cycle() const
 {
     return m_next_field_cycle;
+}
+
+uint64_t c_ee_scanout_clock::next_edge_cycle() const
+{
+    return m_next_end_cycle != 0u && m_next_end_cycle < m_next_field_cycle
+        ? m_next_end_cycle : m_next_field_cycle;
+}
+
+uint64_t c_ee_scanout_clock::last_field_cycle() const
+{
+    return m_last_field_cycle;
 }
 
 uint64_t c_ee_scanout_clock::last_ee_cycle() const

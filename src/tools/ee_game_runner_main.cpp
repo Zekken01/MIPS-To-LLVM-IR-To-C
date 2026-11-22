@@ -693,6 +693,7 @@ struct s_gs_field_probe
     uint32_t m_start_dispatch = 0u;
     bool m_first_ppm[3]{};
     bool m_first_nonblack_ppm[3]{};
+    bool m_first_varied_ppm[3]{};
     uint64_t m_last_present_attempts = 0u;
     uint64_t m_last_present_succeeded = 0u;
 };
@@ -703,6 +704,7 @@ bool capture_gs_field(
     const ee::c_ee_gs_presentation_probe& presentation,
     const ee::s_ee_gs_display_registers& display, uint32_t crt_mode,
     uint64_t fields_started, uint64_t dispatches, uint64_t ee_cycle,
+    uint64_t field_cycle,
     uint32_t ee_pc)
 {
     constexpr uint32_t k_max_captures = 64u;
@@ -740,7 +742,7 @@ bool capture_gs_field(
     std::fprintf(probe.m_file,
         "{\"event\":\"field_started\",\"field\":%llu,"
         "\"skipped_fields\":%llu,\"dispatches\":%llu,"
-        "\"ee_cycle\":%llu,\"ee_pc\":\"0x%08x\","
+        "\"ee_cycle\":%llu,\"field_cycle\":%llu,\"ee_pc\":\"0x%08x\","
         "\"guest_crt_mode\":%u,"
         "\"pmode\":\"0x%016llx\",\"smode2\":\"0x%016llx\","
         "\"dispfb1\":\"0x%016llx\",\"dispfb2\":\"0x%016llx\","
@@ -757,7 +759,8 @@ bool capture_gs_field(
         static_cast<unsigned long long>(fields_started),
         static_cast<unsigned long long>(skipped),
         static_cast<unsigned long long>(dispatches),
-        static_cast<unsigned long long>(ee_cycle), ee_pc, crt_mode,
+        static_cast<unsigned long long>(ee_cycle),
+        static_cast<unsigned long long>(field_cycle), ee_pc, crt_mode,
         static_cast<unsigned long long>(display.m_pmode),
         static_cast<unsigned long long>(display.m_smode2),
         static_cast<unsigned long long>(display.m_dispfb[0]),
@@ -804,9 +807,16 @@ bool capture_gs_field(
         uint64_t digest = 0u;
         const bool valid = readback && ee::summarize_gs_field_pixels(
             pixels, width, height, &nonblack, &digest);
+        const uint32_t first_rgb = valid ? pixels.front() & 0x00ffffffu : 0u;
+        const bool varied = valid && std::any_of(
+            pixels.begin(), pixels.end(), [first_rgb](uint32_t pixel)
+            {
+                return (pixel & 0x00ffffffu) != first_rgb;
+            });
         bool ppm_written = false;
         if (valid && (!probe.m_first_ppm[i] ||
-            (nonblack != 0u && !probe.m_first_nonblack_ppm[i])))
+            (nonblack != 0u && !probe.m_first_nonblack_ppm[i]) ||
+            (varied && !probe.m_first_varied_ppm[i])))
         {
             const std::string filename = probe.m_prefix +
                 ".field" + std::to_string(fields_started) +
@@ -816,6 +826,7 @@ bool capture_gs_field(
             if (ppm_written)
             {
                 probe.m_first_ppm[i] = true;
+                probe.m_first_varied_ppm[i] |= varied;
                 if (nonblack != 0u)
                 {
                     probe.m_first_nonblack_ppm[i] = true;
@@ -826,12 +837,15 @@ bool capture_gs_field(
             "%s{\"name\":\"%s\",\"available\":%s,"
             "\"base_blocks\":%u,\"fbw\":%u,\"psm\":%u,"
             "\"readback_succeeded\":%s,\"width\":%u,\"height\":%u,"
-            "\"nonblack_rgb\":%llu,\"fnv1a64_rgba\":\"0x%016llx\","
+            "\"nonblack_rgb\":%llu,\"uniform_rgb\":%s,"
+            "\"first_rgb\":\"0x%02x%02x%02x\",\"fnv1a64_rgba\":\"0x%016llx\","
             "\"ppm_written\":%s}",
             i != 0u ? "," : "", k_names[i],
             available ? "true" : "false", base, fbw, psm,
             valid ? "true" : "false", width, height,
             static_cast<unsigned long long>(nonblack),
+            valid ? (varied ? "false" : "true") : "null",
+            first_rgb & 0xffu, (first_rgb >> 8u) & 0xffu, first_rgb >> 16u,
             static_cast<unsigned long long>(digest),
             ppm_written ? "true" : "false");
     }
@@ -3105,10 +3119,16 @@ int main(int argc, char** argv)
                 iop_hle->signal_vblank_edge(start_edge != 0u);
             }
         }
+#ifdef EE_ENABLE_WEBGPU
+        // Presentation and diagnostics use one display register snapshot
+        // at the checkpoint that delivered the latest field.
+        const auto display = hardware.gs_display_registers();
+        const uint32_t crt_mode = hardware.gs_crt_mode();
+        const uint64_t field = hardware.scanout().fields_started();
+#endif
 #ifdef EE_ENABLE_RAYLIB_WINDOW
         if (gs_webgpu_window)
         {
-            const uint64_t field = hardware.scanout().fields_started();
             if (field != paced_field)
             {
                 using t_clock = std::chrono::steady_clock;
@@ -3158,9 +3178,7 @@ int main(int argc, char** argv)
             }
             raylib_window.pump(
                 webgpu_bridge,
-                hardware.gs_display_registers(),
-                hardware.gs_crt_mode(),
-                hardware.scanout().fields_started(), &graphics_probe,
+                display, crt_mode, field, &graphics_probe,
                 iop_kernel != nullptr ? &iop_kernel->hardware() : nullptr);
             if (raylib_window.closed())
             {
@@ -3172,10 +3190,9 @@ int main(int argc, char** argv)
         if (gs_field_probe.m_file != nullptr &&
             !capture_gs_field(
                 gs_field_probe, webgpu_bridge, gs_state, graphics_probe,
-                hardware.gs_display_registers(),
-                hardware.gs_crt_mode(),
-                hardware.scanout().fields_started(), dispatched,
-                runtime.m_ee_cycle_scheduler.current_cycle(), cpu.m_pc))
+                display, crt_mode, field, dispatched,
+                runtime.m_ee_cycle_scheduler.current_cycle(),
+                hardware.scanout().last_field_cycle(), cpu.m_pc))
         {
             std::fprintf(stderr, "failed to write GS field probe: %s\n",
                 gs_field_probe_path);
@@ -3576,7 +3593,7 @@ int main(int argc, char** argv)
             uint64_t next = std::min(now + k_idle_slice, host_timers.next_event());
             if (hardware.scanout().enabled())
             {
-                next = std::min(next, hardware.scanout().next_field_cycle());
+                next = std::min(next, hardware.scanout().next_edge_cycle());
             }
             // The preceding service has already handled all due events.
             // A device with no future deadline must not stall idle time.

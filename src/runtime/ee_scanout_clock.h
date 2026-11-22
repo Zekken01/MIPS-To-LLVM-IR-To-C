@@ -38,6 +38,8 @@ public:
     void acknowledge_csr(uint64_t write_one_to_clear);
     bool enabled() const;
     uint64_t next_field_cycle() const;
+    uint64_t next_edge_cycle() const;
+    uint64_t last_field_cycle() const;
     uint64_t last_ee_cycle() const;
     uint64_t csr() const;
     uint64_t fields_started() const;
@@ -51,6 +53,7 @@ private:
 
     uint64_t m_last_ee_cycle = 0u;
     uint64_t m_next_field_cycle = 0u;
+    uint64_t m_last_field_cycle = 0u;
     uint64_t m_field_numerator = 0u;
     uint32_t m_field_denominator = 1u;
     uint32_t m_fraction = 0u;
