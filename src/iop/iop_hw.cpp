@@ -96,6 +96,8 @@ void c_hw::reset()
     }
     m_spu2_dma_remaining[0] = 0u;
     m_spu2_dma_remaining[1] = 0u;
+    m_spu2_auto_dma[0] = {};
+    m_spu2_auto_dma[1] = {};
     m_dma_cpu = nullptr;
     m_dma_pcr = 0u;
     m_dma_pcr2 = 0u;
@@ -655,17 +657,47 @@ bool c_hw::spu2_ram_word(uint32_t address, uint16_t* value) const
 
 uint32_t c_hw::spu2_dma_cycles_remaining() const
 {
-    const uint32_t first = m_spu2_dma_remaining[0u];
-    const uint32_t second = m_spu2_dma_remaining[1u];
-    if (first == 0u)
+    uint32_t next = 0u;
+    for (uint32_t deadline : {m_spu2_dma_remaining[0], m_spu2_dma_remaining[1],
+                             m_spu2_auto_dma[0].m_tick, m_spu2_auto_dma[1].m_tick})
     {
-        return second;
+        if (deadline != 0u && (next == 0u || deadline < next))
+        {
+            next = deadline;
+        }
     }
-    if (second == 0u)
+    return next;
+}
+
+void c_hw::feed_spu2_auto_dma(uint32_t core)
+{
+    s_spu2_auto_dma& stream = m_spu2_auto_dma[core];
+    constexpr uint32_t k_chunk_bytes = 1024u;
+    while (stream.m_bytes != 0u &&
+           stream.m_frames <= c_spu2::k_input_frames - k_chunk_bytes / 4u)
     {
-        return first;
+        uint8_t data[k_chunk_bytes]{};
+        const uint32_t bytes = std::min(stream.m_bytes, k_chunk_bytes);
+        if (!m_dma_cpu->dma_read(stream.m_source, data, bytes))
+        {
+            stream.m_bytes = 0u;
+            return;
+        }
+        const uint32_t slot =
+            (stream.m_read_slot + stream.m_frames) % c_spu2::k_input_frames;
+        m_spu2.write_auto_dma_input(core, slot, data, bytes / 4u);
+        stream.m_frames += bytes / 4u;
+        stream.m_source += bytes;
+        stream.m_bytes -= bytes;
+        if (stream.m_bytes == 0u)
+        {
+            m_spu2_dma_remaining[core] = 32u;
+        }
     }
-    return std::min(first, second);
+    if (stream.m_frames != 0u && stream.m_tick == 0u)
+    {
+        stream.m_tick = c_spu2::k_input_batch_cycles;
+    }
 }
 
 void c_hw::start_spu2_dma(uint32_t core)
@@ -686,19 +718,24 @@ void c_hw::start_spu2_dma(uint32_t core)
     const bool to_spu = (chcr & 1u) != 0u;
     const uint32_t channel = core == 0u ? 4u : 7u;
 
-    // Reject invalid lengths, unbacked RAM and separate AutoDMA
-    // streaming rather than inventing sample bytes or a completion.
     if (words == 0u || bytes > c_cpu::k_ram_size ||
         physical > c_cpu::k_ram_size ||
-        bytes > c_cpu::k_ram_size - physical ||
-        (to_spu && m_spu2.auto_dma_enabled(core)))
+        bytes > c_cpu::k_ram_size - physical)
     {
         std::printf(
             "IOP SPU2 DMA deferred: channel=%u madr=0x%08x "
-            "bcr=0x%08x chcr=0x%08x auto=%u "
-            "(no data or completion fabricated)\n",
-            channel, madr, bcr, chcr,
-            (to_spu && m_spu2.auto_dma_enabled(core)) ? 1u : 0u);
+            "bcr=0x%08x chcr=0x%08x (invalid RAM range)\n",
+            channel, madr, bcr, chcr);
+        return;
+    }
+    if (to_spu && m_spu2.auto_dma_enabled(core))
+    {
+        s_spu2_auto_dma& stream = m_spu2_auto_dma[core];
+        stream.m_source = madr;
+        stream.m_bytes = static_cast<uint32_t>(bytes);
+        feed_spu2_auto_dma(core);
+        std::printf("IOP SPU2 AutoDMA started: channel=%u bytes=%u buffered=%u\n",
+                    channel, static_cast<uint32_t>(bytes), stream.m_frames);
         return;
     }
 
@@ -741,38 +778,66 @@ void c_hw::advance_spu2_dma(uint32_t cycles)
     for (uint32_t core = 0u; core < 2u; ++core)
     {
         uint32_t& remaining = m_spu2_dma_remaining[core];
-        if (remaining == 0u)
+        s_spu2_auto_dma& stream = m_spu2_auto_dma[core];
+        for (uint32_t elapsed = 0u;
+             elapsed < cycles && (remaining != 0u || stream.m_tick != 0u);)
         {
-            continue;
-        }
-        if ((m_spu2_dma[core][2u] & k_spu2_dma_str_bit) == 0u)
-        {
-            remaining = 0u;
-            continue;
-        }
-        if (cycles < remaining)
-        {
-            remaining -= cycles;
-            continue;
-        }
-        remaining = 0u;
+            uint32_t step = cycles - elapsed;
+            if (remaining != 0u)
+            {
+                step = std::min(step, remaining);
+            }
+            if (stream.m_tick != 0u)
+            {
+                step = std::min(step, stream.m_tick);
+            }
+            elapsed += step;
+            const bool completed = remaining != 0u && remaining == step;
+            if (remaining != 0u)
+            {
+                remaining -= step;
+            }
+            if (stream.m_tick != 0u)
+            {
+                stream.m_tick -= step;
+                if (stream.m_tick == 0u)
+                {
+                    const uint32_t frames =
+                        std::min(stream.m_frames, c_spu2::k_input_batch);
+                    const uint32_t prior_irq = m_spu2.irq_latches();
+                    m_spu2.consume_auto_dma_input(core, stream.m_read_slot, frames);
+                    if ((m_spu2.irq_latches() & ~prior_irq) != 0u)
+                    {
+                        (void)raise_interrupt(c_spu2::k_irq_line);
+                    }
+                    stream.m_read_slot =
+                        (stream.m_read_slot + frames) % c_spu2::k_input_frames;
+                    stream.m_frames -= frames;
+                    feed_spu2_auto_dma(core);
+                }
+            }
+            if (!completed)
+            {
+                continue;
+            }
 
-        // A real sound-RAM copy completed and was not cancelled.
-        // Only now may the guest see STR fall and the matching
-        // DICR/DICR2 channel completion flag with shared IOP IRQ3.
-        m_spu2_dma[core][2u] &= ~k_spu2_dma_str_bit;
-        const uint32_t channel = core == 0u ? 4u : 7u;
-        const uint32_t index = core == 0u ? 4u : 0u;
-        uint32_t& control = core == 0u ? m_dma_icr : m_dma_icr2;
-        control |= uint32_t{1} << (24u + index);
-        assert_dma_irq(control, false);
-        (void)raise_interrupt(k_dma_irq);
-        std::printf(
-            "IOP SPU2 DMA completed: channel=%u chcr=0x%08x "
-            "dicr=0x%08x i_stat=0x%08x i_mask=0x%08x "
-            "i_ctrl=%u next_irq=%d\n",
-            channel, m_spu2_dma[core][2u], control, m_i_stat,
-            m_i_mask, m_i_ctrl, next_pending_interrupt());
+            // A real sound-RAM copy completed and was not cancelled.
+            // Only now may the guest see STR fall and the matching
+            // DICR/DICR2 channel completion flag with shared IOP IRQ3.
+            m_spu2_dma[core][2u] &= ~k_spu2_dma_str_bit;
+            const uint32_t channel = core == 0u ? 4u : 7u;
+            const uint32_t index = core == 0u ? 4u : 0u;
+            uint32_t& control = core == 0u ? m_dma_icr : m_dma_icr2;
+            control |= uint32_t{1} << (24u + index);
+            assert_dma_irq(control, false);
+            (void)raise_interrupt(k_dma_irq);
+            std::printf(
+                "IOP SPU2 DMA completed: channel=%u chcr=0x%08x "
+                "dicr=0x%08x i_stat=0x%08x i_mask=0x%08x "
+                "i_ctrl=%u next_irq=%d\n",
+                channel, m_spu2_dma[core][2u], control, m_i_stat,
+                m_i_mask, m_i_ctrl, next_pending_interrupt());
+        }
     }
 }
 
@@ -1236,6 +1301,7 @@ bool c_hw::write(
                 // Driver cancellation must never complete a stopped
                 // DMA or set a phantom DICR interrupt flag.
                 m_spu2_dma_remaining[spu2_core] = 0u;
+                m_spu2_auto_dma[spu2_core].m_bytes = 0u;
             }
             else if ((previous & k_spu2_dma_str_bit) == 0u)
             {

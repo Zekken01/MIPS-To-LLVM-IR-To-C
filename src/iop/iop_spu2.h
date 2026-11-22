@@ -7,7 +7,7 @@ namespace iop
 {
 // Guest-visible 16-bit SPU2 register bank from ps2-web-recomp/SDBZ.
 // This models register and transfer-address state only. No voice mixer,
-// sampled audio, automatic DMA completion, or periodic SPU IRQ is inferred.
+// host audio output or voice mixing is modeled here.
 class c_spu2
 {
 public:
@@ -28,7 +28,12 @@ public:
     // SPU2 uses shared 2 MiB sound RAM for both core DMA channels.
     // An ordinary DMA copies real little-endian halfwords starting at
     // the core's guest-programmed TSA, wrapping in the sound RAM.
-    // AutoDMA streaming is a different mode and is not implemented.
+    static constexpr uint32_t k_input_frames = 512u;
+    static constexpr uint32_t k_input_batch = 32u;
+    static constexpr uint32_t k_input_batch_cycles = k_input_batch * 768u;
+    void write_auto_dma_input(uint32_t core, uint32_t slot,
+                              const uint8_t* data, uint32_t frames);
+    void consume_auto_dma_input(uint32_t core, uint32_t slot, uint32_t frames);
     bool auto_dma_enabled(uint32_t core) const;
     bool copy_dma(uint32_t core, std::vector<uint8_t>& data, bool to_spu);
     bool ram_word(uint32_t address, uint16_t* value) const;

@@ -277,6 +277,7 @@ private:
     void assert_dma_irq(uint32_t& control, bool sif_channel);
     void start_spu2_dma(uint32_t core);
     void advance_spu2_dma(uint32_t cycles);
+    void feed_spu2_auto_dma(uint32_t core);
     bool process_sio2_packet();
     bool run_sio2_transfer();
 
@@ -359,6 +360,15 @@ private:
     // Countdown starts only after an actual IOP <-> sound-RAM copy.
     // A guest CHCR.STR clear cancels the pending completion.
     uint32_t m_spu2_dma_remaining[2]{};
+    struct s_spu2_auto_dma
+    {
+        uint32_t m_source = 0u;
+        uint32_t m_bytes = 0u;
+        uint32_t m_read_slot = 0u;
+        uint32_t m_frames = 0u;
+        uint32_t m_tick = 0u;
+    };
+    s_spu2_auto_dma m_spu2_auto_dma[2]{};
     c_cpu* m_dma_cpu = nullptr;
     uint32_t m_dma_pcr = 0u;
     uint32_t m_dma_pcr2 = 0u;

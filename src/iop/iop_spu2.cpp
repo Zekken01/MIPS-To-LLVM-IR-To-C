@@ -56,6 +56,39 @@ bool c_spu2::auto_dma_enabled(uint32_t core) const
          (uint16_t{1} << core)) != 0u;
 }
 
+void c_spu2::write_auto_dma_input(
+    uint32_t core, uint32_t slot, const uint8_t* data, uint32_t frames)
+{
+    const uint32_t base = 0x2000u + core * 0x400u;
+    for (uint32_t frame = 0u; frame < frames; ++frame)
+    {
+        const uint32_t index = (slot + frame) % k_input_frames;
+        const uint32_t left = frame * 2u;
+        const uint32_t right = left + frames * 2u;
+        m_ram[base + index] = static_cast<uint16_t>(
+            data[left] | (uint16_t{data[left + 1u]} << 8u));
+        m_ram[base + k_input_frames + index] = static_cast<uint16_t>(
+            data[right] | (uint16_t{data[right + 1u]} << 8u));
+    }
+}
+
+void c_spu2::consume_auto_dma_input(
+    uint32_t core, uint32_t slot, uint32_t frames)
+{
+    const uint32_t base = 0x2000u + core * 0x400u;
+    for (s_core& candidate : m_cores)
+    {
+        if (!candidate.m_irq && (candidate.m_attr & 0x40u) != 0u &&
+            candidate.m_irqa >= base &&
+            candidate.m_irqa < base + k_input_frames &&
+            (candidate.m_irqa - base + k_input_frames - slot) %
+                k_input_frames < frames)
+        {
+            candidate.m_irq = true;
+        }
+    }
+}
+
 bool c_spu2::ram_word(uint32_t address, uint16_t* value) const
 {
     if (value == nullptr || address >= k_ram_words)

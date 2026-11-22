@@ -184,24 +184,50 @@ bool test_authentic_spu2_dma()
         return false;
     }
 
-    // AutoDMA is a separate streaming-ring protocol in the primary
-    // reference, not ordinary TSA memcpy. Fail closed until it exists.
+    // Three planar stereo blocks exceed the 512-frame input ring.
+    // The last block can enter only after 256 frames are consumed.
     hw.reset();
     if (!kernel.attach_hle_hardware() ||
+        !cpu.write32(source, 0x22221111u) ||
+        !cpu.write32(source + 512u, 0x44443333u) ||
+        !cpu.write32(source + 2048u, 0x66665555u) ||
+        !cpu.write32(source + 2560u, 0x88887777u) ||
         !hw.write(spu2 + 0x1b0u, 2u, 1u) ||
+        !hw.write(spu2 + 0x19eu, 2u, 0x2000u) ||
+        !hw.write(spu2 + 0x19au, 2u, 0x40u) ||
         !hw.write(dma4, 4u, source) ||
-        !hw.write(dma4 + 4u, 4u, 0x00010004u) ||
-        !cpu.write32(0xbf8010c8u, 0x01000001u))
+        !hw.write(dma4 + 4u, 4u, 0x00300010u) ||
+        !cpu.write32(0xbf8010c8u, 0x01000201u) ||
+        !hw.spu2_ram_word(0x2000u, &sample) || sample != 0x1111u ||
+        !hw.spu2_ram_word(0x2200u, &sample) || sample != 0x3333u ||
+        hw.spu2_dma_cycles_remaining() != 24576u)
     {
         return false;
     }
-    hw.advance_cycles(1000u);
-    if (!hw.read(dma4 + 8u, 4u, &actual) ||
-        (actual & iop::c_hw::k_spu2_dma_str_bit) == 0u ||
+    hw.advance_cycles(24576u * 8u - 1u);
+    if (!hw.spu2_ram_word(0x2000u, &sample) || sample != 0x1111u ||
         !hw.read(iop::c_hw::k_i_stat, 4u, &actual) ||
-        actual != 0u ||
-        !hw.read(spu2 + 0x1aau, 2u, &actual) ||
-        actual != 0u)
+        (actual & (1u << iop::c_spu2::k_irq_line)) == 0u ||
+        (actual & (1u << iop::c_hw::k_dma_irq)) != 0u)
+    {
+        return false;
+    }
+    hw.advance_cycles(32u);
+    if (!hw.spu2_ram_word(0x2000u, &sample) || sample != 0x5555u ||
+        !hw.spu2_ram_word(0x2200u, &sample) || sample != 0x7777u ||
+        !hw.read(dma4 + 8u, 4u, &actual) ||
+        (actual & iop::c_hw::k_spu2_dma_str_bit) == 0u)
+    {
+        return false;
+    }
+    hw.advance_cycles(1u);
+    if (!hw.read(dma4 + 8u, 4u, &actual) ||
+        (actual & iop::c_hw::k_spu2_dma_str_bit) != 0u ||
+        !hw.read(iop::c_hw::k_dma_icr, 4u, &actual) ||
+        (actual & 0x10000000u) == 0u ||
+        !hw.read(iop::c_hw::k_i_stat, 4u, &actual) ||
+        (actual & (1u << iop::c_hw::k_dma_irq)) == 0u ||
+        !hw.read(spu2 + 0x1aau, 2u, &actual) || actual != 0u)
     {
         return false;
     }
