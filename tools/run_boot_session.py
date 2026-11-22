@@ -210,6 +210,10 @@ def main(argv=None):
     )
     parser.add_argument("--expansion-passes", type=int, default=2)
     parser.add_argument("--expansion-per-pass", type=int, default=128)
+    parser.add_argument(
+        "--replay-after-expand", action="store_true",
+        help="Legacy mode: restart the guest after each cache miss instead of resuming live",
+    )
     parser.add_argument("--no-recompile", action="store_true")
     parser.add_argument(
         "--quick-probe", action="store_true",
@@ -348,6 +352,7 @@ def main(argv=None):
     base = [
         sys.executable, str(args.driver.resolve()), str(args.elf.resolve()),
         f"--work-dir={work}", f"--report={report}", *forwarded,
+        *(["--replay-after-expand"] if args.replay_after_expand else []),
     ]
 
     if args.gs_webgpu_window and "live_report" in progress_kwargs:
