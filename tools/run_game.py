@@ -1172,8 +1172,8 @@ def main(argv=None):
             parser.error(f"--{name.replace('_', '-')} must be an aligned uint32")
     if args.timeout_seconds < 1 or args.timeout_seconds > 3600:
         parser.error("--timeout-seconds must be in [1, 3600]")
-    if args.auto_expand < 0 or args.auto_expand > 128:
-        parser.error("--auto-expand must be between 0 and 128")
+    if args.auto_expand < 0 or args.auto_expand > 1024:
+        parser.error("--auto-expand must be between 0 and 1024")
     if args.auto_expand_table < 0 or args.auto_expand_table > 128:
         parser.error("--auto-expand-table must be between 0 and 128")
     if args.pdb and os.name != "nt":
