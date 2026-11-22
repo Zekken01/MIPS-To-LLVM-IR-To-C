@@ -206,6 +206,7 @@ def test_replay_pair_is_cpu_only_and_uses_one_library():
         calls = []
         def fake_run(command, env=None, check=False):
             assert "--no-recompile" in command and "--auto-expand=0" in command
+            assert "--memcard-discard-writes" in command
             assert not any("--auto-expand=" in c and c != "--auto-expand=0" for c in command)
             assert not any("--gs-webgpu" in c or "--gs-snapshot" in c for c in command)
             assert "--disc-folder" in command

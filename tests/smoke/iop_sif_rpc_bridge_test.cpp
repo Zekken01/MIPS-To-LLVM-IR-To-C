@@ -290,7 +290,23 @@ bool test_arkd_deferred_bind(const std::filesystem::path& disc_root)
     if (!ee::c_ee_dmac::mmio_write(
             &dmac, ee::c_ee_dmac::k_sif0_base,
             4u, &armed) ||
-        !rpc.pump() ||
+        !dmac.raise(5u) || rpc.pump() ||
+        rpc.pending_replies() != 1u ||
+        memory.read32(k_receive + 16u) != 0xcafef00du)
+    {
+        return false;
+    }
+    // Kernel HLE acknowledges DMA5 before running the EE callback.
+    // The acknowledgement alone must leave the receiver untouched.
+    rpc.set_ee_receive_busy(true);
+    dmac.acknowledge(5u);
+    if (rpc.pump() || rpc.pending_replies() != 1u ||
+        memory.read32(k_receive + 16u) != 0xcafef00du)
+    {
+        return false;
+    }
+    rpc.set_ee_receive_busy(false);
+    if (!rpc.pump() ||
         rpc.pending_replies() != 0u ||
         memory.read32(k_receive + 8u) !=
             iop::c_sif_rpc_bridge::k_reply_cid ||

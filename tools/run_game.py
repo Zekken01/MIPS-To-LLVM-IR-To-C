@@ -1025,6 +1025,8 @@ def main(argv=None):
                         help="Trace native guest V0 changes within an aligned guest PC interval START:END")
     parser.add_argument("--trace-store", type=lambda value: int(value, 0),
                         help="Trace guest store PCs and operands overlapping a 32-bit guest word")
+    parser.add_argument("--memcard-discard-writes", action="store_true",
+                        help="Keep guest memory card writes in memory only")
     parser.add_argument("--gs-snapshot", type=Path,
                         help="Optional PPM display VRAM readback (not a completed frame)")
     parser.add_argument("--gs-upload-snapshot", type=Path,
@@ -1331,6 +1333,10 @@ def main(argv=None):
                 )
             command.append(f"--kernel-ram={snapshot}")
 
+        # Every discovery replay starts with the same on-disk card. The
+        # final replay without auto-expansion can persist guest changes.
+        if args.auto_expand or args.memcard_discard_writes:
+            command.append("--memcard-discard-writes")
         ranges = executable_segments(elf) if args.auto_expand else []
         expanded_count = 0
         for replay in range(args.auto_expand + 1):
