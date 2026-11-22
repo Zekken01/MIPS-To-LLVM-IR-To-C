@@ -987,7 +987,10 @@ def run_hot_expand(command, directory, timeout_seconds, compile_missing):
                         print(f"run_game: hot expansion failed: {exc}",
                               file=sys.stderr, flush=True)
                     pending = response.with_suffix(".tmp")
-                    pending.write_text(f"{sequence}\n{result}\n", encoding="utf-8")
+                    # Never use Windows text-mode newline translation here: 
+                    # the native binary reader expects an exact two-line protocol.
+                    with pending.open("w", encoding="utf-8", newline="\n") as output:
+                        output.write(f"{sequence}\n{result}\n")
                     pending.replace(response)
                     sequence += 1
 
