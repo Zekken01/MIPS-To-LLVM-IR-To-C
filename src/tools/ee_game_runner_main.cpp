@@ -578,6 +578,145 @@ bool write_gs_ppm(
     return success;
 }
 
+#ifdef EE_ENABLE_WEBGPU
+// Diagnostic-only, bounded field-start captures. An offscreen WebGPU
+// replay uses the same guest scanout clock as a windowed one.
+struct s_gs_field_probe
+{
+    FILE* m_file = nullptr;
+    std::string m_prefix;
+    uint64_t m_last_field = 0u;
+    uint32_t m_captures = 0u;
+    bool m_first_ppm[3]{};
+    bool m_first_nonblack_ppm[3]{};
+};
+
+bool capture_gs_field(
+    s_gs_field_probe& probe, ee::c_ee_webgpu_bridge& gpu,
+    const ee::c_ee_gs_state& gs,
+    const ee::s_ee_gs_display_registers& display, uint32_t crt_mode,
+    uint64_t fields_started, uint64_t dispatches, uint64_t ee_cycle,
+    uint32_t ee_pc)
+{
+    constexpr uint32_t k_max_captures = 64u;
+    if (probe.m_file == nullptr || fields_started <= probe.m_last_field)
+    {
+        return true;
+    }
+    const uint64_t skipped = fields_started - probe.m_last_field - 1u;
+    probe.m_last_field = fields_started;
+    if (probe.m_captures >= k_max_captures)
+    {
+        return true;
+    }
+    ++probe.m_captures;
+
+    const uint32_t circuit = (display.m_pmode & 2u) != 0u ? 1u : 0u;
+    const uint64_t selected_fb = display.m_dispfb[circuit];
+    const uint64_t frames[2] =
+    {
+        gs.register_value(0x4cu), gs.register_value(0x4du)
+    };
+    const bool frame_written[2] =
+    {
+        gs.was_written(0x4cu), gs.was_written(0x4du)
+    };
+    std::fprintf(probe.m_file,
+        "{\"event\":\"field_started\",\"field\":%llu,"
+        "\"skipped_fields\":%llu,\"dispatches\":%llu,"
+        "\"ee_cycle\":%llu,\"ee_pc\":\"0x%08x\","
+        "\"guest_crt_mode\":%u,"
+        "\"pmode\":\"0x%016llx\",\"smode2\":\"0x%016llx\","
+        "\"dispfb1\":\"0x%016llx\",\"dispfb2\":\"0x%016llx\","
+        "\"display1\":\"0x%016llx\",\"display2\":\"0x%016llx\","
+        "\"selected_circuit\":%u,"
+        "\"frame1\":\"0x%016llx\",\"frame2\":\"0x%016llx\","
+        "\"frame1_written\":%s,\"frame2_written\":%s,"
+        "\"sprite_pairs\":%llu,\"textured_sprite_pairs\":%llu,"
+        "\"gpu_draws\":%llu,\"targets\":[",
+        static_cast<unsigned long long>(fields_started),
+        static_cast<unsigned long long>(skipped),
+        static_cast<unsigned long long>(dispatches),
+        static_cast<unsigned long long>(ee_cycle), ee_pc, crt_mode,
+        static_cast<unsigned long long>(display.m_pmode),
+        static_cast<unsigned long long>(display.m_smode2),
+        static_cast<unsigned long long>(display.m_dispfb[0]),
+        static_cast<unsigned long long>(display.m_dispfb[1]),
+        static_cast<unsigned long long>(display.m_display[0]),
+        static_cast<unsigned long long>(display.m_display[1]),
+        circuit + 1u,
+        static_cast<unsigned long long>(frames[0]),
+        static_cast<unsigned long long>(frames[1]),
+        frame_written[0] ? "true" : "false",
+        frame_written[1] ? "true" : "false",
+        static_cast<unsigned long long>(gs.state().m_total_sprite_pair_kicks),
+        static_cast<unsigned long long>(gs.state().m_total_sprite_textured_kicks),
+        static_cast<unsigned long long>(gpu.rendered_primitives()));
+
+    static constexpr const char* k_names[3] =
+    {
+        "display", "frame1", "frame2"
+    };
+    for (uint32_t i = 0u; i < 3u; ++i)
+    {
+        const bool available = i == 0u || frame_written[i - 1u];
+        const uint64_t raw = i == 0u ? selected_fb : frames[i - 1u];
+        const ee::s_ee_gs_frame_target frame =
+            ee::decode_gs_frame_target(raw);
+        const uint32_t base = i == 0u
+            ? static_cast<uint32_t>(raw & 0x1ffu) * 32u : frame.m_base;
+        const uint32_t fbw = i == 0u
+            ? static_cast<uint32_t>((raw >> 9u) & 0x3fu) : frame.m_fbw;
+        const uint32_t psm = i == 0u
+            ? static_cast<uint32_t>((raw >> 15u) & 0x1fu) : frame.m_psm;
+        std::vector<uint32_t> pixels;
+        uint32_t width = 0u;
+        uint32_t height = 0u;
+        const bool readback = available && (i == 0u
+            ? gpu.readback(display, crt_mode, pixels, width, height)
+            : gpu.readback_frame(raw, display, crt_mode,
+                pixels, width, height));
+        uint64_t nonblack = 0u;
+        uint64_t digest = 0u;
+        const bool valid = readback && ee::summarize_gs_field_pixels(
+            pixels, width, height, &nonblack, &digest);
+        bool ppm_written = false;
+        if (valid && (!probe.m_first_ppm[i] ||
+            (nonblack != 0u && !probe.m_first_nonblack_ppm[i])))
+        {
+            const std::string filename = probe.m_prefix +
+                ".field" + std::to_string(fields_started) +
+                "." + k_names[i] + ".ppm";
+            ppm_written = write_gs_ppm(
+                filename.c_str(), pixels, width, height);
+            if (ppm_written)
+            {
+                probe.m_first_ppm[i] = true;
+                if (nonblack != 0u)
+                {
+                    probe.m_first_nonblack_ppm[i] = true;
+                }
+            }
+        }
+        std::fprintf(probe.m_file,
+            "%s{\"name\":\"%s\",\"available\":%s,"
+            "\"base_blocks\":%u,\"fbw\":%u,\"psm\":%u,"
+            "\"readback_succeeded\":%s,\"width\":%u,\"height\":%u,"
+            "\"nonblack_rgb\":%llu,\"fnv1a64_rgba\":\"0x%016llx\","
+            "\"ppm_written\":%s}",
+            i != 0u ? "," : "", k_names[i],
+            available ? "true" : "false", base, fbw, psm,
+            valid ? "true" : "false", width, height,
+            static_cast<unsigned long long>(nonblack),
+            static_cast<unsigned long long>(digest),
+            ppm_written ? "true" : "false");
+    }
+    std::fputs("]}\n", probe.m_file);
+    return std::fflush(probe.m_file) == 0 &&
+        std::ferror(probe.m_file) == 0;
+}
+#endif
+
 void usage(const char* program)
 {
     std::printf(
@@ -600,6 +739,8 @@ void usage(const char* program)
         "  --gs-upload-snapshot=FILE  Preview completed GIF upload VRAM PPM (not a frame)\n"
         "  --gs-webgpu-snapshot=FILE  Render actual native WebGPU GS raster to PPM (opt-in)\n"
         "  --gs-webgpu-window   Show guest scanout fields in a raylib/WebGPU window (opt-in)\n"
+        "  --gs-field-probe=FILE  Bounded GPU FRAME/DISPFB JSONL at real guest fields\n"
+        "                        Also accepts SDBZ_GS_FIELD_PROBE (WebGPU build)\n"
         "  --trace              Print guest PC, reason and dispatch count per step\n"
         "  --trace-entry=0xPC   Print arguments and pointed-to words at a guest entry\n"
         "  --watch-word=0xADDR  Report guest word changes between native dispatches\n"
@@ -1337,6 +1478,8 @@ int main(int argc, char** argv)
     const char* gs_snapshot_path = nullptr;
     const char* gs_upload_snapshot_path = nullptr;
     const char* gs_webgpu_snapshot_path = nullptr;
+    const char* gs_field_probe_path = nullptr;
+    std::string gs_field_probe_environment;
     bool gs_webgpu_window = false;
     const char* instruction_trace_path = nullptr;
     uint32_t instruction_trace_first_pc = 0u;
@@ -1452,6 +1595,16 @@ int main(int argc, char** argv)
                 gs_webgpu_snapshot_path = argv[i] + k_prefix_len;
                 continue;
             }
+        }
+        if (argument.compare(0, 17, "--gs-field-probe=") == 0)
+        {
+            if (argument.size() == 17u || gs_field_probe_path != nullptr)
+            {
+                std::fprintf(stderr, "invalid or duplicate GS field probe path\n");
+                return 2;
+            }
+            gs_field_probe_path = argv[i] + 17;
+            continue;
         }
         if (argument == "--gs-webgpu-window")
         {
@@ -1925,9 +2078,53 @@ int main(int argc, char** argv)
 
     ee::c_ee_gs_presentation_probe graphics_probe{};
     graphics_probe.set_window_requested(gs_webgpu_window);
+    if (gs_field_probe_path == nullptr)
+    {
+        gs_field_probe_path = read_host_environment(
+            "SDBZ_GS_FIELD_PROBE", &gs_field_probe_environment);
+    }
+#ifndef EE_ENABLE_WEBGPU
+    if (gs_field_probe_path != nullptr && *gs_field_probe_path != '\0')
+    {
+        std::fprintf(stderr, "GS field probe requires EE_ENABLE_WEBGPU=ON\n");
+        return 2;
+    }
+#endif
 #ifdef EE_ENABLE_WEBGPU
+    std::unique_ptr<FILE, decltype(&std::fclose)> gs_field_probe_file(
+        nullptr, &std::fclose);
+    s_gs_field_probe gs_field_probe{};
+    if (gs_field_probe_path != nullptr)
+    {
+        if (*gs_field_probe_path == '\0')
+        {
+            std::fprintf(stderr, "empty GS field probe path\n");
+            return 2;
+        }
+        gs_field_probe_file.reset(
+            open_host_file(gs_field_probe_path, "wb"));
+        if (!gs_field_probe_file)
+        {
+            std::fprintf(stderr, "cannot create GS field probe: %s\n",
+                gs_field_probe_path);
+            return 2;
+        }
+        gs_field_probe.m_file = gs_field_probe_file.get();
+        gs_field_probe.m_prefix = gs_field_probe_path;
+        std::fputs(
+            "{\"event\":\"configuration\","
+            "\"schema\":\"gs-field-target-provenance-v1\","
+            "\"max_field_samples\":64,"
+            "\"ppm_policy\":\"first_readback_and_first_nonblack_per_target\"}\n",
+            gs_field_probe.m_file);
+        if (std::fflush(gs_field_probe.m_file) != 0)
+        {
+            return 2;
+        }
+    }
     ee::c_ee_webgpu_bridge webgpu_bridge{};
-    if (gs_webgpu_snapshot_path != nullptr || gs_webgpu_window)
+    if (gs_webgpu_snapshot_path != nullptr || gs_webgpu_window ||
+        gs_field_probe.m_file != nullptr)
     {
         if (!webgpu_bridge.init())
         {
@@ -3197,6 +3394,20 @@ int main(int argc, char** argv)
                 static_cast<unsigned long long>(runtime.m_ee_cycle_scheduler.current_cycle()));
             return 1;
         }
+#ifdef EE_ENABLE_WEBGPU
+        if (gs_field_probe.m_file != nullptr &&
+            !capture_gs_field(
+                gs_field_probe, webgpu_bridge, gs_state,
+                hardware.gs_display_registers(),
+                hardware.gs_crt_mode(),
+                hardware.scanout().fields_started(), dispatched,
+                runtime.m_ee_cycle_scheduler.current_cycle(), cpu.m_pc))
+        {
+            std::fprintf(stderr, "failed to write GS field probe: %s\n",
+                gs_field_probe_path);
+            return 1;
+        }
+#endif
         // Deliver original IOP start/end callbacks in the scanout
         // clock's event order; never infer edges from wall time.
         if (iop_hle != nullptr)
