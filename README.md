@@ -81,8 +81,13 @@ protocol, validation rules, acceptance target and limitations.
 
 Run `python tools/launch_ps2_gui.py` for the graphical launcher. Choose
 the extracted disc folder and an optional raw PS2 memory card, then
-select **Launch**. The game opens in the raylib/WebGPU window. The
-first available controller supplies PS2 port 1 input. The south face
+select **Launch**. By default, the native raylib/WebGPU game opens
+inside the launcher's new **Game window** tab, with build and runtime logs
+still visible underneath. On the **Game** tab, uncheck **Show game in
+launcher tab** to restore the standalone game window. The game viewport
+resizes with the launcher. This Win32 embedding uses the live renderer and
+input, not a screenshot; the game still runs as its own process.
+The first available controller supplies PS2 port 1 input. The south face
 button maps to Cross. Both sticks, the D-pad, Start, Select, and the
 shoulder buttons are mapped. The launcher shows the build and game
 log and saves it to `build/ps2-launcher.log`.
