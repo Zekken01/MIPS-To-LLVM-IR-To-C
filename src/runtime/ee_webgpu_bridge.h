@@ -50,6 +50,15 @@ public:
         std::vector<uint32_t>& pixels, uint32_t& width, uint32_t& height
     );
 
+    // Read a FRAME_1/FRAME_2 drawing target directly from GPU VRAM using
+    // the guest's actual DISPLAY crop. Does not alter any GS registers or
+    // submit a guest present. Unsupported color formats fail closed.
+    bool readback_frame(
+        uint64_t frame, const s_ee_gs_display_registers& registers,
+        uint32_t crt_mode, std::vector<uint32_t>& pixels,
+        uint32_t& width, uint32_t& height
+    );
+
 private:
     void register_write(uint32_t reg, uint64_t value);
     void packed_write(uint32_t reg, uint64_t low, uint64_t high);
