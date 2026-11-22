@@ -61,7 +61,8 @@ BUILD_OPTIONS = (
            choices=("Debug", "Release", "RelWithDebInfo", "MinSizeRel")),
     Option("--functions", "Translate entry, all functions, or a positive function cap.", default="entry"),
     Option("--extra-functions", "Comma-separated guest PCs to translate."),
-    Option("--auto-expand", "Maximum newly translated entry PCs per replay.", default="0"),
+    Option("--auto-expand", "Maximum new functions (0–1024); pauses and resumes live by default.", default="0"),
+    Option("--replay-after-expand", "Use legacy restart after each cache miss instead of live resume.", "flag"),
     Option("--auto-expand-table", "Maximum sibling function pointers prefetched per replay.", default="24"),
     Option("--pdb", "Generate a Windows PDB with Clang/LLD.", "flag"),
     Option("--emit-opt", "LLVM native object optimization level.", default="0", choices=("0", "1", "2", "3")),
@@ -81,7 +82,7 @@ TOOL_OPTIONS = {
             Option("--work-dir", WORK_DIR.help, "required-directory", "build/ps2-game-hle"),
             Option("--report", REPORT.help, "required-output", "build/ps2-game-hle/first-boot.json"),
             Option("--expansion-passes", "Maximum auto-expansion passes (1–64).", default="2"),
-            Option("--expansion-per-pass", "Maximum new functions per pass (1–128).", default="128"),
+            Option("--expansion-per-pass", "Maximum new functions per pass (1–1024).", default="128"),
             Option("--no-recompile", "Reuse compiled guest code without rebuilding it.", "flag"),
             Option("--quick-probe", "Use the last expansion pass as the final report. Skips traced replay.", "flag"),
             Option("--ll-progress", "Show the live LLVM IR file count on a terminal.", "flag"),
@@ -96,7 +97,7 @@ TOOL_OPTIONS = {
         ),
         "Runtime": LIMITS + (TIMEOUT,),
         "Translation": tuple(option for option in BUILD_OPTIONS if option.name not in
-                             ("--auto-expand", "--no-recompile", "--link-only")),
+                             ("--auto-expand", "--no-recompile", "--link-only", "--replay-after-expand")),
         "Trace": TRACE_OPTIONS[1:],
     },
     "Game runner (Python)": {
@@ -109,7 +110,9 @@ TOOL_OPTIONS = {
     },
     "Native runner": {
         "Inputs": (ELF, Option("library", "Path to the linked native game library.", "positional"), REPORT),
-        "Runtime": LIMITS,
+        "Runtime": LIMITS + (
+            Option("--hot-expand-dir", "Internal live cache-miss transport; requires a Python compiler supervisor.", "directory"),
+        ),
         "Disc and IOP": DISC_OPTIONS + (IRX_ROM,),
         "Display": GS_OPTIONS + (
             Option("--gs-field-probe", "Write bounded GS field diagnostics as JSONL.", "output"),
