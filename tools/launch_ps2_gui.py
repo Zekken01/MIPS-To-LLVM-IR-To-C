@@ -37,6 +37,78 @@ NUMERIC_SETTINGS = {
 }
 COMMAND_TOOLS = ("Boot session", "Game runner (Python)", "Native runner")
 
+OPTION_HELP = {
+    "Extracted disc": "Folder containing the extracted game files and SYSTEM.CNF.",
+    "Memory card": "Optional raw 8,650,752-byte PS2 card image for slot 1. Game writes may be saved to this file.",
+    "Session mode": (
+        "Full replay runs the traced boot. Automatic uses the launcher’s normal selection. "
+        "Quick probe checks cached coverage. Matched replay runs neutral and Cross inputs "
+        "with the same cached code. Cache recovery reconstructs known IR without running the game."
+    ),
+    "Controller profile": (
+        "Neutral leaves the controller free of scripted presses. Cross replay injects "
+        "eight polls starting at poll 200. Custom uses the values under Limits and diagnostics."
+    ),
+    "WebGPU window": "Open the raylib game window with live controller input. Available for Full replay and Automatic.",
+    "WebGPU snapshot": "Save a WebGPU-rendered display snapshot. Available for Full replay and Automatic.",
+    "Accept changed IR hashes": "Allow cache recovery to accept IR hashes that differ from the saved manifest.",
+    "Cross first poll": "The first port 1 controller poll that receives scripted Cross. Select the Custom profile to use it.",
+    "Cross poll count": "How many consecutive polls hold Cross. Select the Custom profile to use it.",
+    "Max dispatches": "Maximum translated EE dispatches per pass.",
+    "Timeout (seconds)": "Wall-clock timeout for a replay or probe, in seconds.",
+    "Expansion passes": "Maximum auto-expansion passes. Range 1–64.",
+    "Functions per expansion": "Maximum newly emitted functions per expansion pass. Range 1–128.",
+    "Compile jobs": "Number of parallel jobs used to compile translated guest code.",
+    "SIF poll limit": "Maximum polling iterations allowed at a SIF wait boundary.",
+    "Loop watchdog resumes": "How many times to resume the native loop watchdog between progress events. Zero stops on the first watchdog hit.",
+    "Trace every N dispatches": "Sample ordinary verbose dispatch lines at this interval. One logs every dispatch.",
+    "Report snapshot interval (ms)": "Interval between periodic JSON reports, in milliseconds. Zero uses dispatch-based checkpoints.",
+    "Tool": "Choose the boot session orchestrator, Python game runner, or native executable for a direct command.",
+    "Native executable": "Path to ee_game_runner.exe for the Native runner tool.",
+    "Arguments": "Enter one argument per line. Keep paths containing spaces on one line without surrounding quotes.",
+    "Show --help": "Print the selected tool’s command-line help in the output pane.",
+    "Launch": "Run the command configured in the selected tab.",
+}
+
+
+class Tooltip:
+    def __init__(self, widget, text):
+        self.widget = widget
+        self.text = text
+        self.pending = None
+        self.popup = None
+        widget.bind("<Enter>", self.schedule, add="+")
+        for event in ("<Leave>", "<ButtonPress>", "<Unmap>", "<Destroy>"):
+            widget.bind(event, self.hide, add="+")
+
+    def schedule(self, _event):
+        self.hide()
+        self.pending = self.widget.after(500, self.show)
+
+    def show(self):
+        self.pending = None
+        popup = tk.Toplevel(self.widget)
+        self.popup = popup
+        popup.withdraw()
+        popup.overrideredirect(True)
+        ttk.Label(
+            popup, text=self.text, wraplength=320, padding=(8, 5), relief="solid"
+        ).pack()
+        popup.update_idletasks()
+        x = self.widget.winfo_rootx()
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 3
+        popup.geometry(f"{x:+d}{y:+d}")
+        popup.deiconify()
+
+    def hide(self, _event=None):
+        if self.pending is not None:
+            self.widget.after_cancel(self.pending)
+            self.pending = None
+        if self.popup is not None:
+            self.popup.destroy()
+            self.popup = None
+
+
 
 def replay_limits(mode):
     if mode == "Quick probe":
@@ -216,15 +288,21 @@ class Launcher(ttk.Frame):
         self.pad_picker = self.choice_row(self.setup, 3, "Controller profile", self.pad, PAD_PROFILES)
         self.window_picker = ttk.Checkbutton(self.setup, text="WebGPU window", variable=self.window)
         self.window_picker.grid(row=4, column=1, sticky="w")
+        Tooltip(self.window_picker, OPTION_HELP["WebGPU window"])
         self.snapshot_picker = ttk.Checkbutton(self.setup, text="WebGPU snapshot", variable=self.snapshot)
         self.snapshot_picker.grid(row=5, column=1, sticky="w")
+        Tooltip(self.snapshot_picker, OPTION_HELP["WebGPU snapshot"])
         self.ir_picker = ttk.Checkbutton(self.setup, text="Accept changed IR hashes", variable=self.accept_ir)
         self.ir_picker.grid(row=6, column=1, sticky="w")
+        Tooltip(self.ir_picker, OPTION_HELP["Accept changed IR hashes"])
         self.cross_entries = []
         for row, (label, variable) in enumerate(self.numeric.items()):
-            ttk.Label(self.limits, text=label).grid(row=row, column=0, sticky="w", padx=(0, 12))
+            caption = ttk.Label(self.limits, text=label)
+            caption.grid(row=row, column=0, sticky="w", padx=(0, 12))
+            Tooltip(caption, OPTION_HELP[label])
             entry = ttk.Entry(self.limits, textvariable=variable)
             entry.grid(row=row, column=1, sticky="ew", pady=2)
+            Tooltip(entry, OPTION_HELP[label])
             if row < 2:
                 self.cross_entries.append(entry)
         ttk.Label(self.limits, text="Blank fields use the batch launcher defaults.").grid(
@@ -232,18 +310,23 @@ class Launcher(ttk.Frame):
         )
         self.choice_row(self.direct, 0, "Tool", self.tool, COMMAND_TOOLS)
         self.path_row(self.direct, 1, "Native executable", self.executable, filedialog.askopenfilename)
-        ttk.Label(self.direct, text="Arguments (one per line)").grid(row=2, column=0, sticky="nw")
+        arguments_label = ttk.Label(self.direct, text="Arguments (one per line)")
+        arguments_label.grid(row=2, column=0, sticky="nw")
+        Tooltip(arguments_label, OPTION_HELP["Arguments"])
         self.arguments = tk.Text(self.direct, height=7, width=48, wrap="none")
         self.arguments.grid(row=2, column=1, columnspan=2, sticky="ew")
         self.arguments.insert("1.0", settings["arguments"])
+        Tooltip(self.arguments, OPTION_HELP["Arguments"])
         self.help_button = ttk.Button(self.direct, text="Show --help", command=lambda: self.launch(True))
         self.help_button.grid(row=3, column=1, sticky="w", pady=(6, 0))
+        Tooltip(self.help_button, OPTION_HELP["Show --help"])
         self.mode.trace_add("write", self.change_mode)
         window.protocol("WM_DELETE_WINDOW", self.close)
         self.pad.trace_add("write", self.update_fields)
         self.update_fields()
         self.play = ttk.Button(self, text="Launch", command=self.launch)
         self.play.grid(row=3, column=0, sticky="w", pady=(0, 10))
+        Tooltip(self.play, OPTION_HELP["Launch"])
         ttk.Label(self, textvariable=self.status).grid(
             row=3, column=1, columnspan=2, sticky="w"
         )
@@ -297,9 +380,12 @@ class Launcher(ttk.Frame):
             entry.state(cross_state)
 
     def choice_row(self, parent, row, label, variable, choices):
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=(0, 12))
+        caption = ttk.Label(parent, text=label)
+        caption.grid(row=row, column=0, sticky="w", padx=(0, 12))
+        Tooltip(caption, OPTION_HELP[label])
         picker = ttk.Combobox(parent, textvariable=variable, values=list(choices), state="readonly")
         picker.grid(row=row, column=1, columnspan=2, sticky="ew", pady=4)
+        Tooltip(picker, OPTION_HELP[label])
         return picker
 
     def path_row(self, parent, row, label, variable, picker):
@@ -308,13 +394,15 @@ class Launcher(ttk.Frame):
             if selected:
                 variable.set(selected)
 
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=(0, 12))
-        ttk.Entry(parent, textvariable=variable).grid(
-            row=row, column=1, sticky="ew", pady=4
-        )
-        ttk.Button(parent, text="Browse", command=browse).grid(
-            row=row, column=2, padx=(10, 0)
-        )
+        caption = ttk.Label(parent, text=label)
+        caption.grid(row=row, column=0, sticky="w", padx=(0, 12))
+        Tooltip(caption, OPTION_HELP[label])
+        entry = ttk.Entry(parent, textvariable=variable)
+        entry.grid(row=row, column=1, sticky="ew", pady=4)
+        button = ttk.Button(parent, text="Browse", command=browse)
+        button.grid(row=row, column=2, padx=(10, 0))
+        Tooltip(entry, OPTION_HELP[label])
+        Tooltip(button, OPTION_HELP[label])
 
     def game_command(self, env):
         disc = Path(self.disc.get()).expanduser().resolve()
