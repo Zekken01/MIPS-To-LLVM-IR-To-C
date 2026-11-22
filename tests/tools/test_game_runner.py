@@ -1849,7 +1849,8 @@ def main():
             assert json.loads(metadata_path.read_text(encoding="utf-8"))["function_count"] == 1
 
             resumed = subprocess.run(
-                base + ["--no-recompile", "--auto-expand=1"],
+                base + ["--no-recompile", "--auto-expand=1",
+                        "--trace-entry=0x00100008"],
                 capture_output=True,
                 text=True,
                 check=False,
@@ -1857,6 +1858,13 @@ def main():
             assert "auto-expand: compiling reachable PC 0x00100030" in resumed.stdout, (
                 resumed.stdout + resumed.stderr
             )
+            assert "EE hot-expand: resumed guest pc=0x00100030" in resumed.stdout, (
+                resumed.stdout + resumed.stderr
+            )
+            assert resumed.stdout.count("EE trace-entry:") == 1, (
+                "guest entry executed more than once (unexpected replay): " + resumed.stdout
+            )
+            assert resumed.stdout.count("EE ELF entry") == 1, resumed.stdout
             assert "EE stopped: dispatched=" in resumed.stdout, (
                 resumed.stdout + resumed.stderr
             )
