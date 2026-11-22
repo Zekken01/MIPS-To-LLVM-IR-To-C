@@ -83,6 +83,7 @@ TOOL_OPTIONS = {
             Option("--report", REPORT.help, "required-output", "build/ps2-game-hle/first-boot.json"),
             Option("--expansion-passes", "Maximum auto-expansion passes (1–64).", default="2"),
             Option("--expansion-per-pass", "Maximum new functions per pass (1–1024).", default="128"),
+            Option("--replay-after-expand", "Legacy mode: restart the game after each cache miss rather than resuming its live state.", "flag"),
             Option("--no-recompile", "Reuse compiled guest code without rebuilding it.", "flag"),
             Option("--quick-probe", "Use the last expansion pass as the final report. Skips traced replay.", "flag"),
             Option("--ll-progress", "Show the live LLVM IR file count on a terminal.", "flag"),
