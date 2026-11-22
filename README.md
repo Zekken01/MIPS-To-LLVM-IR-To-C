@@ -103,6 +103,15 @@ from `build/ps2-launcher-settings.json`. It saves on launch and when
 you close the window. Clear a numeric field to use the script’s
 automatic value.
 
+The **Game** tab now includes **Resume after cache miss**, enabled by default.
+When an uncached EE function is reached, compilation and native-library
+replacement happen without restarting the current game process or repeating
+the controller input. Uncheck it to use the original restart-on-miss path.
+The **Limits and diagnostics** tab accepts up to 1024 functions per expansion
+pass (128 by default). The **Direct command** forms for both the boot session
+and Python game runner expose `--replay-after-expand`. This is not a persistent
+savestate and does not survive closing the process.
+
 Place the original, extracted game disc files under `PS2_GAME/` at the
 repository root, including `SYSTEM.CNF`. Run:
 
