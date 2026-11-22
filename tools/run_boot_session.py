@@ -457,7 +457,18 @@ def main(argv=None):
     # Request images only for the FINAL traced boot, never for temporary
     # auto-expansion replays. A missing image must not be a stale file from
     # a previous local invocation.
-    final_command = [*base, "--no-recompile", "--auto-expand=0", "--trace"]
+    graphics_replay = args.gs_webgpu_window or args.gs_webgpu_snapshot is not None
+    final_expansion = args.expansion_per_pass if graphics_replay else 0
+    if graphics_replay:
+        print(
+            f"Graphics replay can cache up to {final_expansion} new functions. "
+            "After a cache miss, the replay restarts with the updated cache. "
+            "Memory card writes stay in memory during these replays.",
+            flush=True,
+        )
+    final_command = [
+        *base, "--no-recompile", f"--auto-expand={final_expansion}", "--trace",
+    ]
     for option, path in snapshots:
         if path is not None:
             target = path.resolve()

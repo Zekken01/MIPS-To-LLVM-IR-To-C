@@ -21,7 +21,7 @@ SPEC.loader.exec_module(SESSION)
 
 def run_case(passes, initial_reuse=False, diagnostics=False,
              initial_function_count=None, expansion_per_pass=2,
-             snapshots=False, quick_probe=False):
+             snapshots=False, quick_probe=False, graphics=None):
     with tempfile.TemporaryDirectory(prefix="ee-boot-session-") as temp:
         work = Path(temp) / "work"
         report = work / "first-boot.json"
@@ -99,6 +99,10 @@ def run_case(passes, initial_reuse=False, diagnostics=False,
                 "--gs-snapshot", str(display),
                 "--gs-upload-snapshot", str(upload),
             ))
+        if graphics == "window":
+            argv.append("--gs-webgpu-window")
+        elif graphics == "snapshot":
+            argv.append(f"--gs-webgpu-snapshot={work / 'webgpu.ppm'}")
         if diagnostics:
             argv.extend((
                 "--trace-entry=0x0018cf68",
@@ -144,7 +148,14 @@ def run_case(passes, initial_reuse=False, diagnostics=False,
             ).read_text(), "missing diagnostic in boot command"
         if len(passes) > 2:
             assert "--no-recompile" in calls[1], calls
-        assert "--auto-expand=0" in calls[-1] if len(passes) > 1 else True
+        if len(passes) > 1:
+            final_limit = expansion_per_pass if graphics else 0
+            assert f"--auto-expand={final_limit}" in calls[-1], calls
+        if graphics:
+            option = f"--gs-webgpu-{graphics}"
+            assert any(arg.startswith(option) for arg in calls[-1])
+            assert all(not any(arg.startswith(option) for arg in call) for call in calls[:-1])
+            assert "--no-recompile" in calls[-1]
         assert (work / "expansion.log").is_file()
         assert (work / "boot.log").is_file()
         return code, calls, (work / "expansion.log").read_text(), (work / "boot.log").read_text()
@@ -529,6 +540,12 @@ def main():
     test_guest_rpc_snapshots_in_cached_probe()
     test_windows_launcher_preserves_guest_cache()
     test_ll_counter()
+    for graphics in ("window", "snapshot"):
+        code, _, _, _ = run_case([
+            {"trace": False, "replay": 0, "dispatch_status": 1, "code": 4},
+            {"trace": True, "replay": 1, "dispatch_status": 1, "code": 4},
+        ], initial_reuse=True, expansion_per_pass=7, graphics=graphics)
+        assert code == 4
     code, calls, expansion, boot = run_case([
         {"trace": False, "replay": 0, "exit_reason": 0, "dispatch_status": 1,
          "code": 4, "message": "DISPATCH LIMIT"},
