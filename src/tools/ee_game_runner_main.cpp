@@ -550,6 +550,11 @@ bool request_hot_expand(
                 *failure = "hot-expand response sequence mismatch or empty result";
                 return false;
             }
+            if (result == "STOP")
+            {
+                library->clear();
+                return true;
+            }
             if (result.compare(0, 6, "ERROR:") == 0)
             {
                 *failure = result;
@@ -3547,6 +3552,12 @@ int main(int argc, char** argv)
                 std::fprintf(stderr, "EE hot-expand failed: %s\n",
                              failure.c_str());
                 return 1;
+            }
+            if (replacement.empty())
+            {
+                std::printf("EE hot-expand: expansion budget reached at pc=0x%08x\n",
+                            from_pc);
+                break;
             }
             c_native_module candidate;
             if (!candidate.open(replacement.string().c_str()))
