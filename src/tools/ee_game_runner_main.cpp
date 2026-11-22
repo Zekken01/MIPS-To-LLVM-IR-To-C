@@ -4069,11 +4069,14 @@ int main(int argc, char** argv)
                  signed_service == -0x78);
             // Genuine guest interrupt handlers signal semaphores through
             // iSignalSema; SDBZ's VBlank callback also calls iFlushCache.
+            const bool interrupt_thread_wakeup_service = irq_callback_active &&
+                (signed_service == -0x34 || signed_service == -0x36);
             const bool interrupt_semaphore_service = irq_callback_active &&
                 signed_service == -0x43;
             const bool interrupt_cache_service = irq_callback_active &&
                 signed_service == -0x68;
             const bool interrupt_safe_service = interrupt_sif_service ||
+                interrupt_thread_wakeup_service ||
                 interrupt_semaphore_service || interrupt_cache_service;
             const uint32_t service = interrupt_safe_service
                 ? static_cast<uint32_t>(-signed_service)
