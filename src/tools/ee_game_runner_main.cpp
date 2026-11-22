@@ -4,6 +4,7 @@
 #include "ee_ram_interpreter.h"
 #include "ee_hw_bus.h"
 #include "ee_host_timers.h"
+#include "ee_hot_expand_protocol.h"
 #include "ee_hot_loop_diagnostics.h"
 #include "ee_host_loop_yield_budget.h"
 #include "ee_reached_isa_inventory.h"
@@ -533,21 +534,9 @@ bool request_hot_expand(
         std::ifstream input(response, std::ios::binary);
         if (input)
         {
-            std::string received;
             std::string result;
-            if (!std::getline(input, received) ||
-                !std::getline(input, result))
+            if (!hot_expand::parse_response(input, key, &result, failure))
             {
-                *failure = "malformed hot-expand response";
-                return false;
-            }
-            if (!result.empty() && result.back() == '\r')
-            {
-                result.pop_back();
-            }
-            if (received != key || result.empty())
-            {
-                *failure = "hot-expand response sequence mismatch or empty result";
                 return false;
             }
             if (result == "STOP")
