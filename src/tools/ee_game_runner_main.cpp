@@ -589,11 +589,14 @@ struct s_gs_field_probe
     uint32_t m_captures = 0u;
     bool m_first_ppm[3]{};
     bool m_first_nonblack_ppm[3]{};
+    uint64_t m_last_present_attempts = 0u;
+    uint64_t m_last_present_succeeded = 0u;
 };
 
 bool capture_gs_field(
     s_gs_field_probe& probe, ee::c_ee_webgpu_bridge& gpu,
     const ee::c_ee_gs_state& gs,
+    const ee::c_ee_gs_presentation_probe& presentation,
     const ee::s_ee_gs_display_registers& display, uint32_t crt_mode,
     uint64_t fields_started, uint64_t dispatches, uint64_t ee_cycle,
     uint32_t ee_pc)
@@ -610,6 +613,14 @@ bool capture_gs_field(
         return true;
     }
     ++probe.m_captures;
+    const uint64_t present_attempts = presentation.present_attempts();
+    const uint64_t present_succeeded = presentation.present_succeeded();
+    const bool attempted_now =
+        present_attempts > probe.m_last_present_attempts;
+    const bool succeeded_now =
+        present_succeeded > probe.m_last_present_succeeded;
+    probe.m_last_present_attempts = present_attempts;
+    probe.m_last_present_succeeded = present_succeeded;
 
     const uint32_t circuit = (display.m_pmode & 2u) != 0u ? 1u : 0u;
     const uint64_t selected_fb = display.m_dispfb[circuit];
@@ -633,7 +644,11 @@ bool capture_gs_field(
         "\"frame1\":\"0x%016llx\",\"frame2\":\"0x%016llx\","
         "\"frame1_written\":%s,\"frame2_written\":%s,"
         "\"sprite_pairs\":%llu,\"textured_sprite_pairs\":%llu,"
-        "\"gpu_draws\":%llu,\"targets\":[",
+        "\"gpu_draws\":%llu,"
+        "\"window_present_attempted\":%s,"
+        "\"window_present_succeeded\":%s,"
+        "\"window_present_attempts_total\":%llu,"
+        "\"window_present_succeeded_total\":%llu,\"targets\":[",
         static_cast<unsigned long long>(fields_started),
         static_cast<unsigned long long>(skipped),
         static_cast<unsigned long long>(dispatches),
@@ -651,7 +666,11 @@ bool capture_gs_field(
         frame_written[1] ? "true" : "false",
         static_cast<unsigned long long>(gs.state().m_total_sprite_pair_kicks),
         static_cast<unsigned long long>(gs.state().m_total_sprite_textured_kicks),
-        static_cast<unsigned long long>(gpu.rendered_primitives()));
+        static_cast<unsigned long long>(gpu.rendered_primitives()),
+        attempted_now ? "true" : "false",
+        succeeded_now ? "true" : "false",
+        static_cast<unsigned long long>(present_attempts),
+        static_cast<unsigned long long>(present_succeeded));
 
     static constexpr const char* k_names[3] =
     {
@@ -3394,20 +3413,6 @@ int main(int argc, char** argv)
                 static_cast<unsigned long long>(runtime.m_ee_cycle_scheduler.current_cycle()));
             return 1;
         }
-#ifdef EE_ENABLE_WEBGPU
-        if (gs_field_probe.m_file != nullptr &&
-            !capture_gs_field(
-                gs_field_probe, webgpu_bridge, gs_state,
-                hardware.gs_display_registers(),
-                hardware.gs_crt_mode(),
-                hardware.scanout().fields_started(), dispatched,
-                runtime.m_ee_cycle_scheduler.current_cycle(), cpu.m_pc))
-        {
-            std::fprintf(stderr, "failed to write GS field probe: %s\n",
-                gs_field_probe_path);
-            return 1;
-        }
-#endif
         // Deliver original IOP start/end callbacks in the scanout
         // clock's event order; never infer edges from wall time.
         if (iop_hle != nullptr)
@@ -3426,6 +3431,20 @@ int main(int argc, char** argv)
                 hardware.gs_display_registers(),
                 hardware.gs_crt_mode(),
                 hardware.scanout().fields_started(), &graphics_probe);
+        }
+#endif
+#ifdef EE_ENABLE_WEBGPU
+        if (gs_field_probe.m_file != nullptr &&
+            !capture_gs_field(
+                gs_field_probe, webgpu_bridge, gs_state, graphics_probe,
+                hardware.gs_display_registers(),
+                hardware.gs_crt_mode(),
+                hardware.scanout().fields_started(), dispatched,
+                runtime.m_ee_cycle_scheduler.current_cycle(), cpu.m_pc))
+        {
+            std::fprintf(stderr, "failed to write GS field probe: %s\n",
+                gs_field_probe_path);
+            return 1;
         }
 #endif
         if (has_watch_word && count != 0u)
