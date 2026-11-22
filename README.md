@@ -75,10 +75,11 @@ log and saves it to `build/ps2-launcher.log`.
 **Game** exposes all batch flags, including quick probe, matched replay
 and cache recovery. **Limits and diagnostics** controls dispatch budgets,
 timeouts, custom Cross pulses and trace settings. **Direct command**
-runs `run_boot_session.py`, `run_game.py`, or a selected `ee_game_runner.exe`
-with one argument per line. Use **Show --help** to list the selected
-tool's options. Enter a path containing spaces on a single line without
-surrounding quotes.
+shows separate tabbed forms for `run_boot_session.py`, `run_game.py`, and
+`ee_game_runner.exe`. Each tool retains its own inputs. Hover over a
+field for help or use **Show --help** for the selected tool’s CLI help.
+For repeatable IRX options and extra arguments, enter one item per line
+and leave paths with spaces unquoted.
 
 The launcher prefills the boot script’s defaults and restores choices
 from `build/ps2-launcher-settings.json`. It saves on launch and when

@@ -9,6 +9,8 @@ from tempfile import NamedTemporaryFile
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+from ps2_direct_options import TOOL_OPTIONS, tool_arguments
+
 ROOT = Path(__file__).resolve().parents[1]
 LOG_PATH = ROOT / "build" / "ps2-launcher.log"
 SETTINGS_PATH = ROOT / "build" / "ps2-launcher-settings.json"
@@ -135,6 +137,7 @@ def default_settings():
         "tool": COMMAND_TOOLS[0],
         "executable": str(runner),
         "arguments": "",
+        "tool_options": {},
         "numeric": {
             "SDBZ_PAD0_CROSS_FIRST_POLL": "200",
             "SDBZ_PAD0_CROSS_POLL_COUNT": "8",
@@ -163,7 +166,7 @@ def load_settings(path):
         return settings, f"Invalid {path.name}. Loaded defaults."
     for key, default in settings.items():
         value = saved.get(key)
-        if type(value) is type(default) and key != "numeric":
+        if type(value) is type(default) and key not in ("numeric", "tool_options"):
             settings[key] = value
     for key, choices in (("mode", SESSION_MODES), ("pad", PAD_PROFILES), ("tool", COMMAND_TOOLS)):
         if settings[key] not in choices:
@@ -175,6 +178,29 @@ def load_settings(path):
         for key in numeric:
             if isinstance(saved_numeric.get(key), str):
                 numeric[key] = saved_numeric[key]
+    saved_tools = saved.get("tool_options")
+    if isinstance(saved_tools, dict):
+        for tool, groups in TOOL_OPTIONS.items():
+            raw = saved_tools.get(tool)
+            if not isinstance(raw, dict):
+                continue
+            typed = {
+                option.name: raw[option.name]
+                for options in groups.values() for option in options
+                if type(raw.get(option.name)) is (bool if option.kind == "flag" else str)
+            }
+            if isinstance(raw.get("extra"), str):
+                typed["extra"] = raw["extra"]
+            settings["tool_options"][tool] = typed
+    if settings["arguments"]:
+        selected_options = settings["tool_options"].setdefault(settings["tool"], {})
+        selected_options.setdefault("extra", settings["arguments"])
+        # Old manual argv already contains its own positionals and flags.
+        for options in TOOL_OPTIONS[settings["tool"]].values():
+            for option in options:
+                if option.kind != "flag":
+                    selected_options.setdefault(option.name, "")
+        settings["arguments"] = ""
     return settings, ""
 
 
@@ -240,7 +266,7 @@ def direct_command(tool, executable, arguments, help_only=False):
     if help_only:
         return command + ["--help"]
     # One argument per line keeps Windows paths and whitespace literal.
-    return command + [line for line in arguments.splitlines() if line.strip()]
+    return command + arguments
 
 
 class Launcher(ttk.Frame):
@@ -252,7 +278,7 @@ class Launcher(ttk.Frame):
         settings, warning = load_settings(SETTINGS_PATH)
         self.fields = {
             key: (tk.BooleanVar if isinstance(value, bool) else tk.StringVar)(value=value)
-            for key, value in settings.items() if key not in ("numeric", "arguments")
+            for key, value in settings.items() if key not in ("numeric", "arguments", "tool_options")
         }
         self.disc = self.fields["disc"]
         self.card = self.fields["card"]
@@ -310,13 +336,31 @@ class Launcher(ttk.Frame):
         )
         self.choice_row(self.direct, 0, "Tool", self.tool, COMMAND_TOOLS)
         self.path_row(self.direct, 1, "Native executable", self.executable, filedialog.askopenfilename)
-        arguments_label = ttk.Label(self.direct, text="Arguments (one per line)")
-        arguments_label.grid(row=2, column=0, sticky="nw")
-        Tooltip(arguments_label, OPTION_HELP["Arguments"])
-        self.arguments = tk.Text(self.direct, height=7, width=48, wrap="none")
-        self.arguments.grid(row=2, column=1, columnspan=2, sticky="ew")
-        self.arguments.insert("1.0", settings["arguments"])
-        Tooltip(self.arguments, OPTION_HELP["Arguments"])
+        self.tool_forms = {}
+        self.tool_values = {}
+        self.tool_extra = {}
+        for tool, groups in TOOL_OPTIONS.items():
+            form = ttk.Notebook(self.direct)
+            self.tool_forms[tool] = form
+            saved = settings["tool_options"].get(tool, {})
+            values = self.tool_values[tool] = {}
+            for group, options in groups.items():
+                page = ttk.Frame(form, padding=8)
+                page.columnconfigure(1, weight=1)
+                form.add(page, text=group)
+                for row, option in enumerate(options):
+                    self.option_row(page, row, option, saved, values)
+            additional = ttk.Frame(form, padding=8)
+            additional.columnconfigure(0, weight=1)
+            form.add(additional, text="Extra arguments")
+            ttk.Label(additional, text="One additional argument per line").grid(sticky="w")
+            extra = tk.Text(additional, height=5, width=48, wrap="none")
+            extra.grid(sticky="ew")
+            extra.insert("1.0", saved.get("extra", ""))
+            Tooltip(extra, OPTION_HELP["Arguments"])
+            self.tool_extra[tool] = extra
+        self.tool.trace_add("write", self.show_tool)
+        self.show_tool()
         self.help_button = ttk.Button(self.direct, text="Show --help", command=lambda: self.launch(True))
         self.help_button.grid(row=3, column=1, sticky="w", pady=(6, 0))
         Tooltip(self.help_button, OPTION_HELP["Show --help"])
@@ -341,6 +385,62 @@ class Launcher(ttk.Frame):
             if not warning:
                 self.status.set("The native raylib window is available on Windows.")
 
+    def show_tool(self, *_):
+        for tool, form in self.tool_forms.items():
+            if tool == self.tool.get():
+                form.grid(row=2, column=0, columnspan=3, sticky="ew")
+            else:
+                form.grid_remove()
+
+    def option_row(self, parent, row, option, saved, values):
+        label = option.name + (" *" if option.required else "")
+        if option.kind == "flag":
+            value = tk.BooleanVar(value=saved.get(option.name, False))
+            widget = ttk.Checkbutton(parent, text=label, variable=value)
+            widget.grid(row=row, column=0, columnspan=2, sticky="w")
+        else:
+            caption = ttk.Label(parent, text=label)
+            caption.grid(row=row, column=0, sticky="nw", padx=(0, 12), pady=2)
+            Tooltip(caption, option.help)
+            initial = saved.get(option.name, option.default)
+            if option.kind == "repeat":
+                widget = tk.Text(parent, height=3, width=40, wrap="none")
+                widget.insert("1.0", initial)
+                value = widget
+            else:
+                value = tk.StringVar(value=initial)
+                if option.choices:
+                    widget = ttk.Combobox(parent, values=("", *option.choices),
+                                          textvariable=value, state="readonly")
+                else:
+                    widget = ttk.Entry(parent, textvariable=value)
+            widget.grid(row=row, column=1, sticky="ew", pady=2)
+            pickers = {
+                "positional": filedialog.askopenfilename,
+                "file": filedialog.askopenfilename,
+                "directory": filedialog.askdirectory,
+                "required-directory": filedialog.askdirectory,
+                "output": filedialog.asksaveasfilename,
+                "required-output": filedialog.asksaveasfilename,
+            }
+            if option.kind in pickers:
+                def browse():
+                    selected = pickers[option.kind](parent=self)
+                    if selected:
+                        value.set(selected)
+
+                button = ttk.Button(parent, text="Browse", command=browse)
+                button.grid(row=row, column=2, padx=(8, 0))
+                Tooltip(button, option.help)
+        Tooltip(widget, option.help)
+        values[option.name] = value
+
+    def direct_values(self, tool):
+        return {
+            key: value.get("1.0", "end-1c") if isinstance(value, tk.Text) else value.get()
+            for key, value in self.tool_values[tool].items()
+        }
+
     def change_mode(self, *_):
         mode = self.mode.get()
         for label, previous, current in zip(
@@ -357,7 +457,10 @@ class Launcher(ttk.Frame):
         settings["numeric"] = {
             key: self.numeric[label].get() for label, (key, _, _) in NUMERIC_SETTINGS.items()
         }
-        settings["arguments"] = self.arguments.get("1.0", "end-1c")
+        settings["tool_options"] = {
+            tool: dict(self.direct_values(tool), extra=extra.get("1.0", "end-1c"))
+            for tool, extra in self.tool_extra.items()
+        }
         save_settings(SETTINGS_PATH, settings)
 
     def close(self):
@@ -424,10 +527,11 @@ class Launcher(ttk.Frame):
             env = os.environ.copy()
             is_direct = self.tabs.select() == str(self.direct)
             if is_direct:
-                command = direct_command(
-                    self.tool.get(), self.executable.get(), self.arguments.get("1.0", "end-1c"),
-                    help_only,
+                tool = self.tool.get()
+                arguments = [] if help_only else tool_arguments(
+                    tool, self.direct_values(tool), self.tool_extra[tool].get("1.0", "end-1c")
                 )
+                command = direct_command(tool, self.executable.get(), arguments, help_only)
             else:
                 command = self.game_command(env)
             if not help_only:
