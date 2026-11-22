@@ -980,7 +980,7 @@ def run_hot_expand(command, directory, timeout_seconds, compile_missing):
                             # remains an independent fail-safe.
                             active_start += time.monotonic() - compile_start
                         result = "STOP" if replacement is None else str(replacement.resolve())
-                    except (ValueError, OSError, subprocess.CalledProcessError) as exc:
+                    except Exception as exc:
                         result = "ERROR: " + str(exc).replace("\r", " ").replace("\n", " ")
                         print(f"run_game: hot expansion failed: {exc}",
                               file=sys.stderr, flush=True)
@@ -1456,9 +1456,11 @@ def main(argv=None):
                         if candidate not in existing and candidate != address
                     ]
                     targets = targets[:available]
-                    print("live cache-miss: compiling " +
-                          ", ".join(f"0x{pc:08x}" for pc in targets),
-                          flush=True)
+                    print(f"auto-expand: compiling reachable PC 0x{address:08x} "
+                          "(live cache-miss)", flush=True)
+                    for candidate in targets[1:]:
+                        print(f"auto-expand: compiling table sibling PC "
+                              f"0x{candidate:08x}", flush=True)
                     new_modules = batch_append_functions(
                         recomp, elf, work, metadata_path, targets
                     )
@@ -1473,7 +1475,6 @@ def main(argv=None):
                         raise ValueError(
                             f"new native library does not cover 0x{address:08x}"
                         )
-                    expanded_count += len(new_modules)
                     suffix = ".dll" if os.name == "nt" else (
                         ".dylib" if sys.platform == "darwin" else ".so"
                     )
@@ -1485,6 +1486,7 @@ def main(argv=None):
                         replacement, args.emit_opt, pdb=args.pdb,
                         emit_jobs=args.emit_jobs, appended_ir=new_modules
                     )
+                    expanded_count += len(new_modules)
                     last_library = replacement
                     return replacement
 
@@ -1492,7 +1494,7 @@ def main(argv=None):
                     hot_command, session, args.timeout_seconds,
                     compile_live_miss
                 )
-                if last_library is not None:
+                if last_library is not None and result.returncode != 1:
                     # The runner has exited and unloaded its modules. Publish
                     # the latest linked library to the normal cache atomically.
                     staged = library.with_name(library.name + ".hot-new")
@@ -1508,6 +1510,10 @@ def main(argv=None):
                     print(f"live cache-miss: published {expanded_count} "
                           "new guest module(s) to translation cache",
                           flush=True)
+                if last_library is not None and result.returncode == 1:
+                    print("run_game: not publishing failed live expansion; "
+                          "use cache recovery/relink on the next run",
+                          file=sys.stderr, flush=True)
                 return result.returncode
 
         ranges = executable_segments(elf) if args.auto_expand else []
