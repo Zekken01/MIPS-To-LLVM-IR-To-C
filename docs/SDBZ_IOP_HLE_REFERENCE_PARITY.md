@@ -121,7 +121,8 @@ Using `ps2-web-recomp/runtime/src/iop/io.cpp` and the PS2SDK
   device-init/deinit callbacks. Driver registration or memory-card
   readiness is never fabricated.
 - `secrman#4/#5/#6`: explicitly *unsuccessful* security boundaries;
-  SecrAuthCard returns false instead of pretending a card was authenticated.
+  SecrAuthCard returns false for physical or absent cards. The file-backed
+  slot 1 card completes its emulated handshake after a SIO2 reset-auth.
 
 Only these 11 new ordinals were registered. Other unsupported IOMAN
 operations remain unresolved. The real CD-ROM source is attached only

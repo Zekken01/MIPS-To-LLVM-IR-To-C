@@ -22,6 +22,7 @@
 #endif
 #include "elf_loader.h"
 #include "iop_kernel.h"
+#include "iop_memory_card.h"
 #include "iop_guest_fault_probe.h"
 #include "iop_cdvd.h"
 #include "iop_folder_sector_source.h"
@@ -1371,7 +1372,6 @@ bool write_report(
             "],\"limitations\":["
             "\"hardware_counters_not_pad_button_state\","
             "\"module_load_does_not_prove_controller_poll\","
-            "\"no_virtual_memory_card_attached\","
             "\"rejected_ctrl_start_does_not_raise_irq17\"]}",
             output);
     }
@@ -2181,6 +2181,23 @@ int main(int argc, char** argv)
     // Optional real guest IOP execution. This is a deterministic polling
     // rendezvous, NOT EE/IOP hardware cycle synchronization: the native
     // dispatcher does not yet expose an accurate EE-cycle clock.
+    iop::c_memory_card memory_card;
+    std::string memory_card_environment;
+    const char* memory_card_path = read_host_environment(
+        "SDBZ_MEMCARD", &memory_card_environment);
+    if (memory_card_path != nullptr && *memory_card_path != '\0')
+    {
+        if ((disc_folder_path == nullptr && iop_irx_paths.empty() &&
+             iop_rom0_path == nullptr) ||
+            !memory_card.mount(std::filesystem::u8path(memory_card_path)))
+        {
+            std::fprintf(stderr,
+                "[mc] mounting requires an active IOP and an exact "
+                "8650752-byte raw PS2 card image: %s\n", memory_card_path);
+            return 2;
+        }
+        std::printf("[mc] card mounted in slot 1: %s\n", memory_card_path);
+    }
     std::unique_ptr<iop::c_kernel> iop_kernel;
     iop::c_iop_guest_fault_probe iop_fault_probe{};
     std::unique_ptr<iop::c_sif1_dma_transport> iop_sif1_transport;
@@ -2206,6 +2223,10 @@ int main(int argc, char** argv)
         disc_folder_path != nullptr)
     {
         iop_kernel = std::make_unique<iop::c_kernel>();
+        if (memory_card.mounted())
+        {
+            iop_kernel->hardware().bind_memory_card(&memory_card);
+        }
         if (iop_rom0_path != nullptr)
         {
             std::ifstream rom(
@@ -6400,6 +6421,17 @@ int main(int argc, char** argv)
             gs.k_sprite_sample_capacity);
     }
 
+    if (memory_card.mounted())
+    {
+        std::printf("[mc] slot 1 completed SIO2 exchanges: %llu\n",
+            static_cast<unsigned long long>(memory_card.completed_exchanges()));
+    }
+    if (!memory_card.save())
+    {
+        std::fprintf(stderr, "[mc] failed to save card image: %s\n",
+                     memory_card_path);
+        return 1;
+    }
     if (gs_snapshot_path != nullptr || gs_upload_snapshot_path != nullptr)
     {
         const auto& display = hardware.gs_display_registers();

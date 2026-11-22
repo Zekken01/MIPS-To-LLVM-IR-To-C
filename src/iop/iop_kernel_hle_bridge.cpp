@@ -2727,12 +2727,19 @@ bool c_kernel_hle_bridge::handle_secrman(uint32_t ordinal)
     {
         return false;
     }
-    // A software HLE must never acknowledge a card challenge or KELF
-    // authentication as successful without a verified security backend.
-    // Return false for SecrAuthCard, and an explicit failed result for
-    // the two opaque device-specific entrypoints.
-    m_kernel.cpu().state().m_gpr[2] =
-        ordinal == 6u ? 0u : static_cast<uint32_t>(-1);
+    auto& state = m_kernel.cpu().state();
+    // The virtual file-backed PS2 card has no MagicGate processor.
+    // Complete the guest driver's handshake only for its mounted
+    // SIO2 port and slot after the card has received reset-auth.
+    if (ordinal == 6u)
+    {
+        state.m_gpr[2] = m_kernel.hardware().complete_memory_card_auth_reset(
+            state.m_gpr[4], state.m_gpr[5]) ? 1u : 0u;
+    }
+    else
+    {
+        state.m_gpr[2] = static_cast<uint32_t>(-1);
+    }
     return true;
 }
 

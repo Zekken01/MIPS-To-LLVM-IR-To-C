@@ -308,3 +308,23 @@ clip/test/blend/texture state. If the display GPU target becomes nonblack
 but the actual window does not, investigate surface presentation. Nonblack
 sprites, nonzero upload bytes and valid GPU readbacks do not alone prove
 the first rendered and presented game frame.
+
+
+### Mount a virtual memory card
+
+Set `SDBZ_MEMCARD` to a working copy of an existing raw PS2 memory card
+image before running the launcher. Slot 1 accepts an 8 MiB card image
+with spare bytes (8,650,752 bytes total). Use a formatted card with the USA
+save for the USA executable.
+
+~~~bat
+set "SDBZ_MEMCARD=C:\PS2\memcards\Mcd001-working.ps2"
+set "EE_WEBGPU_WINDOW=1"
+run_ps2_game.bat --full --neutral
+~~~
+
+The guest's MCMAN and MCSERV modules communicate with the card through
+SIO2. The runner writes changed card data back on normal shutdown. Use a
+separate working copy for each emulator instance. Set `SDBZ_TRACE_MEMCARD=1`
+to log serial commands and `set "SDBZ_MEMCARD="` to boot without a card.
+Slot 2 remains empty.

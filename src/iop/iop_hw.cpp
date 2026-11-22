@@ -1,8 +1,10 @@
 #include "iop_hw.h"
 #include "iop_cpu.h"
+#include "iop_memory_card.h"
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 
 namespace iop
 {
@@ -41,6 +43,10 @@ void c_hw::reset()
     m_sio2_stat = 0u;
     m_sio2_intr = 0u;
     m_sio2_index = 0u;
+    if (m_memory_card != nullptr)
+    {
+        m_memory_card->reset_protocol();
+    }
     std::fill(m_sio2_send3, m_sio2_send3 + 16u, 0u);
     std::fill(m_sio2_port, m_sio2_port + 8u, 0u);
     m_sio2_pad[0] = s_sio2_pad{};
@@ -160,6 +166,12 @@ void c_hw::bind_dma_cpu(c_cpu* cpu)
     m_dma_cpu = cpu;
 }
 
+bool c_hw::complete_memory_card_auth_reset(uint32_t port, uint32_t slot)
+{
+    return port == 2u && slot == 0u && m_memory_card != nullptr &&
+        m_memory_card->complete_auth_reset();
+}
+
 void c_hw::configure_sio2_pad0_cross_pulse(
     uint32_t first_poll, uint32_t poll_count)
 {
@@ -220,20 +232,26 @@ bool c_hw::process_sio2_packet()
     {
         m_sio2_stat = 0x1100u;
     }
-    // Port 2 is the memory card. No card is attached until a real
-    // persistent image is mounted: report absence, not fake save data.
+    const bool card_present = port == 2u && m_memory_card != nullptr &&
+        m_memory_card->exchange(m_sio2_pending_tx.data(), in_size, reply);
+    if (m_sio2_pending_tx[0u] == 0x81u && std::getenv("SDBZ_TRACE_MEMCARD") != nullptr)
+    {
+        std::fprintf(stderr, "[mc] port=%u cmd=%02x in=%u out=%u response=%u\n",
+            port, in_size >= 2u ? m_sio2_pending_tx[1u] : 0u,
+            in_size, out_size, card_present ? 1u : 0u);
+    }
     const bool pad_present = port < 2u &&
         m_sio2_pad[port].m_connected &&
         m_sio2_port[port * 2u + 1u] != 0x5ffffu &&
         m_sio2_port[port * 2u + 1u] != 0x00030064u &&
         m_sio2_pending_tx[0u] == 0x01u;
     bool cross_reply = false;
-    if (!pad_present)
+    if (!pad_present && !card_present)
     {
         m_sio2_stat |= 0xc000u |
             (0x10000u << (m_sio2_index & 15u));
     }
-    else
+    else if (pad_present)
     {
         s_sio2_pad& pad = m_sio2_pad[port];
         const uint8_t command = in_size >= 2u ?
