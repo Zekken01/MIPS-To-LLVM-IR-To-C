@@ -1870,6 +1870,47 @@ def main():
             metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
             assert metadata["function_count"] == 2, metadata
 
+        # Signed word ALU ops consume the low words. A delay-slot overflow
+        # commits preceding writes, preserves rd, and reports the branch EPC.
+        with tempfile.TemporaryDirectory(prefix="ee-signed-word-") as tmp:
+            root = Path(tmp)
+            for name, immediate, operation, expected in (
+                ("add", 42, 0x00854820, 43),
+                ("sub", 0, 0x00854822, (1 << 64) - 1),
+                ("add_overflow", 0x7fffffff, 0x00854820, None),
+                ("sub_overflow", 0x80000000, 0x00854822, None),
+                ("sub_to_zero_overflow", 0x80000000, 0x00850022, None),
+            ):
+                elf = root / (name + ".elf")
+                make_elf(elf)
+                image = bytearray(elf.read_bytes())
+                words = (
+                    0x3c040000 | (immediate >> 16),
+                    0x34840000 | (immediate & 0xffff),
+                    0x24050001,  # a1 = 1
+                    0x24090063,  # previous t1 = 99
+                    0x00000008,  # jr zero
+                    operation,
+                )
+                struct.pack_into("<6I", image, 0x108, *words)
+                elf.write_bytes(image)
+                report = root / (name + ".json")
+                result = subprocess.run([
+                    sys.executable, str(source / "tools" / "run_game.py"),
+                    str(elf), "--build-dir", str(build), "--work-dir",
+                    str(root / name), "--functions=entry", "--max-dispatches=1",
+                    "--report", str(report),
+                ], capture_output=True, text=True)
+                assert report.is_file(), result.stdout + result.stderr
+                state = json.loads(report.read_text())
+                if expected is None:
+                    assert state["cop0_cause"] & 0x8000007c == 0x80000030, state
+                    assert state["cop0_epc"] == 0x00100018, state
+                    assert state["gpr_lo"][9] == 99, state
+                else:
+                    assert state["gpr_lo"][9] == expected, state
+                    assert state["cop0_cause"] & 0x7c == 0, state
+
         # The USA resource wrapper jumps to a block which consumes both
         # incoming arguments with doubleword arithmetic, then reuses a0.
         with tempfile.TemporaryDirectory(prefix="ee-native-tail-arguments-") as tmp:
