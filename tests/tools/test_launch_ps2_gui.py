@@ -8,7 +8,24 @@ import json
 from pathlib import Path
 import sys
 import tempfile
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
+
+
+# CI uses a minimal Python installation without the optional Tk package.
+# Only the pure argument/settings logic is exercised: no GUI is created.
+# Provide import-time stubs when Tk is absent, leaving a real installed
+# tkinter module completely untouched on Windows developer machines.
+try:
+    import tkinter
+except ImportError:
+    tkinter = ModuleType("tkinter")
+    tkinter.__path__ = []
+    for module_name in ("ttk", "filedialog", "messagebox"):
+        module = ModuleType("tkinter." + module_name)
+        setattr(tkinter, module_name, module)
+        sys.modules["tkinter." + module_name] = module
+    tkinter.ttk.Frame = type("Frame", (), {})
+    sys.modules["tkinter"] = tkinter
 
 
 ROOT = Path(__file__).resolve().parents[2]
