@@ -1432,6 +1432,12 @@ def main(argv=None):
                         print("live cache-miss: expansion limit reached; "
                               "preserving stopped replay report", flush=True)
                         return None
+                    if (translation_inputs(elf, recomp, source_root) != inputs or
+                            ir_generation_inputs(elf, source_root) != ir_sources):
+                        raise ValueError(
+                            "ELF or translation sources changed during live "
+                            "checkpoint; refusing to load incompatible code"
+                        )
                     if not any(start <= address < end for start, end in ranges):
                         raise ValueError(
                             f"guest cache miss 0x{address:08x} is outside "
@@ -1489,6 +1495,11 @@ def main(argv=None):
                         emit_jobs=args.emit_jobs, appended_ir=new_modules,
                         cache_base=library
                     )
+                    if (translation_inputs(elf, recomp, source_root) != inputs or
+                            ir_generation_inputs(elf, source_root) != ir_sources):
+                        raise ValueError(
+                            "ELF or translation sources changed during hot relink"
+                        )
                     expanded_count += len(new_modules)
                     last_library = replacement
                     return replacement
