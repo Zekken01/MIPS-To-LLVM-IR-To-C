@@ -72,6 +72,14 @@ button maps to Cross. Both sticks, the D-pad, Start, Select, and the
 shoulder buttons are mapped. The launcher shows the build and game
 log and saves it to `build/ps2-launcher.log`.
 
+**Game** exposes all batch flags, including quick probe, matched replay
+and cache recovery. **Limits and diagnostics** controls dispatch budgets,
+timeouts, custom Cross pulses and trace settings. **Direct command**
+runs `run_boot_session.py`, `run_game.py`, or a selected `ee_game_runner.exe`
+with one argument per line. Use **Show --help** to list the selected
+tool's options. Enter a path containing spaces on a single line without
+surrounding quotes.
+
 Place the original, extracted game disc files under `PS2_GAME/` at the
 repository root, including `SYSTEM.CNF`. Run:
 
