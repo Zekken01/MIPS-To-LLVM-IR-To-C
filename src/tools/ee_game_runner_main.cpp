@@ -4758,7 +4758,9 @@ int main(int argc, char** argv)
                     if (trace)
                     {
                         std::printf(
-                            "HLE GetThreadId: id=%u\n", current_thread_id
+                            "HLE %sGetThreadId: id=%u\n",
+                            signed_service == -0x2f ? "_i" : "",
+                            current_thread_id
                         );
                     }
                 }

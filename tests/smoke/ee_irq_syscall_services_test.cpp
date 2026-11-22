@@ -29,6 +29,12 @@ int main()
     bool passed = true;
     passed = check("retail IRQ iReferThreadStatus", -0x31, true,
                    0x31u, true) && passed;
+    passed = check("retail IRQ _iGetThreadId", -0x2f, true,
+                   0x2fu, true) && passed;
+    passed = check("_iGetThreadId outside IRQ", -0x2f, false,
+                   static_cast<uint32_t>(-0x2f), false) && passed;
+    passed = check("normal GetThreadId", 0x2f, true,
+                   0x2fu, false) && passed;
     passed = check("negative outside IRQ", -0x31, false,
                    static_cast<uint32_t>(-0x31), false) && passed;
     passed = check("normal ReferThreadStatus", 0x30, false,

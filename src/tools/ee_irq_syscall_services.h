@@ -23,6 +23,7 @@ inline s_decoded_service decode(int32_t signed_number, bool irq_active)
         switch (signed_number)
         {
         case -0x2e: // iReleaseWaitThread
+        case -0x2f: // _iGetThreadId (SCE interrupt wakeup workaround)
         case -0x31: // iReferThreadStatus
         case -0x34: // iWakeupThread
         case -0x36: // iCancelWakeupThread

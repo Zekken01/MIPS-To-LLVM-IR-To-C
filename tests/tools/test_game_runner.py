@@ -787,8 +787,8 @@ def make_thread_semaphore_release_wait_elf(path):
     path.write_bytes(image)
 
 
-def make_interrupt_status_encoding_elf(path):
-    """Negative EE iReferThreadStatus must fail without IRQ callback."""
+def make_interrupt_status_encoding_elf(path, negative_service=-0x31):
+    """Negative EE thread status/id syscalls must fail outside an IRQ."""
     make_elf(path)
     image = bytearray(path.read_bytes())
     instructions = (
@@ -797,7 +797,7 @@ def make_interrupt_status_encoding_elf(path):
         0x24030031,  # positive iReferThreadStatus is permitted
         0x0000000c,
         0x00408021,  # s0 = RUN status (1)
-        0x2403ffcf,  # v1 = signed -0x31
+        0x24030000 | (negative_service & 0xffff),  # signed IRQ-only service
         0x0000000c,  # rejected outside a registered IRQ callback
         0x00408821,  # unreachable s1
         0x00000008,
@@ -3202,28 +3202,29 @@ def main():
             assert registers[20] == 1, state  # PollSema consumed new signal
             assert state["final_pc"] == 0, state
 
-        with tempfile.TemporaryDirectory(prefix="ee-native-irq-status-") as tmp:
-            root = Path(tmp)
-            elf = root / "kernel-irq-status.elf"
-            make_interrupt_status_encoding_elf(elf)
-            report_path = root / "irq-status.json"
-            result = subprocess.run(
-                [
-                    sys.executable, str(source / "tools" / "run_game.py"),
-                    str(elf), "--build-dir", str(build),
-                    "--work-dir", str(root / "out"),
-                    "--max-dispatches=32", "--hle-startup", "--trace",
-                    "--report", str(report_path),
-                ],
-                capture_output=True, text=True, check=False,
-            )
-            combined = result.stdout + result.stderr
-            state = json.loads(report_path.read_text(encoding="utf-8"))
-            assert state["exit_name"] == "EXCEPTION", state
-            assert state["cop0_epc"] == 0x00100020, state
-            assert state["gpr_lo"][16] == 1, state
-            assert state["gpr_lo"][17] == 0, state
-            assert "HLE iReferThreadStatus: id=1 address=0x00000000 status=1" in combined, combined
+        for negative_service in (-0x31, -0x2f):
+            with tempfile.TemporaryDirectory(prefix="ee-native-irq-status-") as tmp:
+                root = Path(tmp)
+                elf = root / "kernel-irq-status.elf"
+                make_interrupt_status_encoding_elf(elf, negative_service)
+                report_path = root / "irq-status.json"
+                result = subprocess.run(
+                    [
+                        sys.executable, str(source / "tools" / "run_game.py"),
+                        str(elf), "--build-dir", str(build),
+                        "--work-dir", str(root / "out"),
+                        "--max-dispatches=32", "--hle-startup", "--trace",
+                        "--report", str(report_path),
+                    ],
+                    capture_output=True, text=True, check=False,
+                )
+                combined = result.stdout + result.stderr
+                state = json.loads(report_path.read_text(encoding="utf-8"))
+                assert state["exit_name"] == "EXCEPTION", (negative_service, state)
+                assert state["cop0_epc"] == 0x00100020, (negative_service, state)
+                assert state["gpr_lo"][16] == 1, (negative_service, state)
+                assert state["gpr_lo"][17] == 0, (negative_service, state)
+                assert "HLE iReferThreadStatus: id=1 address=0x00000000 status=1" in combined, combined
 
         with tempfile.TemporaryDirectory(prefix="ee-native-suspend-resume-") as tmp:
             root = Path(tmp)
