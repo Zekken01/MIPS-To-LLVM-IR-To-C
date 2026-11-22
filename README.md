@@ -62,6 +62,21 @@ ctest --test-dir build --output-on-failure
 For full-image validation and the PCSX2 differential workflow, see
 FULL_GAME_NATIVE_LINK_VALIDATION.md and tools/vu0_diff/README.md.
 
+## Live translation-cache miss recovery
+
+Auto-expansion now pauses the current native process at a missing guest function
+instead of restarting the game after every newly compiled LLVM module. The
+driver compiles and verifies the function, hot-loads a new native library, and
+retries the same PC without repeating guest inputs, IOP work, or VBlank.
+
+This is **in-process resume, not a disk savestate**. An interrupted process or
+exhausted expansion budget still requires a new guest run. The default
+`EXPANSION_PER_PASS=128` can be raised up to 1024 for longer live sessions;
+`--replay-after-expand` on `tools/run_game.py` retains the legacy behavior.
+
+See [Live cache-miss resume](docs/SDBZ_LIVE_CACHE_MISS_RESUME.md) for the
+protocol, validation rules, acceptance target and limitations.
+
 ## BIOS-free extracted disc launcher (Windows)
 
 Run `python tools/launch_ps2_gui.py` for the graphical launcher. Choose
