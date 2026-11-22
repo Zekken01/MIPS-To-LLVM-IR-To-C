@@ -98,7 +98,7 @@ def test_game_tab_command_and_environment():
     with tempfile.TemporaryDirectory() as temporary:
         disc = Path(temporary)
         (disc / "SYSTEM.CNF").write_text(
-            "BOOT2 = cdrom0:\\SLUS_214.42;1\n", encoding="ascii"
+            r"BOOT2 = cdrom0:\\SLUS_214.42;1" + "\n", encoding="ascii"
         )
         vars = {
             "disc": c_fake_variable(str(disc)),
@@ -160,6 +160,7 @@ def test_batch_route():
         encoding="utf-8"
     )
     assert 'f"--report={report}", *forwarded,' in session
+    assert '*(["--replay-after-expand"] if args.replay_after_expand else []),' in session
 
 
 def main():
