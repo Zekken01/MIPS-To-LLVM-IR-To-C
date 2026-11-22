@@ -17,6 +17,8 @@ LOG_PATH = ROOT / "build" / "ps2-launcher.log"
 SETTINGS_PATH = ROOT / "build" / "ps2-launcher-settings.json"
 
 
+SPEEDS = {"50%": 50, "100%": 100, "150%": 150, "200%": 200, "Unlimited": 0}
+
 SESSION_MODES = {
     "Full replay": "--full",
     "Automatic": None,
@@ -53,6 +55,7 @@ OPTION_HELP = {
         "eight polls starting at poll 200. Custom uses the values under Limits and diagnostics."
     ),
     "WebGPU window": "Open the raylib game window with live controller input. Available for Full replay and Automatic.",
+    "Speed": "Target emulation speed for the game window. Headless expansion remains unpaced.",
     "WebGPU snapshot": "Save a WebGPU-rendered display snapshot. Available for Full replay and Automatic.",
     "Show game in launcher tab": (
         "Embed the native raylib/WebGPU window in the Game window tab rather than "
@@ -150,6 +153,7 @@ def default_settings():
         "window": True,
         "embed_game_window": True,
         "snapshot": True,
+        "speed": "100%",
         "cache_miss_resume": True,
         "tool": COMMAND_TOOLS[0],
         "executable": str(runner),
@@ -240,7 +244,7 @@ def load_settings(path):
         value = saved.get(key)
         if type(value) is type(default) and key not in ("numeric", "tool_options"):
             settings[key] = value
-    for key, choices in (("mode", SESSION_MODES), ("pad", PAD_PROFILES), ("tool", COMMAND_TOOLS)):
+    for key, choices in (("mode", SESSION_MODES), ("pad", PAD_PROFILES), ("tool", COMMAND_TOOLS), ("speed", SPEEDS)):
         if settings[key] not in choices:
             settings[key] = default_settings()[key]
     saved_numeric = saved.get("numeric")
@@ -377,6 +381,8 @@ class Launcher(ttk.Frame):
         self.window = self.fields["window"]
         self.embed_game_window = self.fields["embed_game_window"]
         self.snapshot = self.fields["snapshot"]
+        self.speed = self.fields["speed"]
+        self.speed_status = tk.StringVar()
         self.cache_miss_resume = self.fields["cache_miss_resume"]
         self.tool = self.fields["tool"]
         self.executable = self.fields["executable"]
@@ -421,6 +427,8 @@ class Launcher(ttk.Frame):
                  "The log remains visible below.",
         ).grid(row=1, column=0, sticky="w", pady=(6, 0))
 
+        ttk.Label(self.game_view, textvariable=self.speed_status).grid(row=2, column=0, sticky="w")
+
         self.path_row(self.setup, 0, "Extracted disc", self.disc, filedialog.askdirectory)
         self.path_row(self.setup, 1, "Memory card", self.card, filedialog.askopenfilename)
         self.choice_row(self.setup, 2, "Session mode", self.mode, SESSION_MODES)
@@ -448,6 +456,8 @@ class Launcher(ttk.Frame):
         self.ir_picker = ttk.Checkbutton(self.setup, text="Accept changed IR hashes", variable=self.accept_ir)
         self.ir_picker.grid(row=9, column=1, sticky="w")
         Tooltip(self.ir_picker, OPTION_HELP["Accept changed IR hashes"])
+        self.speed_picker = self.choice_row(self.setup, 10, "Speed", self.speed, SPEEDS)
+        ttk.Label(self.setup, textvariable=self.speed_status).grid(row=11, column=1, sticky="w")
         self.cross_entries = []
         for row, (label, variable) in enumerate(self.numeric.items()):
             caption = ttk.Label(self.limits, text=label)
@@ -626,6 +636,8 @@ class Launcher(ttk.Frame):
             mode in ("Automatic", "Full replay") else ["disabled"]
         )
         self.snapshot_picker.state(graphics_state)
+        self.speed_picker.configure(state="readonly" if self.window.get() and
+                                    mode in ("Automatic", "Full replay") else "disabled")
         self.ir_picker.state(["!disabled"] if mode == "Recover translation cache" else ["disabled"])
         self.cache_miss_picker.state(
             ["disabled"] if special else ["!disabled"]
@@ -670,7 +682,8 @@ class Launcher(ttk.Frame):
         )
         for key, _, _ in NUMERIC_SETTINGS.values():
             env.pop(key, None)
-        env.update(overrides, SDBZ_DISC_ROOT=str(disc))
+        env.update(overrides, SDBZ_DISC_ROOT=str(disc),
+                   SDBZ_SPEED_PERCENT=str(SPEEDS[self.speed.get()]))
         return ["cmd.exe", "/d", "/c", "run_ps2_game.bat", *args]
 
     def launch(self, help_only=False):
@@ -738,12 +751,16 @@ class Launcher(ttk.Frame):
         self.output.configure(state="disabled")
         self.play.state(["disabled"])
         self.help_button.state(["disabled"])
+        self.speed_status.set("")
         self.status.set("Running command")
         self.read_output()
 
     def read_output(self):
         chunk = self.log.read(32768)
         if chunk:
+            for line in chunk.splitlines():
+                if line.startswith("EE speed: "):
+                    self.speed_status.set(line.removeprefix("EE speed: "))
             if "live cache-miss: PC=" in chunk:
                 self.status.set("Compiling missing EE code; game state paused")
             if "EE hot-expand: resumed guest pc=" in chunk:

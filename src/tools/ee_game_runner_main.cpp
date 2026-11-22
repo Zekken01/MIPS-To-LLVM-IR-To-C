@@ -1,3 +1,4 @@
+#include "ee_scanout_clock.h"
 #include "ee_runtime.h"
 #include "ee_exceptions.h"
 #include "ee_memory.h"
@@ -861,6 +862,7 @@ void usage(const char* program)
         "  --gs-snapshot=FILE   Read-only displayed GS VRAM PPM (not a frame)\n"
         "  --gs-upload-snapshot=FILE  Preview completed GIF upload VRAM PPM (not a frame)\n"
         "  --gs-webgpu-snapshot=FILE  Render actual native WebGPU GS raster to PPM (opt-in)\n"
+        "  --speed-percent=N   Window pacing target (0=unlimited, default 100)\n"
         "  --gs-webgpu-window   Show guest scanout fields in a raylib/WebGPU window (opt-in)\n"
         "  --gs-field-probe=FILE  Bounded GPU FRAME/DISPFB JSONL at real guest fields\n"
         "                        Also accepts SDBZ_GS_FIELD_PROBE (WebGPU build)\n"
@@ -1607,6 +1609,8 @@ int main(int argc, char** argv)
     const char* gs_field_probe_path = nullptr;
     std::string gs_field_probe_environment;
     bool gs_webgpu_window = false;
+    uint32_t speed_percent = 100u;
+    bool has_speed_percent = false;
     const char* instruction_trace_path = nullptr;
     uint32_t instruction_trace_first_pc = 0u;
     uint32_t instruction_trace_last_pc = 0xffffffffu;
@@ -1730,6 +1734,17 @@ int main(int argc, char** argv)
                 return 2;
             }
             gs_field_probe_path = argv[i] + 17;
+            continue;
+        }
+        if (argument.compare(0, 16, "--speed-percent=") == 0)
+        {
+            if (has_speed_percent || !parse_u32(argv[i] + 16, &speed_percent) ||
+                speed_percent > 1000u)
+            {
+                std::fprintf(stderr, "invalid --speed-percent (expected 0..1000)\n");
+                return 2;
+            }
+            has_speed_percent = true;
             continue;
         }
         if (argument == "--gs-webgpu-window")
@@ -2047,6 +2062,16 @@ int main(int argc, char** argv)
     // reporting every one of them verbatim. An opt-in host-only cadence
     // reduces trace I/O without affecting guest dispatch cadence, IRQ
     // sampling, RPC scheduling, report snapshots or saved histories.
+    if (gs_webgpu_window && !has_speed_percent)
+    {
+        std::string speed_environment;
+        const char* speed = read_host_environment("SDBZ_SPEED_PERCENT", &speed_environment);
+        if (speed != nullptr && (!parse_u32(speed, &speed_percent) || speed_percent > 1000u))
+        {
+            std::fprintf(stderr, "invalid SDBZ_SPEED_PERCENT (expected 0..1000)\n");
+            return 2;
+        }
+    }
     uint32_t dispatch_trace_every = 1u;
     std::string dispatch_trace_environment;
     const char* dispatch_trace_setting = read_host_environment(
@@ -3032,6 +3057,13 @@ int main(int argc, char** argv)
     double native_time_ms = 0.0;
     double slowest_native_ms = 0.0;
     uint32_t slowest_native_pc = 0u;
+#ifdef EE_ENABLE_RAYLIB_WINDOW
+    uint64_t paced_field = 0u;
+    uint64_t pace_cycle = 0u;
+    uint64_t sample_cycle = 0u;
+    auto pace_time = std::chrono::steady_clock::now();
+    auto sample_time = pace_time;
+#endif
     while (remaining != 0)
     {
         if (pad0_cross_poll_count != 0u && iop_kernel != nullptr)
@@ -3664,6 +3696,54 @@ int main(int argc, char** argv)
 #ifdef EE_ENABLE_RAYLIB_WINDOW
         if (gs_webgpu_window)
         {
+            const uint64_t field = hardware.scanout().fields_started();
+            if (field != paced_field)
+            {
+                using t_clock = std::chrono::steady_clock;
+                const uint64_t cycle = runtime.m_ee_cycle_scheduler.current_cycle();
+                constexpr double clock_hz = ee::c_ee_scanout_clock::k_ee_clock_hz;
+                auto now = t_clock::now();
+                if (paced_field == 0u || cycle < pace_cycle)
+                {
+                    pace_cycle = sample_cycle = cycle;
+                    pace_time = sample_time = now;
+                }
+                else if (speed_percent != 0u)
+                {
+                    const auto target = pace_time + std::chrono::duration_cast<t_clock::duration>(
+                        std::chrono::duration<double>((cycle - pace_cycle) * 100.0 /
+                            (clock_hz * speed_percent)));
+                    if (target > now && target - now <= std::chrono::milliseconds(500))
+                    {
+                        std::this_thread::sleep_until(target);
+                        now = t_clock::now();
+                    }
+                    // Re-anchor after a stall or a large guest clock jump.
+                    if (now - target > std::chrono::milliseconds(100) ||
+                        target - now > std::chrono::milliseconds(500))
+                    {
+                        pace_cycle = cycle;
+                        pace_time = now;
+                    }
+                }
+                const double elapsed = std::chrono::duration<double>(now - sample_time).count();
+                if (elapsed >= 1.0)
+                {
+                    const double actual = (cycle - sample_cycle) * 100.0 / (clock_hz * elapsed);
+                    if (speed_percent == 0u)
+                    {
+                        std::printf("EE speed: %.0f%% actual / Unlimited\n", actual);
+                    }
+                    else
+                    {
+                        std::printf("EE speed: %.0f%% actual / %u%% target\n", actual, speed_percent);
+                    }
+                    std::fflush(stdout);
+                    sample_cycle = cycle;
+                    sample_time = now;
+                }
+                paced_field = field;
+            }
             raylib_window.pump(
                 webgpu_bridge,
                 hardware.gs_display_registers(),

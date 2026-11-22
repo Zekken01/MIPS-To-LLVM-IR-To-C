@@ -125,6 +125,7 @@ def test_game_tab_command_and_environment():
             "accept_ir": c_fake_variable(False),
             "window": c_fake_variable(True),
             "snapshot": c_fake_variable(True),
+            "speed": c_fake_variable("150%"),
             "cache_miss_resume": c_fake_variable(False),
             "numeric": {label: c_fake_variable(value)
                         for label, value in gui_values(GUI.default_settings()).items()},
@@ -138,6 +139,8 @@ def test_game_tab_command_and_environment():
         assert "--full" in command and "--replay-after-expand" in command
         assert env["EXPANSION_PER_PASS"] == "128"
         assert env["SDBZ_DISC_ROOT"] == str(disc.resolve())
+        assert env["SDBZ_SPEED_PERCENT"] == "150"
+        assert GUI.default_settings()["speed"] == "100%"
 
         instance.cache_miss_resume = c_fake_variable(True)
         command = GUI.Launcher.game_command(instance, env)

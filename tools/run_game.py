@@ -1110,6 +1110,8 @@ def main(argv=None):
                         help="Optional completed GS IMAGE transfer PPM (not a rendered frame)")
     parser.add_argument("--gs-webgpu-snapshot", type=Path,
                         help="Optional native WebGPU rasterized GS display PPM (requires EE_ENABLE_WEBGPU)")
+    parser.add_argument("--speed-percent", type=int, choices=range(1001), metavar="0..1000",
+                        help="Window pacing target (0=unlimited, default 100)")
     parser.add_argument("--gs-webgpu-window", action="store_true",
                         help="Present native WebGPU GS scanout in a raylib window (Windows)")
     parser.add_argument("--report", type=Path,
@@ -1385,6 +1387,8 @@ def main(argv=None):
             command.append(f"--gs-webgpu-snapshot={image_path}")
         if args.gs_webgpu_window:
             command.append("--gs-webgpu-window")
+            if args.speed_percent is not None:
+                command.append(f"--speed-percent={args.speed_percent}")
         if args.report is not None:
             report_path = args.report.resolve()
             report_path.parent.mkdir(parents=True, exist_ok=True)

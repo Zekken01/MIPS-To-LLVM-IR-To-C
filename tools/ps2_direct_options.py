@@ -23,6 +23,7 @@ GS_OPTIONS = (
     Option("--gs-snapshot", "Save the configured guest display buffer as a PPM.", "output"),
     Option("--gs-upload-snapshot", "Save the last completed GS upload as a PPM.", "output"),
     Option("--gs-webgpu-snapshot", "Save a native WebGPU raster as a PPM.", "output"),
+    Option("--speed-percent", "WebGPU window pacing target. Zero is unlimited."),
     Option("--gs-webgpu-window", "Open the raylib/WebGPU game window on Windows.", "flag"),
 )
 LIMITS = (
