@@ -834,6 +834,9 @@ bool test_guest_sio2_controller()
     }
     for (uint32_t pad_poll = 1u; pad_poll <= 7u; ++pad_poll)
     {
+        const bool live_pressed = pad_poll == 3u;
+        input_probe.set_sio2_pad0_input(
+            live_pressed ? 0x0820u : 0u, 128u, 128u, 128u, 128u);
         if (!input_probe.write(ctrl, 4u, 0x0cu) ||
             !input_probe.write(send3, 4u, (5u << 8u) | (5u << 18u)))
         {
@@ -849,9 +852,15 @@ bool test_guest_sio2_controller()
         for (uint32_t reply_index = 0u; reply_index < 5u;
              ++reply_index)
         {
-            const uint32_t expected =
-                reply_index == 4u && (pad_poll == 3u || pad_poll == 4u)
-                ? 0xbfu : neutral_reply[reply_index];
+            uint32_t expected = neutral_reply[reply_index];
+            if (reply_index == 3u && live_pressed)
+            {
+                expected = 0xdfu; // D-pad right
+            }
+            if (reply_index == 4u && (pad_poll == 3u || pad_poll == 4u))
+            {
+                expected = live_pressed ? 0xb7u : 0xbfu; // Cross plus R1
+            }
             if (!input_probe.read(rx, 1u, &status) ||
                 status != expected)
             {

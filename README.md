@@ -64,6 +64,14 @@ FULL_GAME_NATIVE_LINK_VALIDATION.md and tools/vu0_diff/README.md.
 
 ## BIOS-free extracted disc launcher (Windows)
 
+Run `python tools/launch_ps2_gui.py` for the graphical launcher. Choose
+the extracted disc folder and an optional raw PS2 memory card, then
+select **Launch**. The game opens in the raylib/WebGPU window. The
+first available controller supplies PS2 port 1 input. The south face
+button maps to Cross. Both sticks, the D-pad, Start, Select, and the
+shoulder buttons are mapped. The launcher shows the build and game
+log and saves it to `build/ps2-launcher.log`.
+
 Place the original, extracted game disc files under `PS2_GAME/` at the
 repository root, including `SYSTEM.CNF`. Run:
 

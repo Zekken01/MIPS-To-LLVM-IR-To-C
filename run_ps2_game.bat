@@ -88,6 +88,7 @@ if defined SDBZ_PAD0_CROSS_POLL_COUNT set "CAPTURE_PROFILE=pad-custom"
 if "%SDBZ_PAD0_CROSS_FIRST_POLL%"=="200" if "%SDBZ_PAD0_CROSS_POLL_COUNT%"=="8" set "CAPTURE_PROFILE=cross"
 
 set "DISC_ROOT=%CD%\PS2_GAME"
+if defined SDBZ_DISC_ROOT set "DISC_ROOT=%SDBZ_DISC_ROOT%"
 set "BASE_WORK_DIR=build\ps2-game-hle"
 set "WORK_DIR=%BASE_WORK_DIR%"
 if not defined EMIT_JOBS set "EMIT_JOBS=8"

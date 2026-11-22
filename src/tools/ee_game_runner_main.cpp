@@ -3475,7 +3475,12 @@ int main(int argc, char** argv)
                 webgpu_bridge,
                 hardware.gs_display_registers(),
                 hardware.gs_crt_mode(),
-                hardware.scanout().fields_started(), &graphics_probe);
+                hardware.scanout().fields_started(), &graphics_probe,
+                iop_kernel != nullptr ? &iop_kernel->hardware() : nullptr);
+            if (raylib_window.closed())
+            {
+                break;
+            }
         }
 #endif
 #ifdef EE_ENABLE_WEBGPU
@@ -7102,6 +7107,12 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "guest blocked by an unsupported operation or host service\n");
         return 3;
     }
+#ifdef EE_ENABLE_RAYLIB_WINDOW
+    if (raylib_window.closed())
+    {
+        return 0;
+    }
+#endif
     // An exit from the linked translated-code set is not a completed PS2 boot.
     std::fprintf(stderr, "guest left compiled code; further runtime/BIOS work required\n");
     return 3;
