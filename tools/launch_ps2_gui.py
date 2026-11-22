@@ -583,6 +583,7 @@ class Launcher(ttk.Frame):
             return
         try:
             env = os.environ.copy()
+            env["SDBZ_LAUNCHER_LIVE_PROGRESS"] = "1"
             is_direct = self.tabs.select() == str(self.direct)
             if is_direct:
                 numeric = default_settings()["numeric"]

@@ -8,6 +8,7 @@ must not throw away previously compiled guest functions.
 import argparse
 import json
 import locale
+import os
 from pathlib import Path
 import re
 import shutil
@@ -105,10 +106,29 @@ def watch_ll_files(progress, stopped):
         progress.refresh()
 
 
-def run_session(command, log_path, append=False, progress=None):
+def watch_live_report(report_path, stopped, started):
+    last = None
+    while not stopped.wait(5):
+        report = read_report(report_path)
+        dispatches = report.get("dispatches") if isinstance(report, dict) else None
+        elapsed = int(time.monotonic() - started)
+        if type(dispatches) is int and dispatches != last:
+            print(f"EE replay: {dispatches:,} dispatches ({elapsed}s in this pass).", flush=True)
+            last = dispatches
+        else:
+            print(f"Replay command still running ({elapsed}s in this pass).", flush=True)
+
+
+def run_session(command, log_path, append=False, progress=None, live_report=None):
     started = time.monotonic()
     stopped = threading.Event()
     worker = None
+    report_worker = None
+    if live_report is not None:
+        report_worker = threading.Thread(
+            target=watch_live_report, args=(live_report, stopped, started), daemon=True
+        )
+        report_worker.start()
     if progress is not None and progress.m_enabled:
         worker = threading.Thread(
             target=watch_ll_files, args=(progress, stopped), daemon=True
@@ -150,8 +170,10 @@ def run_session(command, log_path, append=False, progress=None):
                 if result.stdout is not None:
                     output = result.stdout
     finally:
+        stopped.set()
+        if report_worker is not None:
+            report_worker.join()
         if worker is not None:
-            stopped.set()
             worker.join()
             progress.refresh()
             progress.finish_line()
@@ -303,6 +325,8 @@ def main(argv=None):
     # feature was explicitly requested. Diagnostic tools and tests use the
     # existing three-argument interface without a progress keyword.
     progress_kwargs = {"progress": progress} if progress is not None else {}
+    if os.environ.get("SDBZ_LAUNCHER_LIVE_PROGRESS") == "1":
+        progress_kwargs["live_report"] = report
     snapshots = [
         ("--gs-snapshot", args.gs_snapshot),
         ("--gs-upload-snapshot", args.gs_upload_snapshot),
@@ -320,6 +344,9 @@ def main(argv=None):
         sys.executable, str(args.driver.resolve()), str(args.elf.resolve()),
         f"--work-dir={work}", f"--report={report}", *forwarded,
     ]
+
+    if args.gs_webgpu_window and "live_report" in progress_kwargs:
+        print("Expansion runs headless. The game window opens for the final traced replay.", flush=True)
 
     reuse = args.no_recompile
     for index in range(args.expansion_passes):
