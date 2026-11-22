@@ -659,6 +659,9 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME ee_live_cache_miss
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_live_cache_miss.py)
+    add_test(NAME ee_launcher_cache_resume
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/tools/test_launch_ps2_gui.py)
     add_test(NAME ee_known_cache_recovery
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_cache_recovery.py)
