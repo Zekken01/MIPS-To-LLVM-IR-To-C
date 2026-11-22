@@ -207,7 +207,7 @@ def batch_tool_defaults(disc):
         "--emit-opt": "0",
         "--timeout-seconds": numeric["BOOT_TIMEOUT_SECONDS"],
     }
-    return {
+    defaults = {
         "Boot session": {
             **python_defaults,
             "--disc-root": str(disc),
@@ -228,6 +228,11 @@ def batch_tool_defaults(disc):
             "--trace": True,
         },
     }
+    for tool, values in defaults.items():
+        for option in TOOL_OPTIONS[tool]["Trace"]:
+            if option.kind != "flag":
+                values[option.name] = option.default
+    return defaults
 
 
 def load_settings(path):
@@ -488,6 +493,15 @@ class Launcher(ttk.Frame):
                 form.add(page, text=group)
                 for row, option in enumerate(options):
                     self.option_row(page, row, option, saved, values)
+                if group == "Trace":
+                    general_trace = (
+                        "The boot session enables tracing for its final replay."
+                        if tool == "Boot session" else "Batch defaults enable --trace."
+                    )
+                    ttk.Label(
+                        page, text=general_trace + " Blank fields disable targeted traces.",
+                        wraplength=480,
+                    ).grid(row=len(options), column=0, columnspan=3, sticky="w", pady=(8, 0))
             additional = ttk.Frame(form, padding=8)
             additional.columnconfigure(0, weight=1)
             form.add(additional, text="Extra arguments")

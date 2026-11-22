@@ -166,6 +166,12 @@ def test_game_window_environment():
 
 def test_direct_commands():
     direct = GUI.batch_tool_defaults("/nonexistent/PS2_GAME")
+    for tool, defaults in direct.items():
+        for flag in ("--trace-instructions", "--trace-instructions-window", "--trace-entry",
+                     "--watch-word", "--trace-v0", "--trace-store"):
+            assert defaults[flag] == "", (tool, flag)
+    assert direct["Game runner (Python)"]["--trace"] is True
+    assert "--trace" not in direct["Boot session"]
     assert direct["Boot session"]["--replay-after-expand"] is False
     assert direct["Game runner (Python)"]["--replay-after-expand"] is False
     assert direct["Game runner (Python)"]["--auto-expand"] == "128"
