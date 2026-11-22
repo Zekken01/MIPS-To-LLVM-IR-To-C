@@ -747,7 +747,8 @@ void c_sif_rpc_bridge::commit_command(const s_request& request)
     {
         const uint32_t token = m_next_guest_token++;
         m_guest_pending.emplace(token, s_guest_pending{
-            response, request.m_result_destination, request.m_words[11]});
+            response, request.m_result_destination, request.m_words[11],
+            request.m_server_id, request.m_words[8]});
         if (!m_sifcmd.enqueue_guest_rpc(
                 token, request.m_server_id, request.m_words[8],
                 request.m_guest_rpc_bytes))
@@ -1185,6 +1186,21 @@ bool c_sif_rpc_bridge::finish_guest_rpc(
         for (uint32_t i = 0u; i < data.size(); ++i)
         {
             m_ee_ram.write8(call.m_destination + i, data[i]);
+        }
+        // MCSERV returns a pointer. The first copied word is the RPC
+        // status, while save-file data uses separate guest transfers.
+        if ((call.m_server_id == 0x80000400u ||
+             call.m_server_id == 0x80000480u) && data.size() >= 4u)
+        {
+            const uint32_t status = static_cast<uint32_t>(data[0]) |
+                (static_cast<uint32_t>(data[1]) << 8u) |
+                (static_cast<uint32_t>(data[2]) << 16u) |
+                (static_cast<uint32_t>(data[3]) << 24u);
+            std::fprintf(stderr,
+                "[mc] RPC reply: server=0x%08x method=0x%08x token=%u "
+                "status=0x%08x ee_destination=0x%08x bytes=%u\n",
+                call.m_server_id, call.m_method, token, status,
+                call.m_destination, call.m_recv_size);
         }
     }
     // Zero return pointers still complete the guest RPC, with no

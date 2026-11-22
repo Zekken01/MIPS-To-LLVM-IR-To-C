@@ -207,6 +207,8 @@ private:
         s_reply m_reply{};
         uint32_t m_destination = 0u;
         uint32_t m_recv_size = 0u;
+        uint32_t m_server_id = 0u;
+        uint32_t m_method = 0u;
     };
 
     struct s_pending_module_start
