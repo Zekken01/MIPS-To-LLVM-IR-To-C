@@ -34,6 +34,60 @@ struct s_ee_gs_capture_metrics
     s_ee_gs_display_registers m_display{};
 };
 
+// Framebuffer probes use the original GS FRAME register encoding (FBP in
+// 2 KiB pages, converted to the GPU's 64-byte block units). This is a host
+// diagnostic; it never writes the guest's FRAME or DISPFB registers.
+struct s_ee_gs_frame_target
+{
+    uint32_t m_base = 0u;
+    uint32_t m_fbw = 0u;
+    uint32_t m_psm = 0u;
+    bool m_supported = false;
+};
+
+inline s_ee_gs_frame_target decode_gs_frame_target(uint64_t frame)
+{
+    s_ee_gs_frame_target target{};
+    target.m_base = static_cast<uint32_t>(frame & 0x1ffu) * 32u;
+    target.m_fbw = static_cast<uint32_t>((frame >> 16u) & 0x3fu);
+    target.m_psm = static_cast<uint32_t>((frame >> 24u) & 0x3fu);
+    target.m_supported =
+        target.m_psm == 0u || target.m_psm == 1u ||
+        target.m_psm == 2u || target.m_psm == 0x0au;
+    return target;
+}
+
+// A successful GPU readback is not a present event. Summaries cover RGB
+// nonblack pixels and FNV-1a over all RGBA bytes in little-endian order.
+inline bool summarize_gs_field_pixels(
+    const std::vector<uint32_t>& pixels, uint32_t width, uint32_t height,
+    uint64_t* nonblack, uint64_t* checksum)
+{
+    if (nonblack == nullptr || checksum == nullptr ||
+        width == 0u || height == 0u ||
+        pixels.size() != static_cast<size_t>(width) * height)
+    {
+        return false;
+    }
+    uint64_t rgb = 0u;
+    uint64_t hash = 14695981039346656037ull;
+    for (uint32_t color : pixels)
+    {
+        if ((color & 0x00ffffffu) != 0u)
+        {
+            ++rgb;
+        }
+        for (uint32_t shift = 0u; shift < 32u; shift += 8u)
+        {
+            hash ^= (color >> shift) & 0xffu;
+            hash *= 1099511628211ull;
+        }
+    }
+    *nonblack = rgb;
+    *checksum = hash;
+    return true;
+}
+
 // Reporting data is deliberately independent from the CPU GS state, DMA,
 // scanout clock and WebGPU renderer. It cannot manufacture any event.
 class c_ee_gs_presentation_probe final
