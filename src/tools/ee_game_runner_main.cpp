@@ -52,6 +52,8 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <thread>
+#include <utility>
 #include <vector>
 
 #if defined(_WIN32)
@@ -441,6 +443,11 @@ struct c_native_module
         return m_handle != nullptr;
     }
 
+    void swap(c_native_module& other)
+    {
+        std::swap(m_handle, other.m_handle);
+    }
+
     t_game_run entry() const
     {
 #if defined(_WIN32)
@@ -464,6 +471,104 @@ struct c_native_module
 #endif
     }
 };
+
+// No guest machine state is serialized here.  On a zero-dispatch cache miss
+// the native runner stays alive, and the compiler publishes a new DLL/SO.  This
+// preserves EE/IOP memory, pending callbacks, DMA, GPU, timers, and pad/card
+// state in their owning objects.  Unique request IDs and atomic file renames
+// prevent consumption of stale or incomplete responses.
+bool request_hot_expand(
+    const std::filesystem::path& directory,
+    uint32_t sequence,
+    uint32_t pc,
+    std::filesystem::path* library,
+    std::string* failure)
+{
+    if (library == nullptr || failure == nullptr)
+    {
+        return false;
+    }
+    const std::string key = std::to_string(sequence);
+    const std::filesystem::path request = directory / ("request-" + key + ".txt");
+    const std::filesystem::path pending = directory / ("request-" + key + ".tmp");
+    const std::filesystem::path response = directory / ("response-" + key + ".txt");
+    std::error_code error;
+    std::filesystem::create_directories(directory, error);
+    if (error)
+    {
+        *failure = "cannot create hot-expand directory: " + error.message();
+        return false;
+    }
+    {
+        std::ofstream output(pending, std::ios::binary | std::ios::trunc);
+        if (!output)
+        {
+            *failure = "cannot write hot-expand request";
+            return false;
+        }
+        char address[16]{};
+        std::snprintf(address, sizeof(address), "0x%08x", pc);
+        output << sequence << '\n' << address << '\n';
+        output.close();
+        if (!output)
+        {
+            *failure = "incomplete hot-expand request";
+            return false;
+        }
+    }
+    std::filesystem::rename(pending, request, error);
+    if (error)
+    {
+        *failure = "cannot publish hot-expand request: " + error.message();
+        return false;
+    }
+    std::printf("EE hot-expand: paused at missing guest pc=0x%08x request=%u\n",
+                pc, sequence);
+    std::fflush(stdout);
+
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::minutes(30);
+    while (std::chrono::steady_clock::now() < deadline)
+    {
+        std::ifstream input(response, std::ios::binary);
+        if (input)
+        {
+            std::string received;
+            std::string result;
+            if (!std::getline(input, received) ||
+                !std::getline(input, result))
+            {
+                *failure = "malformed hot-expand response";
+                return false;
+            }
+            if (!result.empty() && result.back() == '\r')
+            {
+                result.pop_back();
+            }
+            if (received != key || result.empty())
+            {
+                *failure = "hot-expand response sequence mismatch or empty result";
+                return false;
+            }
+            if (result.compare(0, 6, "ERROR:") == 0)
+            {
+                *failure = result;
+                return false;
+            }
+            *library = std::filesystem::path(result);
+            if (!library->is_absolute() ||
+                !std::filesystem::is_regular_file(*library))
+            {
+                *failure = "hot-expand replacement library missing or not absolute";
+                return false;
+            }
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    *failure = "timed out waiting for hot-expand compiler";
+    return false;
+}
 
 bool parse_u32(const char* value, uint32_t* out)
 {
@@ -764,6 +869,7 @@ void usage(const char* program)
         "  --gs-field-probe=FILE  Bounded GPU FRAME/DISPFB JSONL at real guest fields\n"
         "                        Also accepts SDBZ_GS_FIELD_PROBE (WebGPU build)\n"
         "  --trace              Print guest PC, reason and dispatch count per step\n"
+        "  --hot-expand-dir=DIR Pause on missing guest code and hot-load compiled DLL\n"
         "  --trace-entry=0xPC   Print arguments and pointed-to words at a guest entry\n"
         "  --memcard-discard-writes Keep card writes in memory for this replay\n"
         "  --watch-word=0xADDR  Report guest word changes between native dispatches\n"
@@ -1498,6 +1604,7 @@ int main(int argc, char** argv)
     bool kseg_ram = false;
     const char* kernel_ram_path = nullptr;
     const char* report_path = nullptr;
+    const char* hot_expand_dir = nullptr;
     const char* gs_snapshot_path = nullptr;
     const char* gs_upload_snapshot_path = nullptr;
     const char* gs_webgpu_snapshot_path = nullptr;
@@ -1673,6 +1780,16 @@ int main(int argc, char** argv)
         if (argument == "--memcard-discard-writes")
         {
             discard_memory_card_writes = true;
+            continue;
+        }
+        if (argument.compare(0, 17, "--hot-expand-dir=") == 0)
+        {
+            if (argument.size() == 17u || hot_expand_dir != nullptr)
+            {
+                std::fprintf(stderr, "invalid or duplicate hot-expand directory\n");
+                return 2;
+            }
+            hot_expand_dir = argv[i] + 17;
             continue;
         }
         if (argument == "--hle-startup")
@@ -2035,7 +2152,7 @@ int main(int argc, char** argv)
         module.print_error();
         return 1;
     }
-    const t_game_run native_run = module.entry();
+    t_game_run native_run = module.entry();
     if (native_run == nullptr)
     {
         std::fprintf(stderr, "native library has no ee_game_run export\n");
@@ -2845,6 +2962,7 @@ int main(int argc, char** argv)
 
     uint32_t remaining = budget;
     uint64_t dispatched = 0;
+    uint32_t hot_expand_sequence = 0u;
     // Diagnose an unready IOP SIF handshake. Real ROM0 execution advances
     // on each read; the guard never manufactures a readiness value.
     uint32_t last_sif_smflag_epc = 0u;
@@ -3366,13 +3484,17 @@ int main(int argc, char** argv)
         // HLE services the IOP and pending callbacks between EE dispatches.
         // Batching across this boundary changes guest timing in a quiet run.
         const uint32_t slice =
-            (hle_startup || trace || report_path != nullptr) ? 1u : remaining;
+            (hot_expand_dir != nullptr || hle_startup || trace ||
+             report_path != nullptr) ? 1u : remaining;
         const auto native_start = std::chrono::steady_clock::now();
         // A given native function can branch internally forever without
         // returning to the dispatcher. Reset a per-invocation loop-header
         // budget before execution; instrumented CFG blocks exit precisely
         // with LOOP_BUDGET if this count is exhausted.
         runtime.m_loop_safepoint_remaining = runtime.m_loop_safepoint_limit;
+        const ee::s_ee_cpu_state cpu_before_dispatch = cpu;
+        const uint64_t instructions_before_dispatch =
+            runtime.m_guest_instruction_attempts;
         reason = native_run(&cpu, &runtime, slice, &count, &out_pc, &status);
         if (runtime.m_timing_observer_failed != 0u)
         {
@@ -3398,6 +3520,57 @@ int main(int argc, char** argv)
         {
             std::fprintf(stderr, "invalid native dispatcher count %u > %u\n", count, slice);
             return 1;
+        }
+
+        // Misses are observed only after a zero-count native dispatch.  No
+        // guest instruction, hardware clock, input poll, or IRQ may advance
+        // while the compiler updates the host code.  This is an in-process
+        // live checkpoint, not a disk savestate.
+        if (hot_expand_dir != nullptr && count == 0u && status == 0u &&
+            reason == static_cast<uint32_t>(
+                ee::e_ee_exit_reason::EE_EXIT_DISPATCH))
+        {
+            if (out_pc != from_pc ||
+                runtime.m_guest_instruction_attempts !=
+                    instructions_before_dispatch)
+            {
+                std::fprintf(stderr,
+                    "EE hot-expand refused non-atomic missing dispatch "
+                    "from=0x%08x to=0x%08x\n", from_pc, out_pc);
+                return 1;
+            }
+            std::filesystem::path replacement;
+            std::string failure;
+            if (!request_hot_expand(hot_expand_dir, ++hot_expand_sequence,
+                                    from_pc, &replacement, &failure))
+            {
+                std::fprintf(stderr, "EE hot-expand failed: %s\n",
+                             failure.c_str());
+                return 1;
+            }
+            c_native_module candidate;
+            if (!candidate.open(replacement.string().c_str()))
+            {
+                candidate.print_error();
+                return 1;
+            }
+            const t_game_run replacement_entry = candidate.entry();
+            if (replacement_entry == nullptr)
+            {
+                std::fprintf(stderr,
+                    "EE hot-expand replacement lacks ee_game_run\n");
+                return 1;
+            }
+            module.swap(candidate);
+            native_run = replacement_entry;
+            cpu = cpu_before_dispatch;
+            cpu.m_exit_reason = static_cast<uint32_t>(
+                ee::e_ee_exit_reason::EE_EXIT_DISPATCH);
+            std::printf("EE hot-expand: resumed guest pc=0x%08x "
+                        "with replacement=%s (no replay)\n",
+                        from_pc, replacement.string().c_str());
+            std::fflush(stdout);
+            continue;
         }
 
         dispatched += count;
