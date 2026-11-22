@@ -1305,6 +1305,13 @@ bool c_sif_rpc_bridge::pump()
             "result=0x%08x\n",
             it->m_module_id, it->m_thread_id, guest_start_result);
         m_replies.push_back(std::move(it->m_reply));
+        // LOADFILE owns this one-shot initializer. Once its reply has
+        // captured the real guest return value, release the temporary
+        // stack while keeping the resident IRX and its worker threads.
+        if (!failed)
+        {
+            (void)m_kernel.delete_thread(it->m_thread_id);
+        }
         it = m_pending_module_starts.erase(it);
     }
     // DMA5 may belong to another transport, and an acknowledged
