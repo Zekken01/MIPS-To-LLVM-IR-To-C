@@ -21,7 +21,7 @@ SPEC.loader.exec_module(SESSION)
 
 def run_case(passes, initial_reuse=False, diagnostics=False,
              initial_function_count=None, expansion_per_pass=2,
-             snapshots=False, quick_probe=False, graphics=None):
+             snapshots=False, quick_probe=False, graphics=None, legacy=False):
     with tempfile.TemporaryDirectory(prefix="ee-boot-session-") as temp:
         work = Path(temp) / "work"
         report = work / "first-boot.json"
@@ -87,6 +87,8 @@ def run_case(passes, initial_reuse=False, diagnostics=False,
         ]
         if initial_reuse:
             argv.append("--no-recompile")
+        if legacy:
+            argv.append("--replay-after-expand")
         if quick_probe:
             argv.extend(("--quick-probe", "--no-iop-catalog"))
         if snapshots:
@@ -113,6 +115,7 @@ def run_case(passes, initial_reuse=False, diagnostics=False,
         with patch.object(SESSION.subprocess, "run", side_effect=fake_run):
             code = SESSION.main(argv)
         assert len(calls) == len(passes), calls
+        assert all(("--replay-after-expand" in call) == legacy for call in calls), calls
         assert all("--trace" not in call for call in calls[:-1]), calls
         if quick_probe:
             assert all("--trace" not in call for call in calls), calls
@@ -324,6 +327,8 @@ def test_windows_launcher_preserves_guest_cache():
     assert 'if not defined MAX_DISPATCHES set "MAX_DISPATCHES=%DEFAULT_MAX_DISPATCHES%"' in launcher
     assert '--max-dispatches=%MAX_DISPATCHES%' in launcher
     assert '--timeout-seconds=%BOOT_TIMEOUT_SECONDS%' in launcher
+    assert 'if /I "%~1"=="--replay-after-expand" (' in launcher
+    assert '%SESSION_ARGS% %CACHE_MISS_ARGS%' in launcher
     assert '--max-dispatches=100000 ^' not in launcher
     assert (
         'if /I "%REQUESTED_SESSION_MODE%"=="quick" '
@@ -561,6 +566,14 @@ def main():
     ], initial_reuse=True, initial_function_count=421, quick_probe=True)
     assert code == 3 and len(calls) == 2
     assert "new_functions=2" in expansion and "LOOP_BUDGET" in boot
+
+    # The boot-session CLI explicitly forwards the GUI-selected legacy
+    # restart policy through both expansion and final replay commands.
+    code, calls, _, _ = run_case([
+        {"trace": False, "exit_reason": 5},
+        {"trace": True, "exit_reason": 5},
+    ], initial_reuse=True, legacy=True)
+    assert code == 3 and len(calls) == 2
 
     # First pass consumes its expansion cap; the second finds a real
     # non-DISPATCH blocker and the final run emits the useful trace.
