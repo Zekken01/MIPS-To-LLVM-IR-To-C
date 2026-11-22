@@ -566,6 +566,65 @@ def make_osd_config_elf(path, invalid_set=False):
     path.write_bytes(image)
 
 
+def make_thread_sleep_wakeup_elf(path):
+    """Original EE syscalls: wakeup credit, actual SleepThread, worker wake."""
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    image.extend(bytes(max(0, 0x400 - len(image))))
+    struct.pack_into("<I", image, 52 + 16, 0x300)
+    struct.pack_into("<I", image, 52 + 20, 0x300)
+
+    entry = (
+        0x3c040010,  # lui a0,0x0010
+        0x34840200,  # ori a0,a0,0x200: thread descriptor
+        0x24030020,  # CreateThread
+        0x0000000c,
+        0x00408021,  # s0 = thread ID 2
+        0x24040001,  # a0 = running thread ID 1
+        0x24030033,  # WakeupThread(1) before sleep: wakeup credit
+        0x0000000c,
+        0x00408821,  # s1 = WakeupThread result 1
+        0x24030032,  # SleepThread consumes the credit, no context switch
+        0x0000000c,
+        0x00409021,  # s2 = SleepThread result 1
+        0x24040002,  # a0 = worker ID 2
+        0x24030022,  # StartThread(2), worker is READY at priority 1
+        0x0000000c,
+        0x24030032,  # SleepThread with no credit: block thread 1
+        0x0000000c,  # switch to guest worker entry
+        0x00409821,  # s3 = SleepThread result 1 after wake
+        0x24040001,  # a0 = thread ID 1
+        0x24030035,  # CancelWakeupThread(1)
+        0x0000000c,
+        0x0040a021,  # s4 = cleared wakeup count 0
+        0x24040063,  # a0 = missing thread ID 99
+        0x24030033,  # WakeupThread(99) must return -1
+        0x0000000c,
+        0x0040a821,  # s5 = -1
+        0x00000008,  # jr zero: finish synthetic test
+        0x00000000,
+    )
+    worker = (
+        0x24040001,  # a0 = sleeping main thread ID 1
+        0x24030033,  # WakeupThread(1)
+        0x0000000c,  # wake and preempt worker with ready main
+        0x24030023,  # ExitThread if worker is scheduled again
+        0x0000000c,
+        0x00000008,
+        0x00000000,
+    )
+    for index, opcode in enumerate(entry):
+        struct.pack_into("<I", image, 0x108 + index * 4, opcode)
+    for index, opcode in enumerate(worker):
+        struct.pack_into("<I", image, 0x1f0 + index * 4, opcode)
+    struct.pack_into(
+        "<9I", image, 0x300,
+        0, 0x001000f0, 0x00102000, 0x800,
+        0x0010f000, 1, 0, 0, 0
+    )
+    path.write_bytes(image)
+
+
 def make_thread_suspend_resume_elf(path):
     """Create, start, suspend, resume a real guest EE thread via syscalls."""
     make_elf(path)
@@ -2781,6 +2840,46 @@ def main():
             assert regs[12] == 0x00642000, state # SetupHeap(size) result
             assert regs[13] == 0x00642000, state # EndOfHeap updated
             assert regs[14] == 0x00642000, state # EndOfHeap ignores A0
+
+        with tempfile.TemporaryDirectory(prefix="ee-native-sleep-wakeup-") as tmp:
+            root = Path(tmp)
+            elf = root / "kernel-sleep-wakeup.elf"
+            make_thread_sleep_wakeup_elf(elf)
+            report_path = root / "sleep-wakeup.json"
+            command = [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf),
+                "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--max-dispatches=160",
+                "--auto-expand=4",
+                "--trace",
+                "--report", str(report_path),
+                "--hle-startup",
+            ]
+            result = subprocess.run(
+                command, capture_output=True, text=True, check=False,
+            )
+            combined = result.stdout + result.stderr
+            assert "HLE CreateThread: id=2" in combined, combined
+            assert "HLE WakeupThread: id=1 status=1 wakeups=1" in combined, combined
+            assert "HLE SleepThread: id=1 consumed wakeup remaining=0" in combined, combined
+            assert "HLE StartThread: id=2" in combined, combined
+            assert "HLE SleepThread: id=1 status=4" in combined, combined
+            assert "HLE EE thread switch: id=2 pc=0x001000f0" in combined, combined
+            assert "HLE WakeupThread: id=1 status=2 wakeups=0 released=1" in combined, combined
+            assert "HLE EE thread switch: id=1" in combined, combined
+            assert "HLE CancelWakeupThread: id=1 status=1 wakeups=0" in combined, combined
+            assert "HLE WakeupThread: id=99 not found, result=-1" in combined, combined
+            state = json.loads(report_path.read_text(encoding="utf-8"))
+            registers = state["gpr_lo"]
+            assert registers[16] == 2, state  # worker created
+            assert registers[17] == 1, state  # wakeup credit granted
+            assert registers[18] == 1, state  # credit consumed without block
+            assert registers[19] == 1, state  # returned from genuine sleep
+            assert registers[20] == 0, state  # no leftover wakeup credit
+            assert registers[21] == 0xffffffffffffffff, state # invalid ID
+            assert state["final_pc"] != 0x001000f0, state # no worker escape
 
         with tempfile.TemporaryDirectory(prefix="ee-native-suspend-resume-") as tmp:
             root = Path(tmp)
