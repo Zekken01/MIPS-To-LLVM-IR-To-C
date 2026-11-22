@@ -989,8 +989,8 @@ def run_hot_expand(command, directory, timeout_seconds, compile_missing):
                     pending = response.with_suffix(".tmp")
                     # Never use Windows text-mode newline translation here: 
                     # the native binary reader expects an exact two-line protocol.
-                    with pending.open("w", encoding="utf-8", newline="\n") as output:
-                        output.write(f"{sequence}\n{result}\n")
+                    with pending.open("w", encoding="utf-8", newline="\n") as response_output:
+                        response_output.write(f"{sequence}\n{result}\n")
                     pending.replace(response)
                     sequence += 1
 
