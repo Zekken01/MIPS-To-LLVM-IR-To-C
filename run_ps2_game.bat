@@ -95,7 +95,7 @@ if not defined EMIT_JOBS set "EMIT_JOBS=8"
 if not defined SIF_POLL_LIMIT set "SIF_POLL_LIMIT=2048"
 rem Bound each native auto-expansion session; both limits are configurable.
 rem EXPANSION_PASSES: 1..64, number of bounded passes (default 8).
-rem EXPANSION_PER_PASS: 1..128, newly emitted functions per pass (default 128).
+rem EXPANSION_PER_PASS: 1..1024, newly emitted functions per pass (default 128).
 rem Stop early at genuine guest blockers; never fabricate completion.
 if not defined EXPANSION_PASSES set "EXPANSION_PASSES=8"
 if not defined EXPANSION_PER_PASS set "EXPANSION_PER_PASS=128"
