@@ -6783,11 +6783,11 @@ int main(int argc, char** argv)
                                 break;
                             }
 
-                            if (trace)
-                            {
-                                // Keep host logs line-safe and byte-exact
-                                // without claiming to decode guest Shift-JIS.
-                                std::string display;
+                            // A real guest KPUTS message is application
+                            // output, not a diagnostic that requires --trace.
+                            // Keep host logs line-safe and byte-exact without
+                            // claiming to decode guest Shift-JIS.
+                            std::string display;
                                 for (unsigned char value : guest_text)
                                 {
                                     if (value >= 0x20u && value <= 0x7eu &&
@@ -6806,6 +6806,14 @@ int main(int argc, char** argv)
                                         display += encoded;
                                     }
                                 }
+                            // Make messages visible in the normal batch
+                            // console and the Python launcher's live stream.
+                            // Flush so a long-running guest need not exit
+                            // before a buffered line becomes visible.
+                            std::printf("EE KPUTS: %s\n", display.c_str());
+                            std::fflush(stdout);
+                            if (trace)
+                            {
                                 std::printf(
                                     "HLE Deci2Call KPUTS: text=\"%s\" "
                                     "bytes=%zu result=1\n",

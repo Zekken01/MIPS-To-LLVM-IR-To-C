@@ -2737,15 +2737,16 @@ def main():
                     invalid_string=invalid_string,
                 )
                 report_path = root / "deci2-kputs.json"
+                command = [
+                    sys.executable, str(source / "tools" / "run_game.py"),
+                    str(elf), "--build-dir", str(build),
+                    "--work-dir", str(root / "out"),
+                    "--max-dispatches=32",
+                    "--hle-startup",
+                    "--report", str(report_path),
+                ]
                 result = subprocess.run(
-                    [
-                        sys.executable, str(source / "tools" / "run_game.py"),
-                        str(elf), "--build-dir", str(build),
-                        "--work-dir", str(root / "out"),
-                        "--max-dispatches=32",
-                        "--hle-startup", "--trace",
-                        "--report", str(report_path),
-                    ],
+                    command + ["--trace"],
                     capture_output=True, text=True, check=False,
                 )
                 combined = result.stdout + result.stderr
@@ -2758,6 +2759,7 @@ def main():
                         "string pointer 0x00100201"
                     ) in result.stderr, combined
                     assert state["gpr_lo"][8] == 0, state
+                    assert "EE KPUTS:" not in result.stdout, combined
                 elif invalid_string:
                     assert state["cop0_epc"] == 0x00100018, state
                     assert (
@@ -2765,12 +2767,26 @@ def main():
                         "guest text 0x7ffffffc"
                     ) in result.stderr, combined
                     assert state["gpr_lo"][8] == 0, state
+                    assert "EE KPUTS:" not in result.stdout, combined
                 else:
                     assert state["cop0_epc"] == 0x00100024, state
+                    assert "EE KPUTS: DECI2 KPUTS SUCCESS" in result.stdout, combined
                     assert (
                         'HLE Deci2Call KPUTS: text="DECI2 KPUTS SUCCESS" '
                         "bytes=19 result=1"
                     ) in result.stdout, combined
+                    # KPUTS must appear without --trace as well. The
+                    # native runner is reused, not rebuilt, for this check.
+                    untraced = subprocess.run(
+                        command + ["--no-recompile"],
+                        capture_output=True, text=True, check=False,
+                    )
+                    assert (
+                        "EE KPUTS: DECI2 KPUTS SUCCESS"
+                    ) in untraced.stdout, untraced.stdout + untraced.stderr
+                    assert (
+                        "HLE Deci2Call KPUTS: text="
+                    ) not in untraced.stdout, untraced.stdout
                     assert state["gpr_lo"][8] == 1, state
                     assert state["gpr_lo"][9] == 0, state
                     assert (
