@@ -642,14 +642,21 @@ def branch_anchored_jump_table_siblings(elf_path, target, executable_ranges, lim
             guard_register = (bound >> 16) & 31
             count = bound & 0xffff
             base_register = (upper >> 16) & 31
+            # The bounds branch may save an argument in its delay slot.
+            # DADDU rd, rs, zero is a nontrapping copy. Only the checked
+            # index must survive until SLL; LUI initializes the table base.
+            delay_copies_register = (
+                (delay & 0xfc1f07ff) == 0x2d and
+                ((delay >> 11) & 31) != index_register
+            )
             if not (
                 (bound >> 26) == 0x0b and
                 ((bound >> 21) & 31) == index_register and
-                guard_register != 0 and 2 <= count <= 128 and
+                guard_register not in (0, index_register) and 2 <= count <= 128 and
                 (guard >> 26) == 0x04 and
                 ((guard >> 21) & 31) == guard_register and
                 ((guard >> 16) & 31) == 0 and
-                delay == 0 and
+                (delay == 0 or delay_copies_register) and
                 (upper >> 26) == 0x0f and base_register not in (0, index_register) and
                 (shift >> 26) == 0 and (shift & 63) == 0 and
                 ((shift >> 21) & 31) == 0 and
