@@ -283,11 +283,12 @@ bool c_sif1_dma_transport::set_dma(
     constexpr uint32_t k_stage_capacity = 0x00010000u;
     uint32_t ee_chcr = 0u;
     uint32_t iop_chcr = 0u;
+    // The syscall adapter stages copies from mapped EE RAM or scratchpad
+    // before submitting the generated chain from main RAM to DMA6.
     const uint32_t list_address = m_ee_ram.translate_direct_address(list);
     if (dma_id == nullptr || m_next_dma_id == 0u ||
         count == 0u || count > 64u ||
         (list & 3u) != 0u ||
-        list_address >= 0x02000000u ||
         !m_ee_ram.contains(list_address, static_cast<size_t>(count) * 16u) ||
         !m_ee_ram.contains(k_stage, k_stage_capacity) ||
         m_faulted || m_count != 0u ||
@@ -306,7 +307,8 @@ bool c_sif1_dma_transport::set_dma(
         const uint32_t descriptor = list_address + index * 16u;
         const uint32_t source = m_ee_ram.read32(descriptor);
         const uint32_t destination = m_ee_ram.read32(descriptor + 4u);
-        const uint32_t size = m_ee_ram.read32(descriptor + 8u);
+        // The SIF syscall uses the low 31 bits for its byte count.
+        const uint32_t size = m_ee_ram.read32(descriptor + 8u) & 0x7fffffffu;
         const uint32_t attributes = m_ee_ram.read32(descriptor + 12u);
         const uint32_t source_address =
             m_ee_ram.translate_direct_address(source);
@@ -328,7 +330,6 @@ bool c_sif1_dma_transport::set_dma(
             (destination_region != 0u &&
              destination_region != 0x80000000u &&
              destination_region != 0xa0000000u) ||
-            source_address >= 0x02000000u ||
             !m_ee_ram.contains(source_address, static_cast<size_t>(padded)) ||
             destination_address == 0u ||
             destination_address >= c_cpu::k_ram_size ||

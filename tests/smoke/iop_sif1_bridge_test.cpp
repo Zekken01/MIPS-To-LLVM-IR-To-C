@@ -51,7 +51,7 @@ int main()
     }
     descriptor(
         ee_ram, k_list, 0x80000000u | k_source0,
-        k_destination0, 20u
+        k_destination0, 0x80000000u | 20u
     );
     descriptor(
         ee_ram, k_list + 16u, k_source1,

@@ -248,10 +248,12 @@ int run_case(uint32_t size, bool sender_first)
 }
 
 int run_syscall_case(uint32_t size, uint32_t count,
-                     uint32_t final_attributes)
+                     uint32_t final_attributes, bool scratchpad = false)
 {
-    constexpr uint32_t k_descriptor = 0x00110004u;
-    constexpr uint32_t k_data = 0x00120000u;
+    const uint32_t descriptor = scratchpad
+        ? ee::ee_memory::k_scratchpad_base + 4u : 0x00110004u;
+    const uint32_t data = scratchpad
+        ? ee::ee_memory::k_scratchpad_base + 0x100u : 0x00120000u;
     constexpr uint32_t k_borrowed_stage = 0x01c00000u;
     ee::ee_memory memory(32u * 1024u * 1024u);
     ee::s_ee_cpu_state ee_cpu{};
@@ -290,12 +292,12 @@ int run_syscall_case(uint32_t size, uint32_t count,
     }
     for (uint32_t n = 0u; n < count; ++n)
     {
-        const uint32_t src = k_data + n * 0x1000u;
+        const uint32_t src = data + n * 0x1000u;
         const uint32_t dst = k_destination + 4u + n * 0x1000u;
-        memory.write32(k_descriptor + n * 16u, src);
-        memory.write32(k_descriptor + n * 16u + 4u, dst);
-        memory.write32(k_descriptor + n * 16u + 8u, size);
-        memory.write32(k_descriptor + n * 16u + 12u,
+        memory.write32(descriptor + n * 16u, src);
+        memory.write32(descriptor + n * 16u + 4u, dst);
+        memory.write32(descriptor + n * 16u + 8u, 0x80000000u | size);
+        memory.write32(descriptor + n * 16u + 12u,
                        n + 1u == count ? final_attributes : 0u);
         for (uint32_t index = 0u; index < padded + 16u; ++index)
         {
@@ -315,7 +317,7 @@ int run_syscall_case(uint32_t size, uint32_t count,
     }
 
     uint32_t id = 0xdeadbeefu;
-    if (transport.set_dma(k_descriptor, count, &id) ||
+    if (transport.set_dma(descriptor, count, &id) ||
         id != 0xdeadbeefu || dmac.status() != 0u)
     {
         return fail("unarmed DMA10 accepted a guest descriptor", size);
@@ -329,43 +331,43 @@ int run_syscall_case(uint32_t size, uint32_t count,
         return fail("IOP receiver MMIO setup not executed", size);
     }
 
-    memory.write32(k_descriptor + 12u, 1u);
-    if (transport.set_dma(k_descriptor, count, &id) ||
+    memory.write32(descriptor + 12u, 1u);
+    if (transport.set_dma(descriptor, count, &id) ||
         id != 0xdeadbeefu || dmac.status() != 0u)
     {
         return fail("invalid attributes committed partial DMA", size);
     }
-    memory.write32(k_descriptor + 12u,
+    memory.write32(descriptor + 12u,
                    count == 1u ? final_attributes : 0u);
 
     // A terminal SIFCMD marker is supported only on the final packet.
     // Rejecting an earlier marker must not submit or partially deliver DMA.
     if (count > 1u)
     {
-        memory.write32(k_descriptor + 12u, 0x44u);
-        if (transport.set_dma(k_descriptor, count, &id) ||
+        memory.write32(descriptor + 12u, 0x44u);
+        if (transport.set_dma(descriptor, count, &id) ||
             id != 0xdeadbeefu || dmac.status() != 0u)
         {
             return fail("nonterminal SIFCMD marker accepted", size);
         }
-        memory.write32(k_descriptor + 12u, 0u);
+        memory.write32(descriptor + 12u, 0u);
     }
 
-    if (transport.set_dma(k_descriptor + 1u, count, &id) ||
+    if (transport.set_dma(descriptor + 1u, count, &id) ||
         id != 0xdeadbeefu || dmac.status() != 0u)
     {
         return fail("non-word-aligned descriptor list accepted", size);
     }
 
-    memory.write32(k_descriptor + 4u, k_destination + 5u);
-    if (transport.set_dma(k_descriptor, count, &id) ||
+    memory.write32(descriptor + 4u, k_destination + 5u);
+    if (transport.set_dma(descriptor, count, &id) ||
         id != 0xdeadbeefu || dmac.status() != 0u)
     {
         return fail("non-word-aligned IOP destination accepted", size);
     }
-    memory.write32(k_descriptor + 4u, k_destination + 4u);
+    memory.write32(descriptor + 4u, k_destination + 4u);
 
-    if (!transport.set_dma(k_descriptor, count, &id) || id != 1u)
+    if (!transport.set_dma(descriptor, count, &id) || id != 1u)
     {
         return fail("real syscall DMA6->DMA10 failed", size);
     }
@@ -405,7 +407,7 @@ int run_syscall_case(uint32_t size, uint32_t count,
     }
     for (uint32_t n = 0u; n < count; ++n)
     {
-        const uint32_t src = k_data + n * 0x1000u;
+        const uint32_t src = data + n * 0x1000u;
         const uint32_t dst = k_destination + 4u + n * 0x1000u;
         for (uint32_t index = 0u; index < padded + 16u; ++index)
         {
@@ -451,7 +453,8 @@ int main()
     }
     if (run_syscall_case(20u, 1u, 0u) != 0 ||
         run_syscall_case(20u, 1u, 0x44u) != 0 ||
-        run_syscall_case(56u, 2u, 0x44u) != 0)
+        run_syscall_case(56u, 2u, 0x44u) != 0 ||
+        run_syscall_case(20u, 1u, 0u, true) != 0)
     {
         return 1;
     }

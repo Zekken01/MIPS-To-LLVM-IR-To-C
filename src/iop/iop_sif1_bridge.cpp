@@ -146,7 +146,8 @@ bool c_sif1_bridge::set_dma(
         const uint32_t descriptor = list_physical + index * 16u;
         const uint32_t source = m_ee_ram.read32(descriptor);
         const uint32_t destination = m_ee_ram.read32(descriptor + 4u);
-        const uint32_t size = m_ee_ram.read32(descriptor + 8u);
+        // The SIF syscall uses the low 31 bits for its byte count.
+        const uint32_t size = m_ee_ram.read32(descriptor + 8u) & 0x7fffffffu;
         const uint32_t attributes = m_ee_ram.read32(descriptor + 12u);
 
         uint32_t ee_source = 0u;
