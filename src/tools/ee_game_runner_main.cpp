@@ -2847,6 +2847,8 @@ int main(int argc, char** argv)
     uint64_t next_thread_order = 1u;
     constexpr uint32_t k_thread_return_pc = 0xffffffe0u;
     bool reschedule_requested = false;
+    uint64_t idle_started_cycle = 0u;
+    uint64_t idle_cycles = 0u;
     const auto schedule_threads = [&]() -> bool
     {
         uint32_t next_id = 0u;
@@ -2866,10 +2868,12 @@ int main(int argc, char** argv)
                 next_id = id;
             }
         }
-        if (next_id == 0u)
+        if (next_id == 0u &&
+            runtime.m_ee_cycle_scheduler.source() !=
+                ee::e_ee_cycle_source::REFERENCE_COMPATIBILITY)
         {
             std::fprintf(stderr,
-                "EE thread scheduler: no runnable guest threads\n");
+                "EE thread scheduler: no runnable guest threads and no idle clock\n");
             return false;
         }
         if (next_id != current_thread_id)
@@ -2885,6 +2889,17 @@ int main(int argc, char** argv)
                     current.m_status = 2u;
                     current.m_order = ++next_thread_order;
                 }
+            }
+            if (next_id == 0u)
+            {
+                current_thread_id = 0u;
+                idle_started_cycle = runtime.m_ee_cycle_scheduler.current_cycle();
+                reschedule_requested = false;
+                if (trace)
+                {
+                    std::printf("HLE EE scheduler idle: no runnable guest threads\n");
+                }
+                return true;
             }
             s_kernel_thread& next = threads[next_id];
             if (!next.m_has_context)
@@ -3064,6 +3079,202 @@ int main(int argc, char** argv)
     auto pace_time = std::chrono::steady_clock::now();
     auto sample_time = pace_time;
 #endif
+    enum class e_device_service { continued, window_closed, failed };
+    const auto service_devices = [&]() -> e_device_service
+    {
+        // Service guest-programmed timer compare/overflow events against
+        // the same reached-instruction compatibility clock as scanout.
+        // Timer COUNT reads inside a long native loop sample the live
+        // instruction budget rather than this after-dispatch checkpoint.
+        host_timers.service();
+        const auto scanout_result = runtime.m_ee_cycle_scheduler.service_scanout(
+            hardware, vsync_flags, *memory);
+        if (scanout_result == ee::e_ee_scheduled_event_result::INVALID_TIMESTAMP_OR_DELIVERY)
+        {
+            std::fprintf(stderr, "EE scheduler rejected scanout delivery at cycle=%llu\n",
+                static_cast<unsigned long long>(runtime.m_ee_cycle_scheduler.current_cycle()));
+            return e_device_service::failed;
+        }
+        // Deliver original IOP start/end callbacks in the scanout
+        // clock's event order; never infer edges from wall time.
+        if (iop_hle != nullptr)
+        {
+            for (uint8_t start_edge :
+                 hardware.scanout().delivered_vblank_edges())
+            {
+                iop_hle->signal_vblank_edge(start_edge != 0u);
+            }
+        }
+#ifdef EE_ENABLE_RAYLIB_WINDOW
+        if (gs_webgpu_window)
+        {
+            const uint64_t field = hardware.scanout().fields_started();
+            if (field != paced_field)
+            {
+                using t_clock = std::chrono::steady_clock;
+                const uint64_t cycle = runtime.m_ee_cycle_scheduler.current_cycle();
+                constexpr double clock_hz = ee::c_ee_scanout_clock::k_ee_clock_hz;
+                auto now = t_clock::now();
+                if (paced_field == 0u || cycle < pace_cycle)
+                {
+                    pace_cycle = sample_cycle = cycle;
+                    pace_time = sample_time = now;
+                }
+                else if (speed_percent != 0u)
+                {
+                    const auto target = pace_time + std::chrono::duration_cast<t_clock::duration>(
+                        std::chrono::duration<double>((cycle - pace_cycle) * 100.0 /
+                            (clock_hz * speed_percent)));
+                    if (target > now && target - now <= std::chrono::milliseconds(500))
+                    {
+                        std::this_thread::sleep_until(target);
+                        now = t_clock::now();
+                    }
+                    // Re-anchor after a stall or a large guest clock jump.
+                    if (now - target > std::chrono::milliseconds(100) ||
+                        target - now > std::chrono::milliseconds(500))
+                    {
+                        pace_cycle = cycle;
+                        pace_time = now;
+                    }
+                }
+                const double elapsed = std::chrono::duration<double>(now - sample_time).count();
+                if (elapsed >= 1.0)
+                {
+                    const double actual = (cycle - sample_cycle) * 100.0 / (clock_hz * elapsed);
+                    if (speed_percent == 0u)
+                    {
+                        std::printf("EE speed: %.0f%% actual / Unlimited\n", actual);
+                    }
+                    else
+                    {
+                        std::printf("EE speed: %.0f%% actual / %u%% target\n", actual, speed_percent);
+                    }
+                    std::fflush(stdout);
+                    sample_cycle = cycle;
+                    sample_time = now;
+                }
+                paced_field = field;
+            }
+            raylib_window.pump(
+                webgpu_bridge,
+                hardware.gs_display_registers(),
+                hardware.gs_crt_mode(),
+                hardware.scanout().fields_started(), &graphics_probe,
+                iop_kernel != nullptr ? &iop_kernel->hardware() : nullptr);
+            if (raylib_window.closed())
+            {
+                return e_device_service::window_closed;
+            }
+        }
+#endif
+#ifdef EE_ENABLE_WEBGPU
+        if (gs_field_probe.m_file != nullptr &&
+            !capture_gs_field(
+                gs_field_probe, webgpu_bridge, gs_state, graphics_probe,
+                hardware.gs_display_registers(),
+                hardware.gs_crt_mode(),
+                hardware.scanout().fields_started(), dispatched,
+                runtime.m_ee_cycle_scheduler.current_cycle(), cpu.m_pc))
+        {
+            std::fprintf(stderr, "failed to write GS field probe: %s\n",
+                gs_field_probe_path);
+            return e_device_service::failed;
+        }
+#endif
+        return e_device_service::continued;
+    };
+    enum class e_intc_service { not_pending, handled, failed };
+    const auto service_intc = [&](uint32_t exit_reason) -> e_intc_service
+    {
+        // ps2-web-recomp/kernel.cpp::run_intc acknowledges the actual
+        // masked INTC cause and runs the registered guest callbacks, then
+        // restores the interrupted EE thread. The ROM0 exception vector
+        // is not executable in HLE-first mode, so bridge only an observed,
+        // architecturally taken INTC exception; all other exceptions
+        // remain unsupported. Never manufacture a VBlank or interrupt.
+        if (hle_startup && !irq_callback_active && !callback_active &&
+            exit_reason == static_cast<uint32_t>(
+                ee::e_ee_exit_reason::EE_EXIT_EXCEPTION) &&
+            ((cpu.m_cop0[13] >> 2u) & 31u) == ee::EX_Int &&
+            cpu.m_pc == ee::ee_exception_vector(
+                cpu.m_cop0[12] & ~ee::STATUS_EXL, ee::EX_Int) &&
+            (cpu.m_cop0[12] & (ee::STATUS_EXL | ee::STATUS_IE |
+                                 ee::STATUS_EIE)) ==
+                (ee::STATUS_EXL | ee::STATUS_IE | ee::STATUS_EIE) &&
+            (cpu.m_cop0[12] & ee::STATUS_ERL) == 0u &&
+            (cpu.m_cop0[13] & ee::CAUSE_BD) == 0u &&
+            (ee::ee_pending_interrupts(&cpu) &
+                (1u << (ee::CAUSE_IP_SHIFT + ee::INT_INTC))) != 0u &&
+            hardware.intc().pending() != 0u)
+        {
+            const uint32_t pending = hardware.intc().pending();
+            uint32_t cause = 0u;
+            while (cause < 32u && (pending & (1u << cause)) == 0u)
+            {
+                ++cause;
+            }
+            if (cause >= 32u)
+            {
+                return e_intc_service::failed;
+            }
+
+            irq_callback_handlers.clear();
+            for (const s_kernel_interrupt_handler& handler : intc_handlers)
+            {
+                if (handler.m_cause == cause)
+                {
+                    irq_callback_handlers.push_back(handler);
+                }
+            }
+            if (!irq_callback_handlers.empty() &&
+                !memory->contains(k_irq_kernel_stack - 0x1000u, 0x1000u))
+            {
+                std::fprintf(stderr,
+                    "HLE INTC callback refused unmapped kernel stack\n");
+                return e_intc_service::failed;
+            }
+
+            const ee::s_ee_u128 acknowledge{1u << cause, 0u};
+            if (!ee::c_ee_intc::mmio_write(
+                    &hardware.intc(), ee::c_ee_intc::k_stat_address,
+                    4u, &acknowledge))
+            {
+                std::fprintf(stderr, "HLE INTC acknowledgement failed\n");
+                return e_intc_service::failed;
+            }
+            // Resume at EPC, not EPC+4. The interrupted instruction did
+            // not execute, and a branch-delay interrupt is excluded above.
+            ee::s_ee_cpu_state resume_cpu = cpu;
+            resume_cpu.m_pc = cpu.m_cop0[14];
+            resume_cpu.m_cop0[12] &= ~ee::STATUS_EXL;
+            resume_cpu.m_exit_reason = static_cast<uint32_t>(
+                ee::e_ee_exit_reason::EE_EXIT_DISPATCH);
+            if (trace)
+            {
+                std::printf("HLE INTC IRQ: cause=%u pending=0x%08x "
+                            "handlers=%zu epc=0x%08x\n",
+                            cause, pending, irq_callback_handlers.size(),
+                            resume_cpu.m_pc);
+            }
+            if (irq_callback_handlers.empty())
+            {
+                cpu = resume_cpu;
+                hardware.intc().bind_cpu(&cpu);
+                hardware.dmac().bind_cpu(&cpu);
+                return e_intc_service::handled;
+            }
+            irq_interrupted_cpu = resume_cpu;
+            irq_interrupted_vu0 = vu0;
+            irq_callback_is_intc = true;
+            irq_callback_cause = cause;
+            irq_callback_index = 0u;
+            irq_callback_active = true;
+            enter_irq_callback(irq_callback_handlers[irq_callback_index++]);
+            return e_intc_service::handled;
+        }
+        return e_intc_service::not_pending;
+    };
     while (remaining != 0)
     {
         if (pad0_cross_poll_count != 0u && iop_kernel != nullptr)
@@ -3316,6 +3527,81 @@ int main(int argc, char** argv)
             last_snapshot_dispatch = dispatched;
             last_snapshot_callback_active = callback_active;
             last_snapshot_time = std::chrono::steady_clock::now();
+        }
+        if (current_thread_id == 0u && !irq_callback_active && !callback_active)
+        {
+            if (!schedule_threads())
+            {
+                return 1;
+            }
+            if (current_thread_id != 0u)
+            {
+                continue;
+            }
+
+            // Idle has no guest instruction to take the interrupt.
+            // Sample the real masked INTC line at this kernel boundary.
+            if (hardware.intc().pending() != 0u &&
+                (ee::ee_pending_interrupts(&cpu) &
+                    (1u << (ee::CAUSE_IP_SHIFT + ee::INT_INTC))) != 0u &&
+                ee::ee_check_interrupts(&cpu, &runtime, cpu.m_pc, 0u) != 0u)
+            {
+                if (service_intc(cpu.m_exit_reason) != e_intc_service::handled)
+                {
+                    reason = static_cast<uint32_t>(
+                        ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED);
+                    status = 0u;
+                    break;
+                }
+                continue;
+            }
+
+            // Keep one idle turn below the normal IOP catch-up limit.
+            // Device events continue on the emulated clock, even though
+            // there are no EE instructions to charge to the guest.
+            constexpr uint64_t k_idle_slice = 65536u;
+            constexpr uint64_t k_max_idle_cycles = ee::c_ee_scanout_clock::k_ee_clock_hz;
+            const uint64_t now = runtime.m_ee_cycle_scheduler.current_cycle();
+            if (now - idle_started_cycle >= k_max_idle_cycles ||
+                now > std::numeric_limits<uint64_t>::max() - k_idle_slice)
+            {
+                std::fprintf(stderr,
+                    "EE scheduler idle limit: no guest thread woke at cycle=%llu\n",
+                    static_cast<unsigned long long>(now));
+                reason = static_cast<uint32_t>(
+                    ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED);
+                status = 0u;
+                break;
+            }
+            uint64_t next = std::min(now + k_idle_slice, host_timers.next_event());
+            if (hardware.scanout().enabled())
+            {
+                next = std::min(next, hardware.scanout().next_field_cycle());
+            }
+            // The preceding service has already handled all due events.
+            // A device with no future deadline must not stall idle time.
+            if (next <= now)
+            {
+                next = now + k_idle_slice;
+            }
+            idle_cycles += next - now;
+            host_timers.set_idle_cycles(idle_cycles);
+            if (!runtime.m_ee_cycle_scheduler.publish_cycle(next))
+            {
+                return 1;
+            }
+            reason = static_cast<uint32_t>(ee::e_ee_exit_reason::EE_EXIT_DISPATCH);
+            status = 1u;
+            const auto device_result = service_devices();
+            if (device_result == e_device_service::failed)
+            {
+                return 1;
+            }
+            if (device_result == e_device_service::window_closed)
+            {
+                break;
+            }
+            continue;
         }
         if (callback_active && !image.is_executable_address(cpu.m_pc))
         {
@@ -3665,111 +3951,20 @@ int main(int argc, char** argv)
         if (runtime.m_ee_cycle_scheduler.source() ==
             ee::e_ee_cycle_source::REFERENCE_COMPATIBILITY &&
             !runtime.m_ee_cycle_scheduler.publish_cycle(
-                runtime.m_guest_instruction_attempts))
+                runtime.m_guest_instruction_attempts + idle_cycles))
         {
             std::fprintf(stderr, "EE compatibility cycle publication rejected\n");
             return 1;
         }
-        // Service guest-programmed timer compare/overflow events against
-        // the same reached-instruction compatibility clock as scanout.
-        // Timer COUNT reads inside a long native loop sample the live
-        // instruction budget rather than this after-dispatch checkpoint.
-        host_timers.service();
-        const auto scanout_result = runtime.m_ee_cycle_scheduler.service_scanout(
-            hardware, vsync_flags, *memory);
-        if (scanout_result == ee::e_ee_scheduled_event_result::INVALID_TIMESTAMP_OR_DELIVERY)
+        const auto device_result = service_devices();
+        if (device_result == e_device_service::failed)
         {
-            std::fprintf(stderr, "EE scheduler rejected scanout delivery at cycle=%llu\n",
-                static_cast<unsigned long long>(runtime.m_ee_cycle_scheduler.current_cycle()));
             return 1;
         }
-        // Deliver original IOP start/end callbacks in the scanout
-        // clock's event order; never infer edges from wall time.
-        if (iop_hle != nullptr)
+        if (device_result == e_device_service::window_closed)
         {
-            for (uint8_t start_edge :
-                 hardware.scanout().delivered_vblank_edges())
-            {
-                iop_hle->signal_vblank_edge(start_edge != 0u);
-            }
+            break;
         }
-#ifdef EE_ENABLE_RAYLIB_WINDOW
-        if (gs_webgpu_window)
-        {
-            const uint64_t field = hardware.scanout().fields_started();
-            if (field != paced_field)
-            {
-                using t_clock = std::chrono::steady_clock;
-                const uint64_t cycle = runtime.m_ee_cycle_scheduler.current_cycle();
-                constexpr double clock_hz = ee::c_ee_scanout_clock::k_ee_clock_hz;
-                auto now = t_clock::now();
-                if (paced_field == 0u || cycle < pace_cycle)
-                {
-                    pace_cycle = sample_cycle = cycle;
-                    pace_time = sample_time = now;
-                }
-                else if (speed_percent != 0u)
-                {
-                    const auto target = pace_time + std::chrono::duration_cast<t_clock::duration>(
-                        std::chrono::duration<double>((cycle - pace_cycle) * 100.0 /
-                            (clock_hz * speed_percent)));
-                    if (target > now && target - now <= std::chrono::milliseconds(500))
-                    {
-                        std::this_thread::sleep_until(target);
-                        now = t_clock::now();
-                    }
-                    // Re-anchor after a stall or a large guest clock jump.
-                    if (now - target > std::chrono::milliseconds(100) ||
-                        target - now > std::chrono::milliseconds(500))
-                    {
-                        pace_cycle = cycle;
-                        pace_time = now;
-                    }
-                }
-                const double elapsed = std::chrono::duration<double>(now - sample_time).count();
-                if (elapsed >= 1.0)
-                {
-                    const double actual = (cycle - sample_cycle) * 100.0 / (clock_hz * elapsed);
-                    if (speed_percent == 0u)
-                    {
-                        std::printf("EE speed: %.0f%% actual / Unlimited\n", actual);
-                    }
-                    else
-                    {
-                        std::printf("EE speed: %.0f%% actual / %u%% target\n", actual, speed_percent);
-                    }
-                    std::fflush(stdout);
-                    sample_cycle = cycle;
-                    sample_time = now;
-                }
-                paced_field = field;
-            }
-            raylib_window.pump(
-                webgpu_bridge,
-                hardware.gs_display_registers(),
-                hardware.gs_crt_mode(),
-                hardware.scanout().fields_started(), &graphics_probe,
-                iop_kernel != nullptr ? &iop_kernel->hardware() : nullptr);
-            if (raylib_window.closed())
-            {
-                break;
-            }
-        }
-#endif
-#ifdef EE_ENABLE_WEBGPU
-        if (gs_field_probe.m_file != nullptr &&
-            !capture_gs_field(
-                gs_field_probe, webgpu_bridge, gs_state, graphics_probe,
-                hardware.gs_display_registers(),
-                hardware.gs_crt_mode(),
-                hardware.scanout().fields_started(), dispatched,
-                runtime.m_ee_cycle_scheduler.current_cycle(), cpu.m_pc))
-        {
-            std::fprintf(stderr, "failed to write GS field probe: %s\n",
-                gs_field_probe_path);
-            return 1;
-        }
-#endif
         if (has_watch_word && count != 0u)
         {
             const uint32_t watched_after = memory->read32(watch_word);
@@ -3968,7 +4163,7 @@ int main(int argc, char** argv)
             // A genuine interrupt-safe SignalSema may have promoted an EE
             // waiter to READY. The kernel must finish restoring interrupted
             // EE/VU0 state before scheduling the newly runnable thread.
-            if (reschedule_requested && !schedule_threads())
+            if ((reschedule_requested || current_thread_id == 0u) && !schedule_threads())
             {
                 reason = static_cast<uint32_t>(
                     ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED);
@@ -4035,99 +4230,16 @@ int main(int argc, char** argv)
             break;
         }
 
-        // ps2-web-recomp/kernel.cpp::run_intc acknowledges the actual
-        // masked INTC cause and runs the registered guest callbacks, then
-        // restores the interrupted EE thread. The ROM0 exception vector
-        // is not executable in HLE-first mode, so bridge only an observed,
-        // architecturally taken INTC exception; all other exceptions
-        // remain unsupported. Never manufacture a VBlank or interrupt.
-        if (hle_startup && !irq_callback_active && !callback_active &&
-            reason == static_cast<uint32_t>(
-                ee::e_ee_exit_reason::EE_EXIT_EXCEPTION) &&
-            ((cpu.m_cop0[13] >> 2u) & 31u) == ee::EX_Int &&
-            cpu.m_pc == ee::ee_exception_vector(
-                cpu.m_cop0[12] & ~ee::STATUS_EXL, ee::EX_Int) &&
-            (cpu.m_cop0[12] & (ee::STATUS_EXL | ee::STATUS_IE |
-                                 ee::STATUS_EIE)) ==
-                (ee::STATUS_EXL | ee::STATUS_IE | ee::STATUS_EIE) &&
-            (cpu.m_cop0[12] & ee::STATUS_ERL) == 0u &&
-            (cpu.m_cop0[13] & ee::CAUSE_BD) == 0u &&
-            (ee::ee_pending_interrupts(&cpu) &
-                (1u << (ee::CAUSE_IP_SHIFT + ee::INT_INTC))) != 0u &&
-            hardware.intc().pending() != 0u)
+        const auto intc_result = service_intc(reason);
+        if (intc_result == e_intc_service::failed)
         {
-            const uint32_t pending = hardware.intc().pending();
-            uint32_t cause = 0u;
-            while (cause < 32u && (pending & (1u << cause)) == 0u)
-            {
-                ++cause;
-            }
-            if (cause >= 32u)
-            {
-                reason = static_cast<uint32_t>(
-                    ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED);
-                status = 0u;
-                break;
-            }
-
-            irq_callback_handlers.clear();
-            for (const s_kernel_interrupt_handler& handler : intc_handlers)
-            {
-                if (handler.m_cause == cause)
-                {
-                    irq_callback_handlers.push_back(handler);
-                }
-            }
-            if (!irq_callback_handlers.empty() &&
-                !memory->contains(k_irq_kernel_stack - 0x1000u, 0x1000u))
-            {
-                std::fprintf(stderr,
-                    "HLE INTC callback refused unmapped kernel stack\n");
-                reason = static_cast<uint32_t>(
-                    ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED);
-                status = 0u;
-                break;
-            }
-
-            const ee::s_ee_u128 acknowledge{1u << cause, 0u};
-            if (!ee::c_ee_intc::mmio_write(
-                    &hardware.intc(), ee::c_ee_intc::k_stat_address,
-                    4u, &acknowledge))
-            {
-                std::fprintf(stderr, "HLE INTC acknowledgement failed\n");
-                reason = static_cast<uint32_t>(
-                    ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED);
-                status = 0u;
-                break;
-            }
-            // Resume at EPC, not EPC+4. The interrupted instruction did
-            // not execute, and a branch-delay interrupt is excluded above.
-            ee::s_ee_cpu_state resume_cpu = cpu;
-            resume_cpu.m_pc = cpu.m_cop0[14];
-            resume_cpu.m_cop0[12] &= ~ee::STATUS_EXL;
-            resume_cpu.m_exit_reason = static_cast<uint32_t>(
-                ee::e_ee_exit_reason::EE_EXIT_DISPATCH);
-            if (trace)
-            {
-                std::printf("HLE INTC IRQ: cause=%u pending=0x%08x "
-                            "handlers=%zu epc=0x%08x\n",
-                            cause, pending, irq_callback_handlers.size(),
-                            resume_cpu.m_pc);
-            }
-            if (irq_callback_handlers.empty())
-            {
-                cpu = resume_cpu;
-                hardware.intc().bind_cpu(&cpu);
-                hardware.dmac().bind_cpu(&cpu);
-                continue;
-            }
-            irq_interrupted_cpu = resume_cpu;
-            irq_interrupted_vu0 = vu0;
-            irq_callback_is_intc = true;
-            irq_callback_cause = cause;
-            irq_callback_index = 0u;
-            irq_callback_active = true;
-            enter_irq_callback(irq_callback_handlers[irq_callback_index++]);
+            reason = static_cast<uint32_t>(
+                ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED);
+            status = 0u;
+            break;
+        }
+        if (intc_result == e_intc_service::handled)
+        {
             continue;
         }
 
@@ -4825,9 +4937,9 @@ int main(int argc, char** argv)
                     // GetThreadId has no arguments. Creation of a dormant
                     // thread does not switch the CPU's running thread.
                     // Match ps2-web-recomp's current_thread()/GetThreadId.
-                    if (current_thread_id == 0u ||
+                    if ((current_thread_id == 0u && !irq_callback_active) ||
                         current_thread_id >= 256u ||
-                        !threads[current_thread_id].m_used)
+                        (current_thread_id != 0u && !threads[current_thread_id].m_used))
                     {
                         std::fprintf(stderr,
                             "GetThreadId HLE refused invalid running thread\n");

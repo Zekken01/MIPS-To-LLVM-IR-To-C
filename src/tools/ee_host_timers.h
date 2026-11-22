@@ -14,8 +14,8 @@ namespace ee
 //
 // Counter enable/clock selection, COMP, overflow flags, reset-on-compare,
 // and their real INTC causes follow ps2-web-recomp:SDBZ/runtime/src/hw.cpp.
-// The reference-compatible clock uses guest instruction attempts, NOT wall
-// time or the number of host resumes; it is not calibrated R5900 timing.
+// The compatibility clock uses guest instruction attempts plus modeled EE
+// idle cycles. It is independent of wall time and host resumes.
 class c_ee_host_timers
 {
 public:
@@ -112,6 +112,24 @@ public:
         service(now());
     }
 
+    void set_idle_cycles(uint64_t cycles)
+    {
+        m_idle_cycles = cycles;
+    }
+
+    uint64_t next_event() const
+    {
+        uint64_t next = std::numeric_limits<uint64_t>::max();
+        for (const s_timer& timer : m_timers)
+        {
+            if (timer.m_next_event < next)
+            {
+                next = timer.m_next_event;
+            }
+        }
+        return next;
+    }
+
     uint32_t current_count(uint32_t index) const
     {
         return index < 4u ? count(index, now()) : 0u;
@@ -163,7 +181,7 @@ private:
         {
             // Unlike a post-dispatch timestamp, this advances *inside*
             // an instrumented native guest loop at its instruction sites.
-            return m_runtime->m_guest_instruction_attempts;
+            return m_runtime->m_guest_instruction_attempts + m_idle_cycles;
         }
         return m_runtime->m_ee_cycle_scheduler.current_cycle();
     }
@@ -293,5 +311,6 @@ private:
     s_ee_runtime* m_runtime = nullptr;
     c_ee_hw_bus* m_hardware = nullptr;
     s_timer m_timers[4]{};
+    uint64_t m_idle_cycles = 0u;
 };
 } // namespace ee

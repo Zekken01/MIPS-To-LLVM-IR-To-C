@@ -1496,6 +1496,47 @@ def make_vu0_indexed_native_elf(path):
     path.write_bytes(image)
 
 
+def make_idle_timer_wakeup_elf(path):
+    """The only runnable thread sleeps until its timer IRQ wakes it."""
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    image.extend(bytes(0x200 - len(image)))
+    struct.pack_into("<II", image, 52 + 16, 0x100, 0x100)
+    entry = (
+        0x24040009,  # a0 = Timer 0 INTC cause
+        0x3c050010,  # a1 = 0x00100080 handler
+        0x34a50080,
+        0x2406ffff,  # append handler
+        0x24030010,  # AddIntcHandler
+        0x0000000c,
+        0x24030014,  # EnableIntc
+        0x0000000c,
+        0x3c081000,  # t0 = Timer 0 MMIO
+        0x24090400,  # compare at 1024 bus ticks
+        0xad090020,
+        0x24090180,  # enable counter and compare interrupt
+        0xad090010,
+        0x24030032,  # SleepThread
+        0x0000000c,
+        0x00408021,  # s0 = SleepThread return value
+        0x0000000d,  # BREAK after it resumes
+    )
+    handler = (
+        0x3c081000,
+        0xad000010,  # stop Timer 0
+        0x2403ffd1,  # _iGetThreadId sees the idle EE
+        0x0000000c,
+        0x24040001,  # a0 = sleeping thread ID
+        0x2403ffcc,  # iWakeupThread
+        0x0000000c,
+        0x03e00008,
+        0x00000000,
+    )
+    for offset, instructions in ((0x108, entry), (0x180, handler)):
+        struct.pack_into(f"<{len(instructions)}I", image, offset, *instructions)
+    path.write_bytes(image)
+
+
 def make_ee_timer_poll_elf(path):
     """Exercise guest-programmed Timer 0 COUNT advancing inside native CFG."""
     make_elf(path)
@@ -4071,6 +4112,34 @@ def main():
             assert "guest host loop yield cap reached" not in result.stderr, (
                 result.stdout, result.stderr
             )
+
+        with tempfile.TemporaryDirectory(prefix="ee-native-idle-timer-") as tmp:
+            root = Path(tmp)
+            elf = root / "idle-timer.elf"
+            make_idle_timer_wakeup_elf(elf)
+            report_path = root / "idle-timer.json"
+            result = subprocess.run(
+                [
+                    sys.executable, str(source / "tools" / "run_game.py"),
+                    str(elf), "--build-dir", str(build),
+                    "--work-dir", str(root / "out"),
+                    "--functions=entry", "--extra-functions=0x00100080",
+                    "--max-dispatches=32", "--auto-expand=8",
+                    "--hle-startup", "--kseg-ram", "--ee-clock=reference-compat",
+                    "--trace", "--report", str(report_path), "--timeout-seconds=10",
+                ],
+                capture_output=True, text=True, check=False, timeout=40,
+            )
+            combined = result.stdout + result.stderr
+            assert "HLE EE scheduler idle: no runnable guest threads" in combined, combined
+            assert "HLE INTC IRQ: cause=9" in combined, combined
+            assert "HLE _iGetThreadId: id=0" in combined, combined
+            assert "HLE iWakeupThread: id=1 status=2 wakeups=0 released=1" in combined, combined
+            state = json.loads(report_path.read_text(encoding="utf-8"))
+            assert state["exit_name"] == "EXCEPTION", state
+            assert state["cop0_epc"] == 0x00100048, state
+            assert state["gpr_lo"][16] == 1, state
+            assert state["ee_cycles"] - state["guest_instruction_attempts"] >= 2000, state
 
         # Resuming without a bounded guest-loop watchdog would spin forever;
         # reject an invalid command before loading or mutating guest state.
