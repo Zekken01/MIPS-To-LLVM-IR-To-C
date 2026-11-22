@@ -291,7 +291,7 @@ int run_syscall_case(uint32_t size, uint32_t count,
     for (uint32_t n = 0u; n < count; ++n)
     {
         const uint32_t src = k_data + n * 0x1000u;
-        const uint32_t dst = k_destination + n * 0x1000u;
+        const uint32_t dst = k_destination + 4u + n * 0x1000u;
         memory.write32(k_descriptor + n * 16u, src);
         memory.write32(k_descriptor + n * 16u + 4u, dst);
         memory.write32(k_descriptor + n * 16u + 8u, size);
@@ -357,6 +357,14 @@ int run_syscall_case(uint32_t size, uint32_t count,
         return fail("non-word-aligned descriptor list accepted", size);
     }
 
+    memory.write32(k_descriptor + 4u, k_destination + 5u);
+    if (transport.set_dma(k_descriptor, count, &id) ||
+        id != 0xdeadbeefu || dmac.status() != 0u)
+    {
+        return fail("non-word-aligned IOP destination accepted", size);
+    }
+    memory.write32(k_descriptor + 4u, k_destination + 4u);
+
     if (!transport.set_dma(k_descriptor, count, &id) || id != 1u)
     {
         return fail("real syscall DMA6->DMA10 failed", size);
@@ -398,7 +406,7 @@ int run_syscall_case(uint32_t size, uint32_t count,
     for (uint32_t n = 0u; n < count; ++n)
     {
         const uint32_t src = k_data + n * 0x1000u;
-        const uint32_t dst = k_destination + n * 0x1000u;
+        const uint32_t dst = k_destination + 4u + n * 0x1000u;
         for (uint32_t index = 0u; index < padded + 16u; ++index)
         {
             uint32_t read_word = 0u;

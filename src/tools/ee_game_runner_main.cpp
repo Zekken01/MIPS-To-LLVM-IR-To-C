@@ -6004,24 +6004,22 @@ int main(int argc, char** argv)
 
                 else if (service == 0x76u)
                 {
-                    // SifDmaStat reports only real transfers accepted by
-                    // the connected EE-to-IOP transport. Until cycle-level
-                    // scheduling exists, those copies finish synchronously.
+                    // Like the reference SIF kernel, report -1 for
+                    // completed or unknown IDs on a connected transport.
                     const uint32_t id =
                         static_cast<uint32_t>(cpu.m_gpr[4].m_lo);
-                    int32_t dma_status = 0;
-                    const bool known_id = iop_rom0_path != nullptr
-                        ? iop_sif1_transport != nullptr &&
-                          iop_sif1_transport->dma_stat(id, &dma_status)
-                        : iop_sif1 != nullptr &&
-                          iop_sif1->dma_stat(id, &dma_status);
-                    if (!known_id)
+                    int32_t dma_status = -1;
+                    if (iop_rom0_path != nullptr && iop_sif1_transport != nullptr)
                     {
-                        std::fprintf(
-                            stderr,
-                            "SifDmaStat refused untracked SIF1 DMA id=%u\n",
-                            id
-                        );
+                        (void)iop_sif1_transport->dma_stat(id, &dma_status);
+                    }
+                    else if (iop_rom0_path == nullptr && iop_sif1 != nullptr)
+                    {
+                        (void)iop_sif1->dma_stat(id, &dma_status);
+                    }
+                    else
+                    {
+                        std::fprintf(stderr, "SifDmaStat refused disconnected IOP\n");
                         break;
                     }
                     cpu.m_gpr[2].m_lo = static_cast<uint64_t>(

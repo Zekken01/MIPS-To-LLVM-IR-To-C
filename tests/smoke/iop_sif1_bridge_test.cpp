@@ -38,7 +38,7 @@ int main()
     constexpr uint32_t k_list = 0x11004u;
     constexpr uint32_t k_source0 = 0x12000u;
     constexpr uint32_t k_source1 = 0x13000u;
-    constexpr uint32_t k_destination0 = 0x14000u;
+    constexpr uint32_t k_destination0 = 0x14004u;
     constexpr uint32_t k_destination1 = 0x15000u;
 
     for (uint32_t i = 0u; i < 8u; ++i)
@@ -114,6 +114,11 @@ int main()
         bridge.set_dma(0xffffff00u, 2u, &id))
     {
         return fail("invalid descriptor list was accepted");
+    }
+    descriptor(ee_ram, k_list, k_source0, k_destination0 + 1u, 16u);
+    if (bridge.set_dma(k_list, 1u, &id))
+    {
+        return fail("non-word-aligned IOP destination was accepted");
     }
     descriptor(ee_ram, k_list, k_source0, 0u, 16u);
     if (bridge.set_dma(k_list, 1u, &id))

@@ -1496,6 +1496,20 @@ def make_vu0_indexed_native_elf(path):
     path.write_bytes(image)
 
 
+def make_sif_unknown_dma_stat_elf(path):
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    instructions = (
+        0x24040063,  # a0 = an unissued DMA ID
+        0x24030076,  # SifDmaStat
+        0x0000000c,
+        0x00408021,  # s0 = returned status
+        0x0000000d,  # BREAK after the guest sees the status
+    )
+    struct.pack_into("<5I", image, 0x108, *instructions)
+    path.write_bytes(image)
+
+
 def make_idle_timer_wakeup_elf(path):
     """The only runnable thread sleeps until its timer IRQ wakes it."""
     make_elf(path)
@@ -2577,6 +2591,33 @@ def main():
             assert bounded_state["exit_name"] == "UNSUPPORTED", bounded_state
             assert "SIF SMFLAG polling stalled:" in bounded.stderr, bounded.stderr
             assert "guest_epc=0x00100010 register=4 value=0 reads=6" in bounded.stderr, bounded.stderr
+
+        with tempfile.TemporaryDirectory(prefix="ee-native-sif-dmastat-") as tmp:
+            root = Path(tmp)
+            elf = root / "sif-dmastat.elf"
+            make_sif_unknown_dma_stat_elf(elf)
+            disc = root / "disc"
+            disc.mkdir()
+            (disc / "SYSTEM.CNF").write_text(
+                "BOOT2 = cdrom0:\\SLUS_214.42;1\n", encoding="ascii"
+            )
+            report_path = root / "sif-dmastat.json"
+            result = subprocess.run(
+                [
+                    sys.executable, str(source / "tools" / "run_game.py"),
+                    str(elf), "--build-dir", str(build),
+                    "--work-dir", str(root / "out"), "--max-dispatches=16",
+                    "--hle-startup", "--trace", "--report", str(report_path),
+                    "--disc-folder", str(disc), "--timeout-seconds=10",
+                ],
+                capture_output=True, text=True, check=False, timeout=40,
+            )
+            assert "HLE SifDmaStat: id=99 status=-1" in result.stdout, (
+                result.stdout, result.stderr
+            )
+            state = json.loads(report_path.read_text(encoding="utf-8"))
+            assert state["cop0_epc"] == 0x00100018, state
+            assert state["gpr_lo"][16] == 0xffffffffffffffff, state
 
         # HLE-only extracted-disc mode models the already-bootstrapped IOP
         # service baseline, matching ps2-web-recomp's SDBZ HLE model. It must

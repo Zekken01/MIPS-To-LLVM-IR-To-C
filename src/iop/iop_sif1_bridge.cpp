@@ -207,7 +207,7 @@ bool c_sif1_bridge::set_dma(
             // A reset request is not an ordinary IOP RAM write.
             return refuse(e_sif1_dma_failure::unsupported_iop_reboot);
         }
-        if ((destination & 0x0fu) != 0u ||
+        if ((destination & 3u) != 0u ||
             (!rpc_payload &&
              !normalize_iop_address(destination, &iop_destination)) ||
             (!rpc_payload &&

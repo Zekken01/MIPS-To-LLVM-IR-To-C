@@ -324,7 +324,7 @@ bool c_sif1_dma_transport::set_dma(
             (attributes == 0x44u && index + 1u == count);
         if (!supported_attributes || size == 0u || size > 65536u ||
             (source & 15u) != 0u ||
-            (destination & 15u) != 0u ||
+            (destination & 3u) != 0u ||
             (destination_region != 0u &&
              destination_region != 0x80000000u &&
              destination_region != 0xa0000000u) ||
