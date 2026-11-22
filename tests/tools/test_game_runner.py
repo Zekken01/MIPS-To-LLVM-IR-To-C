@@ -115,6 +115,39 @@ def make_deci2_open_close_elf(path, invalid_open=False):
     path.write_bytes(image)
 
 
+
+def make_deci2_kputs_elf(path, invalid_argument=False, invalid_string=False):
+    """Real Deci2Call(0x10) uses A1 as pointer-to-guest-string-pointer."""
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    image.extend(bytes(max(0, 0x400 - len(image))))
+    struct.pack_into("<I", image, 52 + 16, 0x300)
+    struct.pack_into("<I", image, 52 + 20, 0x300)
+
+    instructions = (
+        0x3c050010,  # lui a1,0x0010
+        0x34a50201 if invalid_argument else 0x34a50200,
+                     # invalid argument: unaligned 0x00100201
+        0x24040010,  # a0=0x10 KPUTS
+        0x2403007c,  # v1=Deci2Call
+        0x0000000c,  # syscall
+        0x00404021,  # t0 = returned 1
+        0x24040007,  # deliberately unsupported operation
+        0x0000000c,  # remains an exception
+        0x00404821,  # unreachable t1
+        0x00000008,
+        0x00000000,
+    )
+    for index, opcode in enumerate(instructions):
+        struct.pack_into("<I", image, 0x108 + index * 4, opcode)
+    struct.pack_into(
+        "<I", image, 0x300,
+        0x7ffffffc if invalid_string else 0x00100220,
+    )
+    image[0x320:0x333] = b"DECI2 KPUTS SUCCESS\x00"
+    path.write_bytes(image)
+
+
 def make_sif_set_dchain_elf(path):
     """SIF0 kernel initialization must set real guest-visible DMAC MMIO."""
     make_elf(path)
@@ -2692,6 +2725,57 @@ def main():
             assert "--iop-irx-list and --iop-irx are mutually exclusive" in (
                 ambiguous.stderr
             )
+
+        for invalid_argument, invalid_string in (
+            (False, False), (True, False), (False, True),
+        ):
+            with tempfile.TemporaryDirectory(prefix="ee-native-deci2-kputs-") as tmp:
+                root = Path(tmp)
+                elf = root / "deci2-kputs.elf"
+                make_deci2_kputs_elf(
+                    elf, invalid_argument=invalid_argument,
+                    invalid_string=invalid_string,
+                )
+                report_path = root / "deci2-kputs.json"
+                result = subprocess.run(
+                    [
+                        sys.executable, str(source / "tools" / "run_game.py"),
+                        str(elf), "--build-dir", str(build),
+                        "--work-dir", str(root / "out"),
+                        "--max-dispatches=32",
+                        "--hle-startup", "--trace",
+                        "--report", str(report_path),
+                    ],
+                    capture_output=True, text=True, check=False,
+                )
+                combined = result.stdout + result.stderr
+                state = json.loads(report_path.read_text(encoding="utf-8"))
+                assert state["exit_name"] == "EXCEPTION", state
+                if invalid_argument:
+                    assert state["cop0_epc"] == 0x00100018, state
+                    assert (
+                        "Deci2Call KPUTS HLE refused unbacked or unaligned "
+                        "string pointer 0x00100201"
+                    ) in result.stderr, combined
+                    assert state["gpr_lo"][8] == 0, state
+                elif invalid_string:
+                    assert state["cop0_epc"] == 0x00100018, state
+                    assert (
+                        "Deci2Call KPUTS HLE refused unterminated or unbacked "
+                        "guest text 0x7ffffffc"
+                    ) in result.stderr, combined
+                    assert state["gpr_lo"][8] == 0, state
+                else:
+                    assert state["cop0_epc"] == 0x00100024, state
+                    assert (
+                        'HLE Deci2Call KPUTS: text="DECI2 KPUTS SUCCESS" '
+                        "bytes=18 result=1"
+                    ) in result.stdout, combined
+                    assert state["gpr_lo"][8] == 1, state
+                    assert state["gpr_lo"][9] == 0, state
+                    assert (
+                        "Deci2Call HLE refused unsupported operation=7"
+                    ) in result.stderr, combined
 
         for invalid_open in (False, True):
             with tempfile.TemporaryDirectory(prefix="ee-native-deci2-") as tmp:

@@ -6727,6 +6727,97 @@ int main(int argc, char** argv)
                             );
                         }
                     }
+                    else if (operation == 0x10u)
+                    {
+                        // PCSX2 __Deci2Call(0x10) is KPUTS: A1 points to
+                        // a guest 32-bit word containing the string address.
+                        // This is debug output only, not SIF/IOP traffic.
+                        // Bound and validate the entire read before returning
+                        // success; malformed guest pointers fail closed.
+                        if (argument_address != 0u)
+                        {
+                            if ((argument_address & 3u) != 0u ||
+                                !memory->contains(argument_address, 4u))
+                            {
+                                std::fprintf(
+                                    stderr,
+                                    "Deci2Call KPUTS HLE refused unbacked "
+                                    "or unaligned string pointer 0x%08x\n",
+                                    argument_address);
+                                break;
+                            }
+                            const uint32_t string_address =
+                                memory->read32(argument_address);
+                            constexpr size_t k_kputs_max_bytes = 4096u;
+                            std::string guest_text;
+                            bool terminated = false;
+                            for (size_t index = 0u;
+                                 index < k_kputs_max_bytes; ++index)
+                            {
+                                const uint64_t guest_address =
+                                    static_cast<uint64_t>(string_address) +
+                                    index;
+                                if (guest_address > UINT32_MAX ||
+                                    !memory->contains(
+                                        static_cast<uint32_t>(guest_address),
+                                        1u))
+                                {
+                                    break;
+                                }
+                                const uint8_t value = memory->read8(
+                                    static_cast<uint32_t>(guest_address));
+                                if (value == 0u)
+                                {
+                                    terminated = true;
+                                    break;
+                                }
+                                guest_text.push_back(static_cast<char>(value));
+                            }
+                            if (!terminated)
+                            {
+                                std::fprintf(
+                                    stderr,
+                                    "Deci2Call KPUTS HLE refused unterminated "
+                                    "or unbacked guest text 0x%08x\n",
+                                    string_address);
+                                break;
+                            }
+
+                            if (trace)
+                            {
+                                // Keep host logs line-safe and byte-exact
+                                // without claiming to decode guest Shift-JIS.
+                                std::string display;
+                                for (unsigned char value : guest_text)
+                                {
+                                    if (value >= 0x20u && value <= 0x7eu &&
+                                        value != static_cast<unsigned char>('\\') &&
+                                        value != static_cast<unsigned char>('"'))
+                                    {
+                                        display.push_back(
+                                            static_cast<char>(value));
+                                    }
+                                    else
+                                    {
+                                        char encoded[5]{};
+                                        std::snprintf(encoded, sizeof(encoded),
+                                            "\\x%02x",
+                                            static_cast<unsigned int>(value));
+                                        display += encoded;
+                                    }
+                                }
+                                std::printf(
+                                    "HLE Deci2Call KPUTS: text=\"%s\" "
+                                    "bytes=%zu result=1\n",
+                                    display.c_str(), guest_text.size());
+                            }
+                        }
+                        else if (trace)
+                        {
+                            std::printf(
+                                "HLE Deci2Call KPUTS: null argument result=1\n");
+                        }
+                    }
                     else
                     {
                         std::fprintf(
