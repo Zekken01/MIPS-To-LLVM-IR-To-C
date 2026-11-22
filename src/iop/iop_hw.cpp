@@ -172,6 +172,16 @@ bool c_hw::complete_memory_card_auth_reset(uint32_t port, uint32_t slot)
         m_memory_card->complete_auth_reset();
 }
 
+void c_hw::set_sio2_pad0_input(uint16_t buttons, uint8_t right_x,
+    uint8_t right_y, uint8_t left_x, uint8_t left_y)
+{
+    m_pad0_buttons = buttons;
+    m_pad0_axes[0] = right_x;
+    m_pad0_axes[1] = right_y;
+    m_pad0_axes[2] = left_x;
+    m_pad0_axes[3] = left_y;
+}
+
 void c_hw::configure_sio2_pad0_cross_pulse(
     uint32_t first_poll, uint32_t poll_count)
 {
@@ -307,6 +317,7 @@ bool c_hw::process_sio2_packet()
                 // PS2 pad button bits are active-low: Cross is bit 14,
                 // the upper byte's bit 6. Only a genuine guest 0x42
                 // read on a connected port-0 pad consumes the probe.
+                uint16_t buttons = m_pad0_buttons;
                 ++m_sio2_pad0_poll_count;
                 if (m_sio2_pad0_cross_poll_count != 0u &&
                     m_sio2_pad0_poll_count >=
@@ -315,9 +326,31 @@ bool c_hw::process_sio2_packet()
                         m_sio2_pad0_cross_first_poll <
                         m_sio2_pad0_cross_poll_count)
                 {
-                    put(4u, 0xbfu);
+                    buttons |= 1u << 14u;
                     cross_reply = true;
                     ++m_sio2_pad0_cross_pressed_polls;
+                }
+                const uint16_t wire_buttons = static_cast<uint16_t>(~buttons);
+                put(3u, static_cast<uint8_t>(wire_buttons));
+                put(4u, static_cast<uint8_t>(wire_buttons >> 8u));
+                if (pad.m_mode != 0x41u)
+                {
+                    for (uint32_t index = 0u; index < 4u; ++index)
+                    {
+                        put(5u + index, m_pad0_axes[index]);
+                    }
+                }
+                if (pad.m_mode == 0x79u)
+                {
+                    constexpr uint8_t pressure_bits[] = {
+                        5u, 7u, 4u, 6u, 12u, 13u, 14u, 15u, 10u, 11u, 8u, 9u
+                    };
+                    for (uint32_t index = 0u; index < sizeof(pressure_bits); ++index)
+                    {
+                        put(9u + index,
+                            (m_pad0_buttons & (1u << pressure_bits[index])) != 0u ?
+                                0xffu : 0u);
+                    }
                 }
                 if (pad_trace_window() && reply.size() >= 5u)
                 {

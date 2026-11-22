@@ -1869,6 +1869,9 @@ int main()
     const iop::s_kernel_run_result executed = kernel.run(64u);
     const iop::s_kernel_thread* completed_module =
         kernel.thread(rpc.last_observation().m_thread_id);
+    const uint32_t free_before_reply = kernel.heap_total_free();
+    const uint32_t initializer_stack_size = completed_module != nullptr
+        ? completed_module->m_stack_size : 0u;
     if (executed.m_stop != iop::e_kernel_stop::idle ||
         kernel.has_guest_work() ||
         completed_module == nullptr ||
@@ -1882,6 +1885,13 @@ int main()
         (dmac.status() & (1u << 5u)) == 0u)
     {
         return fail("LOADFILE module entrypoint never ran");
+    }
+
+    if (kernel.thread(rpc.last_observation().m_thread_id) != nullptr ||
+        kernel.module(1u) == nullptr || initializer_stack_size == 0u ||
+        kernel.heap_total_free() != free_before_reply + initializer_stack_size)
+    {
+        return fail("LOADFILE did not retire its initializer after reply");
     }
 
     // The modeled server responds with an error for a request that

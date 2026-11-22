@@ -8,6 +8,7 @@ must not throw away previously compiled guest functions.
 import argparse
 import json
 import locale
+import os
 from pathlib import Path
 import re
 import shutil
@@ -43,12 +44,13 @@ def read_report(path):
 
 
 class c_ll_file_progress:
-    """One in-place console counter; never emits progress into boot logs."""
+    """Show IR file counts in a terminal or the GUI launch log."""
 
-    def __init__(self, work, stream=None):
+    def __init__(self, work, stream=None, gui=False):
         self.m_ir = Path(work) / "ir"
         self.m_stream = sys.stdout if stream is None else stream
-        self.m_enabled = bool(getattr(self.m_stream, "isatty", lambda: False)())
+        self.m_gui = gui
+        self.m_enabled = gui or bool(getattr(self.m_stream, "isatty", lambda: False)())
         self.m_last = None
         self.m_visible = False
         self.m_line_width = 0
@@ -82,11 +84,14 @@ class c_ll_file_progress:
             return
         percentage = current * 100.0 / total
         line = f"LLVM IR [{current}/{total}] {percentage:.1f}%"
-        self.m_stream.write("\r" + line +
-                            " " * max(0, self.m_line_width - len(line)))
+        if self.m_gui:
+            self.m_stream.write(line + "\n")
+        else:
+            self.m_stream.write("\r" + line +
+                                " " * max(0, self.m_line_width - len(line)))
+            self.m_line_width = len(line)
+            self.m_visible = True
         self.m_stream.flush()
-        self.m_line_width = len(line)
-        self.m_visible = True
         self.m_last = status
 
     def finish_line(self):
@@ -105,10 +110,29 @@ def watch_ll_files(progress, stopped):
         progress.refresh()
 
 
-def run_session(command, log_path, append=False, progress=None):
+def watch_live_report(report_path, stopped, started):
+    last = None
+    while not stopped.wait(5):
+        report = read_report(report_path)
+        dispatches = report.get("dispatches") if isinstance(report, dict) else None
+        elapsed = int(time.monotonic() - started)
+        if type(dispatches) is int and dispatches != last:
+            print(f"EE replay: {dispatches:,} dispatches ({elapsed}s in this pass).", flush=True)
+            last = dispatches
+        else:
+            print(f"Replay command still running ({elapsed}s in this pass).", flush=True)
+
+
+def run_session(command, log_path, append=False, progress=None, live_report=None):
     started = time.monotonic()
     stopped = threading.Event()
     worker = None
+    report_worker = None
+    if live_report is not None:
+        report_worker = threading.Thread(
+            target=watch_live_report, args=(live_report, stopped, started), daemon=True
+        )
+        report_worker.start()
     if progress is not None and progress.m_enabled:
         worker = threading.Thread(
             target=watch_ll_files, args=(progress, stopped), daemon=True
@@ -150,8 +174,10 @@ def run_session(command, log_path, append=False, progress=None):
                 if result.stdout is not None:
                     output = result.stdout
     finally:
+        stopped.set()
+        if report_worker is not None:
+            report_worker.join()
         if worker is not None:
-            stopped.set()
             worker.join()
             progress.refresh()
             progress.finish_line()
@@ -184,6 +210,10 @@ def main(argv=None):
     )
     parser.add_argument("--expansion-passes", type=int, default=2)
     parser.add_argument("--expansion-per-pass", type=int, default=128)
+    parser.add_argument(
+        "--replay-after-expand", action="store_true",
+        help="Legacy mode: restart the guest after each cache miss instead of resuming live",
+    )
     parser.add_argument("--no-recompile", action="store_true")
     parser.add_argument(
         "--quick-probe", action="store_true",
@@ -216,8 +246,8 @@ def main(argv=None):
     args, forwarded = parser.parse_known_args(argv)
     if not 1 <= args.expansion_passes <= 64:
         parser.error("--expansion-passes must be between 1 and 64")
-    if not 1 <= args.expansion_per_pass <= 128:
-        parser.error("--expansion-per-pass must be between 1 and 128")
+    if not 1 <= args.expansion_per_pass <= 1024:
+        parser.error("--expansion-per-pass must be between 1 and 1024")
     if args.quick_probe and (args.gs_snapshot or args.gs_upload_snapshot or
                              args.gs_webgpu_snapshot or args.gs_webgpu_window):
         parser.error("GS snapshots and the WebGPU window require a full boot session")
@@ -298,11 +328,14 @@ def main(argv=None):
             flush=True,
         )
 
-    progress = c_ll_file_progress(work) if args.ll_progress else None
+    gui_progress = os.environ.get("SDBZ_LAUNCHER_LIVE_PROGRESS") == "1"
+    progress = c_ll_file_progress(work, gui=gui_progress) if args.ll_progress or gui_progress else None
     # Keep legacy run_session calls unchanged unless the console progress
     # feature was explicitly requested. Diagnostic tools and tests use the
     # existing three-argument interface without a progress keyword.
     progress_kwargs = {"progress": progress} if progress is not None else {}
+    if gui_progress:
+        progress_kwargs["live_report"] = report
     snapshots = [
         ("--gs-snapshot", args.gs_snapshot),
         ("--gs-upload-snapshot", args.gs_upload_snapshot),
@@ -319,7 +352,11 @@ def main(argv=None):
     base = [
         sys.executable, str(args.driver.resolve()), str(args.elf.resolve()),
         f"--work-dir={work}", f"--report={report}", *forwarded,
+        *(["--replay-after-expand"] if args.replay_after_expand else []),
     ]
+
+    if args.gs_webgpu_window and "live_report" in progress_kwargs:
+        print("Expansion runs headless. The game window opens for the final traced replay.", flush=True)
 
     reuse = args.no_recompile
     for index in range(args.expansion_passes):
@@ -425,7 +462,19 @@ def main(argv=None):
     # Request images only for the FINAL traced boot, never for temporary
     # auto-expansion replays. A missing image must not be a stale file from
     # a previous local invocation.
-    final_command = [*base, "--no-recompile", "--auto-expand=0", "--trace"]
+    graphics_replay = args.gs_webgpu_window or args.gs_webgpu_snapshot is not None
+    final_expansion = args.expansion_per_pass if graphics_replay else 0
+    if graphics_replay:
+        print(
+            f"Graphics replay can cache up to {final_expansion} new functions. "
+            "A missing function pauses and relinks within the same live guest "
+            "process; a replay is needed only if the expansion budget is exhausted. "
+            "Memory card writes remain in memory during expansion.",
+            flush=True,
+        )
+    final_command = [
+        *base, "--no-recompile", f"--auto-expand={final_expansion}", "--trace",
+    ]
     for option, path in snapshots:
         if path is not None:
             target = path.resolve()

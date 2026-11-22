@@ -269,6 +269,26 @@ target_include_directories(ee_host_loop_yield_budget_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/tools)
 add_test(NAME ee_host_loop_yield_budget COMMAND ee_host_loop_yield_budget_test)
 
+# Regression for Windows CRLF cache-miss replies: tests the same native parser
+# used by ee_game_runner with no game binaries or Python/Tk dependency.
+add_executable(ee_hot_expand_protocol_test
+    tests/smoke/ee_hot_expand_protocol_test.cpp)
+target_include_directories(ee_hot_expand_protocol_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/tools)
+add_test(NAME ee_hot_expand_protocol COMMAND ee_hot_expand_protocol_test)
+
+add_executable(ee_kernel_thread_status_test
+    tests/smoke/ee_kernel_thread_status_test.cpp)
+target_include_directories(ee_kernel_thread_status_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/tools)
+add_test(NAME ee_kernel_thread_status COMMAND ee_kernel_thread_status_test)
+
+add_executable(ee_irq_syscall_services_test
+    tests/smoke/ee_irq_syscall_services_test.cpp)
+target_include_directories(ee_irq_syscall_services_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/tools)
+add_test(NAME ee_irq_syscall_services COMMAND ee_irq_syscall_services_test)
+
 add_executable(ee_isa_inventory_test tests/smoke/ee_isa_inventory_test.cpp)
 target_link_libraries(ee_isa_inventory_test PRIVATE ee_core)
 add_test(NAME ee_isa_inventory COMMAND ee_isa_inventory_test)
@@ -656,6 +676,12 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME ee_known_function_replays
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_known_replays.py)
+    add_test(NAME ee_live_cache_miss
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/tools/test_live_cache_miss.py)
+    add_test(NAME ee_launcher_cache_resume
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/tools/test_launch_ps2_gui.py)
     add_test(NAME ee_known_cache_recovery
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/tools/test_cache_recovery.py)

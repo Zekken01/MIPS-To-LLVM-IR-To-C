@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+"""Headless regression tests for live cache-miss controls in the Windows GUI.
+
+No Tk window is created, so this also runs on Linux CI.
+"""
+import importlib.util
+import json
+from pathlib import Path
+import sys
+import tempfile
+from types import ModuleType, SimpleNamespace
+
+
+# CI uses a minimal Python installation without the optional Tk package.
+# Only the pure argument/settings logic is exercised: no GUI is created.
+# Provide import-time stubs when Tk is absent, leaving a real installed
+# tkinter module completely untouched on Windows developer machines.
+try:
+    import tkinter
+except ImportError:
+    tkinter = ModuleType("tkinter")
+    tkinter.__path__ = []
+    for module_name in ("ttk", "filedialog", "messagebox"):
+        module = ModuleType("tkinter." + module_name)
+        setattr(tkinter, module_name, module)
+        sys.modules["tkinter." + module_name] = module
+    tkinter.ttk.Frame = type("Frame", (), {})
+    sys.modules["tkinter"] = tkinter
+
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools"))
+SPEC = importlib.util.spec_from_file_location(
+    "launch_ps2_gui", ROOT / "tools" / "launch_ps2_gui.py"
+)
+GUI = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(GUI)
+
+from ps2_direct_options import TOOL_OPTIONS, tool_arguments
+
+
+class c_fake_variable:
+    def __init__(self, value):
+        self.m_value = value
+
+    def get(self):
+        return self.m_value
+
+
+def gui_values(settings):
+    return {
+        label: settings["numeric"][key]
+        for label, (key, _, _) in GUI.NUMERIC_SETTINGS.items()
+    }
+
+
+def test_defaults_and_compatibility():
+    defaults = GUI.default_settings()
+    assert defaults["cache_miss_resume"] is True
+    assert defaults["embed_game_window"] is True
+    assert GUI.NUMERIC_SETTINGS["Functions per expansion"][2] == 1024
+    with tempfile.TemporaryDirectory() as temporary:
+        settings_path = Path(temporary) / "launcher-settings.json"
+        # Old GUI settings do not contain the new key. Migration must
+        # default to live state-preserving resume rather than legacy replay.
+        old = {key: value for key, value in defaults.items()
+               if key != "cache_miss_resume"}
+        settings_path.write_text(json.dumps(old), encoding="utf-8")
+        restored, warning = GUI.load_settings(settings_path)
+        assert not warning and restored["cache_miss_resume"] is True
+        restored["cache_miss_resume"] = False
+        restored["numeric"]["EXPANSION_PER_PASS"] = "1024"
+        GUI.save_settings(settings_path, restored)
+        again, warning = GUI.load_settings(settings_path)
+        assert not warning and again["cache_miss_resume"] is False
+        assert again["numeric"]["EXPANSION_PER_PASS"] == "1024"
+
+
+def test_launcher_flags_and_bounds():
+    values = gui_values(GUI.default_settings())
+    for mode in ("Full replay", "Automatic", "Quick probe"):
+        args, env = GUI.launcher_options(
+            mode, "Neutral", False, True, True, values
+        )
+        assert "--replay-after-expand" not in args
+        assert env["EXPANSION_PER_PASS"] == "128"
+        args, env = GUI.launcher_options(
+            mode, "Neutral", False, True, True, values,
+            resume_on_cache_miss=False
+        )
+        assert args.count("--replay-after-expand") == 1
+    for mode in ("Matched neutral/Cross", "Recover translation cache"):
+        args, _ = GUI.launcher_options(
+            mode, "Neutral", False, False, False, values,
+            resume_on_cache_miss=False
+        )
+        assert "--replay-after-expand" not in args
+
+    values["Functions per expansion"] = "1024"
+    args, env = GUI.launcher_options(
+        "Full replay", "Neutral", False, True, True, values,
+        resume_on_cache_miss=False
+    )
+    assert env["EXPANSION_PER_PASS"] == "1024"
+    values["Functions per expansion"] = "1025"
+    try:
+        GUI.launcher_options("Full replay", "Neutral", False, True, True,
+                             values)
+    except ValueError as error:
+        assert "Functions per expansion must be 1–1024" in str(error)
+    else:
+        raise AssertionError("accepted an expansion count above 1024")
+
+
+def test_game_tab_command_and_environment():
+    with tempfile.TemporaryDirectory() as temporary:
+        disc = Path(temporary)
+        (disc / "SYSTEM.CNF").write_text(
+            r"BOOT2 = cdrom0:\\SLUS_214.42;1" + "\n", encoding="ascii"
+        )
+        vars = {
+            "disc": c_fake_variable(str(disc)),
+            "mode": c_fake_variable("Full replay"),
+            "pad": c_fake_variable("Neutral"),
+            "accept_ir": c_fake_variable(False),
+            "window": c_fake_variable(True),
+            "snapshot": c_fake_variable(True),
+            "speed": c_fake_variable("150%"),
+            "cache_miss_resume": c_fake_variable(False),
+            "numeric": {label: c_fake_variable(value)
+                        for label, value in gui_values(GUI.default_settings()).items()},
+        }
+        instance = SimpleNamespace(**vars)
+        env = {"EXPANSION_PER_PASS": "99", "SDBZ_DISC_ROOT": "stale"}
+        command = GUI.Launcher.game_command(instance, env)
+        assert command[:4] == [
+            "cmd.exe", "/d", "/c", "run_ps2_game.bat"
+        ], command
+        assert "--full" in command and "--replay-after-expand" in command
+        assert env["EXPANSION_PER_PASS"] == "128"
+        assert env["SDBZ_DISC_ROOT"] == str(disc.resolve())
+        assert env["SDBZ_SPEED_PERCENT"] == "150"
+        assert GUI.default_settings()["speed"] == "100%"
+
+        instance.cache_miss_resume = c_fake_variable(True)
+        command = GUI.Launcher.game_command(instance, env)
+        assert "--replay-after-expand" not in command
+
+
+def test_game_window_environment():
+    env = {"SDBZ_GS_PARENT_HWND": "123", "UNRELATED": "retained"}
+    GUI.configure_game_window_environment(env, 987654)
+    assert env == {
+        "SDBZ_GS_PARENT_HWND": "987654", "UNRELATED": "retained"
+    }
+    GUI.configure_game_window_environment(env)
+    assert env == {"UNRELATED": "retained"}
+    for invalid in (0, -5, True, "bogus"):
+        try:
+            GUI.configure_game_window_environment(env, invalid)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"accepted invalid parent HWND {invalid!r}")
+
+
+def test_direct_commands():
+    direct = GUI.batch_tool_defaults("/nonexistent/PS2_GAME")
+    for tool, defaults in direct.items():
+        for flag in ("--trace-instructions", "--trace-instructions-window", "--trace-entry",
+                     "--watch-word", "--trace-v0", "--trace-store"):
+            assert defaults[flag] == "", (tool, flag)
+    assert direct["Game runner (Python)"]["--trace"] is True
+    assert "--trace" not in direct["Boot session"]
+    assert direct["Boot session"]["--replay-after-expand"] is False
+    assert direct["Game runner (Python)"]["--replay-after-expand"] is False
+    assert direct["Game runner (Python)"]["--auto-expand"] == "128"
+    for tool in ("Boot session", "Game runner (Python)"):
+        choices = [opt for options in TOOL_OPTIONS[tool].values()
+                   for opt in options]
+        names = [opt.name for opt in choices]
+        assert names.count("--replay-after-expand") == 1
+        values = {**direct[tool], "--replay-after-expand": True}
+        # The required source ELF is supplied by the UI's user-selected
+        # disc file. We only test token generation, not loading the game.
+        values["elf"] = "/tmp/dummy.elf"
+        args = tool_arguments(tool, values, "")
+        assert args.count("--replay-after-expand") == 1
+        values["--replay-after-expand"] = False
+        assert "--replay-after-expand" not in tool_arguments(tool, values, "")
+
+
+def test_batch_route():
+    batch = (ROOT / "run_ps2_game.bat").read_text(encoding="utf-8")
+    assert 'if /I "%~1"=="--replay-after-expand" (' in batch
+    assert 'set "CACHE_MISS_ARGS=--replay-after-expand"' in batch
+    assert '%SESSION_ARGS% %CACHE_MISS_ARGS%' in batch
+    # Matched and recovery modes have no auto-expansion to resume.
+    assert 'ERROR: --replay-after-expand has no meaning during cache recovery.' in batch
+    assert 'ERROR: --replay-after-expand has no meaning during matched replays.' in batch
+    # Boot-session argv is forwarded to the game translation driver,
+    # which owns the implementation of --replay-after-expand.
+    session = (ROOT / "tools" / "run_boot_session.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'f"--report={report}", *forwarded,' in session
+    assert '*(["--replay-after-expand"] if args.replay_after_expand else []),' in session
+
+
+def main():
+    test_defaults_and_compatibility()
+    test_launcher_flags_and_bounds()
+    test_game_tab_command_and_environment()
+    test_game_window_environment()
+    test_direct_commands()
+    test_batch_route()
+    print("launcher live cache-miss controls: PASS")
+
+
+if __name__ == "__main__":
+    main()

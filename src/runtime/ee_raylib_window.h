@@ -4,6 +4,8 @@
 
 #include <cstdint>
 
+namespace iop { class c_hw; }
+
 namespace ee
 {
 class c_ee_webgpu_bridge;
@@ -20,15 +22,18 @@ public:
     c_ee_raylib_window& operator=(const c_ee_raylib_window&) = delete;
 
     bool initialize();
+    bool closed() const { return m_closed; }
     void pump(c_ee_webgpu_bridge& bridge,
         const s_ee_gs_display_registers& registers,
         uint32_t crt_mode, uint64_t field_count,
-        c_ee_gs_presentation_probe* probe);
+        c_ee_gs_presentation_probe* probe, iop::c_hw* iop_hardware);
 
 private:
     bool m_ready = false;
     bool m_closed = false;
     uint64_t m_last_fields = 0u;
     double m_last_host_poll = 0.0;
+    void* m_parent_window_handle = nullptr;
+    void* m_native_window_handle = nullptr;
 };
 }

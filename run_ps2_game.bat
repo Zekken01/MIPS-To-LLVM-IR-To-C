@@ -11,6 +11,7 @@ rem Usage: run_ps2_game.bat [--full^|--quick^|--matched^|--recover-cache] [--cro
 rem --recover-cache reconstructs known IR without a game replay. Optional
 rem --accept-new-ir explicitly permits changed lowering IR hashes; this never
 rem deletes or overwrites the previous guest cache.
+rem --replay-after-expand opts out of in-process live cache-miss resume.
 rem --matched executes a CPU-only neutral/Cross pair with known cached IR,
 rem never running guest function discovery or auto-expansion.
 rem Full retail diagnostics use the usual local replay settings below.
@@ -20,6 +21,7 @@ rem Without either switch, retain explicitly configured pad variables.
 set "REQUESTED_SESSION_MODE="
 set "REQUESTED_PAD_PROFILE="
 set "ACCEPT_NEW_IR="
+set "CACHE_MISS_ARGS="
 :parse_launcher_options
 if "%~1"=="" goto :launcher_options_ready
 if /I "%~1"=="--full" (
@@ -47,6 +49,11 @@ if /I "%~1"=="--accept-new-ir" (
     shift
     goto :parse_launcher_options
 )
+if /I "%~1"=="--replay-after-expand" (
+    set "CACHE_MISS_ARGS=--replay-after-expand"
+    shift
+    goto :parse_launcher_options
+)
 if /I "%~1"=="--cross" (
     set "REQUESTED_PAD_PROFILE=cross"
     shift
@@ -58,7 +65,7 @@ if /I "%~1"=="--neutral" (
     goto :parse_launcher_options
 )
 echo ERROR: Unknown launcher option "%~1".
-echo Usage: run_ps2_game.bat [--full or --quick or --matched or --recover-cache] [--cross or --neutral] [--accept-new-ir]
+echo Usage: run_ps2_game.bat [--full or --quick or --matched or --recover-cache] [--cross or --neutral] [--accept-new-ir] [--replay-after-expand]
 exit /b 2
 
 :launcher_options_ready
@@ -72,6 +79,14 @@ if /I "%REQUESTED_SESSION_MODE%"=="recover" if defined REQUESTED_PAD_PROFILE (
 )
 if /I "%REQUESTED_SESSION_MODE%"=="matched" if defined REQUESTED_PAD_PROFILE (
     echo ERROR: --matched runs both profiles; omit --cross and --neutral.
+    exit /b 2
+)
+if defined CACHE_MISS_ARGS if /I "%REQUESTED_SESSION_MODE%"=="recover" (
+    echo ERROR: --replay-after-expand has no meaning during cache recovery.
+    exit /b 2
+)
+if defined CACHE_MISS_ARGS if /I "%REQUESTED_SESSION_MODE%"=="matched" (
+    echo ERROR: --replay-after-expand has no meaning during matched replays.
     exit /b 2
 )
 if /I "%REQUESTED_PAD_PROFILE%"=="cross" (
@@ -88,13 +103,14 @@ if defined SDBZ_PAD0_CROSS_POLL_COUNT set "CAPTURE_PROFILE=pad-custom"
 if "%SDBZ_PAD0_CROSS_FIRST_POLL%"=="200" if "%SDBZ_PAD0_CROSS_POLL_COUNT%"=="8" set "CAPTURE_PROFILE=cross"
 
 set "DISC_ROOT=%CD%\PS2_GAME"
+if defined SDBZ_DISC_ROOT set "DISC_ROOT=%SDBZ_DISC_ROOT%"
 set "BASE_WORK_DIR=build\ps2-game-hle"
 set "WORK_DIR=%BASE_WORK_DIR%"
 if not defined EMIT_JOBS set "EMIT_JOBS=8"
 if not defined SIF_POLL_LIMIT set "SIF_POLL_LIMIT=2048"
 rem Bound each native auto-expansion session; both limits are configurable.
 rem EXPANSION_PASSES: 1..64, number of bounded passes (default 8).
-rem EXPANSION_PER_PASS: 1..128, newly emitted functions per pass (default 128).
+rem EXPANSION_PER_PASS: 1..1024, newly emitted functions per pass (default 128).
 rem Stop early at genuine guest blockers; never fabricate completion.
 if not defined EXPANSION_PASSES set "EXPANSION_PASSES=8"
 if not defined EXPANSION_PER_PASS set "EXPANSION_PER_PASS=128"
@@ -388,7 +404,7 @@ python tools\run_boot_session.py "%GAME_ELF%" ^
     --loop-budget=1000000 ^
     --loop-yield-resumes=%LOOP_YIELD_RESUMES% ^
     --sif-poll-limit=%SIF_POLL_LIMIT% ^
-    --timeout-seconds=%BOOT_TIMEOUT_SECONDS% %CACHE_FLAG% %SESSION_ARGS% %EE_WEBGPU_RUN_ARG% %EE_WEBGPU_WINDOW_ARG%
+    --timeout-seconds=%BOOT_TIMEOUT_SECONDS% %CACHE_FLAG% %SESSION_ARGS% %CACHE_MISS_ARGS% %EE_WEBGPU_RUN_ARG% %EE_WEBGPU_WINDOW_ARG%
 set "EXIT_CODE=%ERRORLEVEL%"
 rem Save a unique upload-ready archive after every full replay, even
 rem when the guest exits at its dispatch budget or is cancelled.

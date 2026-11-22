@@ -21,7 +21,7 @@ SPEC.loader.exec_module(SESSION)
 
 def run_case(passes, initial_reuse=False, diagnostics=False,
              initial_function_count=None, expansion_per_pass=2,
-             snapshots=False, quick_probe=False):
+             snapshots=False, quick_probe=False, graphics=None, legacy=False):
     with tempfile.TemporaryDirectory(prefix="ee-boot-session-") as temp:
         work = Path(temp) / "work"
         report = work / "first-boot.json"
@@ -87,6 +87,8 @@ def run_case(passes, initial_reuse=False, diagnostics=False,
         ]
         if initial_reuse:
             argv.append("--no-recompile")
+        if legacy:
+            argv.append("--replay-after-expand")
         if quick_probe:
             argv.extend(("--quick-probe", "--no-iop-catalog"))
         if snapshots:
@@ -99,6 +101,10 @@ def run_case(passes, initial_reuse=False, diagnostics=False,
                 "--gs-snapshot", str(display),
                 "--gs-upload-snapshot", str(upload),
             ))
+        if graphics == "window":
+            argv.append("--gs-webgpu-window")
+        elif graphics == "snapshot":
+            argv.append(f"--gs-webgpu-snapshot={work / 'webgpu.ppm'}")
         if diagnostics:
             argv.extend((
                 "--trace-entry=0x0018cf68",
@@ -109,6 +115,7 @@ def run_case(passes, initial_reuse=False, diagnostics=False,
         with patch.object(SESSION.subprocess, "run", side_effect=fake_run):
             code = SESSION.main(argv)
         assert len(calls) == len(passes), calls
+        assert all(("--replay-after-expand" in call) == legacy for call in calls), calls
         assert all("--trace" not in call for call in calls[:-1]), calls
         if quick_probe:
             assert all("--trace" not in call for call in calls), calls
@@ -144,7 +151,14 @@ def run_case(passes, initial_reuse=False, diagnostics=False,
             ).read_text(), "missing diagnostic in boot command"
         if len(passes) > 2:
             assert "--no-recompile" in calls[1], calls
-        assert "--auto-expand=0" in calls[-1] if len(passes) > 1 else True
+        if len(passes) > 1:
+            final_limit = expansion_per_pass if graphics else 0
+            assert f"--auto-expand={final_limit}" in calls[-1], calls
+        if graphics:
+            option = f"--gs-webgpu-{graphics}"
+            assert any(arg.startswith(option) for arg in calls[-1])
+            assert all(not any(arg.startswith(option) for arg in call) for call in calls[:-1])
+            assert "--no-recompile" in calls[-1]
         assert (work / "expansion.log").is_file()
         assert (work / "boot.log").is_file()
         return code, calls, (work / "expansion.log").read_text(), (work / "boot.log").read_text()
@@ -193,6 +207,12 @@ def test_ll_counter():
         quiet.refresh()
         quiet.finish_line()
         assert piped.getvalue() == ""
+
+        gui = SESSION.c_ll_file_progress(temp, stream=piped, gui=True)
+        gui.refresh()
+        gui.refresh()
+        gui.finish_line()
+        assert piped.getvalue() == "LLVM IR [2/7550] 0.0%\n"
 
         # If an old discovery marker is absent, use actual persisted
         # function-count metadata (cached --no-recompile sessions).
@@ -307,6 +327,8 @@ def test_windows_launcher_preserves_guest_cache():
     assert 'if not defined MAX_DISPATCHES set "MAX_DISPATCHES=%DEFAULT_MAX_DISPATCHES%"' in launcher
     assert '--max-dispatches=%MAX_DISPATCHES%' in launcher
     assert '--timeout-seconds=%BOOT_TIMEOUT_SECONDS%' in launcher
+    assert 'if /I "%~1"=="--replay-after-expand" (' in launcher
+    assert '%SESSION_ARGS% %CACHE_MISS_ARGS%' in launcher
     assert '--max-dispatches=100000 ^' not in launcher
     assert (
         'if /I "%REQUESTED_SESSION_MODE%"=="quick" '
@@ -523,6 +545,12 @@ def main():
     test_guest_rpc_snapshots_in_cached_probe()
     test_windows_launcher_preserves_guest_cache()
     test_ll_counter()
+    for graphics in ("window", "snapshot"):
+        code, _, _, _ = run_case([
+            {"trace": False, "replay": 0, "dispatch_status": 1, "code": 4},
+            {"trace": True, "replay": 1, "dispatch_status": 1, "code": 4},
+        ], initial_reuse=True, expansion_per_pass=7, graphics=graphics)
+        assert code == 4
     code, calls, expansion, boot = run_case([
         {"trace": False, "replay": 0, "exit_reason": 0, "dispatch_status": 1,
          "code": 4, "message": "DISPATCH LIMIT"},
@@ -538,6 +566,14 @@ def main():
     ], initial_reuse=True, initial_function_count=421, quick_probe=True)
     assert code == 3 and len(calls) == 2
     assert "new_functions=2" in expansion and "LOOP_BUDGET" in boot
+
+    # The boot-session CLI explicitly forwards the GUI-selected legacy
+    # restart policy through both expansion and final replay commands.
+    code, calls, _, _ = run_case([
+        {"trace": False, "exit_reason": 5},
+        {"trace": True, "exit_reason": 5},
+    ], initial_reuse=True, legacy=True)
+    assert code == 3 and len(calls) == 2
 
     # First pass consumes its expansion cap; the second finds a real
     # non-DISPATCH blocker and the final run emits the useful trace.

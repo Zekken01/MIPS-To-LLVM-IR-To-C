@@ -115,6 +115,39 @@ def make_deci2_open_close_elf(path, invalid_open=False):
     path.write_bytes(image)
 
 
+
+def make_deci2_kputs_elf(path, invalid_argument=False, invalid_string=False):
+    """Real Deci2Call(0x10) uses A1 as pointer-to-guest-string-pointer."""
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    image.extend(bytes(max(0, 0x400 - len(image))))
+    struct.pack_into("<I", image, 52 + 16, 0x300)
+    struct.pack_into("<I", image, 52 + 20, 0x300)
+
+    instructions = (
+        0x3c050010,  # lui a1,0x0010
+        0x34a50201 if invalid_argument else 0x34a50200,
+                     # invalid argument: unaligned 0x00100201
+        0x24040010,  # a0=0x10 KPUTS
+        0x2403007c,  # v1=Deci2Call
+        0x0000000c,  # syscall
+        0x00404021,  # t0 = returned 1
+        0x24040007,  # deliberately unsupported operation
+        0x0000000c,  # remains an exception
+        0x00404821,  # unreachable t1
+        0x00000008,
+        0x00000000,
+    )
+    for index, opcode in enumerate(instructions):
+        struct.pack_into("<I", image, 0x108 + index * 4, opcode)
+    struct.pack_into(
+        "<I", image, 0x300,
+        0x7ffffffc if invalid_string else 0x00100220,
+    )
+    image[0x320:0x334] = b"DECI2 KPUTS SUCCESS\x00"
+    path.write_bytes(image)
+
+
 def make_sif_set_dchain_elf(path):
     """SIF0 kernel initialization must set real guest-visible DMAC MMIO."""
     make_elf(path)
@@ -563,6 +596,270 @@ def make_osd_config_elf(path, invalid_set=False):
     struct.pack_into("<I", image, 0x300, 0xcafebabe)
     struct.pack_into("<I", image, 0x310, 0x12345678)
     struct.pack_into("<I", image, 0x320, 0xfeedbabe)
+    path.write_bytes(image)
+
+
+def make_thread_sleep_wakeup_elf(path):
+    """Original EE syscalls: wakeup credit, actual SleepThread, worker wake."""
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    image.extend(bytes(max(0, 0x400 - len(image))))
+    struct.pack_into("<I", image, 52 + 16, 0x300)
+    struct.pack_into("<I", image, 52 + 20, 0x300)
+
+    entry = (
+        0x3c040010,  # lui a0,0x0010
+        0x34840200,  # ori a0,a0,0x200: thread descriptor
+        0x24030020,  # CreateThread
+        0x0000000c,
+        0x00408021,  # s0 = thread ID 2
+        0x24040001,  # a0 = running thread ID 1
+        0x24030033,  # WakeupThread(1) before sleep: wakeup credit
+        0x0000000c,
+        0x00408821,  # s1 = WakeupThread result 1
+        0x24030032,  # SleepThread consumes the credit, no context switch
+        0x0000000c,
+        0x00409021,  # s2 = SleepThread result 1
+        0x24040002,  # a0 = worker ID 2
+        0x24030022,  # StartThread(2), worker is READY at priority 1
+        0x0000000c,
+        0x24030032,  # SleepThread with no credit: block thread 1
+        0x0000000c,  # switch to guest worker entry
+        0x00409821,  # s3 = SleepThread result 1 after wake
+        0x24040001,  # a0 = thread ID 1
+        0x24030035,  # CancelWakeupThread(1)
+        0x0000000c,
+        0x0040a021,  # s4 = cleared wakeup count 0
+        0x24040063,  # a0 = missing thread ID 99
+        0x24030033,  # WakeupThread(99) must return -1
+        0x0000000c,
+        0x0040a821,  # s5 = -1
+        0x00000008,  # jr zero: finish synthetic test
+        0x00000000,
+    )
+    worker = (
+        0x24040001,  # a0 = sleeping main thread ID 1
+        0x24030033,  # WakeupThread(1)
+        0x0000000c,  # wake and preempt worker with ready main
+        0x24030023,  # ExitThread if worker is scheduled again
+        0x0000000c,
+        0x00000008,
+        0x00000000,
+    )
+    for index, opcode in enumerate(entry):
+        struct.pack_into("<I", image, 0x108 + index * 4, opcode)
+    for index, opcode in enumerate(worker):
+        struct.pack_into("<I", image, 0x1f0 + index * 4, opcode)
+    struct.pack_into(
+        "<9I", image, 0x300,
+        0, 0x001000f0, 0x00102000, 0x800,
+        0x0010f000, 1, 0, 0, 0
+    )
+    path.write_bytes(image)
+
+
+
+def make_thread_release_wait_elf(path):
+    """Release a blocked guest twice, including WAITSUSPEND and i variant."""
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    image.extend(bytes(max(0, 0x400 - len(image))))
+    struct.pack_into("<I", image, 52 + 16, 0x300)
+    struct.pack_into("<I", image, 52 + 20, 0x300)
+
+    entry = (
+        0x3c040010,  # a0 = 0x00100200 descriptor
+        0x34840200,
+        0x24030020,  # CreateThread
+        0x0000000c,
+        0x00408021,  # s0 = worker ID 2
+        0x24040002,
+        0x24030022,  # StartThread(2): lower priority worker READY
+        0x0000000c,
+        0x24030032,  # SleepThread(): WAIT, switch to worker
+        0x0000000c,
+        0x00408821,  # s1 = 1, resumed after ReleaseWaitThread
+        0x24030032,  # SleepThread() again
+        0x0000000c,
+        0x00409021,  # s2 = 1, resumed after Suspend/Release/Resume
+        0x24040002,
+        0x2403002d,  # ReleaseWaitThread(2) while READY: return -1
+        0x0000000c,
+        0x00409821,  # s3 = -1
+        0x00000008,  # jr zero
+        0x00000000,
+    )
+    worker = (
+        0x24040001,
+        0x2403002d,  # ReleaseWaitThread(1): WAIT -> READY, preempt
+        0x0000000c,
+        0x0040a021,  # s4 = returned ID 1
+        0x24040001,
+        0x24030037,  # SuspendThread(1): WAIT -> WAITSUSPEND
+        0x0000000c,
+        0x24040001,
+        0x2403002e,  # iReleaseWaitThread(1): WAITSUSPEND -> SUSPEND
+        0x0000000c,
+        0x0040a821,  # s5 = returned ID 1
+        0x24040001,
+        0x24030039,  # ResumeThread(1): SUSPEND -> READY, preempt
+        0x0000000c,
+        0x24030023,  # ExitThread if worker is rescheduled later
+        0x0000000c,
+        0x00000008,
+        0x00000000,
+    )
+    for index, opcode in enumerate(entry):
+        struct.pack_into("<I", image, 0x108 + index * 4, opcode)
+    for index, opcode in enumerate(worker):
+        struct.pack_into("<I", image, 0x1f0 + index * 4, opcode)
+    struct.pack_into(
+        "<9I", image, 0x300,
+        0, 0x001000f0, 0x00102000, 0x800,
+        0x0010f000, 1, 0, 0, 0,
+    )
+    path.write_bytes(image)
+
+
+def make_thread_semaphore_release_wait_elf(path):
+    """Release a real WaitSema waiter; no stale semaphore queue entry."""
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    image.extend(bytes(max(0, 0x400 - len(image))))
+    struct.pack_into("<I", image, 52 + 16, 0x300)
+    struct.pack_into("<I", image, 52 + 20, 0x300)
+
+    entry = (
+        0x3c040010,  # a0 = 0x00100200 thread descriptor
+        0x34840200,
+        0x24030020,  # CreateThread
+        0x0000000c,
+        0x00408021,  # s0 = ID 2
+        0x3c040010,
+        0x34840240,  # a0 = 0x00100240 sema descriptor
+        0x24030040,  # CreateSema: initial count 0, maximum 1
+        0x0000000c,
+        0x00408821,  # s1 = sema ID 1
+        0x24040002,
+        0x24030022,  # StartThread(2)
+        0x0000000c,
+        0x24040001,
+        0x24030044,  # WaitSema(1), blocks main
+        0x0000000c,
+        0x00409021,  # s2 = returned sema ID 1
+        0x24040001,
+        0x3c050010,
+        0x34a50280,  # a1 = guest ee_sema_t output
+        0x24030047,  # ReferSemaStatus(1)
+        0x0000000c,
+        0x3c080010,
+        0x3508028c,
+        0x8d130000,  # lw s3, wait_threads: must be zero
+        0x24040001,
+        0x24030042,  # SignalSema(1) must increment count, not wake old waiter
+        0x0000000c,
+        0x24040001,
+        0x24030045,  # PollSema(1) succeeds and consumes new count
+        0x0000000c,
+        0x0040a021,  # s4 = semaphore ID 1
+        0x00000008,
+        0x00000000,
+    )
+    worker = (
+        0x24040001,
+        0x2403002d,  # ReleaseWaitThread(1): removes sema queue entry
+        0x0000000c,
+        0x24030023,  # ExitThread if ever resumed
+        0x0000000c,
+        0x00000008,
+        0x00000000,
+    )
+    for index, opcode in enumerate(entry):
+        struct.pack_into("<I", image, 0x108 + index * 4, opcode)
+    for index, opcode in enumerate(worker):
+        struct.pack_into("<I", image, 0x1f0 + index * 4, opcode)
+    struct.pack_into(
+        "<9I", image, 0x300,
+        0, 0x001000f0, 0x00102000, 0x800,
+        0x0010f000, 1, 0, 0, 0,
+    )
+    struct.pack_into("<6I", image, 0x340, 0, 1, 0, 0, 0, 0)
+    path.write_bytes(image)
+
+
+def make_interrupt_status_encoding_elf(path, negative_service=-0x31):
+    """Negative EE thread status/id syscalls must fail outside an IRQ."""
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    instructions = (
+        0x24040001,  # a0 = main thread 1
+        0x00002821,  # a1 = null output pointer
+        0x24030031,  # positive iReferThreadStatus is permitted
+        0x0000000c,
+        0x00408021,  # s0 = RUN status (1)
+        0x24030000 | (negative_service & 0xffff),  # signed IRQ-only service
+        0x0000000c,  # rejected outside a registered IRQ callback
+        0x00408821,  # unreachable s1
+        0x00000008,
+        0x00000000,
+    )
+    for index, opcode in enumerate(instructions):
+        struct.pack_into("<I", image, 0x108 + index * 4, opcode)
+    path.write_bytes(image)
+
+
+def make_thread_suspend_resume_elf(path):
+    """Create, start, suspend, resume a real guest EE thread via syscalls."""
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    image.extend(bytes(max(0, 0x400 - len(image))))
+    struct.pack_into("<I", image, 52 + 16, 0x300)
+    struct.pack_into("<I", image, 52 + 20, 0x300)
+
+    instructions = (
+        0x3c040010,  # lui a0,0x0010
+        0x34840200,  # ori a0,a0,0x0200: thread descriptor
+        0x24030020,  # CreateThread
+        0x0000000c,
+        0x00408021,  # s0 = new thread ID 2
+        0x24040002,  # a0 = 2
+        0x24030022,  # StartThread, leaving child READY at priority 64
+        0x0000000c,
+        0x24040002,  # ReferThreadStatus(2, nullptr)
+        0x00002821,  # a1 = 0
+        0x24030030,
+        0x0000000c,
+        0x00408821,  # s1 = READY (2)
+        0x24040002,
+        0x24030037,  # SuspendThread(2) -- retail SDBZ failure
+        0x0000000c,
+        0x00409021,  # s2 = returned ID 2
+        0x24040002,
+        0x24030030,  # ReferThreadStatus(2) after suspension
+        0x0000000c,
+        0x00409821,  # s3 = SUSPEND (8)
+        0x24040002,
+        0x24030039,  # ResumeThread(2)
+        0x0000000c,
+        0x0040a021,  # s4 = returned ID 2
+        0x24040002,
+        0x24030030,  # ReferThreadStatus(2) after resume
+        0x0000000c,
+        0x0040a821,  # s5 = READY (2)
+        0x24040063,
+        0x24030037,  # SuspendThread(99): invalid ID, no mutation
+        0x0000000c,
+        0x0040b021,  # s6 = -1
+        0x00000008,  # jr zero to end the synthetic game
+        0x00000000,
+    )
+    for index, opcode in enumerate(instructions):
+        struct.pack_into("<I", image, 0x108 + index * 4, opcode)
+    struct.pack_into(
+        "<9I", image, 0x300,
+        0, 0x001000f0, 0x00102000, 0x800,
+        0x0010f000, 64, 0, 0, 0
+    )
     path.write_bytes(image)
 
 
@@ -1196,6 +1493,47 @@ def make_vu0_indexed_native_elf(path):
     ]
     for index, word in enumerate(program):
         struct.pack_into("<I", image, 0x108 + 4 * index, word)
+    path.write_bytes(image)
+
+
+def make_idle_timer_wakeup_elf(path):
+    """The only runnable thread sleeps until its timer IRQ wakes it."""
+    make_elf(path)
+    image = bytearray(path.read_bytes())
+    image.extend(bytes(0x200 - len(image)))
+    struct.pack_into("<II", image, 52 + 16, 0x100, 0x100)
+    entry = (
+        0x24040009,  # a0 = Timer 0 INTC cause
+        0x3c050010,  # a1 = 0x00100080 handler
+        0x34a50080,
+        0x2406ffff,  # append handler
+        0x24030010,  # AddIntcHandler
+        0x0000000c,
+        0x24030014,  # EnableIntc
+        0x0000000c,
+        0x3c081000,  # t0 = Timer 0 MMIO
+        0x24090400,  # compare at 1024 bus ticks
+        0xad090020,
+        0x24090180,  # enable counter and compare interrupt
+        0xad090010,
+        0x24030032,  # SleepThread
+        0x0000000c,
+        0x00408021,  # s0 = SleepThread return value
+        0x0000000d,  # BREAK after it resumes
+    )
+    handler = (
+        0x3c081000,
+        0xad000010,  # stop Timer 0
+        0x2403ffd1,  # _iGetThreadId sees the idle EE
+        0x0000000c,
+        0x24040001,  # a0 = sleeping thread ID
+        0x2403ffcc,  # iWakeupThread
+        0x0000000c,
+        0x03e00008,
+        0x00000000,
+    )
+    for offset, instructions in ((0x108, entry), (0x180, handler)):
+        struct.pack_into(f"<{len(instructions)}I", image, offset, *instructions)
     path.write_bytes(image)
 
 
@@ -1849,7 +2187,8 @@ def main():
             assert json.loads(metadata_path.read_text(encoding="utf-8"))["function_count"] == 1
 
             resumed = subprocess.run(
-                base + ["--no-recompile", "--auto-expand=1"],
+                base + ["--no-recompile", "--auto-expand=1",
+                        "--trace-entry=0x00100008"],
                 capture_output=True,
                 text=True,
                 check=False,
@@ -1857,6 +2196,13 @@ def main():
             assert "auto-expand: compiling reachable PC 0x00100030" in resumed.stdout, (
                 resumed.stdout + resumed.stderr
             )
+            assert "EE hot-expand: resumed guest pc=0x00100030" in resumed.stdout, (
+                resumed.stdout + resumed.stderr
+            )
+            assert resumed.stdout.count("EE trace-entry:") == 1, (
+                "guest entry executed more than once (unexpected replay): " + resumed.stdout
+            )
+            assert resumed.stdout.count("EE ELF entry") == 1, resumed.stdout
             assert "EE stopped: dispatched=" in resumed.stdout, (
                 resumed.stdout + resumed.stderr
             )
@@ -2443,6 +2789,73 @@ def main():
                 ambiguous.stderr
             )
 
+        for invalid_argument, invalid_string in (
+            (False, False), (True, False), (False, True),
+        ):
+            with tempfile.TemporaryDirectory(prefix="ee-native-deci2-kputs-") as tmp:
+                root = Path(tmp)
+                elf = root / "deci2-kputs.elf"
+                make_deci2_kputs_elf(
+                    elf, invalid_argument=invalid_argument,
+                    invalid_string=invalid_string,
+                )
+                report_path = root / "deci2-kputs.json"
+                command = [
+                    sys.executable, str(source / "tools" / "run_game.py"),
+                    str(elf), "--build-dir", str(build),
+                    "--work-dir", str(root / "out"),
+                    "--max-dispatches=32",
+                    "--hle-startup",
+                    "--report", str(report_path),
+                ]
+                result = subprocess.run(
+                    command + ["--trace"],
+                    capture_output=True, text=True, check=False,
+                )
+                combined = result.stdout + result.stderr
+                state = json.loads(report_path.read_text(encoding="utf-8"))
+                assert state["exit_name"] == "EXCEPTION", state
+                if invalid_argument:
+                    assert state["cop0_epc"] == 0x00100018, state
+                    assert (
+                        "Deci2Call KPUTS HLE refused unbacked or unaligned "
+                        "string pointer 0x00100201"
+                    ) in result.stderr, combined
+                    assert state["gpr_lo"][8] == 0, state
+                    assert "EE KPUTS:" not in result.stdout, combined
+                elif invalid_string:
+                    assert state["cop0_epc"] == 0x00100018, state
+                    assert (
+                        "Deci2Call KPUTS HLE refused unterminated or unbacked "
+                        "guest text 0x7ffffffc"
+                    ) in result.stderr, combined
+                    assert state["gpr_lo"][8] == 0, state
+                    assert "EE KPUTS:" not in result.stdout, combined
+                else:
+                    assert state["cop0_epc"] == 0x00100024, state
+                    assert "EE KPUTS: DECI2 KPUTS SUCCESS" in result.stdout, combined
+                    assert (
+                        'HLE Deci2Call KPUTS: text="DECI2 KPUTS SUCCESS" '
+                        "bytes=19 result=1"
+                    ) in result.stdout, combined
+                    # KPUTS must appear without --trace as well. The
+                    # native runner is reused, not rebuilt, for this check.
+                    untraced = subprocess.run(
+                        command + ["--no-recompile"],
+                        capture_output=True, text=True, check=False,
+                    )
+                    assert (
+                        "EE KPUTS: DECI2 KPUTS SUCCESS"
+                    ) in untraced.stdout, untraced.stdout + untraced.stderr
+                    assert (
+                        "HLE Deci2Call KPUTS: text="
+                    ) not in untraced.stdout, untraced.stdout
+                    assert state["gpr_lo"][8] == 1, state
+                    assert state["gpr_lo"][9] == 0, state
+                    assert (
+                        "Deci2Call HLE refused unsupported operation=7"
+                    ) in result.stderr, combined
+
         for invalid_open in (False, True):
             with tempfile.TemporaryDirectory(prefix="ee-native-deci2-") as tmp:
                 root = Path(tmp)
@@ -2718,6 +3131,177 @@ def main():
             assert regs[12] == 0x00642000, state # SetupHeap(size) result
             assert regs[13] == 0x00642000, state # EndOfHeap updated
             assert regs[14] == 0x00642000, state # EndOfHeap ignores A0
+
+        with tempfile.TemporaryDirectory(prefix="ee-native-sleep-wakeup-") as tmp:
+            root = Path(tmp)
+            elf = root / "kernel-sleep-wakeup.elf"
+            make_thread_sleep_wakeup_elf(elf)
+            report_path = root / "sleep-wakeup.json"
+            command = [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf),
+                "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--max-dispatches=160",
+                "--auto-expand=4",
+                "--trace",
+                "--report", str(report_path),
+                "--hle-startup",
+            ]
+            result = subprocess.run(
+                command, capture_output=True, text=True, check=False,
+            )
+            combined = result.stdout + result.stderr
+            assert "HLE CreateThread: id=2" in combined, combined
+            assert "HLE WakeupThread: id=1 status=1 wakeups=1" in combined, combined
+            assert "HLE SleepThread: id=1 consumed wakeup remaining=0" in combined, combined
+            assert "HLE StartThread: id=2" in combined, combined
+            assert "HLE SleepThread: id=1 status=4" in combined, combined
+            assert "HLE EE thread switch: id=2 pc=0x001000f0" in combined, combined
+            assert "HLE WakeupThread: id=1 status=2 wakeups=0 released=1" in combined, combined
+            assert "HLE EE thread switch: id=1" in combined, combined
+            assert "HLE CancelWakeupThread: id=1 status=1 wakeups=0" in combined, combined
+            assert "HLE WakeupThread: id=99 not found, result=-1" in combined, combined
+            state = json.loads(report_path.read_text(encoding="utf-8"))
+            registers = state["gpr_lo"]
+            assert registers[16] == 2, state  # worker created
+            assert registers[17] == 1, state  # wakeup credit granted
+            assert registers[18] == 1, state  # credit consumed without block
+            assert registers[19] == 1, state  # returned from genuine sleep
+            assert registers[20] == 0, state  # no leftover wakeup credit
+            assert registers[21] == 0xffffffffffffffff, state # invalid ID
+            assert state["final_pc"] != 0x001000f0, state # no worker escape
+
+        with tempfile.TemporaryDirectory(prefix="ee-native-release-wait-") as tmp:
+            root = Path(tmp)
+            elf = root / "kernel-release-wait.elf"
+            make_thread_release_wait_elf(elf)
+            report_path = root / "release-wait.json"
+            command = [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf),
+                "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--max-dispatches=160",
+                "--auto-expand=4",
+                "--trace",
+                "--report", str(report_path),
+                "--hle-startup",
+            ]
+            result = subprocess.run(
+                command, capture_output=True, text=True, check=False,
+            )
+            combined = result.stdout + result.stderr
+            # The expected jr $zero stop is reported as a nonzero host exit.
+            for expected_line in (
+                "HLE SleepThread: id=1 status=4",
+                "HLE ReleaseWaitThread: id=1 old_status=4 new_status=2",
+                "HLE SuspendThread: id=1 old_status=4 new_status=12",
+                "HLE iReleaseWaitThread: id=1 old_status=12 new_status=8",
+                "HLE ResumeThread: id=1 old_status=8 new_status=2",
+                "HLE ReleaseWaitThread: id=2 not waiting, result=-1",
+            ):
+                assert expected_line in combined, (expected_line, combined)
+            state = json.loads(report_path.read_text(encoding="utf-8"))
+            registers = state["gpr_lo"]
+            assert registers[16] == 2, state
+            assert registers[17] == 1, state
+            assert registers[18] == 1, state
+            assert registers[19] == 0xffffffffffffffff, state
+            assert state["final_pc"] == 0, state
+
+        with tempfile.TemporaryDirectory(prefix="ee-native-semaphore-release-") as tmp:
+            root = Path(tmp)
+            elf = root / "kernel-semaphore-release.elf"
+            make_thread_semaphore_release_wait_elf(elf)
+            report_path = root / "semaphore-release.json"
+            command = [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf),
+                "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--max-dispatches=160",
+                "--auto-expand=4",
+                "--trace",
+                "--report", str(report_path),
+                "--hle-startup",
+            ]
+            result = subprocess.run(
+                command, capture_output=True, text=True, check=False,
+            )
+            combined = result.stdout + result.stderr
+            # The native runner reports a nonzero stop when synthetic MIPS
+            # exits through jr $zero. Verify guest state, not process code.
+            assert "HLE CreateSema: id=1 init=0 max=1" in combined, combined
+            assert "HLE ReleaseWaitThread: id=1 old_status=4 new_status=2" in combined, combined
+            state = json.loads(report_path.read_text(encoding="utf-8"))
+            registers = state["gpr_lo"]
+            assert registers[16] == 2, state  # worker created
+            assert registers[17] == 1, state  # semaphore created
+            assert registers[18] == 1, state  # WaitSema completed
+            assert registers[19] == 0, state  # no stale waiters
+            assert registers[20] == 1, state  # PollSema consumed new signal
+            assert state["final_pc"] == 0, state
+
+        for negative_service in (-0x31, -0x2f):
+            with tempfile.TemporaryDirectory(prefix="ee-native-irq-status-") as tmp:
+                root = Path(tmp)
+                elf = root / "kernel-irq-status.elf"
+                make_interrupt_status_encoding_elf(elf, negative_service)
+                report_path = root / "irq-status.json"
+                result = subprocess.run(
+                    [
+                        sys.executable, str(source / "tools" / "run_game.py"),
+                        str(elf), "--build-dir", str(build),
+                        "--work-dir", str(root / "out"),
+                        "--max-dispatches=32", "--hle-startup", "--trace",
+                        "--report", str(report_path),
+                    ],
+                    capture_output=True, text=True, check=False,
+                )
+                combined = result.stdout + result.stderr
+                state = json.loads(report_path.read_text(encoding="utf-8"))
+                assert state["exit_name"] == "EXCEPTION", (negative_service, state)
+                assert state["cop0_epc"] == 0x00100020, (negative_service, state)
+                assert state["gpr_lo"][16] == 1, (negative_service, state)
+                assert state["gpr_lo"][17] == 0, (negative_service, state)
+                assert "HLE iReferThreadStatus: id=1 address=0x00000000 status=1" in combined, combined
+
+        with tempfile.TemporaryDirectory(prefix="ee-native-suspend-resume-") as tmp:
+            root = Path(tmp)
+            elf = root / "kernel-suspend-resume.elf"
+            make_thread_suspend_resume_elf(elf)
+            report_path = root / "suspend-resume.json"
+            command = [
+                sys.executable, str(source / "tools" / "run_game.py"),
+                str(elf),
+                "--build-dir", str(build),
+                "--work-dir", str(root / "out"),
+                "--max-dispatches=100",
+                "--trace",
+                "--report", str(report_path),
+                "--hle-startup",
+            ]
+            result = subprocess.run(
+                command, capture_output=True, text=True, check=False,
+            )
+            combined = result.stdout + result.stderr
+            assert "HLE CreateThread: id=2" in combined, combined
+            assert "HLE StartThread: id=2" in combined, combined
+            assert "HLE SuspendThread: id=2 old_status=2 new_status=8" in combined, combined
+            assert "HLE ResumeThread: id=2 old_status=8 new_status=2" in combined, combined
+            assert "HLE SuspendThread: id=99 not found, result=-1" in combined, combined
+            state = json.loads(report_path.read_text(encoding="utf-8"))
+            regs = state["gpr_lo"]
+            assert regs[16] == 2, state  # created ID
+            assert regs[17] == 2, state  # initially READY
+            assert regs[18] == 2, state  # SuspendThread return
+            assert regs[19] == 8, state  # state genuinely suspended
+            assert regs[20] == 2, state  # ResumeThread return
+            assert regs[21] == 2, state  # state restored READY
+            assert regs[22] == 0xffffffffffffffff, state # invalid ID
+            assert "HLE EE thread switch: id=2" not in combined, combined
+            assert state["final_pc"] != 0x001000f0, state
 
         with tempfile.TemporaryDirectory(prefix="ee-native-thread-priority-") as tmp:
             root = Path(tmp)
@@ -3528,6 +4112,34 @@ def main():
             assert "guest host loop yield cap reached" not in result.stderr, (
                 result.stdout, result.stderr
             )
+
+        with tempfile.TemporaryDirectory(prefix="ee-native-idle-timer-") as tmp:
+            root = Path(tmp)
+            elf = root / "idle-timer.elf"
+            make_idle_timer_wakeup_elf(elf)
+            report_path = root / "idle-timer.json"
+            result = subprocess.run(
+                [
+                    sys.executable, str(source / "tools" / "run_game.py"),
+                    str(elf), "--build-dir", str(build),
+                    "--work-dir", str(root / "out"),
+                    "--functions=entry", "--extra-functions=0x00100080",
+                    "--max-dispatches=32", "--auto-expand=8",
+                    "--hle-startup", "--kseg-ram", "--ee-clock=reference-compat",
+                    "--trace", "--report", str(report_path), "--timeout-seconds=10",
+                ],
+                capture_output=True, text=True, check=False, timeout=40,
+            )
+            combined = result.stdout + result.stderr
+            assert "HLE EE scheduler idle: no runnable guest threads" in combined, combined
+            assert "HLE INTC IRQ: cause=9" in combined, combined
+            assert "HLE _iGetThreadId: id=0" in combined, combined
+            assert "HLE iWakeupThread: id=1 status=2 wakeups=0 released=1" in combined, combined
+            state = json.loads(report_path.read_text(encoding="utf-8"))
+            assert state["exit_name"] == "EXCEPTION", state
+            assert state["cop0_epc"] == 0x00100048, state
+            assert state["gpr_lo"][16] == 1, state
+            assert state["ee_cycles"] - state["guest_instruction_attempts"] >= 2000, state
 
         # Resuming without a bounded guest-loop watchdog would spin forever;
         # reject an invalid command before loading or mutating guest state.

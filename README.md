@@ -62,7 +62,60 @@ ctest --test-dir build --output-on-failure
 For full-image validation and the PCSX2 differential workflow, see
 FULL_GAME_NATIVE_LINK_VALIDATION.md and tools/vu0_diff/README.md.
 
+## Live translation-cache miss recovery
+
+Auto-expansion now pauses the current native process at a missing guest function
+instead of restarting the game after every newly compiled LLVM module. The
+driver compiles and verifies the function, hot-loads a new native library, and
+retries the same PC without repeating guest inputs, IOP work, or VBlank.
+
+This is **in-process resume, not a disk savestate**. An interrupted process or
+exhausted expansion budget still requires a new guest run. The default
+`EXPANSION_PER_PASS=128` can be raised up to 1024 for longer live sessions;
+`--replay-after-expand` on `tools/run_game.py` retains the legacy behavior.
+
+See [Live cache-miss resume](docs/SDBZ_LIVE_CACHE_MISS_RESUME.md) for the
+protocol, validation rules, acceptance target and limitations.
+
 ## BIOS-free extracted disc launcher (Windows)
+
+Run `python tools/launch_ps2_gui.py` for the graphical launcher. Choose
+the extracted disc folder and an optional raw PS2 memory card, then
+select **Launch**. By default, the native raylib/WebGPU game opens
+inside the launcher's new **Game window** tab, with build and runtime logs
+still visible underneath. On the **Game** tab, uncheck **Show game in
+launcher tab** to restore the standalone game window. The game viewport
+resizes with the launcher. This Win32 embedding uses the live renderer and
+input, not a screenshot; the game still runs as its own process.
+The first available controller supplies PS2 port 1 input. The south face
+button maps to Cross. Both sticks, the D-pad, Start, Select, and the
+shoulder buttons are mapped. The launcher shows the build and game
+log and saves it to `build/ps2-launcher.log`.
+
+**Game** exposes all batch flags, including quick probe, matched replay
+and cache recovery. **Limits and diagnostics** controls dispatch budgets,
+timeouts, custom Cross pulses and trace settings. **Direct command**
+shows separate tabbed forms for `run_boot_session.py`, `run_game.py`, and
+`ee_game_runner.exe`. Each tool retains its own inputs. Hover over a
+field for help or use **Show --help** for the selected tool’s CLI help.
+New forms start with the full-replay defaults from `run_ps2_game.bat`.
+Use **Apply batch defaults** to reload those values for the selected tool.
+For repeatable IRX options and extra arguments, enter one item per line
+and leave paths with spaces unquoted.
+
+The launcher prefills the boot script’s defaults and restores choices
+from `build/ps2-launcher-settings.json`. It saves on launch and when
+you close the window. Clear a numeric field to use the script’s
+automatic value.
+
+The **Game** tab now includes **Resume after cache miss**, enabled by default.
+When an uncached EE function is reached, compilation and native-library
+replacement happen without restarting the current game process or repeating
+the controller input. Uncheck it to use the original restart-on-miss path.
+The **Limits and diagnostics** tab accepts up to 1024 functions per expansion
+pass (128 by default). The **Direct command** forms for both the boot session
+and Python game runner expose `--replay-after-expand`. This is not a persistent
+savestate and does not survive closing the process.
 
 Place the original, extracted game disc files under `PS2_GAME/` at the
 repository root, including `SYSTEM.CNF`. Run:

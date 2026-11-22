@@ -81,9 +81,10 @@ void both32(uint8_t* p, uint32_t value)
 }
 } // namespace
 
-c_folder_sector_source::c_folder_sector_source(const std::filesystem::path& root)
+c_folder_sector_source::c_folder_sector_source(const std::filesystem::path& root,
+    const std::filesystem::path& mounted_card)
 {
-    m_valid = build(root);
+    m_valid = build(root, mounted_card);
 }
 
 bool c_folder_sector_source::valid() const
@@ -167,7 +168,8 @@ std::vector<uint8_t> c_folder_sector_source::make_directory(
     return bytes;
 }
 
-bool c_folder_sector_source::build(const std::filesystem::path& root)
+bool c_folder_sector_source::build(const std::filesystem::path& root,
+    const std::filesystem::path& mounted_card)
 {
     namespace fs = std::filesystem;
     std::error_code error;
@@ -177,6 +179,7 @@ bool c_folder_sector_source::build(const std::filesystem::path& root)
         return fail("disc root must be a real directory");
     }
 
+    const std::string card_name = ascii_upper(mounted_card.filename().generic_u8string());
     m_nodes.emplace("", s_node{root, "", "", 0u, 0u, true});
     fs::recursive_directory_iterator it(root, error), end;
     if (error)
@@ -212,9 +215,19 @@ bool c_folder_sector_source::build(const std::filesystem::path& root)
             return fail("unsupported entry in extracted disc");
         }
         const std::string name = relative.filename().generic_u8string();
+        // The mounted card is host storage even when it sits beside the disc files.
+        if (!card_name.empty() && fs::is_regular_file(status) &&
+            ascii_upper(name) == card_name)
+        {
+            std::error_code identity_error;
+            if (fs::equivalent(it->path(), mounted_card, identity_error) && !identity_error)
+            {
+                continue;
+            }
+        }
         if (!valid_name(name))
         {
-            return fail("non-ISO9660 filename in extracted disc");
+            return fail("non-ISO9660 filename in extracted disc: " + relative.generic_u8string());
         }
         std::string key;
         std::string parent;

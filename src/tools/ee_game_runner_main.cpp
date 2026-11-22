@@ -1,9 +1,13 @@
+#include "ee_scanout_clock.h"
 #include "ee_runtime.h"
 #include "ee_exceptions.h"
 #include "ee_memory.h"
 #include "ee_ram_interpreter.h"
 #include "ee_hw_bus.h"
 #include "ee_host_timers.h"
+#include "ee_hot_expand_protocol.h"
+#include "ee_kernel_thread_status.h"
+#include "ee_irq_syscall_services.h"
 #include "ee_hot_loop_diagnostics.h"
 #include "ee_host_loop_yield_budget.h"
 #include "ee_reached_isa_inventory.h"
@@ -52,6 +56,8 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <thread>
+#include <utility>
 #include <vector>
 
 #if defined(_WIN32)
@@ -441,6 +447,11 @@ struct c_native_module
         return m_handle != nullptr;
     }
 
+    void swap(c_native_module& other)
+    {
+        std::swap(m_handle, other.m_handle);
+    }
+
     t_game_run entry() const
     {
 #if defined(_WIN32)
@@ -464,6 +475,97 @@ struct c_native_module
 #endif
     }
 };
+
+// No guest machine state is serialized here.  On a zero-dispatch cache miss
+// the native runner stays alive, and the compiler publishes a new DLL/SO.  This
+// preserves EE/IOP memory, pending callbacks, DMA, GPU, timers, and pad/card
+// state in their owning objects.  Unique request IDs and atomic file renames
+// prevent consumption of stale or incomplete responses.
+bool request_hot_expand(
+    const std::filesystem::path& directory,
+    uint32_t sequence,
+    uint32_t pc,
+    std::filesystem::path* library,
+    std::string* failure)
+{
+    if (library == nullptr || failure == nullptr)
+    {
+        return false;
+    }
+    const std::string key = std::to_string(sequence);
+    const std::filesystem::path request = directory / ("request-" + key + ".txt");
+    const std::filesystem::path pending = directory / ("request-" + key + ".tmp");
+    const std::filesystem::path response = directory / ("response-" + key + ".txt");
+    std::error_code error;
+    std::filesystem::create_directories(directory, error);
+    if (error)
+    {
+        *failure = "cannot create hot-expand directory: " + error.message();
+        return false;
+    }
+    {
+        std::ofstream output(pending, std::ios::binary | std::ios::trunc);
+        if (!output)
+        {
+            *failure = "cannot write hot-expand request";
+            return false;
+        }
+        char address[16]{};
+        std::snprintf(address, sizeof(address), "0x%08x", pc);
+        output << sequence << '\n' << address << '\n';
+        output.close();
+        if (!output)
+        {
+            *failure = "incomplete hot-expand request";
+            return false;
+        }
+    }
+    std::filesystem::rename(pending, request, error);
+    if (error)
+    {
+        *failure = "cannot publish hot-expand request: " + error.message();
+        return false;
+    }
+    std::printf("EE hot-expand: paused at missing guest pc=0x%08x request=%u\n",
+                pc, sequence);
+    std::fflush(stdout);
+
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::minutes(30);
+    while (std::chrono::steady_clock::now() < deadline)
+    {
+        std::ifstream input(response, std::ios::binary);
+        if (input)
+        {
+            std::string result;
+            if (!hot_expand::parse_response(input, key, &result, failure))
+            {
+                return false;
+            }
+            if (result == "STOP")
+            {
+                library->clear();
+                return true;
+            }
+            if (result.compare(0, 6, "ERROR:") == 0)
+            {
+                *failure = result;
+                return false;
+            }
+            *library = std::filesystem::path(result);
+            if (!library->is_absolute() ||
+                !std::filesystem::is_regular_file(*library))
+            {
+                *failure = "hot-expand replacement library missing or not absolute";
+                return false;
+            }
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    *failure = "timed out waiting for hot-expand compiler";
+    return false;
+}
 
 bool parse_u32(const char* value, uint32_t* out)
 {
@@ -760,10 +862,12 @@ void usage(const char* program)
         "  --gs-snapshot=FILE   Read-only displayed GS VRAM PPM (not a frame)\n"
         "  --gs-upload-snapshot=FILE  Preview completed GIF upload VRAM PPM (not a frame)\n"
         "  --gs-webgpu-snapshot=FILE  Render actual native WebGPU GS raster to PPM (opt-in)\n"
+        "  --speed-percent=N   Window pacing target (0=unlimited, default 100)\n"
         "  --gs-webgpu-window   Show guest scanout fields in a raylib/WebGPU window (opt-in)\n"
         "  --gs-field-probe=FILE  Bounded GPU FRAME/DISPFB JSONL at real guest fields\n"
         "                        Also accepts SDBZ_GS_FIELD_PROBE (WebGPU build)\n"
         "  --trace              Print guest PC, reason and dispatch count per step\n"
+        "  --hot-expand-dir=DIR Pause on missing guest code and hot-load compiled DLL\n"
         "  --trace-entry=0xPC   Print arguments and pointed-to words at a guest entry\n"
         "  --memcard-discard-writes Keep card writes in memory for this replay\n"
         "  --watch-word=0xADDR  Report guest word changes between native dispatches\n"
@@ -1498,12 +1602,15 @@ int main(int argc, char** argv)
     bool kseg_ram = false;
     const char* kernel_ram_path = nullptr;
     const char* report_path = nullptr;
+    const char* hot_expand_dir = nullptr;
     const char* gs_snapshot_path = nullptr;
     const char* gs_upload_snapshot_path = nullptr;
     const char* gs_webgpu_snapshot_path = nullptr;
     const char* gs_field_probe_path = nullptr;
     std::string gs_field_probe_environment;
     bool gs_webgpu_window = false;
+    uint32_t speed_percent = 100u;
+    bool has_speed_percent = false;
     const char* instruction_trace_path = nullptr;
     uint32_t instruction_trace_first_pc = 0u;
     uint32_t instruction_trace_last_pc = 0xffffffffu;
@@ -1629,6 +1736,17 @@ int main(int argc, char** argv)
             gs_field_probe_path = argv[i] + 17;
             continue;
         }
+        if (argument.compare(0, 16, "--speed-percent=") == 0)
+        {
+            if (has_speed_percent || !parse_u32(argv[i] + 16, &speed_percent) ||
+                speed_percent > 1000u)
+            {
+                std::fprintf(stderr, "invalid --speed-percent (expected 0..1000)\n");
+                return 2;
+            }
+            has_speed_percent = true;
+            continue;
+        }
         if (argument == "--gs-webgpu-window")
         {
 #ifndef EE_ENABLE_RAYLIB_WINDOW
@@ -1673,6 +1791,16 @@ int main(int argc, char** argv)
         if (argument == "--memcard-discard-writes")
         {
             discard_memory_card_writes = true;
+            continue;
+        }
+        if (argument.compare(0, 17, "--hot-expand-dir=") == 0)
+        {
+            if (argument.size() == 17u || hot_expand_dir != nullptr)
+            {
+                std::fprintf(stderr, "invalid or duplicate hot-expand directory\n");
+                return 2;
+            }
+            hot_expand_dir = argv[i] + 17;
             continue;
         }
         if (argument == "--hle-startup")
@@ -1934,6 +2062,16 @@ int main(int argc, char** argv)
     // reporting every one of them verbatim. An opt-in host-only cadence
     // reduces trace I/O without affecting guest dispatch cadence, IRQ
     // sampling, RPC scheduling, report snapshots or saved histories.
+    if (gs_webgpu_window && !has_speed_percent)
+    {
+        std::string speed_environment;
+        const char* speed = read_host_environment("SDBZ_SPEED_PERCENT", &speed_environment);
+        if (speed != nullptr && (!parse_u32(speed, &speed_percent) || speed_percent > 1000u))
+        {
+            std::fprintf(stderr, "invalid SDBZ_SPEED_PERCENT (expected 0..1000)\n");
+            return 2;
+        }
+    }
     uint32_t dispatch_trace_every = 1u;
     std::string dispatch_trace_environment;
     const char* dispatch_trace_setting = read_host_environment(
@@ -2035,7 +2173,7 @@ int main(int argc, char** argv)
         module.print_error();
         return 1;
     }
-    const t_game_run native_run = module.entry();
+    t_game_run native_run = module.entry();
     if (native_run == nullptr)
     {
         std::fprintf(stderr, "native library has no ee_game_run export\n");
@@ -2368,7 +2506,10 @@ int main(int argc, char** argv)
             if (disc_folder_path != nullptr)
             {
                 auto folder_source =
-                    std::make_unique<iop::c_folder_sector_source>(disc_root);
+                    std::make_unique<iop::c_folder_sector_source>(
+                        disc_root, memory_card.mounted()
+                            ? std::filesystem::u8path(memory_card_path)
+                            : std::filesystem::path{});
                 if (!folder_source->valid())
                 {
                     std::fprintf(
@@ -2675,10 +2816,12 @@ int main(int argc, char** argv)
     struct s_kernel_thread
     {
         bool m_used = false;
-        uint32_t m_status = 16u; // dormant; 1=run, 2=ready, 4=wait
+        uint32_t m_status = 16u; // dormant; 1=run, 2=ready, 4=wait, 8=suspend, 12=wait+suspend
         uint64_t m_order = 0u;
         bool m_has_context = false;
         uint32_t m_wait_semaphore = 0u;
+        uint32_t m_wait_type = 0u; // 0=none, 1=SleepThread, 2=WaitSema
+        uint32_t m_wakeups = 0u;
         ee::s_ee_cpu_state m_context{};
         ee::s_ee_vu0_state m_vu0_context{};
         uint32_t m_entry = 0u;
@@ -2704,6 +2847,8 @@ int main(int argc, char** argv)
     uint64_t next_thread_order = 1u;
     constexpr uint32_t k_thread_return_pc = 0xffffffe0u;
     bool reschedule_requested = false;
+    uint64_t idle_started_cycle = 0u;
+    uint64_t idle_cycles = 0u;
     const auto schedule_threads = [&]() -> bool
     {
         uint32_t next_id = 0u;
@@ -2723,10 +2868,12 @@ int main(int argc, char** argv)
                 next_id = id;
             }
         }
-        if (next_id == 0u)
+        if (next_id == 0u &&
+            runtime.m_ee_cycle_scheduler.source() !=
+                ee::e_ee_cycle_source::REFERENCE_COMPATIBILITY)
         {
             std::fprintf(stderr,
-                "EE thread scheduler: no runnable guest threads\n");
+                "EE thread scheduler: no runnable guest threads and no idle clock\n");
             return false;
         }
         if (next_id != current_thread_id)
@@ -2742,6 +2889,17 @@ int main(int argc, char** argv)
                     current.m_status = 2u;
                     current.m_order = ++next_thread_order;
                 }
+            }
+            if (next_id == 0u)
+            {
+                current_thread_id = 0u;
+                idle_started_cycle = runtime.m_ee_cycle_scheduler.current_cycle();
+                reschedule_requested = false;
+                if (trace)
+                {
+                    std::printf("HLE EE scheduler idle: no runnable guest threads\n");
+                }
+                return true;
             }
             s_kernel_thread& next = threads[next_id];
             if (!next.m_has_context)
@@ -2842,6 +3000,7 @@ int main(int argc, char** argv)
 
     uint32_t remaining = budget;
     uint64_t dispatched = 0;
+    uint32_t hot_expand_sequence = 0u;
     // Diagnose an unready IOP SIF handshake. Real ROM0 execution advances
     // on each read; the guard never manufactures a readiness value.
     uint32_t last_sif_smflag_epc = 0u;
@@ -2913,6 +3072,209 @@ int main(int argc, char** argv)
     double native_time_ms = 0.0;
     double slowest_native_ms = 0.0;
     uint32_t slowest_native_pc = 0u;
+#ifdef EE_ENABLE_RAYLIB_WINDOW
+    uint64_t paced_field = 0u;
+    uint64_t pace_cycle = 0u;
+    uint64_t sample_cycle = 0u;
+    auto pace_time = std::chrono::steady_clock::now();
+    auto sample_time = pace_time;
+#endif
+    enum class e_device_service { continued, window_closed, failed };
+    const auto service_devices = [&]() -> e_device_service
+    {
+        // Service guest-programmed timer compare/overflow events against
+        // the same reached-instruction compatibility clock as scanout.
+        // Timer COUNT reads inside a long native loop sample the live
+        // instruction budget rather than this after-dispatch checkpoint.
+        host_timers.service();
+        const auto scanout_result = runtime.m_ee_cycle_scheduler.service_scanout(
+            hardware, vsync_flags, *memory);
+        if (scanout_result == ee::e_ee_scheduled_event_result::INVALID_TIMESTAMP_OR_DELIVERY)
+        {
+            std::fprintf(stderr, "EE scheduler rejected scanout delivery at cycle=%llu\n",
+                static_cast<unsigned long long>(runtime.m_ee_cycle_scheduler.current_cycle()));
+            return e_device_service::failed;
+        }
+        // Deliver original IOP start/end callbacks in the scanout
+        // clock's event order; never infer edges from wall time.
+        if (iop_hle != nullptr)
+        {
+            for (uint8_t start_edge :
+                 hardware.scanout().delivered_vblank_edges())
+            {
+                iop_hle->signal_vblank_edge(start_edge != 0u);
+            }
+        }
+#ifdef EE_ENABLE_RAYLIB_WINDOW
+        if (gs_webgpu_window)
+        {
+            const uint64_t field = hardware.scanout().fields_started();
+            if (field != paced_field)
+            {
+                using t_clock = std::chrono::steady_clock;
+                const uint64_t cycle = runtime.m_ee_cycle_scheduler.current_cycle();
+                constexpr double clock_hz = ee::c_ee_scanout_clock::k_ee_clock_hz;
+                auto now = t_clock::now();
+                if (paced_field == 0u || cycle < pace_cycle)
+                {
+                    pace_cycle = sample_cycle = cycle;
+                    pace_time = sample_time = now;
+                }
+                else if (speed_percent != 0u)
+                {
+                    const auto target = pace_time + std::chrono::duration_cast<t_clock::duration>(
+                        std::chrono::duration<double>((cycle - pace_cycle) * 100.0 /
+                            (clock_hz * speed_percent)));
+                    if (target > now && target - now <= std::chrono::milliseconds(500))
+                    {
+                        std::this_thread::sleep_until(target);
+                        now = t_clock::now();
+                    }
+                    // Re-anchor after a stall or a large guest clock jump.
+                    if (now - target > std::chrono::milliseconds(100) ||
+                        target - now > std::chrono::milliseconds(500))
+                    {
+                        pace_cycle = cycle;
+                        pace_time = now;
+                    }
+                }
+                const double elapsed = std::chrono::duration<double>(now - sample_time).count();
+                if (elapsed >= 1.0)
+                {
+                    const double actual = (cycle - sample_cycle) * 100.0 / (clock_hz * elapsed);
+                    if (speed_percent == 0u)
+                    {
+                        std::printf("EE speed: %.0f%% actual / Unlimited\n", actual);
+                    }
+                    else
+                    {
+                        std::printf("EE speed: %.0f%% actual / %u%% target\n", actual, speed_percent);
+                    }
+                    std::fflush(stdout);
+                    sample_cycle = cycle;
+                    sample_time = now;
+                }
+                paced_field = field;
+            }
+            raylib_window.pump(
+                webgpu_bridge,
+                hardware.gs_display_registers(),
+                hardware.gs_crt_mode(),
+                hardware.scanout().fields_started(), &graphics_probe,
+                iop_kernel != nullptr ? &iop_kernel->hardware() : nullptr);
+            if (raylib_window.closed())
+            {
+                return e_device_service::window_closed;
+            }
+        }
+#endif
+#ifdef EE_ENABLE_WEBGPU
+        if (gs_field_probe.m_file != nullptr &&
+            !capture_gs_field(
+                gs_field_probe, webgpu_bridge, gs_state, graphics_probe,
+                hardware.gs_display_registers(),
+                hardware.gs_crt_mode(),
+                hardware.scanout().fields_started(), dispatched,
+                runtime.m_ee_cycle_scheduler.current_cycle(), cpu.m_pc))
+        {
+            std::fprintf(stderr, "failed to write GS field probe: %s\n",
+                gs_field_probe_path);
+            return e_device_service::failed;
+        }
+#endif
+        return e_device_service::continued;
+    };
+    enum class e_intc_service { not_pending, handled, failed };
+    const auto service_intc = [&](uint32_t exit_reason) -> e_intc_service
+    {
+        // ps2-web-recomp/kernel.cpp::run_intc acknowledges the actual
+        // masked INTC cause and runs the registered guest callbacks, then
+        // restores the interrupted EE thread. The ROM0 exception vector
+        // is not executable in HLE-first mode, so bridge only an observed,
+        // architecturally taken INTC exception; all other exceptions
+        // remain unsupported. Never manufacture a VBlank or interrupt.
+        if (hle_startup && !irq_callback_active && !callback_active &&
+            exit_reason == static_cast<uint32_t>(
+                ee::e_ee_exit_reason::EE_EXIT_EXCEPTION) &&
+            ((cpu.m_cop0[13] >> 2u) & 31u) == ee::EX_Int &&
+            cpu.m_pc == ee::ee_exception_vector(
+                cpu.m_cop0[12] & ~ee::STATUS_EXL, ee::EX_Int) &&
+            (cpu.m_cop0[12] & (ee::STATUS_EXL | ee::STATUS_IE |
+                                 ee::STATUS_EIE)) ==
+                (ee::STATUS_EXL | ee::STATUS_IE | ee::STATUS_EIE) &&
+            (cpu.m_cop0[12] & ee::STATUS_ERL) == 0u &&
+            (cpu.m_cop0[13] & ee::CAUSE_BD) == 0u &&
+            (ee::ee_pending_interrupts(&cpu) &
+                (1u << (ee::CAUSE_IP_SHIFT + ee::INT_INTC))) != 0u &&
+            hardware.intc().pending() != 0u)
+        {
+            const uint32_t pending = hardware.intc().pending();
+            uint32_t cause = 0u;
+            while (cause < 32u && (pending & (1u << cause)) == 0u)
+            {
+                ++cause;
+            }
+            if (cause >= 32u)
+            {
+                return e_intc_service::failed;
+            }
+
+            irq_callback_handlers.clear();
+            for (const s_kernel_interrupt_handler& handler : intc_handlers)
+            {
+                if (handler.m_cause == cause)
+                {
+                    irq_callback_handlers.push_back(handler);
+                }
+            }
+            if (!irq_callback_handlers.empty() &&
+                !memory->contains(k_irq_kernel_stack - 0x1000u, 0x1000u))
+            {
+                std::fprintf(stderr,
+                    "HLE INTC callback refused unmapped kernel stack\n");
+                return e_intc_service::failed;
+            }
+
+            const ee::s_ee_u128 acknowledge{1u << cause, 0u};
+            if (!ee::c_ee_intc::mmio_write(
+                    &hardware.intc(), ee::c_ee_intc::k_stat_address,
+                    4u, &acknowledge))
+            {
+                std::fprintf(stderr, "HLE INTC acknowledgement failed\n");
+                return e_intc_service::failed;
+            }
+            // Resume at EPC, not EPC+4. The interrupted instruction did
+            // not execute, and a branch-delay interrupt is excluded above.
+            ee::s_ee_cpu_state resume_cpu = cpu;
+            resume_cpu.m_pc = cpu.m_cop0[14];
+            resume_cpu.m_cop0[12] &= ~ee::STATUS_EXL;
+            resume_cpu.m_exit_reason = static_cast<uint32_t>(
+                ee::e_ee_exit_reason::EE_EXIT_DISPATCH);
+            if (trace)
+            {
+                std::printf("HLE INTC IRQ: cause=%u pending=0x%08x "
+                            "handlers=%zu epc=0x%08x\n",
+                            cause, pending, irq_callback_handlers.size(),
+                            resume_cpu.m_pc);
+            }
+            if (irq_callback_handlers.empty())
+            {
+                cpu = resume_cpu;
+                hardware.intc().bind_cpu(&cpu);
+                hardware.dmac().bind_cpu(&cpu);
+                return e_intc_service::handled;
+            }
+            irq_interrupted_cpu = resume_cpu;
+            irq_interrupted_vu0 = vu0;
+            irq_callback_is_intc = true;
+            irq_callback_cause = cause;
+            irq_callback_index = 0u;
+            irq_callback_active = true;
+            enter_irq_callback(irq_callback_handlers[irq_callback_index++]);
+            return e_intc_service::handled;
+        }
+        return e_intc_service::not_pending;
+    };
     while (remaining != 0)
     {
         if (pad0_cross_poll_count != 0u && iop_kernel != nullptr)
@@ -3166,6 +3528,81 @@ int main(int argc, char** argv)
             last_snapshot_callback_active = callback_active;
             last_snapshot_time = std::chrono::steady_clock::now();
         }
+        if (current_thread_id == 0u && !irq_callback_active && !callback_active)
+        {
+            if (!schedule_threads())
+            {
+                return 1;
+            }
+            if (current_thread_id != 0u)
+            {
+                continue;
+            }
+
+            // Idle has no guest instruction to take the interrupt.
+            // Sample the real masked INTC line at this kernel boundary.
+            if (hardware.intc().pending() != 0u &&
+                (ee::ee_pending_interrupts(&cpu) &
+                    (1u << (ee::CAUSE_IP_SHIFT + ee::INT_INTC))) != 0u &&
+                ee::ee_check_interrupts(&cpu, &runtime, cpu.m_pc, 0u) != 0u)
+            {
+                if (service_intc(cpu.m_exit_reason) != e_intc_service::handled)
+                {
+                    reason = static_cast<uint32_t>(
+                        ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED);
+                    status = 0u;
+                    break;
+                }
+                continue;
+            }
+
+            // Keep one idle turn below the normal IOP catch-up limit.
+            // Device events continue on the emulated clock, even though
+            // there are no EE instructions to charge to the guest.
+            constexpr uint64_t k_idle_slice = 65536u;
+            constexpr uint64_t k_max_idle_cycles = ee::c_ee_scanout_clock::k_ee_clock_hz;
+            const uint64_t now = runtime.m_ee_cycle_scheduler.current_cycle();
+            if (now - idle_started_cycle >= k_max_idle_cycles ||
+                now > std::numeric_limits<uint64_t>::max() - k_idle_slice)
+            {
+                std::fprintf(stderr,
+                    "EE scheduler idle limit: no guest thread woke at cycle=%llu\n",
+                    static_cast<unsigned long long>(now));
+                reason = static_cast<uint32_t>(
+                    ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED);
+                status = 0u;
+                break;
+            }
+            uint64_t next = std::min(now + k_idle_slice, host_timers.next_event());
+            if (hardware.scanout().enabled())
+            {
+                next = std::min(next, hardware.scanout().next_field_cycle());
+            }
+            // The preceding service has already handled all due events.
+            // A device with no future deadline must not stall idle time.
+            if (next <= now)
+            {
+                next = now + k_idle_slice;
+            }
+            idle_cycles += next - now;
+            host_timers.set_idle_cycles(idle_cycles);
+            if (!runtime.m_ee_cycle_scheduler.publish_cycle(next))
+            {
+                return 1;
+            }
+            reason = static_cast<uint32_t>(ee::e_ee_exit_reason::EE_EXIT_DISPATCH);
+            status = 1u;
+            const auto device_result = service_devices();
+            if (device_result == e_device_service::failed)
+            {
+                return 1;
+            }
+            if (device_result == e_device_service::window_closed)
+            {
+                break;
+            }
+            continue;
+        }
         if (callback_active && !image.is_executable_address(cpu.m_pc))
         {
             // Executable RAM handlers (e.g. SDBZ's relocated
@@ -3363,38 +3800,112 @@ int main(int argc, char** argv)
         // HLE services the IOP and pending callbacks between EE dispatches.
         // Batching across this boundary changes guest timing in a quiet run.
         const uint32_t slice =
-            (hle_startup || trace || report_path != nullptr) ? 1u : remaining;
-        const auto native_start = std::chrono::steady_clock::now();
-        // A given native function can branch internally forever without
-        // returning to the dispatcher. Reset a per-invocation loop-header
-        // budget before execution; instrumented CFG blocks exit precisely
-        // with LOOP_BUDGET if this count is exhausted.
-        runtime.m_loop_safepoint_remaining = runtime.m_loop_safepoint_limit;
-        reason = native_run(&cpu, &runtime, slice, &count, &out_pc, &status);
-        if (runtime.m_timing_observer_failed != 0u)
+            (hot_expand_dir != nullptr || hle_startup || trace ||
+             report_path != nullptr) ? 1u : remaining;
+        // Retrying here (rather than restarting the outer guest loop)
+        // preserves the exact scheduler boundary: no second IOP quantum,
+        // controller poll, VBlank, DMA, or GS presentation is delivered.
+        const ee::s_ee_cpu_state cpu_before_dispatch = cpu;
+        const uint64_t instructions_before_dispatch =
+            runtime.m_guest_instruction_attempts;
+        bool hot_expand_budget_reached = false;
+        for (;;)
         {
-            std::fprintf(stderr,
-                "EE timing observation producer rejected native instruction "
-                "(no hardware event published)\n");
-            return 1;
-        }
-        if (report_path != nullptr)
-        {
-            const double duration_ms = std::chrono::duration<double, std::milli>(
-                std::chrono::steady_clock::now() - native_start
-            ).count();
-            native_time_ms += duration_ms;
-            if (duration_ms > slowest_native_ms)
+            // One translated function invocation per native guest boundary.
+            runtime.m_loop_safepoint_remaining =
+                runtime.m_loop_safepoint_limit;
+            const auto native_start = std::chrono::steady_clock::now();
+            reason = native_run(&cpu, &runtime, slice, &count, &out_pc, &status);
+            if (runtime.m_timing_observer_failed != 0u)
             {
-                slowest_native_ms = duration_ms;
-                slowest_native_pc = from_pc;
+                std::fprintf(stderr,
+                    "EE timing observation producer rejected native instruction "
+                    "(no hardware event published)\n");
+                return 1;
             }
+            if (report_path != nullptr)
+            {
+                const double duration_ms =
+                    std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - native_start
+                    ).count();
+                native_time_ms += duration_ms;
+                if (duration_ms > slowest_native_ms)
+                {
+                    slowest_native_ms = duration_ms;
+                    slowest_native_pc = from_pc;
+                }
+            }
+            if (count > slice)
+            {
+                std::fprintf(stderr,
+                    "invalid native dispatcher count %u > %u\n", count, slice);
+                return 1;
+            }
+            const bool missing_guest_code =
+                hot_expand_dir != nullptr && count == 0u && status == 0u &&
+                (reason == static_cast<uint32_t>(
+                    ee::e_ee_exit_reason::EE_EXIT_DISPATCH) ||
+                 reason == static_cast<uint32_t>(
+                    ee::e_ee_exit_reason::EE_EXIT_RETURN));
+            if (!missing_guest_code)
+            {
+                break;
+            }
+            if (out_pc != from_pc ||
+                runtime.m_guest_instruction_attempts !=
+                    instructions_before_dispatch)
+            {
+                std::fprintf(stderr,
+                    "EE hot-expand refused non-atomic missing dispatch "
+                    "from=0x%08x to=0x%08x\n", from_pc, out_pc);
+                return 1;
+            }
+            std::filesystem::path replacement;
+            std::string failure;
+            if (!request_hot_expand(
+                    hot_expand_dir, ++hot_expand_sequence, from_pc,
+                    &replacement, &failure))
+            {
+                std::fprintf(stderr, "EE hot-expand failed: %s\n",
+                             failure.c_str());
+                return 1;
+            }
+            if (replacement.empty())
+            {
+                std::printf(
+                    "EE hot-expand: expansion budget reached at pc=0x%08x\n",
+                    from_pc);
+                hot_expand_budget_reached = true;
+                break;
+            }
+            c_native_module candidate;
+            if (!candidate.open(replacement.string().c_str()))
+            {
+                candidate.print_error();
+                return 1;
+            }
+            const t_game_run replacement_entry = candidate.entry();
+            if (replacement_entry == nullptr)
+            {
+                std::fprintf(stderr,
+                    "EE hot-expand replacement lacks ee_game_run\n");
+                return 1;
+            }
+            module.swap(candidate);
+            native_run = replacement_entry;
+            cpu = cpu_before_dispatch;
+            cpu.m_exit_reason = static_cast<uint32_t>(
+                ee::e_ee_exit_reason::EE_EXIT_DISPATCH);
+            std::printf(
+                "EE hot-expand: resumed guest pc=0x%08x "
+                "with replacement=%s (no replay)\n",
+                from_pc, replacement.string().c_str());
+            std::fflush(stdout);
         }
-
-        if (count > slice)
+        if (hot_expand_budget_reached)
         {
-            std::fprintf(stderr, "invalid native dispatcher count %u > %u\n", count, slice);
-            return 1;
+            break;
         }
 
         dispatched += count;
@@ -3440,58 +3951,20 @@ int main(int argc, char** argv)
         if (runtime.m_ee_cycle_scheduler.source() ==
             ee::e_ee_cycle_source::REFERENCE_COMPATIBILITY &&
             !runtime.m_ee_cycle_scheduler.publish_cycle(
-                runtime.m_guest_instruction_attempts))
+                runtime.m_guest_instruction_attempts + idle_cycles))
         {
             std::fprintf(stderr, "EE compatibility cycle publication rejected\n");
             return 1;
         }
-        // Service guest-programmed timer compare/overflow events against
-        // the same reached-instruction compatibility clock as scanout.
-        // Timer COUNT reads inside a long native loop sample the live
-        // instruction budget rather than this after-dispatch checkpoint.
-        host_timers.service();
-        const auto scanout_result = runtime.m_ee_cycle_scheduler.service_scanout(
-            hardware, vsync_flags, *memory);
-        if (scanout_result == ee::e_ee_scheduled_event_result::INVALID_TIMESTAMP_OR_DELIVERY)
+        const auto device_result = service_devices();
+        if (device_result == e_device_service::failed)
         {
-            std::fprintf(stderr, "EE scheduler rejected scanout delivery at cycle=%llu\n",
-                static_cast<unsigned long long>(runtime.m_ee_cycle_scheduler.current_cycle()));
             return 1;
         }
-        // Deliver original IOP start/end callbacks in the scanout
-        // clock's event order; never infer edges from wall time.
-        if (iop_hle != nullptr)
+        if (device_result == e_device_service::window_closed)
         {
-            for (uint8_t start_edge :
-                 hardware.scanout().delivered_vblank_edges())
-            {
-                iop_hle->signal_vblank_edge(start_edge != 0u);
-            }
+            break;
         }
-#ifdef EE_ENABLE_RAYLIB_WINDOW
-        if (gs_webgpu_window)
-        {
-            raylib_window.pump(
-                webgpu_bridge,
-                hardware.gs_display_registers(),
-                hardware.gs_crt_mode(),
-                hardware.scanout().fields_started(), &graphics_probe);
-        }
-#endif
-#ifdef EE_ENABLE_WEBGPU
-        if (gs_field_probe.m_file != nullptr &&
-            !capture_gs_field(
-                gs_field_probe, webgpu_bridge, gs_state, graphics_probe,
-                hardware.gs_display_registers(),
-                hardware.gs_crt_mode(),
-                hardware.scanout().fields_started(), dispatched,
-                runtime.m_ee_cycle_scheduler.current_cycle(), cpu.m_pc))
-        {
-            std::fprintf(stderr, "failed to write GS field probe: %s\n",
-                gs_field_probe_path);
-            return 1;
-        }
-#endif
         if (has_watch_word && count != 0u)
         {
             const uint32_t watched_after = memory->read32(watch_word);
@@ -3690,7 +4163,7 @@ int main(int argc, char** argv)
             // A genuine interrupt-safe SignalSema may have promoted an EE
             // waiter to READY. The kernel must finish restoring interrupted
             // EE/VU0 state before scheduling the newly runnable thread.
-            if (reschedule_requested && !schedule_threads())
+            if ((reschedule_requested || current_thread_id == 0u) && !schedule_threads())
             {
                 reason = static_cast<uint32_t>(
                     ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED);
@@ -3757,99 +4230,16 @@ int main(int argc, char** argv)
             break;
         }
 
-        // ps2-web-recomp/kernel.cpp::run_intc acknowledges the actual
-        // masked INTC cause and runs the registered guest callbacks, then
-        // restores the interrupted EE thread. The ROM0 exception vector
-        // is not executable in HLE-first mode, so bridge only an observed,
-        // architecturally taken INTC exception; all other exceptions
-        // remain unsupported. Never manufacture a VBlank or interrupt.
-        if (hle_startup && !irq_callback_active && !callback_active &&
-            reason == static_cast<uint32_t>(
-                ee::e_ee_exit_reason::EE_EXIT_EXCEPTION) &&
-            ((cpu.m_cop0[13] >> 2u) & 31u) == ee::EX_Int &&
-            cpu.m_pc == ee::ee_exception_vector(
-                cpu.m_cop0[12] & ~ee::STATUS_EXL, ee::EX_Int) &&
-            (cpu.m_cop0[12] & (ee::STATUS_EXL | ee::STATUS_IE |
-                                 ee::STATUS_EIE)) ==
-                (ee::STATUS_EXL | ee::STATUS_IE | ee::STATUS_EIE) &&
-            (cpu.m_cop0[12] & ee::STATUS_ERL) == 0u &&
-            (cpu.m_cop0[13] & ee::CAUSE_BD) == 0u &&
-            (ee::ee_pending_interrupts(&cpu) &
-                (1u << (ee::CAUSE_IP_SHIFT + ee::INT_INTC))) != 0u &&
-            hardware.intc().pending() != 0u)
+        const auto intc_result = service_intc(reason);
+        if (intc_result == e_intc_service::failed)
         {
-            const uint32_t pending = hardware.intc().pending();
-            uint32_t cause = 0u;
-            while (cause < 32u && (pending & (1u << cause)) == 0u)
-            {
-                ++cause;
-            }
-            if (cause >= 32u)
-            {
-                reason = static_cast<uint32_t>(
-                    ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED);
-                status = 0u;
-                break;
-            }
-
-            irq_callback_handlers.clear();
-            for (const s_kernel_interrupt_handler& handler : intc_handlers)
-            {
-                if (handler.m_cause == cause)
-                {
-                    irq_callback_handlers.push_back(handler);
-                }
-            }
-            if (!irq_callback_handlers.empty() &&
-                !memory->contains(k_irq_kernel_stack - 0x1000u, 0x1000u))
-            {
-                std::fprintf(stderr,
-                    "HLE INTC callback refused unmapped kernel stack\n");
-                reason = static_cast<uint32_t>(
-                    ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED);
-                status = 0u;
-                break;
-            }
-
-            const ee::s_ee_u128 acknowledge{1u << cause, 0u};
-            if (!ee::c_ee_intc::mmio_write(
-                    &hardware.intc(), ee::c_ee_intc::k_stat_address,
-                    4u, &acknowledge))
-            {
-                std::fprintf(stderr, "HLE INTC acknowledgement failed\n");
-                reason = static_cast<uint32_t>(
-                    ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED);
-                status = 0u;
-                break;
-            }
-            // Resume at EPC, not EPC+4. The interrupted instruction did
-            // not execute, and a branch-delay interrupt is excluded above.
-            ee::s_ee_cpu_state resume_cpu = cpu;
-            resume_cpu.m_pc = cpu.m_cop0[14];
-            resume_cpu.m_cop0[12] &= ~ee::STATUS_EXL;
-            resume_cpu.m_exit_reason = static_cast<uint32_t>(
-                ee::e_ee_exit_reason::EE_EXIT_DISPATCH);
-            if (trace)
-            {
-                std::printf("HLE INTC IRQ: cause=%u pending=0x%08x "
-                            "handlers=%zu epc=0x%08x\n",
-                            cause, pending, irq_callback_handlers.size(),
-                            resume_cpu.m_pc);
-            }
-            if (irq_callback_handlers.empty())
-            {
-                cpu = resume_cpu;
-                hardware.intc().bind_cpu(&cpu);
-                hardware.dmac().bind_cpu(&cpu);
-                continue;
-            }
-            irq_interrupted_cpu = resume_cpu;
-            irq_interrupted_vu0 = vu0;
-            irq_callback_is_intc = true;
-            irq_callback_cause = cause;
-            irq_callback_index = 0u;
-            irq_callback_active = true;
-            enter_irq_callback(irq_callback_handlers[irq_callback_index++]);
+            reason = static_cast<uint32_t>(
+                ee::e_ee_exit_reason::EE_EXIT_UNSUPPORTED);
+            status = 0u;
+            break;
+        }
+        if (intc_result == e_intc_service::handled)
+        {
             continue;
         }
 
@@ -3862,25 +4252,17 @@ int main(int argc, char** argv)
         {
             const int32_t signed_service =
                 static_cast<int32_t>(cpu.m_gpr[3].m_lo);
-            // ps2-web-recomp's kernel maps negative EE syscall numbers
-            // to their interrupt-safe variants. In our HLE-first runner,
-            // allow only explicitly modeled variants while a registered
-            // guest INTC/DMAC callback owns the kernel interrupt context.
-            // Never turn an unknown negative service into a successful HLE.
-            const bool interrupt_sif_service = irq_callback_active &&
-                (signed_service == -0x76 || signed_service == -0x77 ||
-                 signed_service == -0x78);
-            // Genuine guest interrupt handlers signal semaphores through
-            // iSignalSema; SDBZ's VBlank callback also calls iFlushCache.
-            const bool interrupt_semaphore_service = irq_callback_active &&
-                signed_service == -0x43;
-            const bool interrupt_cache_service = irq_callback_active &&
-                signed_service == -0x68;
-            const bool interrupt_safe_service = interrupt_sif_service ||
-                interrupt_semaphore_service || interrupt_cache_service;
-            const uint32_t service = interrupt_safe_service
-                ? static_cast<uint32_t>(-signed_service)
-                : static_cast<uint32_t>(signed_service);
+            // Reject all unknown negative syscall encodings. An
+            // interrupt-safe service is accepted only while a real
+            // INTC/DMAC callback owns the saved EE interrupt context.
+            // The retail 17:45 Cross replay reaches -0x31 from a genuine
+            // VBlank callback at guest PC 0x00174bb4.
+            const ee_irq_syscall::s_decoded_service decoded =
+                ee_irq_syscall::decode(signed_service, irq_callback_active);
+            const uint32_t service = decoded.m_number;
+            const bool interrupt_safe_service = decoded.m_interrupt_safe;
+            const bool interrupt_sif_service = interrupt_safe_service &&
+                (service == 0x76u || service == 0x77u || service == 0x78u);
             if (!callback_active && !interrupt_safe_service &&
                 service < 256u &&
                 installed_syscall_handlers[service] != 0u)
@@ -3953,7 +4335,10 @@ int main(int argc, char** argv)
                 (service >= 0x1au && service <= 0x1du) ||
                 (service >= 0x20u && service <= 0x24u) ||
                 service == 0x29u || service == 0x2au || service == 0x2bu ||
+                service == 0x2du || service == 0x2eu ||
                 service == 0x2fu || service == 0x30u || service == 0x31u ||
+                (service >= 0x32u && service <= 0x37u) ||
+                service == 0x39u ||
                 service == 0x3cu || service == 0x3du || service == 0x3eu ||
                 (service >= 0x40u && service <= 0x48u) ||
                 service == 0x4au || service == 0x4bu ||
@@ -4284,6 +4669,9 @@ int main(int argc, char** argv)
                             break;
                         }
                         thread->m_context = {};
+                        thread->m_wait_semaphore = 0u;
+                        thread->m_wait_type = 0u;
+                        thread->m_wakeups = 0u;
                         thread->m_context.m_pc = thread->m_entry;
                         thread->m_context.m_cop0[12] =
                             cpu.m_cop0[12] & ~2u;
@@ -4330,6 +4718,9 @@ int main(int argc, char** argv)
                     s_kernel_thread& thread = threads[current_thread_id];
                     thread.m_status = 16u;
                     thread.m_has_context = false;
+                    thread.m_wait_type = 0u;
+                    thread.m_wait_semaphore = 0u;
+                    thread.m_wakeups = 0u;
                     if (service == 0x24u)
                     {
                         thread.m_used = false;
@@ -4449,14 +4840,106 @@ int main(int argc, char** argv)
                     }
                 }
 
+                else if (service == 0x2du || service == 0x2eu)
+                {
+                    // ReleaseWaitThread / iReleaseWaitThread. Only an
+                    // existing guest wait can be released. A waiting
+                    // semaphore thread must be removed from its queue so
+                    // a subsequent SignalSema cannot wake it twice.
+                    const uint32_t id =
+                        static_cast<uint32_t>(cpu.m_gpr[4].m_lo);
+                    s_kernel_thread* target = id > 0u && id < 256u &&
+                        threads[id].m_used ? &threads[id] : nullptr;
+                    const ee_kernel_thread::s_status_transition next =
+                        target != nullptr
+                        ? ee_kernel_thread::release_wait(target->m_status)
+                        : ee_kernel_thread::s_status_transition{};
+                    if (target == nullptr || !next.m_changed)
+                    {
+                        cpu.m_gpr[2].m_lo =
+                            static_cast<uint64_t>(-1ll);
+                        cpu.m_gpr[2].m_hi = 0u;
+                        if (trace)
+                        {
+                            std::printf(
+                                "HLE %sReleaseWaitThread: id=%u "
+                                "not waiting, result=-1\n",
+                                service == 0x2eu ? "i" : "", id);
+                        }
+                    }
+                    else
+                    {
+                        const uint32_t previous = target->m_status;
+                        if (target->m_wait_type == 2u)
+                        {
+                            const uint32_t semaphore_id =
+                                target->m_wait_semaphore;
+                            if (semaphore_id == 0u ||
+                                semaphore_id > 64u ||
+                                !semaphores[semaphore_id - 1u].m_used)
+                            {
+                                std::fprintf(stderr,
+                                    "ReleaseWaitThread HLE refused "
+                                    "missing guest semaphore id=%u\n",
+                                    semaphore_id);
+                                break;
+                            }
+                            auto& waiters =
+                                semaphores[semaphore_id - 1u].m_waiters;
+                            const auto waiter =
+                                std::find(waiters.begin(), waiters.end(), id);
+                            if (waiter == waiters.end())
+                            {
+                                std::fprintf(stderr,
+                                    "ReleaseWaitThread HLE refused "
+                                    "untracked waiter id=%u sema=%u\n",
+                                    id, semaphore_id);
+                                break;
+                            }
+                            waiters.erase(waiter);
+                        }
+                        else if (target->m_wait_type != 1u)
+                        {
+                            std::fprintf(stderr,
+                                "ReleaseWaitThread HLE refused "
+                                "unknown guest wait type id=%u type=%u\n",
+                                id, target->m_wait_type);
+                            break;
+                        }
+                        target->m_status = next.m_status;
+                        target->m_wait_type = 0u;
+                        target->m_wait_semaphore = 0u;
+                        if (next.m_status == ee_kernel_thread::k_ready)
+                        {
+                            target->m_order = ++next_thread_order;
+                        }
+                        // The interrupt-safe service only makes the thread
+                        // runnable; the ordinary form may switch immediately.
+                        if (service == 0x2du)
+                        {
+                            reschedule_requested = true;
+                        }
+                        cpu.m_gpr[2].m_lo = id;
+                        cpu.m_gpr[2].m_hi = 0u;
+                        if (trace)
+                        {
+                            std::printf(
+                                "HLE %sReleaseWaitThread: id=%u "
+                                "old_status=%u new_status=%u result=%u\n",
+                                service == 0x2eu ? "i" : "",
+                                id, previous, next.m_status, id);
+                        }
+                    }
+                }
+
                 else if (service == 0x2fu)
                 {
                     // GetThreadId has no arguments. Creation of a dormant
                     // thread does not switch the CPU's running thread.
                     // Match ps2-web-recomp's current_thread()/GetThreadId.
-                    if (current_thread_id == 0u ||
+                    if ((current_thread_id == 0u && !irq_callback_active) ||
                         current_thread_id >= 256u ||
-                        !threads[current_thread_id].m_used)
+                        (current_thread_id != 0u && !threads[current_thread_id].m_used))
                     {
                         std::fprintf(stderr,
                             "GetThreadId HLE refused invalid running thread\n");
@@ -4467,7 +4950,9 @@ int main(int argc, char** argv)
                     if (trace)
                     {
                         std::printf(
-                            "HLE GetThreadId: id=%u\n", current_thread_id
+                            "HLE %sGetThreadId: id=%u\n",
+                            signed_service == -0x2f ? "_i" : "",
+                            current_thread_id
                         );
                     }
                 }
@@ -4502,7 +4987,9 @@ int main(int argc, char** argv)
                             thread->m_entry, thread->m_stack,
                             thread->m_stack_size, thread->m_gp,
                             thread->m_initial_priority, thread->m_priority,
-                            thread->m_attr, thread->m_option, 0u, 0u, 0u
+                            thread->m_attr, thread->m_option,
+                            thread->m_wait_type, thread->m_wait_semaphore,
+                            thread->m_wakeups
                         };
                         for (uint32_t index = 0u; index < 12u; ++index)
                         {
@@ -4522,6 +5009,191 @@ int main(int argc, char** argv)
                             "address=0x%08x status=%d\n",
                             service == 0x31u ? "i" : "",
                             requested_id, address, return_code);
+                    }
+                }
+
+                else if (service >= 0x32u && service <= 0x36u)
+                {
+                    // EE kernel sleep/wakeup support. The wakeup count is
+                    // guest-owned and no wakeup is invented by the host.
+                    // 0x32 SleepThread, 0x33 WakeupThread,
+                    // 0x34 iWakeupThread, 0x35 CancelWakeupThread,
+                    // 0x36 iCancelWakeupThread.
+                    if (service == 0x32u)
+                    {
+                        if (callback_active || irq_callback_active ||
+                            current_thread_id == 0u ||
+                            current_thread_id >= 256u ||
+                            !threads[current_thread_id].m_used ||
+                            threads[current_thread_id].m_status != 1u)
+                        {
+                            std::fprintf(stderr,
+                                "SleepThread HLE refused invalid running context\n");
+                            break;
+                        }
+                        s_kernel_thread& thread = threads[current_thread_id];
+                        cpu.m_gpr[2].m_lo = current_thread_id;
+                        cpu.m_gpr[2].m_hi = 0u;
+                        if (thread.m_wakeups != 0u)
+                        {
+                            --thread.m_wakeups;
+                            if (trace)
+                            {
+                                std::printf(
+                                    "HLE SleepThread: id=%u consumed wakeup "
+                                    "remaining=%u\n",
+                                    current_thread_id, thread.m_wakeups);
+                            }
+                        }
+                        else
+                        {
+                            thread.m_status = 4u;
+                            thread.m_wait_type = 1u;
+                            thread.m_wait_semaphore = 0u;
+                            reschedule_requested = true;
+                            if (trace)
+                            {
+                                std::printf(
+                                    "HLE SleepThread: id=%u status=4 "
+                                    "waiting for a guest WakeupThread\n",
+                                    current_thread_id);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        const uint32_t requested_id =
+                            static_cast<uint32_t>(cpu.m_gpr[4].m_lo);
+                        const bool found = requested_id > 0u &&
+                            requested_id < 256u &&
+                            threads[requested_id].m_used;
+                        if (!found)
+                        {
+                            cpu.m_gpr[2].m_lo =
+                                static_cast<uint64_t>(-1ll);
+                            cpu.m_gpr[2].m_hi = 0u;
+                            if (trace)
+                            {
+                                std::printf(
+                                    "HLE %s: id=%u not found, result=-1\n",
+                                    service == 0x33u ? "WakeupThread" :
+                                    service == 0x34u ? "iWakeupThread" :
+                                    service == 0x35u ? "CancelWakeupThread" :
+                                                       "iCancelWakeupThread",
+                                    requested_id);
+                            }
+                        }
+                        else
+                        {
+                            s_kernel_thread& thread = threads[requested_id];
+                            const uint32_t previous_wakeups = thread.m_wakeups;
+                            bool released = false;
+                            if (service == 0x35u || service == 0x36u)
+                            {
+                                thread.m_wakeups = 0u;
+                                cpu.m_gpr[2].m_lo = previous_wakeups;
+                            }
+                            else
+                            {
+                                cpu.m_gpr[2].m_lo = requested_id;
+                                if (thread.m_wait_type == 1u &&
+                                    (thread.m_status == 4u ||
+                                     thread.m_status == 12u))
+                                {
+                                    thread.m_wait_type = 0u;
+                                    thread.m_status =
+                                        thread.m_status == 12u ? 8u : 2u;
+                                    thread.m_context.m_gpr[2].m_lo =
+                                        requested_id;
+                                    thread.m_context.m_gpr[2].m_hi = 0u;
+                                    if (thread.m_status == 2u)
+                                    {
+                                        thread.m_order = ++next_thread_order;
+                                        if (service == 0x33u)
+                                        {
+                                            reschedule_requested = true;
+                                        }
+                                    }
+                                    released = true;
+                                }
+                                else if (thread.m_wakeups !=
+                                         std::numeric_limits<uint32_t>::max())
+                                {
+                                    ++thread.m_wakeups;
+                                }
+                            }
+                            cpu.m_gpr[2].m_hi = 0u;
+                            if (trace)
+                            {
+                                std::printf(
+                                    "HLE %s: id=%u status=%u wakeups=%u "
+                                    "released=%u result=%u\n",
+                                    service == 0x33u ? "WakeupThread" :
+                                    service == 0x34u ? "iWakeupThread" :
+                                    service == 0x35u ? "CancelWakeupThread" :
+                                                       "iCancelWakeupThread",
+                                    requested_id, thread.m_status,
+                                    thread.m_wakeups, released ? 1u : 0u,
+                                    static_cast<uint32_t>(cpu.m_gpr[2].m_lo));
+                            }
+                        }
+                    }
+                }
+
+                else if (service == 0x37u || service == 0x39u)
+                {
+                    // SuspendThread (0x37) and ResumeThread (0x39).
+                    // Read the actual EE kernel thread ID from A0; zero
+                    // addresses the currently executing guest thread.
+                    // An unknown ID returns -1 and changes no state.
+                    const uint32_t requested_id =
+                        static_cast<uint32_t>(cpu.m_gpr[4].m_lo);
+                    const uint32_t thread_id = requested_id == 0u
+                        ? current_thread_id : requested_id;
+                    const bool found = thread_id > 0u &&
+                        thread_id < 256u && threads[thread_id].m_used;
+                    if (!found)
+                    {
+                        cpu.m_gpr[2].m_lo =
+                            static_cast<uint64_t>(-1ll);
+                        cpu.m_gpr[2].m_hi = 0u;
+                        if (trace)
+                        {
+                            std::printf(
+                                "HLE %sThread: id=%u not found, result=-1\n",
+                                service == 0x37u ? "Suspend" : "Resume",
+                                requested_id);
+                        }
+                    }
+                    else
+                    {
+                        s_kernel_thread& thread = threads[thread_id];
+                        const uint32_t old_status = thread.m_status;
+                        const ee_kernel_thread::s_status_transition next =
+                            service == 0x37u
+                            ? ee_kernel_thread::suspend(old_status)
+                            : ee_kernel_thread::resume(
+                                old_status, thread_id == current_thread_id);
+                        thread.m_status = next.m_status;
+                        cpu.m_gpr[2].m_lo = thread_id;
+                        cpu.m_gpr[2].m_hi = 0u;
+                        if (service == 0x39u && next.m_changed)
+                        {
+                            // ResumeThread may make a suspended guest
+                            // runnable. SuspendThread does NOT force a
+                            // reschedule on the original PS2 EE kernel.
+                            thread.m_order = ++next_thread_order;
+                            reschedule_requested = true;
+                        }
+                        if (trace)
+                        {
+                            std::printf(
+                                "HLE %sThread: id=%u old_status=%u "
+                                "new_status=%u changed=%u result=%u\n",
+                                service == 0x37u ? "Suspend" : "Resume",
+                                thread_id, old_status, thread.m_status,
+                                next.m_changed ? 1u : 0u, thread_id);
+                        }
                     }
                 }
 
@@ -5025,6 +5697,7 @@ int main(int argc, char** argv)
                             threads[current_thread_id].m_status = 4u;
                             threads[current_thread_id].m_wait_semaphore =
                                 semaphore_id;
+                            threads[current_thread_id].m_wait_type = 2u;
                             reschedule_requested = true;
                         }
 
@@ -5085,6 +5758,7 @@ int main(int argc, char** argv)
                                 s_kernel_thread& waiter = threads[wake_id];
                                 waiter.m_status = 2u;
                                 waiter.m_wait_semaphore = 0u;
+                                waiter.m_wait_type = 0u;
                                 waiter.m_order = ++next_thread_order;
                                 waiter.m_context.m_gpr[2].m_lo = semaphore_id;
                                 reschedule_requested = true;
@@ -6234,6 +6908,105 @@ int main(int argc, char** argv)
                             );
                         }
                     }
+                    else if (operation == 0x10u)
+                    {
+                        // PCSX2 __Deci2Call(0x10) is KPUTS: A1 points to
+                        // a guest 32-bit word containing the string address.
+                        // This is debug output only, not SIF/IOP traffic.
+                        // Bound and validate the entire read before returning
+                        // success; malformed guest pointers fail closed.
+                        if (argument_address != 0u)
+                        {
+                            if ((argument_address & 3u) != 0u ||
+                                !memory->contains(argument_address, 4u))
+                            {
+                                std::fprintf(
+                                    stderr,
+                                    "Deci2Call KPUTS HLE refused unbacked "
+                                    "or unaligned string pointer 0x%08x\n",
+                                    argument_address);
+                                break;
+                            }
+                            const uint32_t string_address =
+                                memory->read32(argument_address);
+                            constexpr size_t k_kputs_max_bytes = 4096u;
+                            std::string guest_text;
+                            bool terminated = false;
+                            for (size_t index = 0u;
+                                 index < k_kputs_max_bytes; ++index)
+                            {
+                                const uint64_t guest_address =
+                                    static_cast<uint64_t>(string_address) +
+                                    index;
+                                if (guest_address > UINT32_MAX ||
+                                    !memory->contains(
+                                        static_cast<uint32_t>(guest_address),
+                                        1u))
+                                {
+                                    break;
+                                }
+                                const uint8_t value = memory->read8(
+                                    static_cast<uint32_t>(guest_address));
+                                if (value == 0u)
+                                {
+                                    terminated = true;
+                                    break;
+                                }
+                                guest_text.push_back(static_cast<char>(value));
+                            }
+                            if (!terminated)
+                            {
+                                std::fprintf(
+                                    stderr,
+                                    "Deci2Call KPUTS HLE refused unterminated "
+                                    "or unbacked guest text 0x%08x\n",
+                                    string_address);
+                                break;
+                            }
+
+                            // A real guest KPUTS message is application
+                            // output, not a diagnostic that requires --trace.
+                            // Keep host logs line-safe and byte-exact without
+                            // claiming to decode guest Shift-JIS.
+                            std::string display;
+                            for (unsigned char value : guest_text)
+                            {
+                                if (value >= 0x20u && value <= 0x7eu &&
+                                    value != static_cast<unsigned char>('\\') &&
+                                    value != static_cast<unsigned char>('"'))
+                                {
+                                    display.push_back(
+                                        static_cast<char>(value));
+                                }
+                                else
+                                {
+                                    char encoded[5]{};
+                                    std::snprintf(encoded, sizeof(encoded),
+                                        "\\x%02x",
+                                        static_cast<unsigned int>(value));
+                                    display += encoded;
+                                }
+                            }
+                            // Make messages visible in the normal batch
+                            // console and the Python launcher's live stream.
+                            // Flush so a long-running guest need not exit
+                            // before a buffered line becomes visible.
+                            std::printf("EE KPUTS: %s\n", display.c_str());
+                            std::fflush(stdout);
+                            if (trace)
+                            {
+                                std::printf(
+                                    "HLE Deci2Call KPUTS: text=\"%s\" "
+                                    "bytes=%zu result=1\n",
+                                    display.c_str(), guest_text.size());
+                            }
+                        }
+                        else if (trace)
+                        {
+                            std::printf(
+                                "HLE Deci2Call KPUTS: null argument result=1\n");
+                        }
+                    }
                     else
                     {
                         std::fprintf(
@@ -7102,6 +7875,12 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "guest blocked by an unsupported operation or host service\n");
         return 3;
     }
+#ifdef EE_ENABLE_RAYLIB_WINDOW
+    if (raylib_window.closed())
+    {
+        return 0;
+    }
+#endif
     // An exit from the linked translated-code set is not a completed PS2 boot.
     std::fprintf(stderr, "guest left compiled code; further runtime/BIOS work required\n");
     return 3;

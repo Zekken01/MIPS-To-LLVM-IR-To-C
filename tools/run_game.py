@@ -21,6 +21,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 
 
 STOP_PATTERN = re.compile(
@@ -908,7 +909,7 @@ def batch_append_functions(recomp, elf, work, metadata_path, addresses):
 
 def build_linked_library(source_root, work, metadata_path, object_dir, library,
                          emit_opt, pdb=False, reuse_objects=False, emit_jobs=2,
-                         appended_ir=None):
+                         appended_ir=None, cache_base=None):
     if not reuse_objects:
         # Full verification is mandatory on the initial build. An append
         # pass has already validated the existing provenance and only new
@@ -936,7 +937,81 @@ def build_linked_library(source_root, work, metadata_path, object_dir, library,
     ]
     if pdb:
         command.append("--pdb")
+    if cache_base is not None:
+        command.append(f"--cache-base={cache_base}")
     run(command)
+
+
+
+def run_hot_expand(command, directory, timeout_seconds, compile_missing):
+    """Hold one native process alive while the host recompiles cache misses.
+
+    The runner is paused at a zero-dispatch boundary. Guest CPU/IOP, device
+    state, controller and memory card objects remain in that process; this is
+    deliberately *not* a persistent cross-process savestate.
+    """
+    print("+ " + subprocess.list2cmdline([str(item) for item in command]), flush=True)
+    command = [str(item) for item in command]
+    sequence = 1
+    active_start = time.monotonic()
+    timed_out = False
+    with tempfile.TemporaryFile(mode="w+b") as output:
+        process = subprocess.Popen(
+            command, stdout=output, stderr=subprocess.STDOUT,
+        )
+        try:
+            while process.poll() is None:
+                request = directory / f"request-{sequence}.txt"
+                if request.is_file():
+                    response = directory / f"response-{sequence}.txt"
+                    try:
+                        parts = request.read_text(encoding="utf-8").splitlines()
+                        if len(parts) != 2 or int(parts[0]) != sequence:
+                            raise ValueError("invalid live cache-miss request")
+                        pc = int(parts[1], 0)
+                        if pc < 0 or pc > 0xffffffff or pc & 3:
+                            raise ValueError("invalid live cache-miss PC")
+                        print(f"live cache-miss: PC=0x{pc:08x}, request={sequence}",
+                              flush=True)
+                        compile_start = time.monotonic()
+                        try:
+                            replacement = compile_missing(pc, sequence)
+                        finally:
+                            # Compiler time is not charged to the guest replay
+                            # wall clock. The 30-minute native handshake timeout
+                            # remains an independent fail-safe.
+                            active_start += time.monotonic() - compile_start
+                        result = "STOP" if replacement is None else str(replacement.resolve())
+                    except Exception as exc:
+                        result = "ERROR: " + str(exc).replace("\r", " ").replace("\n", " ")
+                        print(f"run_game: hot expansion failed: {exc}",
+                              file=sys.stderr, flush=True)
+                    pending = response.with_suffix(".tmp")
+                    # Never use Windows text-mode newline translation here: 
+                    # the native binary reader expects an exact two-line protocol.
+                    with pending.open("w", encoding="utf-8", newline="\n") as response_output:
+                        response_output.write(f"{sequence}\n{result}\n")
+                    pending.replace(response)
+                    sequence += 1
+
+                if time.monotonic() - active_start > timeout_seconds:
+                    print("run_game: live replay exceeded guest wall-clock timeout",
+                          file=sys.stderr, flush=True)
+                    process.kill()
+                    timed_out = True
+                    break
+                time.sleep(0.1)
+            process.wait()
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+        output.seek(0)
+        captured = output.read().decode("utf-8", errors="replace")
+    if captured:
+        print(captured, end="", flush=True)
+    return subprocess.CompletedProcess(command, 124 if timed_out else process.returncode,
+                                       captured, "")
 
 
 def main(argv=None):
@@ -958,6 +1033,8 @@ def main(argv=None):
         "--auto-expand", type=int, default=0,
         help="relink/replay with up to N newly translated executable entry PCs",
     )
+    parser.add_argument("--replay-after-expand", action="store_true",
+                        help="Use legacy reboot/replay after each new IR function")
     parser.add_argument(
         "--auto-expand-table", type=int, default=24,
         help="prefetch up to N sibling function pointers per replay when anchored by a guest-reached entry (0=off)",
@@ -1033,6 +1110,8 @@ def main(argv=None):
                         help="Optional completed GS IMAGE transfer PPM (not a rendered frame)")
     parser.add_argument("--gs-webgpu-snapshot", type=Path,
                         help="Optional native WebGPU rasterized GS display PPM (requires EE_ENABLE_WEBGPU)")
+    parser.add_argument("--speed-percent", type=int, choices=range(1001), metavar="0..1000",
+                        help="Window pacing target (0=unlimited, default 100)")
     parser.add_argument("--gs-webgpu-window", action="store_true",
                         help="Present native WebGPU GS scanout in a raylib window (Windows)")
     parser.add_argument("--report", type=Path,
@@ -1098,8 +1177,8 @@ def main(argv=None):
             parser.error(f"--{name.replace('_', '-')} must be an aligned uint32")
     if args.timeout_seconds < 1 or args.timeout_seconds > 3600:
         parser.error("--timeout-seconds must be in [1, 3600]")
-    if args.auto_expand < 0 or args.auto_expand > 128:
-        parser.error("--auto-expand must be between 0 and 128")
+    if args.auto_expand < 0 or args.auto_expand > 1024:
+        parser.error("--auto-expand must be between 0 and 1024")
     if args.auto_expand_table < 0 or args.auto_expand_table > 128:
         parser.error("--auto-expand-table must be between 0 and 128")
     if args.pdb and os.name != "nt":
@@ -1308,6 +1387,8 @@ def main(argv=None):
             command.append(f"--gs-webgpu-snapshot={image_path}")
         if args.gs_webgpu_window:
             command.append("--gs-webgpu-window")
+            if args.speed_percent is not None:
+                command.append(f"--speed-percent={args.speed_percent}")
         if args.report is not None:
             report_path = args.report.resolve()
             report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1337,6 +1418,136 @@ def main(argv=None):
         # final replay without auto-expansion can persist guest changes.
         if args.auto_expand or args.memcard_discard_writes:
             command.append("--memcard-discard-writes")
+
+        # By default, auto-expansion preserves the *live process*. On a
+        # zero-dispatch cache miss the native runner stops all guest activity,
+        # requests a newly linked module, hot-loads it, and retries that PC.
+        # No CPU, IOP, DMA, GS, controller, or card state is reconstructed.
+        if args.auto_expand and not args.replay_after_expand:
+            ranges = executable_segments(elf)
+            expanded_count = 0
+            last_library = None
+            with tempfile.TemporaryDirectory(
+                prefix="ee-live-expand-", dir=work
+            ) as temporary:
+                session = Path(temporary)
+                hot_command = [*command, f"--hot-expand-dir={session}"]
+
+                def compile_live_miss(address, sequence):
+                    nonlocal expanded_count, last_library
+                    if expanded_count >= args.auto_expand:
+                        print("live cache-miss: expansion limit reached; "
+                              "preserving stopped replay report", flush=True)
+                        return None
+                    if (translation_inputs(elf, recomp, source_root) != inputs or
+                            ir_generation_inputs(elf, source_root) != ir_sources):
+                        raise ValueError(
+                            "ELF or translation sources changed during live "
+                            "checkpoint; refusing to load incompatible code"
+                        )
+                    if not any(start <= address < end for start, end in ranges):
+                        raise ValueError(
+                            f"guest cache miss 0x{address:08x} is outside "
+                            "ELF executable segments"
+                        )
+                    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                    existing = covered_pcs(metadata)
+                    if address in existing:
+                        raise ValueError(
+                            f"guest cache miss 0x{address:08x} is already compiled"
+                        )
+                    available = args.auto_expand - expanded_count
+                    siblings = branch_anchored_jump_table_siblings(
+                        elf, address, ranges,
+                        min(args.auto_expand_table, available - 1),
+                    )
+                    if not siblings:
+                        siblings = pointer_table_siblings(
+                            elf, address, ranges,
+                            min(args.auto_expand_table, available - 1),
+                        )
+                    targets = [address] + [
+                        candidate for candidate in siblings
+                        if candidate not in existing and candidate != address
+                    ]
+                    targets = targets[:available]
+                    print(f"auto-expand: compiling reachable PC 0x{address:08x} "
+                          "(live cache-miss)", flush=True)
+                    for candidate in targets[1:]:
+                        print(f"auto-expand: compiling table sibling PC "
+                              f"0x{candidate:08x}", flush=True)
+                    new_modules = batch_append_functions(
+                        recomp, elf, work, metadata_path, targets
+                    )
+                    if not new_modules:
+                        raise ValueError(
+                            f"no translated modules produced for 0x{address:08x}"
+                        )
+                    new_metadata = json.loads(
+                        metadata_path.read_text(encoding="utf-8")
+                    )
+                    if address not in covered_pcs(new_metadata):
+                        raise ValueError(
+                            f"new native library does not cover 0x{address:08x}"
+                        )
+                    suffix = ".dll" if os.name == "nt" else (
+                        ".dylib" if sys.platform == "darwin" else ".so"
+                    )
+                    replacement = session / f"game-translated-live-{sequence:04d}{suffix}"
+                    # Never overwrite the DLL loaded by a running Windows
+                    # process. Each new generation is a unique host library.
+                    build_linked_library(
+                        source_root, work, metadata_path, object_dir,
+                        replacement, args.emit_opt, pdb=args.pdb,
+                        emit_jobs=args.emit_jobs, appended_ir=new_modules,
+                        cache_base=library
+                    )
+                    if (translation_inputs(elf, recomp, source_root) != inputs or
+                            ir_generation_inputs(elf, source_root) != ir_sources):
+                        raise ValueError(
+                            "ELF or translation sources changed during hot relink"
+                        )
+                    expanded_count += len(new_modules)
+                    last_library = replacement
+                    return replacement
+
+                result = run_hot_expand(
+                    hot_command, session, args.timeout_seconds,
+                    compile_live_miss
+                )
+                if last_library is not None and result.returncode != 1:
+                    # The runner has exited and unloaded its modules. Publish
+                    # the latest linked library to the normal cache atomically.
+                    staged = library.with_name(library.name + ".hot-new")
+                    try:
+                        shutil.copy2(last_library, staged)
+                        staged.replace(library)
+                    finally:
+                        staged.unlink(missing_ok=True)
+                    if args.pdb:
+                        hot_pdb = last_library.with_suffix(".pdb")
+                        if not hot_pdb.is_file():
+                            raise ValueError("live link did not produce requested PDB")
+                        pdb_destination = library.with_suffix(".pdb")
+                        pdb_staged = pdb_destination.with_suffix(".pdb.hot-new")
+                        try:
+                            shutil.copy2(hot_pdb, pdb_staged)
+                            pdb_staged.replace(pdb_destination)
+                        finally:
+                            pdb_staged.unlink(missing_ok=True)
+                    write_translation_cache(
+                        cache_path, inputs, args.emit_opt,
+                        metadata_path, library, ir_sources
+                    )
+                    print(f"live cache-miss: published {expanded_count} "
+                          "new guest module(s) to translation cache",
+                          flush=True)
+                if last_library is not None and result.returncode == 1:
+                    print("run_game: not publishing failed live expansion; "
+                          "use cache recovery/relink on the next run",
+                          file=sys.stderr, flush=True)
+                return result.returncode
+
         ranges = executable_segments(elf) if args.auto_expand else []
         expanded_count = 0
         for replay in range(args.auto_expand + 1):
