@@ -2794,6 +2794,8 @@ int main(int argc, char** argv)
         uint64_t m_order = 0u;
         bool m_has_context = false;
         uint32_t m_wait_semaphore = 0u;
+        uint32_t m_wait_type = 0u; // 0=none, 1=SleepThread, 2=WaitSema
+        uint32_t m_wakeups = 0u;
         ee::s_ee_cpu_state m_context{};
         ee::s_ee_vu0_state m_vu0_context{};
         uint32_t m_entry = 0u;
@@ -4149,7 +4151,8 @@ int main(int argc, char** argv)
                 (service >= 0x20u && service <= 0x24u) ||
                 service == 0x29u || service == 0x2au || service == 0x2bu ||
                 service == 0x2fu || service == 0x30u || service == 0x31u ||
-                service == 0x37u || service == 0x39u ||
+                (service >= 0x32u && service <= 0x37u) ||
+                service == 0x39u ||
                 service == 0x3cu || service == 0x3du || service == 0x3eu ||
                 (service >= 0x40u && service <= 0x48u) ||
                 service == 0x4au || service == 0x4bu ||
@@ -4480,6 +4483,9 @@ int main(int argc, char** argv)
                             break;
                         }
                         thread->m_context = {};
+                        thread->m_wait_semaphore = 0u;
+                        thread->m_wait_type = 0u;
+                        thread->m_wakeups = 0u;
                         thread->m_context.m_pc = thread->m_entry;
                         thread->m_context.m_cop0[12] =
                             cpu.m_cop0[12] & ~2u;
@@ -4526,6 +4532,9 @@ int main(int argc, char** argv)
                     s_kernel_thread& thread = threads[current_thread_id];
                     thread.m_status = 16u;
                     thread.m_has_context = false;
+                    thread.m_wait_type = 0u;
+                    thread.m_wait_semaphore = 0u;
+                    thread.m_wakeups = 0u;
                     if (service == 0x24u)
                     {
                         thread.m_used = false;
@@ -4698,7 +4707,9 @@ int main(int argc, char** argv)
                             thread->m_entry, thread->m_stack,
                             thread->m_stack_size, thread->m_gp,
                             thread->m_initial_priority, thread->m_priority,
-                            thread->m_attr, thread->m_option, 0u, 0u, 0u
+                            thread->m_attr, thread->m_option,
+                            thread->m_wait_type, thread->m_wait_semaphore,
+                            thread->m_wakeups
                         };
                         for (uint32_t index = 0u; index < 12u; ++index)
                         {
@@ -4718,6 +4729,134 @@ int main(int argc, char** argv)
                             "address=0x%08x status=%d\n",
                             service == 0x31u ? "i" : "",
                             requested_id, address, return_code);
+                    }
+                }
+
+                else if (service >= 0x32u && service <= 0x36u)
+                {
+                    // EE kernel sleep/wakeup support. The wakeup count is
+                    // guest-owned and no wakeup is invented by the host.
+                    // 0x32 SleepThread, 0x33 WakeupThread,
+                    // 0x34 iWakeupThread, 0x35 CancelWakeupThread,
+                    // 0x36 iCancelWakeupThread.
+                    if (service == 0x32u)
+                    {
+                        if (callback_active || irq_callback_active ||
+                            current_thread_id == 0u ||
+                            current_thread_id >= 256u ||
+                            !threads[current_thread_id].m_used ||
+                            threads[current_thread_id].m_status != 1u)
+                        {
+                            std::fprintf(stderr,
+                                "SleepThread HLE refused invalid running context\n");
+                            break;
+                        }
+                        s_kernel_thread& thread = threads[current_thread_id];
+                        cpu.m_gpr[2].m_lo = current_thread_id;
+                        cpu.m_gpr[2].m_hi = 0u;
+                        if (thread.m_wakeups != 0u)
+                        {
+                            --thread.m_wakeups;
+                            if (trace)
+                            {
+                                std::printf(
+                                    "HLE SleepThread: id=%u consumed wakeup "
+                                    "remaining=%u\n",
+                                    current_thread_id, thread.m_wakeups);
+                            }
+                        }
+                        else
+                        {
+                            thread.m_status = 4u;
+                            thread.m_wait_type = 1u;
+                            thread.m_wait_semaphore = 0u;
+                            reschedule_requested = true;
+                            if (trace)
+                            {
+                                std::printf(
+                                    "HLE SleepThread: id=%u status=4 "
+                                    "waiting for a guest WakeupThread\n",
+                                    current_thread_id);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        const uint32_t requested_id =
+                            static_cast<uint32_t>(cpu.m_gpr[4].m_lo);
+                        const bool found = requested_id > 0u &&
+                            requested_id < 256u &&
+                            threads[requested_id].m_used;
+                        if (!found)
+                        {
+                            cpu.m_gpr[2].m_lo =
+                                static_cast<uint64_t>(-1ll);
+                            cpu.m_gpr[2].m_hi = 0u;
+                            if (trace)
+                            {
+                                std::printf(
+                                    "HLE %s: id=%u not found, result=-1\n",
+                                    service == 0x33u ? "WakeupThread" :
+                                    service == 0x34u ? "iWakeupThread" :
+                                    service == 0x35u ? "CancelWakeupThread" :
+                                                       "iCancelWakeupThread",
+                                    requested_id);
+                            }
+                        }
+                        else
+                        {
+                            s_kernel_thread& thread = threads[requested_id];
+                            const uint32_t previous_wakeups = thread.m_wakeups;
+                            bool released = false;
+                            if (service == 0x35u || service == 0x36u)
+                            {
+                                thread.m_wakeups = 0u;
+                                cpu.m_gpr[2].m_lo = previous_wakeups;
+                            }
+                            else
+                            {
+                                cpu.m_gpr[2].m_lo = requested_id;
+                                if (thread.m_wait_type == 1u &&
+                                    (thread.m_status == 4u ||
+                                     thread.m_status == 12u))
+                                {
+                                    thread.m_wait_type = 0u;
+                                    thread.m_status =
+                                        thread.m_status == 12u ? 8u : 2u;
+                                    thread.m_context.m_gpr[2].m_lo =
+                                        requested_id;
+                                    thread.m_context.m_gpr[2].m_hi = 0u;
+                                    if (thread.m_status == 2u)
+                                    {
+                                        thread.m_order = ++next_thread_order;
+                                        if (service == 0x33u)
+                                        {
+                                            reschedule_requested = true;
+                                        }
+                                    }
+                                    released = true;
+                                }
+                                else if (thread.m_wakeups !=
+                                         std::numeric_limits<uint32_t>::max())
+                                {
+                                    ++thread.m_wakeups;
+                                }
+                            }
+                            cpu.m_gpr[2].m_hi = 0u;
+                            if (trace)
+                            {
+                                std::printf(
+                                    "HLE %s: id=%u status=%u wakeups=%u "
+                                    "released=%u result=%u\n",
+                                    service == 0x33u ? "WakeupThread" :
+                                    service == 0x34u ? "iWakeupThread" :
+                                    service == 0x35u ? "CancelWakeupThread" :
+                                                       "iCancelWakeupThread",
+                                    requested_id, thread.m_status,
+                                    thread.m_wakeups, released ? 1u : 0u,
+                                    static_cast<uint32_t>(cpu.m_gpr[2].m_lo));
+                            }
+                        }
                     }
                 }
 
@@ -5278,6 +5417,7 @@ int main(int argc, char** argv)
                             threads[current_thread_id].m_status = 4u;
                             threads[current_thread_id].m_wait_semaphore =
                                 semaphore_id;
+                            threads[current_thread_id].m_wait_type = 2u;
                             reschedule_requested = true;
                         }
 
@@ -5338,6 +5478,7 @@ int main(int argc, char** argv)
                                 s_kernel_thread& waiter = threads[wake_id];
                                 waiter.m_status = 2u;
                                 waiter.m_wait_semaphore = 0u;
+                                waiter.m_wait_type = 0u;
                                 waiter.m_order = ++next_thread_order;
                                 waiter.m_context.m_gpr[2].m_lo = semaphore_id;
                                 reschedule_requested = true;
