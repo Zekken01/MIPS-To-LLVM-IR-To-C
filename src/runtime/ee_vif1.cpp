@@ -3,6 +3,8 @@
 #include "ee_vif1.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <utility>
 
@@ -467,6 +469,25 @@ bool c_ee_vif1::consume(const uint8_t* data, uint32_t qwc)
                      path2_bytes.data(),
                      static_cast<uint32_t>(path2_bytes.size() / 16u)))
         {
+            // Opt-in capture for reproducing a rejected DIRECT batch.
+            const char* dump_path = std::getenv("EE_REJECTED_PATH2_DUMP");
+            if (dump_path != nullptr && *dump_path != '\0')
+            {
+                if (auto* dump = std::fopen(dump_path, "wb"))
+                {
+                    const size_t written = std::fwrite(
+                        path2_bytes.data(), 1, path2_bytes.size(), dump);
+                    const int closed = std::fclose(dump);
+                    if (written != path2_bytes.size() || closed != 0)
+                    {
+                        std::fprintf(stderr, "VIF1 rejected PATH2 dump incomplete\n");
+                    }
+                }
+                else
+                {
+                    std::perror("VIF1 rejected PATH2 dump");
+                }
+            }
             rejection = e_reject::path2_rejected;
         }
     }

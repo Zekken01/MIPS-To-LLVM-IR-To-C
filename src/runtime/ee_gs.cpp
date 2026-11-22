@@ -1,6 +1,8 @@
 #include "ee_gs.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <unordered_map>
 #include <utility>
 
@@ -8,6 +10,15 @@ namespace ee
 {
 namespace
 {
+void trace_rejection(const char* function, int line)
+{
+    const char* dump_path = std::getenv("EE_REJECTED_PATH2_DUMP");
+    if (dump_path != nullptr && *dump_path != '\0')
+    {
+        std::fprintf(stderr, "GS rejection in %s:%d\n", function, line);
+    }
+}
+
 constexpr uint8_t k_block32[4][8] =
 {
     {0, 1, 4, 5, 16, 17, 20, 21},
@@ -261,6 +272,7 @@ bool c_ee_gs_state::read_vram8(uint32_t offset, uint8_t& value) const
 {
     if (offset >= k_vram_bytes)
     {
+        trace_rejection(__func__, __LINE__);
         return false;
     }
     value = m_vram[offset];
@@ -271,6 +283,7 @@ bool c_ee_gs_state::read_vram16(uint32_t offset, uint16_t& value) const
 {
     if (offset > k_vram_bytes - 2u)
     {
+        trace_rejection(__func__, __LINE__);
         return false;
     }
     value = static_cast<uint16_t>(
@@ -284,6 +297,7 @@ bool c_ee_gs_state::read_vram32(uint32_t offset, uint32_t& value) const
 {
     if (offset > k_vram_bytes - 4u)
     {
+        trace_rejection(__func__, __LINE__);
         return false;
     }
     value = read_le32(m_vram.data() + offset);
@@ -301,6 +315,7 @@ bool c_ee_gs_state::read_color_pixel(
         x >= 2048u || y >= 2048u ||
         (psm != 0u && psm != 1u && psm != 2u && psm != 0x0au))
     {
+        trace_rejection(__func__, __LINE__);
         return false;
     }
     // Match ps2-web-recomp's page_address(): a zero FBW has a minimum
@@ -326,6 +341,7 @@ bool c_ee_gs_state::read_clut_entry(
     if (slot >= m_state.m_clut.size() ||
         !m_state.m_clut_valid[slot])
     {
+        trace_rejection(__func__, __LINE__);
         return false;
     }
     value = m_state.m_clut[slot];
@@ -338,6 +354,7 @@ bool c_ee_gs_state::read_indexed_clut_value(
 {
     if (context >= 2u || !m_state.m_written[0x06u + context])
     {
+        trace_rejection(__func__, __LINE__);
         return false;
     }
 
@@ -375,6 +392,7 @@ bool c_ee_gs_state::read_indexed_clut_value(
     }
     else
     {
+        trace_rejection(__func__, __LINE__);
         return false;
     }
 
@@ -387,6 +405,7 @@ bool c_ee_gs_state::read_image(uint8_t* data, uint32_t qwc)
         !m_state.m_written[0x53u] ||
         (m_state.m_registers[0x53u] & 3u) != 1u)
     {
+        trace_rejection(__func__, __LINE__);
         return false;
     }
 
@@ -403,6 +422,7 @@ bool c_ee_gs_state::read_image(uint8_t* data, uint32_t qwc)
     if (bw == 0u || !supported_psm(psm) ||
         width == 0u || height == 0u)
     {
+        trace_rejection(__func__, __LINE__);
         return false;
     }
 
@@ -502,6 +522,7 @@ bool c_ee_gs_state::dma_download(
 {
     if (user == nullptr || channel != 1u)
     {
+        trace_rejection(__func__, __LINE__);
         return false;
     }
     return static_cast<c_ee_gs_state*>(user)->read_image(data, qwc);
@@ -556,6 +577,7 @@ bool c_ee_gs_state::load_clut(
          psm != 0x1bu && psm != 0x24u && psm != 0x2cu) ||
         (cpsm != 0u && cpsm != 2u && cpsm != 0x0au))
     {
+        trace_rejection(__func__, __LINE__);
         return false;
     }
 
@@ -695,6 +717,7 @@ bool c_ee_gs_state::supported_psm(uint32_t psm)
     case 0x3au: // PSMZ16S
         return true;
     default:
+        trace_rejection(__func__, __LINE__);
         return false;
     }
 }
@@ -848,6 +871,7 @@ bool c_ee_gs_state::stage_local_copy(
         static_cast<uint64_t>(writes.size()) + count >
             k_max_local_copy_pixels)
     {
+        trace_rejection(__func__, __LINE__);
         return false;
     }
 
@@ -911,6 +935,7 @@ bool c_ee_gs_state::stage_host_upload(
         (state.m_registers[0x53u] & 3u) != 0u ||
         data == nullptr || byte_count == 0u)
     {
+        trace_rejection(__func__, __LINE__);
         return false;
     }
 
@@ -939,6 +964,7 @@ bool c_ee_gs_state::stage_host_upload(
         state.m_transfer_pixels_written > total_pixels ||
         state.m_transfer_pending_size > 2u)
     {
+        trace_rejection(__func__, __LINE__);
         return false;
     }
 
@@ -958,6 +984,7 @@ bool c_ee_gs_state::stage_host_upload(
     const bool twenty_four_bit = psm == 0x01u || psm == 0x31u;
     if (!twenty_four_bit && state.m_transfer_pending_size != 0u)
     {
+        trace_rejection(__func__, __LINE__);
         return false;
     }
 
@@ -1076,6 +1103,7 @@ bool c_ee_gs_state::write_register(
     // observer must NOT silently pretend to execute.
     if (reg >= state.m_registers.size())
     {
+        trace_rejection(__func__, __LINE__);
         return false;
     }
 
@@ -1187,6 +1215,7 @@ bool c_ee_gs_state::write_register(
                 !state.m_written[0x51u] ||
                 !state.m_written[0x52u])
             {
+                trace_rejection(__func__, __LINE__);
                 return false;
             }
             const uint64_t buf = state.m_registers[0x50u];
@@ -1214,6 +1243,7 @@ bool c_ee_gs_state::write_register(
                  (source_width == 0u || !supported_psm(source_psm))) ||
                 (local_copy && pixels > k_max_local_copy_pixels))
             {
+                trace_rejection(__func__, __LINE__);
                 return false;
             }
             if ((value & 3u) == 0u)
@@ -1234,6 +1264,7 @@ bool c_ee_gs_state::write_register(
     default:
         // Reject SIGNAL, FINISH, LABEL, TEXFLUSH and unknown
         // hardware operations; HWREG executes inside consume().
+        trace_rejection(__func__, __LINE__);
         return false;
     }
 
@@ -1263,6 +1294,7 @@ bool c_ee_gs_state::write_packed(
     {
         if (!write_register(state, 0x02u, low))
         {
+            trace_rejection(__func__, __LINE__);
             return false;
         }
         state.m_q_bits = static_cast<uint32_t>(high);
@@ -1322,6 +1354,7 @@ bool c_ee_gs_state::consume(
         (qwc != 0u && data == nullptr) ||
         qwc > 0xffffu)
     {
+        trace_rejection(__func__, __LINE__);
         return false;
     }
 
@@ -1361,6 +1394,7 @@ bool c_ee_gs_state::consume(
         }
         if (!stage_host_upload(next, writes, packed, sizeof(packed)))
         {
+            trace_rejection(__func__, __LINE__);
             return false;
         }
         ++next.m_hwreg_write_count;
@@ -1394,6 +1428,7 @@ bool c_ee_gs_state::consume(
         const uint64_t offset = e.m_byte_offset;
         if (offset >= bytes)
         {
+            trace_rejection(__func__, __LINE__);
             return false;
         }
 
@@ -1402,6 +1437,7 @@ bool c_ee_gs_state::consume(
         case e_ee_gif_event_type::tag:
             if ((offset & 15u) != 0u || offset + 16u > bytes)
             {
+                trace_rejection(__func__, __LINE__);
                 return false;
             }
             next.m_q_bits = 0x3f800000u;
@@ -1414,6 +1450,7 @@ bool c_ee_gs_state::consume(
                 e.m_word0 > 0x7ffu ||
                 !write_register(next, 0x00u, e.m_word0))
             {
+                trace_rejection(__func__, __LINE__);
                 return false;
             }
             break;
@@ -1437,6 +1474,7 @@ bool c_ee_gs_state::consume(
                     e.m_register
                 ))
             {
+                trace_rejection(__func__, __LINE__);
                 return false;
             }
             ++next.m_total_packed_events;
@@ -1458,6 +1496,7 @@ bool c_ee_gs_state::consume(
                 !write_register(next, e.m_register, e.m_word0) ||
                 !refresh_clut(e.m_register))
             {
+                trace_rejection(__func__, __LINE__);
                 return false;
             }
             ++next.m_total_reglist_events;
@@ -1480,6 +1519,7 @@ bool c_ee_gs_state::consume(
                 length > k_max_image_bytes -
                     next.m_image_data.size())
             {
+                trace_rejection(__func__, __LINE__);
                 return false;
             }
             next.m_image_data.insert(
@@ -1495,12 +1535,14 @@ bool c_ee_gs_state::consume(
                     next, writes, data + static_cast<size_t>(offset),
                     static_cast<size_t>(length)))
             {
+                trace_rejection(__func__, __LINE__);
                 return false;
             }
             // Padding after the final pixel is captured but not written.
             break;
         }
         default:
+            trace_rejection(__func__, __LINE__);
             return false;
         }
     }
@@ -1533,6 +1575,7 @@ bool c_ee_gs_state::gif_events(
 {
     if (user == nullptr)
     {
+        trace_rejection(__func__, __LINE__);
         return false;
     }
     return static_cast<c_ee_gs_state*>(user)->consume(
