@@ -6788,24 +6788,24 @@ int main(int argc, char** argv)
                             // Keep host logs line-safe and byte-exact without
                             // claiming to decode guest Shift-JIS.
                             std::string display;
-                                for (unsigned char value : guest_text)
+                            for (unsigned char value : guest_text)
+                            {
+                                if (value >= 0x20u && value <= 0x7eu &&
+                                    value != static_cast<unsigned char>('\\') &&
+                                    value != static_cast<unsigned char>('"'))
                                 {
-                                    if (value >= 0x20u && value <= 0x7eu &&
-                                        value != static_cast<unsigned char>('\\') &&
-                                        value != static_cast<unsigned char>('"'))
-                                    {
-                                        display.push_back(
-                                            static_cast<char>(value));
-                                    }
-                                    else
-                                    {
-                                        char encoded[5]{};
-                                        std::snprintf(encoded, sizeof(encoded),
-                                            "\\x%02x",
-                                            static_cast<unsigned int>(value));
-                                        display += encoded;
-                                    }
+                                    display.push_back(
+                                        static_cast<char>(value));
                                 }
+                                else
+                                {
+                                    char encoded[5]{};
+                                    std::snprintf(encoded, sizeof(encoded),
+                                        "\\x%02x",
+                                        static_cast<unsigned int>(value));
+                                    display += encoded;
+                                }
+                            }
                             // Make messages visible in the normal batch
                             // console and the Python launcher's live stream.
                             // Flush so a long-running guest need not exit
