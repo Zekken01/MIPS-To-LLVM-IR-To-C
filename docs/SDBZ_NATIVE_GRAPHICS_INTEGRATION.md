@@ -269,6 +269,10 @@ translation cache is not touched by the probe; normal launcher translation
 provenance rules still apply. The diagnostic is **opt-in** because a GPU
 readback can stall and materially slow the run.
 
+For late boot graphics, set `SDBZ_GS_FIELD_PROBE_START_DISPATCH=4350000`
+before launching. This waits for the first field boundary at or after
+that dispatch and preserves the full sample budget for later fields.
+
 The JSONL file begins with a configuration record, then contains **at most
 64** `field_started` records. Each is captured after the actual guest
 scanout scheduler advances, and includes:

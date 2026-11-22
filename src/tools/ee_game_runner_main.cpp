@@ -587,6 +587,7 @@ struct s_gs_field_probe
     std::string m_prefix;
     uint64_t m_last_field = 0u;
     uint32_t m_captures = 0u;
+    uint32_t m_start_dispatch = 0u;
     bool m_first_ppm[3]{};
     bool m_first_nonblack_ppm[3]{};
     uint64_t m_last_present_attempts = 0u;
@@ -608,7 +609,8 @@ bool capture_gs_field(
     }
     const uint64_t skipped = fields_started - probe.m_last_field - 1u;
     probe.m_last_field = fields_started;
-    if (probe.m_captures >= k_max_captures)
+    if (dispatches < probe.m_start_dispatch ||
+        probe.m_captures >= k_max_captures)
     {
         return true;
     }
@@ -2120,6 +2122,17 @@ int main(int argc, char** argv)
             std::fprintf(stderr, "empty GS field probe path\n");
             return 2;
         }
+        std::string start_dispatch_environment;
+        const char* start_dispatch = read_host_environment(
+            "SDBZ_GS_FIELD_PROBE_START_DISPATCH", &start_dispatch_environment);
+        if (start_dispatch != nullptr && *start_dispatch != '\0' &&
+            !parse_u32(start_dispatch, &gs_field_probe.m_start_dispatch))
+        {
+            std::fprintf(stderr,
+                "invalid SDBZ_GS_FIELD_PROBE_START_DISPATCH: %s\n",
+                start_dispatch);
+            return 2;
+        }
         gs_field_probe_file.reset(
             open_host_file(gs_field_probe_path, "wb"));
         if (!gs_field_probe_file)
@@ -2130,12 +2143,12 @@ int main(int argc, char** argv)
         }
         gs_field_probe.m_file = gs_field_probe_file.get();
         gs_field_probe.m_prefix = gs_field_probe_path;
-        std::fputs(
+        std::fprintf(gs_field_probe.m_file,
             "{\"event\":\"configuration\","
             "\"schema\":\"gs-field-target-provenance-v1\","
-            "\"max_field_samples\":64,"
+            "\"max_field_samples\":64,\"start_dispatch\":%u,"
             "\"ppm_policy\":\"first_readback_and_first_nonblack_per_target\"}\n",
-            gs_field_probe.m_file);
+            gs_field_probe.m_start_dispatch);
         if (std::fflush(gs_field_probe.m_file) != 0)
         {
             return 2;
