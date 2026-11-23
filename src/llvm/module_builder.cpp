@@ -2896,8 +2896,92 @@ void module_builder::emit_block(const std::vector<ee::s_ee_instruction>& block,
                  "\n";
         m_out += "  " + remaining + " = load i32, ptr " + remaining_ptr + "\n";
         m_out += "  " + empty + " = icmp eq i32 " + remaining + ", 0\n";
+        const std::string probe_check_label = "loop_probe_check_" + suffix;
         m_out += "  br i1 " + empty + ", label %" + exhausted_label +
+                 ", label %" + probe_check_label + "\n";
+
+        // Host idle-loop probe: an armed header records the budget at its
+        // first visit and yields at its next visit, after exactly one real
+        // iteration. Unarmed (all-zero) probes fall through unchanged.
+        const std::string probe_label = "loop_probe_" + suffix;
+        const std::string probe_first_label = "loop_probe_first_" + suffix;
+        const std::string probe_again_label = "loop_probe_again_" + suffix;
+        const std::string probe_yield_label = "loop_probe_yield_" + suffix;
+        m_out += probe_check_label + ":\n";
+        std::string armed;
+        for (uint32_t slot = 0u; slot < 4u; ++slot)
+        {
+            const std::string slot_ptr = newtemp();
+            const std::string slot_pc = newtemp();
+            const std::string slot_hit = newtemp();
+            m_out += "  " + slot_ptr + " = getelementptr i8, ptr %rt, i64 " +
+                     std::to_string(offsetof(ee::s_ee_runtime, m_idle_probe_pcs) +
+                                    4u * slot) + "\n";
+            m_out += "  " + slot_pc + " = load i32, ptr " + slot_ptr + "\n";
+            m_out += "  " + slot_hit + " = icmp eq i32 " + slot_pc + ", " +
+                     std::to_string(pc) + "\n";
+            if (armed.empty())
+            {
+                armed = slot_hit;
+            }
+            else
+            {
+                const std::string combined = newtemp();
+                m_out += "  " + combined + " = or i1 " + armed + ", " +
+                         slot_hit + "\n";
+                armed = combined;
+            }
+        }
+        m_out += "  br i1 " + armed + ", label %" + probe_label +
                  ", label %" + decrement_label + "\n";
+        m_out += probe_label + ":\n";
+        const std::string state_ptr = newtemp();
+        const std::string state = newtemp();
+        const std::string first_visit = newtemp();
+        m_out += "  " + state_ptr + " = getelementptr i8, ptr %rt, i64 " +
+                 std::to_string(offsetof(ee::s_ee_runtime, m_idle_probe_state)) +
+                 "\n";
+        m_out += "  " + state + " = load i32, ptr " + state_ptr + "\n";
+        m_out += "  " + first_visit + " = icmp eq i32 " + state + ", 0\n";
+        m_out += "  br i1 " + first_visit + ", label %" + probe_first_label +
+                 ", label %" + probe_again_label + "\n";
+        m_out += probe_first_label + ":\n";
+        const std::string hit_ptr = newtemp();
+        const std::string budget_ptr = newtemp();
+        m_out += "  store i32 1, ptr " + state_ptr + "\n";
+        m_out += "  " + hit_ptr + " = getelementptr i8, ptr %rt, i64 " +
+                 std::to_string(offsetof(ee::s_ee_runtime, m_idle_probe_hit_pc)) +
+                 "\n";
+        m_out += "  store i32 " + std::to_string(pc) + ", ptr " + hit_ptr + "\n";
+        m_out += "  " + budget_ptr + " = getelementptr i8, ptr %rt, i64 " +
+                 std::to_string(offsetof(ee::s_ee_runtime, m_idle_probe_remaining)) +
+                 "\n";
+        m_out += "  store i32 " + remaining + ", ptr " + budget_ptr + "\n";
+        m_out += "  br label %" + decrement_label + "\n";
+        m_out += probe_again_label + ":\n";
+        const std::string hit_again_ptr = newtemp();
+        const std::string hit_pc = newtemp();
+        const std::string one_state = newtemp();
+        const std::string same_pc = newtemp();
+        const std::string yield_now = newtemp();
+        m_out += "  " + hit_again_ptr + " = getelementptr i8, ptr %rt, i64 " +
+                 std::to_string(offsetof(ee::s_ee_runtime, m_idle_probe_hit_pc)) +
+                 "\n";
+        m_out += "  " + hit_pc + " = load i32, ptr " + hit_again_ptr + "\n";
+        m_out += "  " + one_state + " = icmp eq i32 " + state + ", 1\n";
+        m_out += "  " + same_pc + " = icmp eq i32 " + hit_pc + ", " +
+                 std::to_string(pc) + "\n";
+        m_out += "  " + yield_now + " = and i1 " + one_state + ", " + same_pc + "\n";
+        m_out += "  br i1 " + yield_now + ", label %" + probe_yield_label +
+                 ", label %" + decrement_label + "\n";
+        m_out += probe_yield_label + ":\n";
+        const std::string probe_pc_ptr = state_field(6);
+        const std::string probe_reason_ptr = state_field(7);
+        m_out += "  store i32 2, ptr " + state_ptr + "\n";
+        m_out += "  store i32 " + std::to_string(pc) + ", ptr " + probe_pc_ptr + "\n";
+        m_out += "  store i32 6, ptr " + probe_reason_ptr + "\n";
+        m_out += "  ret i32 6\n";
+
         m_out += decrement_label + ":\n";
         const std::string decremented = newtemp();
         m_out += "  " + decremented + " = sub i32 " + remaining + ", 1\n";

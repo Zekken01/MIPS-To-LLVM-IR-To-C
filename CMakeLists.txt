@@ -274,6 +274,18 @@ target_include_directories(ee_host_loop_yield_budget_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/tools)
 add_test(NAME ee_host_loop_yield_budget COMMAND ee_host_loop_yield_budget_test)
 
+# Idle-loop skip eligibility and next-iteration prediction (host only).
+add_executable(ee_idle_loop_skip_test
+    tests/smoke/ee_idle_loop_skip_test.cpp)
+target_include_directories(ee_idle_loop_skip_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/tools)
+add_test(NAME ee_idle_loop_skip COMMAND ee_idle_loop_skip_test)
+
+# SDBZ_PAD0_SCRIPT controller-input script parsing (host only).
+add_executable(ee_pad_script_test tests/smoke/ee_pad_script_test.cpp)
+target_include_directories(ee_pad_script_test PRIVATE ${CMAKE_SOURCE_DIR}/src/tools)
+add_test(NAME ee_pad_script COMMAND ee_pad_script_test)
+
 # Regression for Windows CRLF cache-miss replies: tests the same native parser
 # used by ee_game_runner with no game binaries or Python/Tk dependency.
 add_executable(ee_hot_expand_protocol_test

@@ -10,6 +10,8 @@
 #include "ee_irq_syscall_services.h"
 #include "ee_hot_loop_diagnostics.h"
 #include "ee_host_loop_yield_budget.h"
+#include "ee_idle_loop_skip.h"
+#include "ee_pad_script.h"
 #include "ee_reached_isa_inventory.h"
 #include "ee_vsync_flags.h"
 #include "ee_sdbz_dma_wait_probe.h"
@@ -58,6 +60,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -2137,6 +2140,31 @@ int main(int argc, char** argv)
             "expected positive first poll and 1..120 held polls\n");
         return 2;
     }
+    std::vector<iop::c_hw::s_pad0_script_step> pad0_script;
+    {
+        std::string script_environment;
+        const char* script = read_host_environment(
+            "SDBZ_PAD0_SCRIPT", &script_environment);
+        if (script != nullptr && script[0] != '\0')
+        {
+            std::vector<ee::s_pad_script_step> parsed;
+            std::string script_error;
+            if (!ee::parse_pad_script(script, &parsed, &script_error))
+            {
+                std::fprintf(stderr, "invalid SDBZ_PAD0_SCRIPT: %s\n",
+                             script_error.c_str());
+                return 2;
+            }
+            for (const ee::s_pad_script_step& step : parsed)
+            {
+                iop::c_hw::s_pad0_script_step hw_step{};
+                hw_step.m_first_poll = step.first_poll;
+                hw_step.m_poll_count = step.poll_count;
+                hw_step.m_buttons = step.buttons;
+                pad0_script.push_back(hw_step);
+            }
+        }
+    }
     if (trace)
     {
         // Preserve recent trace lines when the Python host kills a timed-out
@@ -2504,6 +2532,13 @@ int main(int argc, char** argv)
                     "IOP SIO2 opt-in pad0 Cross pulse: first_poll=%u "
                     "hold_polls=%u (only real port0 0x42 replies)\n",
                     pad0_cross_first_poll, pad0_cross_poll_count);
+            }
+            if (!pad0_script.empty())
+            {
+                iop_kernel->hardware().configure_sio2_pad0_script(pad0_script);
+                std::printf(
+                    "IOP SIO2 pad0 input script: %zu step(s) "
+                    "(only real port0 0x42 replies)\n", pad0_script.size());
             }
             iop_hle = std::make_unique<iop::c_kernel_hle_bridge>(
                 *iop_kernel);
@@ -3119,6 +3154,36 @@ int main(int argc, char** argv)
     // and time paused waiting for live cache-miss compilation.
     double iop_time_ms = 0.0;
     double compile_wait_ms = 0.0;
+    // SDBZ_PROFILE_PCS=1: host-only per-entry-PC profile of guest
+    // instructions and native wall time, printed when the runner stops.
+    struct s_pc_profile
+    {
+        uint64_t m_calls = 0u;
+        uint64_t m_dispatches = 0u;
+        uint64_t m_instructions = 0u;
+        double m_wall_ms = 0.0;
+    };
+    std::string profile_pcs_environment;
+    const char* profile_pcs_value = read_host_environment(
+        "SDBZ_PROFILE_PCS", &profile_pcs_environment);
+    const bool profile_pcs = profile_pcs_value != nullptr &&
+        std::strcmp(profile_pcs_value, "0") != 0;
+    std::unordered_map<uint32_t, s_pc_profile> pc_profile;
+    // SDBZ_IDLE_SKIP=1: exact host-side acceleration of translated guest
+    // poll loops at HOST_YIELD safepoints (see ee_idle_loop_skip.h).
+    std::string idle_skip_environment;
+    const char* idle_skip_value = read_host_environment(
+        "SDBZ_IDLE_SKIP", &idle_skip_environment);
+    const bool idle_skip = idle_skip_value != nullptr &&
+        std::strcmp(idle_skip_value, "0") != 0;
+    std::unordered_map<uint32_t, ee::s_idle_loop_shape> idle_loop_shapes;
+    // Guarded loop headers observed at HOST_YIELD. Any later native entry
+    // at one of them may probe; the one-iteration probe validates itself.
+    std::unordered_set<uint32_t> idle_yield_headers;
+    std::vector<uint32_t> idle_probe_headers;  // at most four armed headers
+    uint64_t idle_skip_slices = 0u;
+    uint64_t idle_skip_instructions = 0u;
+    uint64_t idle_skip_mispredictions = 0u;
     double slowest_native_ms = 0.0;
     uint32_t slowest_native_pc = 0u;
 #ifdef EE_ENABLE_RAYLIB_WINDOW
@@ -3324,6 +3389,43 @@ int main(int argc, char** argv)
         }
         return e_intc_service::not_pending;
     };
+    // Verify, without changing guest state, that the next iteration of an
+    // eligible poll loop returns to its header and reads only values that
+    // cannot change inside a native slice: RAM/scratchpad and status
+    // registers the host updates between slices (never timers).
+    const auto idle_iteration_loops = [&](const ee::s_idle_loop_shape& shape)
+    {
+        uint64_t gpr[32];
+        for (uint32_t i = 0u; i < 32u; ++i)
+        {
+            gpr[i] = cpu.m_gpr[i].m_lo;
+        }
+        return ee::predict_idle_iteration(
+            shape, gpr,
+            [&](uint32_t address, uint32_t width, uint64_t* raw)
+            {
+                const uint32_t physical = memory->translate_direct_address(address);
+                const bool status_register =
+                    width == 4u &&
+                    (physical == 0x1000f000u ||   // INTC_STAT
+                     physical == 0x1000f010u ||   // INTC_MASK
+                     physical == 0x1000e010u ||   // D_STAT
+                     physical == 0x12001000u);    // GS CSR
+                if (!memory->contains(address, width) && !status_register)
+                {
+                    return false;
+                }
+                switch (width)
+                {
+                case 1u: *raw = ee::ee_mem_read8(&runtime, address); break;
+                case 2u: *raw = ee::ee_mem_read16(&runtime, address); break;
+                case 4u: *raw = ee::ee_mem_read32(&runtime, address); break;
+                default: *raw = ee::ee_mem_read64(&runtime, address); break;
+                }
+                return true;
+            }) == ee::e_idle_iteration::loops;
+    };
+
     while (remaining != 0)
     {
         if (pad0_cross_poll_count != 0u && iop_kernel != nullptr)
@@ -3865,12 +3967,37 @@ int main(int argc, char** argv)
         const ee::s_ee_cpu_state cpu_before_dispatch = cpu;
         const uint64_t instructions_before_dispatch =
             runtime.m_guest_instruction_attempts;
+        const auto profile_start = profile_pcs
+            ? std::chrono::steady_clock::now()
+            : std::chrono::steady_clock::time_point{};
         bool hot_expand_budget_reached = false;
         for (;;)
         {
+            // Arm the translated loop-header idle probe with known pure,
+            // idempotent poll loops (see ee_idle_loop_skip.h).
+            bool idle_armed = false;
+            if (idle_skip && !idle_probe_headers.empty() && slice == 1u &&
+                runtime.m_loop_safepoint_limit > 1u &&
+                runtime.m_loop_safepoint_yield_enabled != 0u &&
+                runtime.m_instruction_trace == nullptr &&
+                runtime.m_guest_v0_trace_remaining == 0u &&
+                runtime.m_timing_observer == nullptr)
+            {
+                for (uint32_t slot = 0u; slot < 4u; ++slot)
+                {
+                    runtime.m_idle_probe_pcs[slot] =
+                        slot < idle_probe_headers.size()
+                            ? idle_probe_headers[slot] : 0u;
+                }
+                runtime.m_idle_probe_state = 0u;
+                runtime.m_idle_probe_hit_pc = 0u;
+                runtime.m_idle_probe_remaining = 0u;
+                idle_armed = true;
+            }
+            const uint32_t safepoint_budget = runtime.m_loop_safepoint_limit;
+
             // One translated function invocation per native guest boundary.
-            runtime.m_loop_safepoint_remaining =
-                runtime.m_loop_safepoint_limit;
+            runtime.m_loop_safepoint_remaining = safepoint_budget;
             const auto native_start = std::chrono::steady_clock::now();
             const uint32_t exit_reason_before = cpu.m_exit_reason;
             reason = native_run(&cpu, &runtime, slice, &count, &out_pc, &status);
@@ -3892,8 +4019,7 @@ int main(int argc, char** argv)
                 const auto cached = overlay_owner_by_pc.find(from_pc);
                 if (cached != overlay_owner_by_pc.end())
                 {
-                    runtime.m_loop_safepoint_remaining =
-                        runtime.m_loop_safepoint_limit;
+                    runtime.m_loop_safepoint_remaining = safepoint_budget;
                     reason = overlay_runs[cached->second](
                         &cpu, &runtime, slice, &count, &out_pc, &status);
                 }
@@ -3903,8 +4029,7 @@ int main(int argc, char** argv)
                          overlay < overlay_runs.size() && unowned();
                          ++overlay)
                     {
-                        runtime.m_loop_safepoint_remaining =
-                            runtime.m_loop_safepoint_limit;
+                        runtime.m_loop_safepoint_remaining = safepoint_budget;
                         reason = overlay_runs[overlay](
                             &cpu, &runtime, slice, &count, &out_pc, &status);
                         if (!unowned())
@@ -3913,6 +4038,51 @@ int main(int argc, char** argv)
                         }
                     }
                 }
+            }
+            if (idle_armed)
+            {
+                // The armed header yielded after exactly one real iteration.
+                // A verified pure poll loop would have repeated that iteration
+                // for every remaining budgeted header visit (nothing it reads
+                // can change before the runner regains control) and yielded
+                // with no budget left. Charge exactly those iterations.
+                const uint32_t hit = runtime.m_idle_probe_hit_pc;
+                if (runtime.m_idle_probe_state == 2u &&
+                    reason == static_cast<uint32_t>(
+                        ee::e_ee_exit_reason::EE_EXIT_HOST_YIELD) &&
+                    count == 1u && status == 0u &&
+                    out_pc == hit && cpu.m_pc == hit)
+                {
+                    const auto shape = idle_loop_shapes.find(hit);
+                    if (shape != idle_loop_shapes.end() &&
+                        idle_iteration_loops(shape->second) &&
+                        runtime.m_idle_probe_remaining >= 1u)
+                    {
+                        const uint64_t repeats =
+                            runtime.m_idle_probe_remaining - 1u;
+                        const uint64_t per_iteration = shape->second.words.size();
+                        runtime.m_guest_instruction_attempts += repeats * per_iteration;
+                        runtime.m_reference_instruction_slots += repeats * per_iteration;
+                        runtime.m_loop_safepoint_remaining = 0u;
+                        ++idle_skip_slices;
+                        idle_skip_instructions += repeats * per_iteration;
+                    }
+                    else
+                    {
+                        // Should not happen for a verified loop; never arm it
+                        // again. This one HOST_YIELD stays a host-only resume.
+                        ++idle_skip_mispredictions;
+                        idle_probe_headers.erase(
+                            std::remove(idle_probe_headers.begin(),
+                                        idle_probe_headers.end(), hit),
+                            idle_probe_headers.end());
+                    }
+                }
+                for (uint32_t slot = 0u; slot < 4u; ++slot)
+                {
+                    runtime.m_idle_probe_pcs[slot] = 0u;
+                }
+                runtime.m_idle_probe_state = 0u;
             }
             if (runtime.m_timing_observer_failed != 0u)
             {
@@ -4022,6 +4192,20 @@ int main(int argc, char** argv)
         if (hot_expand_budget_reached)
         {
             break;
+        }
+
+        if (profile_pcs)
+        {
+            // Host-only attribution of guest instructions and native wall
+            // time to the guest PC each native call was entered at.
+            s_pc_profile& entry = pc_profile[from_pc];
+            entry.m_calls += 1u;
+            entry.m_dispatches += count;
+            entry.m_instructions +=
+                runtime.m_guest_instruction_attempts -
+                instructions_before_dispatch;
+            entry.m_wall_ms += std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - profile_start).count();
         }
 
         dispatched += count;
@@ -4230,6 +4414,27 @@ int main(int argc, char** argv)
             }
             cpu.m_exit_reason = static_cast<uint32_t>(
                 ee::e_ee_exit_reason::EE_EXIT_DISPATCH);
+            // A guarded loop header: analyze it once; arm pure poll loops.
+            if (idle_skip && idle_yield_headers.insert(cpu.m_pc).second)
+            {
+                const uint32_t header = cpu.m_pc;
+                const auto shape = idle_loop_shapes.emplace(header, ee::analyze_idle_loop(
+                    header,
+                    [&](uint32_t pc, uint32_t* word)
+                    {
+                        if (!image.is_executable_address(pc) ||
+                            !memory->contains(pc, 4u))
+                        {
+                            return false;
+                        }
+                        *word = memory->read32(pc);
+                        return true;
+                    })).first;
+                if (shape->second.eligible && idle_probe_headers.size() < 4u)
+                {
+                    idle_probe_headers.push_back(header);
+                }
+            }
             continue;
         }
 
@@ -6319,6 +6524,11 @@ int main(int argc, char** argv)
                                         pad0_cross_first_poll,
                                         pad0_cross_poll_count);
                             }
+                            if (!pad0_script.empty())
+                            {
+                                iop_kernel->hardware()
+                                    .configure_sio2_pad0_script(pad0_script);
+                            }
                             if (cdvd != nullptr && cdvd->m_source != nullptr)
                             {
                                 cdvd->m_transport =
@@ -7282,6 +7492,73 @@ int main(int argc, char** argv)
             slowest_native_pc, slowest_native_ms,
             iop_time_ms, compile_wait_ms
         );
+    }
+    if (!pad0_script.empty() && iop_kernel != nullptr)
+    {
+        std::fprintf(stderr,
+            "IOP SIO2 pad0 script: polls=%u scripted_polls=%u steps=%zu\n",
+            iop_kernel->hardware().sio2_pad0_poll_count(),
+            iop_kernel->hardware().sio2_pad0_script_pressed_polls(),
+            pad0_script.size());
+    }
+    if (idle_skip)
+    {
+        size_t eligible_loops = 0u;
+        for (const auto& item : idle_loop_shapes)
+        {
+            eligible_loops += item.second.eligible ? 1u : 0u;
+        }
+        std::fprintf(stderr,
+            "EE idle skip: slices=%llu charged_instructions=%llu "
+            "mispredictions=%llu analyzed_loops=%zu eligible_loops=%zu\n",
+            static_cast<unsigned long long>(idle_skip_slices),
+            static_cast<unsigned long long>(idle_skip_instructions),
+            static_cast<unsigned long long>(idle_skip_mispredictions),
+            idle_loop_shapes.size(), eligible_loops);
+        for (const auto& item : idle_loop_shapes)
+        {
+            std::fprintf(stderr, "EE idle loop: pc=0x%08x %s\n",
+                         item.first, item.second.reason);
+        }
+    }
+    if (profile_pcs && !pc_profile.empty())
+    {
+        std::vector<std::pair<uint32_t, s_pc_profile>> ranked(
+            pc_profile.begin(), pc_profile.end());
+        std::sort(ranked.begin(), ranked.end(),
+                  [](const auto& a, const auto& b)
+                  {
+                      return a.second.m_instructions > b.second.m_instructions;
+                  });
+        uint64_t total_instructions = 0u;
+        for (const auto& item : ranked)
+        {
+            total_instructions += item.second.m_instructions;
+        }
+        std::fprintf(stderr,
+            "EE profile: %zu entry PCs, %llu guest instructions "
+            "(host-only attribution to the native entry PC)\n",
+            ranked.size(), static_cast<unsigned long long>(total_instructions));
+        for (size_t i = 0; i < ranked.size() && i < 25u; ++i)
+        {
+            const s_pc_profile& item = ranked[i].second;
+            std::fprintf(stderr,
+                "EE profile: pc=0x%08x calls=%llu dispatches=%llu "
+                "instructions=%llu (%.1f%%) wall_ms=%.1f ns_per_instruction=%.2f\n",
+                ranked[i].first,
+                static_cast<unsigned long long>(item.m_calls),
+                static_cast<unsigned long long>(item.m_dispatches),
+                static_cast<unsigned long long>(item.m_instructions),
+                total_instructions != 0u
+                    ? 100.0 * static_cast<double>(item.m_instructions) /
+                          static_cast<double>(total_instructions)
+                    : 0.0,
+                item.m_wall_ms,
+                item.m_instructions != 0u
+                    ? 1.0e6 * item.m_wall_ms /
+                          static_cast<double>(item.m_instructions)
+                    : 0.0);
+        }
     }
 
     if (callback_active)
