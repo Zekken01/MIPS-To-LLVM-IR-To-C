@@ -3219,6 +3219,52 @@ int main(int argc, char** argv)
                 iop_hle->signal_vblank_edge(start_edge != 0u);
             }
         }
+#ifdef EE_ENABLE_WEBGPU
+        // SDBZ_FRAME_DUMP=DIR:EVERY_FIELDS writes DIR/field-NNNNNNNN.ppm
+        // from the WebGPU raster every EVERY_FIELDS fields (diagnostic).
+        {
+            static const std::pair<std::string, uint64_t> s_frame_dump = []
+            {
+                const char* text = std::getenv("SDBZ_FRAME_DUMP");
+                if (text == nullptr)
+                {
+                    return std::pair<std::string, uint64_t>{};
+                }
+                const std::string spec(text);
+                const size_t colon = spec.rfind(':');
+                if (colon == std::string::npos || colon == 0u)
+                {
+                    return std::pair<std::string, uint64_t>{};
+                }
+                return std::pair<std::string, uint64_t>{
+                    spec.substr(0u, colon),
+                    std::strtoull(spec.c_str() + colon + 1u, nullptr, 0)};
+            }();
+            static uint64_t s_frame_dump_next = 0u;
+            if (s_frame_dump.second != 0u)
+            {
+                const uint64_t field = hardware.scanout().fields_started();
+                if (field >= s_frame_dump_next)
+                {
+                    s_frame_dump_next = field + s_frame_dump.second;
+                    std::vector<uint32_t> pixels;
+                    uint32_t width = 0u;
+                    uint32_t height = 0u;
+                    if (webgpu_bridge.readback(
+                            hardware.gs_display_registers(),
+                            hardware.gs_crt_mode(), pixels, width, height))
+                    {
+                        char name[64];
+                        std::snprintf(name, sizeof(name), "/field-%08llu.ppm",
+                                      static_cast<unsigned long long>(field));
+                        (void)write_gs_ppm(
+                            (s_frame_dump.first + name).c_str(),
+                            pixels, width, height);
+                    }
+                }
+            }
+        }
+#endif
 #ifdef EE_ENABLE_RAYLIB_WINDOW
         if (gs_webgpu_window)
         {
@@ -3405,12 +3451,21 @@ int main(int argc, char** argv)
             [&](uint32_t address, uint32_t width, uint64_t* raw)
             {
                 const uint32_t physical = memory->translate_direct_address(address);
+                // IPU registers only change on EE writes or DMA starts,
+                // never while a pure loop spins, and reads are side-effect
+                // free in this model.
                 const bool status_register =
                     width == 4u &&
                     (physical == 0x1000f000u ||   // INTC_STAT
                      physical == 0x1000f010u ||   // INTC_MASK
                      physical == 0x1000e010u ||   // D_STAT
-                     physical == 0x12001000u);    // GS CSR
+                     physical == 0x12001000u ||   // GS CSR
+                     physical == 0x10002000u ||   // IPU_CMD
+                     physical == 0x10002004u ||   // IPU_CMD busy
+                     physical == 0x10002010u ||   // IPU_CTRL
+                     physical == 0x10002020u ||   // IPU_BP
+                     physical == 0x10002030u ||   // IPU_TOP
+                     physical == 0x10002034u);    // IPU_TOP busy
                 if (!memory->contains(address, width) && !status_register)
                 {
                     return false;
@@ -7492,6 +7547,66 @@ int main(int argc, char** argv)
             slowest_native_pc, slowest_native_ms,
             iop_time_ms, compile_wait_ms
         );
+    }
+    if (std::getenv("SDBZ_TRACE_IOP_THREADS") != nullptr && iop_kernel != nullptr)
+    {
+        for (const auto& item : iop_kernel->threads())
+        {
+            const iop::s_kernel_thread& thread = item.second;
+            std::fprintf(stderr,
+                "IOP thread at exit: id=%u status=%u wait=%u prio=%u module=%u "
+                "entry=0x%08x pc=0x%08x ra=0x%08x a0=0x%08x "
+                "last_syscall=%u at=0x%08x ra=0x%08x a0=0x%08x insns=%llu\n",
+                thread.m_id, static_cast<uint32_t>(thread.m_status),
+                thread.m_wait_type, thread.m_priority, thread.m_module_id,
+                thread.m_entry, thread.m_cpu.m_pc, thread.m_cpu.m_gpr[31],
+                thread.m_cpu.m_gpr[4], thread.m_last_syscall_number,
+                thread.m_last_syscall_pc, thread.m_last_syscall_ra,
+                thread.m_last_syscall_a0,
+                static_cast<unsigned long long>(thread.m_guest_instructions));
+        }
+    }
+    if (std::getenv("SDBZ_TRACE_IPU") != nullptr)
+    {
+        const auto& observed = hardware.ipu_observation();
+        std::fprintf(stderr, "EE IPU MMIO: reads=%llu writes=%llu\n",
+                     static_cast<unsigned long long>(observed.reads),
+                     static_cast<unsigned long long>(observed.writes));
+        for (size_t i = 0; i < observed.first.size() && i < 200u; ++i)
+        {
+            const auto& access = observed.first[i];
+            std::fprintf(stderr, "EE IPU MMIO %s addr=0x%08x width=%u value=0x%016llx\n",
+                         access.write ? "W" : "R", access.address, access.width,
+                         static_cast<unsigned long long>(access.value));
+        }
+    }
+    {
+        const ee::c_ee_ipu& ipu = hardware.ipu();
+        uint64_t ipu_commands = 0u;
+        for (uint32_t command = 0u; command < 16u; ++command)
+        {
+            ipu_commands += ipu.command_count(command);
+        }
+        if (ipu_commands != 0u)
+        {
+            std::fprintf(stderr,
+                "EE IPU: commands bclr=%llu idec=%llu bdec=%llu vdec=%llu "
+                "fdec=%llu setiq=%llu setvq=%llu csc=%llu setth=%llu "
+                "stalls=%llu out_qwords=%llu bad_codes=%llu busy=%d\n",
+                static_cast<unsigned long long>(ipu.command_count(0u)),
+                static_cast<unsigned long long>(ipu.command_count(1u)),
+                static_cast<unsigned long long>(ipu.command_count(2u)),
+                static_cast<unsigned long long>(ipu.command_count(3u)),
+                static_cast<unsigned long long>(ipu.command_count(4u)),
+                static_cast<unsigned long long>(ipu.command_count(5u)),
+                static_cast<unsigned long long>(ipu.command_count(6u)),
+                static_cast<unsigned long long>(ipu.command_count(7u)),
+                static_cast<unsigned long long>(ipu.command_count(9u)),
+                static_cast<unsigned long long>(ipu.stalls()),
+                static_cast<unsigned long long>(ipu.output_qwords()),
+                static_cast<unsigned long long>(ipu.bad_codes()),
+                ipu.busy() ? 1 : 0);
+        }
     }
     if (!pad0_script.empty() && iop_kernel != nullptr)
     {
