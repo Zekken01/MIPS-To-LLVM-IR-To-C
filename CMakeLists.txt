@@ -42,6 +42,7 @@ add_library(ee_core STATIC
     src/runtime/ee_dmac.cpp
     src/runtime/ee_gif.cpp
     src/runtime/ee_vif1.cpp
+    src/runtime/ipu/ee_ipu.cpp
     src/runtime/ee_vu1.cpp
     src/runtime/ee_gs.cpp
     src/runtime/ee_gs_display.cpp
@@ -471,6 +472,8 @@ add_test(NAME ee_dmac_gif_observer COMMAND ee_dmac_gif_observer_test)
 
 add_executable(ee_dmac_test tests/smoke/ee_dmac_test.cpp)
 target_link_libraries(ee_dmac_test PRIVATE ee_core)
+add_executable(ee_ipu_test tests/smoke/ee_ipu_test.cpp)
+target_link_libraries(ee_ipu_test PRIVATE ee_core)
 
 add_executable(ee_spr_dma_test tests/smoke/ee_spr_dma_test.cpp)
 target_link_libraries(ee_spr_dma_test PRIVATE ee_core)
@@ -799,6 +802,7 @@ add_test(NAME ee_memory_alias COMMAND ee_memory_alias_test)
 add_test(NAME ee_physical_bus COMMAND ee_physical_bus_test)
 add_test(NAME ee_intc COMMAND ee_intc_test)
 add_test(NAME ee_dmac COMMAND ee_dmac_test)
+add_test(NAME ee_ipu COMMAND ee_ipu_test)
 add_test(NAME ee_spr_dma COMMAND ee_spr_dma_test)
 add_test(NAME ee_fromspr_chain COMMAND ee_fromspr_chain_test)
 add_test(NAME ee_spr_interleave COMMAND ee_spr_interleave_test)
