@@ -529,7 +529,16 @@ bool c_cdvdman_bridge::handle_syscall(
          name.substr(0u, 7u) == "CDROM0:");
     const std::string guest_path = qualified ? name : "cdrom0:" + name;
     s_folder_file_info file{};
-    if (!m_source.find_file(guest_path, &file))
+    const bool found = m_source.find_file(guest_path, &file);
+    static const bool trace_search = std::getenv("SDBZ_TRACE_CDVD") != nullptr;
+    if (trace_search)
+    {
+        std::fprintf(stderr,
+            "IOP CDVD sceCdSearchFile %s found=%d lba=%u size=%u thread=%u\n",
+            guest_path.c_str(), found ? 1 : 0, found ? file.m_lba : 0u,
+            found ? file.m_size : 0u, m_kernel.current_thread_id());
+    }
+    if (!found)
     {
         // A missing/unsupported filename is a genuine search miss.
         // Leave the caller's output structure untouched.
