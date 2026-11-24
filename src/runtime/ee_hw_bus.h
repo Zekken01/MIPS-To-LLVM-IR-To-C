@@ -231,8 +231,19 @@ public:
         }
         if (is_ipu_address(address))
         {
-            static_cast<c_ee_hw_bus*>(user)->observe_ipu(address, width, 0u, false);
+            // Observe the value actually returned by the device.
+            const bool handled = mmio_read_device(user, address, width, value);
+            static_cast<c_ee_hw_bus*>(user)->observe_ipu(
+                address, width,
+                handled && value != nullptr ? value->m_lo : 0u, false);
+            return handled;
         }
+        return mmio_read_device(user, address, width, value);
+    }
+
+    static bool mmio_read_device(void* user, uint32_t address,
+                                 uint32_t width, s_ee_u128* value)
+    {
 
         c_ee_hw_bus* bus = static_cast<c_ee_hw_bus*>(user);
         const int32_t display_index = display_register_index(address);

@@ -2747,7 +2747,12 @@ int main(int argc, char** argv)
     std::vector<ee::s_ee_instruction_trace_entry> instruction_trace;
     if (instruction_trace_path != nullptr)
     {
-        instruction_trace.resize(k_instruction_trace_limit);
+        // SDBZ_TRACE_LIMIT=N raises the bounded entry count (diagnostic).
+        const char* limit_text = std::getenv("SDBZ_TRACE_LIMIT");
+        const unsigned long long limit = limit_text != nullptr
+            ? std::strtoull(limit_text, nullptr, 0) : 0ull;
+        instruction_trace.resize(limit != 0ull && limit <= 0x10000000ull
+            ? static_cast<size_t>(limit) : k_instruction_trace_limit);
     }
     // Preserve the most recent guest stores, not just the first 64
     // printed matches. This ring is host-owned and disabled by default.
@@ -7578,6 +7583,22 @@ int main(int argc, char** argv)
             std::fprintf(stderr, "EE IPU MMIO %s addr=0x%08x width=%u value=0x%016llx\n",
                          access.write ? "W" : "R", access.address, access.width,
                          static_cast<unsigned long long>(access.value));
+        }
+    }
+    // SDBZ_DUMP_RAM=FILE writes the 32 MiB EE RAM image at exit (diagnostic).
+    if (const char* dump_path = std::getenv("SDBZ_DUMP_RAM"))
+    {
+        if (FILE* dump = std::fopen(dump_path, "wb"))
+        {
+            std::vector<uint8_t> image(32u * 1024u * 1024u);
+            for (uint32_t address = 0u; address < image.size(); address += 4u)
+            {
+                const uint32_t word = memory->read32(address);
+                std::memcpy(image.data() + address, &word, 4u);
+            }
+            std::fwrite(image.data(), 1u, image.size(), dump);
+            std::fclose(dump);
+            std::fprintf(stderr, "EE RAM dumped: %s\n", dump_path);
         }
     }
     {
