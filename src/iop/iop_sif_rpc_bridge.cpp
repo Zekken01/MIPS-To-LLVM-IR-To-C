@@ -965,6 +965,18 @@ void c_sif_rpc_bridge::commit_command(const s_request& request)
         {
         case 0x01u:
         case 0x0du:
+        {
+            static const bool trace_cdvd =
+                std::getenv("SDBZ_TRACE_CDVD") != nullptr;
+            if (trace_cdvd)
+            {
+                std::fprintf(stderr,
+                    "IOP CDVDFSV read: fno=%u lba=%u sectors=%u dst=0x%08x "
+                    "recv=%u\n", method, request.m_cdvd_lba,
+                    request.m_cdvd_count, request.m_cdvd_destination,
+                    request.m_words[11]);
+            }
+        }
             if (request.m_words[11] != 0u)
             {
                 m_ee_ram.write32(request.m_result_destination, 0u);

@@ -3266,6 +3266,16 @@ int main(int argc, char** argv)
                             (s_frame_dump.first + name).c_str(),
                             pixels, width, height);
                     }
+                    const ee::c_ee_ipu& ipu = hardware.ipu();
+                    std::fprintf(stderr,
+                        "EE frame dump: field=%llu ipu bdec=%llu idec=%llu "
+                        "csc=%llu out_qwords=%llu dispatched=%llu\n",
+                        static_cast<unsigned long long>(field),
+                        static_cast<unsigned long long>(ipu.command_count(2u)),
+                        static_cast<unsigned long long>(ipu.command_count(1u)),
+                        static_cast<unsigned long long>(ipu.command_count(7u)),
+                        static_cast<unsigned long long>(ipu.output_qwords()),
+                        static_cast<unsigned long long>(dispatched));
                 }
             }
         }
@@ -7610,6 +7620,22 @@ int main(int argc, char** argv)
         }
         if (ipu_commands != 0u)
         {
+            const auto reg = [&](uint32_t address) -> uint32_t
+            {
+                ee::s_ee_u128 value{};
+                return ee::c_ee_hw_bus::mmio_read(&hardware, address, 4u, &value)
+                    ? static_cast<uint32_t>(value.m_lo) : 0xdeadbeefu;
+            };
+            std::fprintf(stderr,
+                "EE IPU DMA at exit: ch3 chcr=0x%08x madr=0x%08x qwc=0x%x "
+                "ch4 chcr=0x%08x madr=0x%08x qwc=0x%x tadr=0x%08x "
+                "d_stat=0x%08x d_pcr=0x%08x d_ctrl=0x%08x i_stat=0x%08x "
+                "i_mask=0x%08x ipu_ctrl=0x%08x ipu_bp=0x%08x ipu_cmd=0x%08x\n",
+                reg(0x1000b000u), reg(0x1000b010u), reg(0x1000b020u),
+                reg(0x1000b400u), reg(0x1000b410u), reg(0x1000b420u),
+                reg(0x1000b430u), reg(0x1000e010u), reg(0x1000e020u),
+                reg(0x1000e000u), reg(0x1000f000u), reg(0x1000f010u),
+                reg(0x10002010u), reg(0x10002020u), reg(0x10002000u));
             std::fprintf(stderr,
                 "EE IPU: commands bclr=%llu idec=%llu bdec=%llu vdec=%llu "
                 "fdec=%llu setiq=%llu setvq=%llu csc=%llu setth=%llu "
