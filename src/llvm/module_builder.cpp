@@ -5117,8 +5117,13 @@ void module_builder::emit_function_cfg(const ee::s_ee_function& fn,
     header();
     declare_memory_helpers();
 
-    // Compute written/rbw per block.
+    // Compute written/rbw per block. block_killed_map is the must-write set
+    // used by liveness: a branch-likely delay slot executes only when the
+    // branch is taken, so its writes cannot kill a register that the
+    // not-taken successor still reads (SDBZ 0x166410 BEQL with delay slot
+    // "ld s0,0(sp)" otherwise dropped the preceding "lw s0" result).
     std::map<uint32_t, std::set<uint8_t>> block_written_map, block_rbw_map;
+    std::map<uint32_t, std::set<uint8_t>> block_killed_map;
     std::vector<std::vector<ee::s_ee_instruction>> block_insns_vec;
     for (const auto& bb : fn.blocks)
     {
@@ -5130,6 +5135,17 @@ void module_builder::emit_function_cfg(const ee::s_ee_function& fn,
         }
         block_insns_vec.push_back(insns);
         block_written_map[bb.start_pc] = block_written(insns);
+        if (insns.size() >= 2u && insns[insns.size() - 2u].branch_likely &&
+            insns[insns.size() - 2u].has_delay_slot)
+        {
+            const std::vector<ee::s_ee_instruction> unconditional(
+                insns.begin(), insns.end() - 1);
+            block_killed_map[bb.start_pc] = block_written(unconditional);
+        }
+        else
+        {
+            block_killed_map[bb.start_pc] = block_written_map[bb.start_pc];
+        }
         std::set<uint8_t> rbw = block_read_before_write(insns);
         // The V0 write trace observes the pre-write SSA value even for an
         // instruction which otherwise kills V0 on entry to the block.
@@ -5318,8 +5334,8 @@ void module_builder::emit_function_cfg(const ee::s_ee_function& fn,
                 changed = true;
             }
 
-            // live_in[B] = (live_out[B] - written[B]) U read_before_write[B]
-            const auto& written = block_written_map[bb.start_pc];
+            // live_in[B] = (live_out[B] - killed[B]) U read_before_write[B]
+            const auto& written = block_killed_map[bb.start_pc];
             const auto& rbw = block_rbw_map[bb.start_pc];
             std::set<uint8_t> new_in;
             for (uint8_t r : live_out[bb.start_pc])
