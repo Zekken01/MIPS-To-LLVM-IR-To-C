@@ -1,7 +1,9 @@
 #include "iop_aot.h"
 #include "iop_cpu.h"
 
+#include <algorithm>
 #include <chrono>
+#include <filesystem>
 #include <cstdio>
 #include <cstddef>
 
@@ -42,17 +44,47 @@ uint64_t iop_aot_hash(const uint8_t* bytes, size_t size)
 
 c_iop_aot::~c_iop_aot()
 {
+    for (void* library : m_libraries)
+    {
 #if defined(_WIN32)
-    if (m_library != nullptr)
-    {
-        FreeLibrary(static_cast<HMODULE>(m_library));
-    }
+        FreeLibrary(static_cast<HMODULE>(library));
 #else
-    if (m_library != nullptr)
-    {
-        dlclose(m_library);
-    }
+        dlclose(library);
 #endif
+    }
+}
+
+size_t c_iop_aot::open_directory(const std::string& directory, std::string* error)
+{
+#if defined(_WIN32)
+    const char* suffix = ".dll";
+#else
+    const char* suffix = ".so";
+#endif
+    std::vector<std::filesystem::path> paths;
+    std::error_code code;
+    for (const auto& entry : std::filesystem::directory_iterator(directory, code))
+    {
+        if (entry.path().extension() == suffix)
+        {
+            paths.push_back(entry.path());
+        }
+    }
+    std::sort(paths.begin(), paths.end());
+    size_t loaded = 0u;
+    for (const auto& path : paths)
+    {
+        std::string message;
+        if (open(path.string(), &message))
+        {
+            ++loaded;
+        }
+        else if (error != nullptr)
+        {
+            *error += (error->empty() ? "" : "; ") + message;
+        }
+    }
+    return loaded;
 }
 
 bool c_iop_aot::open(const std::string& path, std::string* error)
@@ -95,7 +127,7 @@ bool c_iop_aot::open(const std::string& path, std::string* error)
 #endif
         return false;
     }
-    m_library = library;
+    m_libraries.push_back(library);
     add_modules(modules(), count());
     return true;
 }

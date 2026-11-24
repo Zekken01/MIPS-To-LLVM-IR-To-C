@@ -2432,9 +2432,18 @@ int main(int argc, char** argv)
         // import-linked .text for tools/iop_recomp.py.
         if (const char* aot_path = std::getenv("SDBZ_IOP_AOT"))
         {
+            // SDBZ_IOP_AOT is a directory of per-module libraries
+            // (tools/build_iop_aot.py OUT/modules) or one library.
             iop_aot = std::make_unique<iop::c_iop_aot>();
             std::string aot_error;
-            if (iop_aot->open(aot_path, &aot_error))
+            const bool aot_loaded = std::filesystem::is_directory(aot_path)
+                ? iop_aot->open_directory(aot_path, &aot_error) != 0u
+                : iop_aot->open(aot_path, &aot_error);
+            if (!aot_error.empty())
+            {
+                std::fprintf(stderr, "IOP AOT: %s\n", aot_error.c_str());
+            }
+            if (aot_loaded)
             {
                 iop_kernel->cpu().set_aot(iop_aot.get());
                 std::fprintf(stderr, "IOP AOT: loaded %zu translated module(s) from %s\n",
@@ -2442,8 +2451,8 @@ int main(int argc, char** argv)
             }
             else
             {
-                std::fprintf(stderr, "IOP AOT: %s; interpreting IRX code\n",
-                             aot_error.c_str());
+                std::fprintf(stderr, "IOP AOT: no translated modules loaded "
+                             "from %s; interpreting IRX code\n", aot_path);
                 iop_aot.reset();
             }
         }

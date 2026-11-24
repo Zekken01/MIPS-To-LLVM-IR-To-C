@@ -101,7 +101,12 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    std::vector<iop::s_iop_ir_table_entry> table;
+#if defined(_WIN32)
+    const bool windows_exports = true;
+#else
+    const bool windows_exports = false;
+#endif
+    size_t modules = 0u;
     uint64_t instructions = 0u;
     for (const auto& meta_path : metas)
     {
@@ -136,33 +141,27 @@ int main(int argc, char** argv)
                          meta_path.string().c_str());
             return 1;
         }
-        const std::string symbol = "iop_aot_fn_" + std::to_string(table.size());
-        const std::filesystem::path ll =
-            output / ("iop_mod_" + std::to_string(table.size()) + ".ll");
-        if (!write_file(ll, iop::iop_lift_module_ir(module, symbol)))
+        // One library per IRX: STEM.ll (code) + STEM.table.ll (exports),
+        // where STEM is the capture name NAME@BASE.
+        const std::string stem = meta_path.stem().string();
+        const std::string symbol = "iop_aot_fn";
+        const std::filesystem::path ll = output / (stem + ".ll");
+        const std::filesystem::path table_ll = output / (stem + ".table.ll");
+        if (!write_file(ll, iop::iop_lift_module_ir(module, symbol)) ||
+            !write_file(table_ll, iop::iop_table_module_ir(
+                {{name, module.m_base, static_cast<uint32_t>(module.m_text.size()),
+                  hash, symbol}}, windows_exports)))
         {
             std::fprintf(stderr, "iop_recomp: cannot write %s\n", ll.string().c_str());
             return 1;
         }
-        table.push_back({name, module.m_base,
-                         static_cast<uint32_t>(module.m_text.size()), hash, symbol});
+        ++modules;
         instructions += module.m_text.size() / 4u;
         std::printf("iop_recomp: %s at 0x%08x, %zu instructions -> %s\n",
                     name.c_str(), module.m_base, module.m_text.size() / 4u,
                     ll.filename().string().c_str());
     }
-#if defined(_WIN32)
-    const bool windows_exports = true;
-#else
-    const bool windows_exports = false;
-#endif
-    if (!write_file(output / "iop_table.ll",
-                    iop::iop_table_module_ir(table, windows_exports)))
-    {
-        std::fprintf(stderr, "iop_recomp: cannot write table\n");
-        return 1;
-    }
-    std::printf("iop_recomp: %zu module(s), %llu instructions\n", table.size(),
+    std::printf("iop_recomp: %zu module(s), %llu instructions\n", modules,
                 static_cast<unsigned long long>(instructions));
     return 0;
 }

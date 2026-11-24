@@ -22,8 +22,12 @@ public:
     c_iop_aot(const c_iop_aot&) = delete;
     c_iop_aot& operator=(const c_iop_aot&) = delete;
 
-    // Load a translated library. Returns false (with a message) on failure.
+    // Load one translated module library (may be called repeatedly).
+    // Returns false (with a message) on failure.
     bool open(const std::string& path, std::string* error);
+    // Load every library (.dll/.so) in a directory, one per IRX module.
+    // Returns the number loaded; failures are appended to *error.
+    size_t open_directory(const std::string& directory, std::string* error);
     // Register modules directly (tests and statically linked translations).
     void add_modules(const s_iop_aot_module* modules, uint32_t count);
 
@@ -64,7 +68,7 @@ public:
     }
 
 private:
-    void* m_library = nullptr;
+    std::vector<void*> m_libraries;
     std::vector<const s_iop_aot_module*> m_modules;
     std::vector<const s_iop_aot_module*> m_active;
     uint64_t m_entries = 0u;
