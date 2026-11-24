@@ -28,6 +28,7 @@
 #endif
 #include "elf_loader.h"
 #include "iop_kernel.h"
+#include "iop_aot.h"
 #include "iop_memory_card.h"
 #include "iop_guest_fault_probe.h"
 #include "iop_cdvd.h"
@@ -2399,6 +2400,8 @@ int main(int argc, char** argv)
         }
         std::printf("[mc] card mounted in slot 1: %s\n", memory_card_path);
     }
+    // Declared before the kernel so translated code outlives the IOP CPU.
+    std::unique_ptr<iop::c_iop_aot> iop_aot;
     std::unique_ptr<iop::c_kernel> iop_kernel;
     iop::c_iop_guest_fault_probe iop_fault_probe{};
     std::unique_ptr<iop::c_sif1_dma_transport> iop_sif1_transport;
@@ -2424,6 +2427,88 @@ int main(int argc, char** argv)
         disc_folder_path != nullptr)
     {
         iop_kernel = std::make_unique<iop::c_kernel>();
+        // SDBZ_IOP_AOT=LIB loads ahead-of-time translated IRX code;
+        // SDBZ_IOP_AOT_CAPTURE=DIR saves each loaded module's relocated,
+        // import-linked .text for tools/iop_recomp.py.
+        if (const char* aot_path = std::getenv("SDBZ_IOP_AOT"))
+        {
+            iop_aot = std::make_unique<iop::c_iop_aot>();
+            std::string aot_error;
+            if (iop_aot->open(aot_path, &aot_error))
+            {
+                iop_kernel->cpu().set_aot(iop_aot.get());
+                std::fprintf(stderr, "IOP AOT: loaded %zu translated module(s) from %s\n",
+                             iop_aot->module_count(), aot_path);
+            }
+            else
+            {
+                std::fprintf(stderr, "IOP AOT: %s; interpreting IRX code\n",
+                             aot_error.c_str());
+                iop_aot.reset();
+            }
+        }
+        {
+            const char* capture_dir = std::getenv("SDBZ_IOP_AOT_CAPTURE");
+            iop::c_kernel* kernel_for_aot = iop_kernel.get();
+            iop::c_iop_aot* aot_for_kernel = iop_aot.get();
+            iop_kernel->set_module_loaded_callback(
+                [capture_dir, kernel_for_aot, aot_for_kernel](
+                    const iop::s_irx_module& module)
+            {
+                if (capture_dir != nullptr && module.m_text_size != 0u)
+                {
+                    std::vector<uint8_t> text(module.m_text_size);
+                    if (kernel_for_aot->cpu().dma_read(
+                            module.m_base, text.data(), module.m_text_size))
+                    {
+                        std::string name;
+                        for (char ch : module.m_name)
+                        {
+                            name.push_back(std::isalnum(
+                                static_cast<unsigned char>(ch)) ? ch : '_');
+                        }
+                        char stem[128];
+                        std::snprintf(stem, sizeof(stem), "%s/%s@%08x",
+                                      capture_dir, name.c_str(), module.m_base);
+                        if (FILE* bin = std::fopen(
+                                (std::string(stem) + ".bin").c_str(), "wb"))
+                        {
+                            std::fwrite(text.data(), 1u, text.size(), bin);
+                            std::fclose(bin);
+                        }
+                        if (FILE* meta = std::fopen(
+                                (std::string(stem) + ".json").c_str(), "w"))
+                        {
+                            std::fprintf(meta,
+                                "{\"name\": \"%s\", \"base\": %u, "
+                                "\"text_size\": %u, \"entry\": %u, "
+                                "\"gp\": %u, \"hash\": \"%016llx\", "
+                                "\"exports\": [",
+                                name.c_str(), module.m_base, module.m_text_size,
+                                module.m_entry, module.m_gp,
+                                static_cast<unsigned long long>(
+                                    iop::iop_aot_hash(text.data(), text.size())));
+                            for (size_t index = 0; index < module.m_exports.size();
+                                 ++index)
+                            {
+                                std::fprintf(meta, "%s%u", index ? ", " : "",
+                                             module.m_exports[index].m_entry);
+                            }
+                            std::fprintf(meta, "]}\n");
+                            std::fclose(meta);
+                        }
+                    }
+                }
+                if (aot_for_kernel != nullptr)
+                {
+                    aot_for_kernel->refresh(kernel_for_aot->cpu());
+                    std::fprintf(stderr,
+                        "IOP AOT: module %s loaded at 0x%08x, %zu translated "
+                        "module(s) active\n", module.m_name.c_str(),
+                        module.m_base, aot_for_kernel->active_count());
+                }
+            });
+        }
         if (memory_card.mounted())
         {
             iop_kernel->hardware().bind_memory_card(&memory_card);
@@ -7594,6 +7679,16 @@ int main(int argc, char** argv)
                          access.write ? "W" : "R", access.address, access.width,
                          static_cast<unsigned long long>(access.value));
         }
+    }
+    if (iop_aot != nullptr)
+    {
+        std::fprintf(stderr,
+            "IOP AOT: modules=%zu active=%zu entries=%llu instructions=%llu "
+            "translated_ms=%.1f refresh_ms=%.1f\n",
+            iop_aot->module_count(), iop_aot->active_count(),
+            static_cast<unsigned long long>(iop_aot->entries()),
+            static_cast<unsigned long long>(iop_aot->instructions()),
+            iop_aot->milliseconds(), iop_aot->refresh_milliseconds());
     }
     // SDBZ_DUMP_RAM=FILE writes the 32 MiB EE RAM image at exit (diagnostic).
     if (const char* dump_path = std::getenv("SDBZ_DUMP_RAM"))

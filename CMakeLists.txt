@@ -62,6 +62,7 @@ add_library(iop_cpu STATIC
     src/iop/iop_memory_card.cpp
     src/iop/iop_spu2.cpp
     src/iop/irx_loader.cpp
+    src/iop/iop_aot.cpp
     src/iop/iop_kernel.cpp
     src/iop/iop_kernel_hle_bridge.cpp
     src/iop/iop_sysclib_strings.cpp
@@ -262,6 +263,19 @@ add_executable(ee_recomp
     src/ee/ee_recomp.cpp
 )
 target_link_libraries(ee_recomp PRIVATE ee_core)
+
+# Ahead-of-time IRX (IOP R3000A) to LLVM IR translator.
+add_executable(iop_recomp
+    src/tools/iop_recomp_main.cpp
+    src/iop/iop_ir_lifter.cpp
+)
+target_link_libraries(iop_recomp PRIVATE iop_cpu)
+add_executable(iop_aot_test
+    tests/smoke/iop_aot_test.cpp
+    src/iop/iop_ir_lifter.cpp
+)
+target_link_libraries(iop_aot_test PRIVATE iop_cpu)
+add_test(NAME iop_aot COMMAND iop_aot_test ${CMAKE_BINARY_DIR}/iop-aot-test)
 
 # Standalone host for translated EE functions and optional, explicit
 # IOP IRX execution at SIF polling rendezvous points.
